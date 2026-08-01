@@ -423,7 +423,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
 
     2. **Strict single-line legacy prose fallback (case-sensitive).**
        If there is no top-level ``verdict`` field, extract exactly ONE
-       physical line matching ``^Verdict:[ \t]*(PASS|FAIL|REVISE)[ \t]*$``
+       physical line matching ``^Verdict:[ \t]*(PASS|FAIL|REVISE|APPROVE)[ \t]*$``
        from ``output_summary``.  Horizontal whitespace (spaces, tabs) only
        — ``\\s`` is NOT used because it can consume a newline.
        * Zero matching lines → no extractable evidence (fail closed).
@@ -446,11 +446,10 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
 
     5. **Malformed Verdict: candidate lines fail closed unconditionally.**
        Any physical line starting with ``Verdict:`` that does NOT match the
-       strict ``PASS|FAIL|REVISE`` pattern is a malformed candidate.  A
+       strict ``PASS|FAIL|REVISE|APPROVE`` pattern is a malformed candidate.  A
        single malformed line fails closed regardless of whether valid legacy
        or structured evidence also exists — there is no structured-verdict
-       equality escape.  This covers ``Verdict: APPROVE`` with structured
-       APPROVE, ``Verdict: APPROVED``, mixed-evidence
+       equality escape.  This covers ``Verdict: APPROVED``, mixed-evidence
        (e.g. ``Verdict: PASS\nVerdict: APPROVED``), and structured
        PASS paired with a malformed legacy candidate.
     """
@@ -491,7 +490,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     # Strict: one physical line per iteration; horizontal whitespace only;
     # case-sensitive exact tokens PASS|FAIL|REVISE; no \s or MULTILINE
     # that can consume a newline.
-    _LEGACY_RE = re.compile(r"^Verdict:[ \t]*(PASS|FAIL|REVISE)[ \t]*$")
+    _LEGACY_RE = re.compile(r"^Verdict:[ \t]*(PASS|FAIL|REVISE|APPROVE)[ \t]*$")
     legacy_candidates: list[str] = []
     for line in output_summary.splitlines():
         m = _LEGACY_RE.match(line)

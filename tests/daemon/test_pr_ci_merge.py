@@ -936,15 +936,14 @@ class TestGuardedMergeLegacyEvidenceRejection:
         assert verdict.verdict == "github_error"
         assert "perform_merge_called" not in call_log
 
-    def test_structured_approve_plus_verdict_approve_no_merge(
+    def test_structured_approve_plus_verdict_approve_allows_merge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Structured APPROVE + physical Verdict: APPROVE → github_error, perform_merge NOT called.
+        """Structured APPROVE + physical Verdict: APPROVE → merged (canonical).
 
-        "Verdict: APPROVE" is NOT in the strict PASS|FAIL|REVISE vocabulary.
-        There is no structured-verdict equality escape — the malformed physical
-        line MUST fail closed unconditionally, even when the reviewer's
-        structured verdict is APPROVE and the guard check would pass.
+        ``Verdict: APPROVE`` is now in the strict PASS|FAIL|REVISE|APPROVE
+        vocabulary.  When structured and anchored prose agree on the
+        canonical token APPROVE, the review guard passes and merge proceeds.
         """
         recall_out = _mock_recall_output("Verdict: APPROVE\n\nCode review passed.", verdict="APPROVE")
 
@@ -956,7 +955,7 @@ class TestGuardedMergeLegacyEvidenceRejection:
         call_log: list[str] = []
 
         def track_merge(method: str) -> MergeResult:
-            call_log.append("perform_merge_called")
+            call_log.append(method)
             return _result()
 
         verdict = _merge(
@@ -964,8 +963,8 @@ class TestGuardedMergeLegacyEvidenceRejection:
             fetch_qa_verdict=lambda: "PASS",
             perform_merge=track_merge,
         )
-        assert verdict.verdict == "github_error"
-        assert "perform_merge_called" not in call_log
+        assert verdict.verdict == "merged"
+        assert call_log == ["squash"]
 
     def test_null_verdict_with_legacy_pass_no_merge(
         self, monkeypatch: pytest.MonkeyPatch
