@@ -224,6 +224,16 @@ export function DashboardPage(): JSX.Element {
             day: 'numeric',
           })}
           {` · Day ${s.org_age_days} · ${s.narrative_counts.agents_active_now} agents active`}
+          {s.generated_at && (
+            <span className="text-text-muted/70 ml-1 font-normal normal-case tracking-normal">
+              · Updated {relativeAge(s.generated_at, now)} ago
+            </span>
+          )}
+          {!s.generated_at && (
+            <span className="text-text-muted/50 ml-1 font-normal normal-case tracking-normal">
+              · Loading first snapshot…
+            </span>
+          )}
         </p>
         <h1 className="font-display text-display text-text-primary mb-8 font-medium">
           {statusSummary(pendingCount)}

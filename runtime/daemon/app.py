@@ -267,9 +267,52 @@ async def _lifespan(app: FastAPI):
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
 
+    # ── Dashboard projection cold-start + periodic refresh ────────────
+    # THR-129: per-org durable last-known-good cache, refreshed every 10s.
+    # Load persisted snapshot, warm once before serving, then start coalesced
+    # periodic scheduler. Each org's manager owns its own scheduler task.
+    from runtime.infrastructure.kb_store import KBStore
+    _dashboard_tasks: list[asyncio.Task] = []
+    for org in state.orgs.values():
+        mgr = org.dashboard_projection
+        # Load persisted snapshot from disk (no-op if missing)
+        persisted = mgr.load_from_disk()
+        if persisted is not None:
+            mgr._projection = persisted
+            _logger.info(
+                "dashboard projection loaded from disk for org %s (generated_at=%s)",
+                org.slug, persisted.generated_at.isoformat(),
+            )
+        # Perform one initial warm so the first request doesn't get 503.
+        # Runs in a thread via asyncio.to_thread to avoid blocking the event
+        # loop for the (now-fast, grouped) SQL query.
+        kb_store = KBStore(org.root / "kb")
+        ok = await mgr.warm(db=org.db, kb_store=kb_store, teams=org.teams)
+        if ok:
+            _logger.info(
+                "dashboard projection initial warm succeeded for org %s",
+                org.slug,
+            )
+        else:
+            _logger.warning(
+                "dashboard projection initial warm FAILED for org %s "
+                "— will retry on periodic scheduler tick",
+                org.slug,
+            )
+        # Start the coalesced periodic refresh scheduler (10s interval).
+        task = mgr.start_scheduler(
+            db=org.db, kb_store=kb_store, teams=org.teams, loop=_main_loop,
+        )
+        _dashboard_tasks.append(task)
+
     try:
         yield
     finally:
+        # ── Dashboard projection cleanup ──────────────────────────────
+        for org in state.orgs.values():
+            await org.dashboard_projection.stop_scheduler()
+        for t in _dashboard_tasks:
+            t.cancel()
         for t in thread_worker_tasks:
             t.cancel()
         dream_scheduler_task.cancel()

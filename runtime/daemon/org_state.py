@@ -23,6 +23,7 @@ from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
@@ -48,6 +49,10 @@ class OrgState:
     schedule_queue: ScheduleQueue = field(default_factory=ScheduleQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
+    # Dashboard projection: per-org durable last-known-good cache, refreshed
+    # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
+    # from this projection; it never calls compose_dashboard_summary directly.
+    dashboard_projection: DashboardProjectionManager = field(init=False)
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -66,6 +71,9 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        self.dashboard_projection = DashboardProjectionManager(
+            org_slug=self.slug, org_root=self.root,
+        )
         def loader(task_id: str) -> list[dict]:
             task = self.db.get_task(task_id)
             if task is not None:

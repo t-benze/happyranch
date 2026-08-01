@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import sqlite3
 import threading
+import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,11 +56,41 @@ def _synchronized(method):
     overlap raises ``sqlite3.InterfaceError`` or hands back rows with None-valued
     columns. A ``threading.RLock`` inside ``Database`` closes that gap without
     per-thread connections or a migration.
+
+    Lock instrumentation (THR-129): times wait duration (acquire) and hold
+    duration (method body). Warns when either exceeds the instance's
+    ``_lock_warn_threshold_seconds`` (default 1.0 s). RLock reentrancy is
+    respected — nested acquires show near-zero wait time.
     """
+    _db_logger = logging.getLogger("happyranch.database.lock")
+
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
-        with self._lock:
-            return method(self, *args, **kwargs)
+        threshold = getattr(self, '_lock_warn_threshold_seconds', 1.0)
+        t_wait_start = _time.monotonic()
+        self._lock.acquire(blocking=True)
+        wait_sec = _time.monotonic() - t_wait_start
+        if wait_sec > threshold:
+            _db_logger.warning(
+                "Database._lock wait %.3fs > threshold %.3fs "
+                "for %s.%s (lock convoy may stall other routes)",
+                wait_sec, threshold,
+                type(self).__name__, method.__name__,
+            )
+        try:
+            t_hold_start = _time.monotonic()
+            result = method(self, *args, **kwargs)
+            hold_sec = _time.monotonic() - t_hold_start
+            if hold_sec > threshold:
+                _db_logger.warning(
+                    "Database._lock hold %.3fs > threshold %.3fs "
+                    "for %s.%s",
+                    hold_sec, threshold,
+                    type(self).__name__, method.__name__,
+                )
+            return result
+        finally:
+            self._lock.release()
     return wrapper
 
 
@@ -122,6 +154,10 @@ class Database:
         # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`
         # both re-enter public methods while already holding the lock.
         self._lock = threading.RLock()
+        # THR-129 lock instrumentation: configurable warning threshold for
+        # lock wait/hold times (seconds). Test seam — tests set this to a low
+        # value to verify instrumentation fires.
+        self._lock_warn_threshold_seconds = 1.0
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")

@@ -336,6 +336,77 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 
 The dashboard is read-only for orchestration state. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates orchestration state itself. The sole exceptions are the Phase-2 editable configuration surfaces — worker-team membership (`PUT /settings/teams`), which writes `teams.yaml` directly, and Org settings (`PUT /settings/org`), which writes the DB-backed `org_settings` table (`config.yaml` seeds it once, then the DB is authoritative); these never touch orchestration state, secrets, or the founder-gated permission/manager surfaces.
 
+### Dashboard Summary: Cache-Only Architecture (THR-129)
+
+`GET /api/v1/orgs/{slug}/dashboard/summary` is **cache-only** — it reads a per-org
+**durable last-known-good projection**, never composing the summary synchronously.
+
+**Rationale:** before THR-129 the endpoint called `compose_dashboard_summary`
+directly, which ran an O(n²) correlated `NOT EXISTS` query over the `audit_log`
+table. With 39k+ rows this held the per-org SQLite `Database._lock` for 15+ seconds,
+blocking **all** other org routes (threads, agents, settings, tokens, etc.).
+
+#### Projection
+
+Each org has one sidecar file at `<org_root>/dashboard_projection.json` with a
+versioned, wire-safe serialization of `DashboardSummaryResponse`. The in-memory
+copy is the authoritative source for the HTTP route; the file is an atomic
+write-then-rename backup for daemon restart.
+
+#### Refresh
+
+A **coalesced asyncio scheduler** refreshes every **10 seconds**. No overlapping
+refreshes — if the previous tick is still in flight, the current tick is skipped.
+
+- **No event-triggered invalidation.** The design explicitly avoids cache
+  invalidation on audit writes, task transitions, or any other event.
+- **Last-known-good failure semantics.** A failed refresh (timeout, DB error,
+  transient issue) logs a warning and keeps the prior successful projection.
+  The HTTP route never returns stale-only data from a failed compose.
+
+#### Cold-start
+
+At daemon startup the persisted projection is loaded from disk (no-op if
+missing). One initial warm is performed **before serving traffic** so the
+first request doesn't hit a 503. After warm, the periodic scheduler takes over.
+
+#### HTTP response
+
+The response includes two timestamps:
+
+| Field | Meaning |
+| --- | --- |
+| `generated_at` | When the projection was **last successfully refreshed** (may be null on cold-start before the first warm completes) |
+| `server_now` | **Response-time** clock — always the current server time |
+
+`server_now` is refreshed on every HTTP response; `generated_at` lags by up to
+10 s (the scheduler interval). The UI shows "Updated … ago" from `generated_at`.
+
+When no projection exists yet (cold-start before the first warm):
+- `GET /dashboard/summary` returns **503 Service Unavailable** with a standard
+  error envelope (`{"detail": "…not yet available…"}`).
+- Auth and org-dependency guards run before the 503 (404 for unknown org, 401
+  without bearer token).
+
+The route uses the org's `DashboardProjectionManager`, a per-org field on
+`OrgState`. It never imports or calls `compose_dashboard_summary` directly.
+
+#### Daemon lifecycle
+
+Projection managers are created in `OrgState.__post_init__`. The daemon lifespan
+(`_lifespan` in `app.py`) loads persisted projections, performs one initial warm
+per org, starts the scheduler, and cancels all schedulers on shutdown. Each org's
+scheduler is an independent `asyncio.Task` — a stuck org never stalls others.
+
+#### Lock instrumentation (THR-129 Phase 2)
+
+`Database._lock` (a `threading.RLock`) now carries a configurable warning
+threshold (`_lock_warn_threshold_seconds`, default 1.0 s). When lock wait or hold
+time exceeds the threshold, a `happyranch.database.lock` logger warning is emitted
+with the method name and duration. This makes lock-convoy diagnosis durable
+without requiring schema or audit changes. RLock reentrancy is respected — nested
+acquires show near-zero wait time and do not trigger false warnings.
+
 ---
 
 ## 4. Suggested Implementation Order

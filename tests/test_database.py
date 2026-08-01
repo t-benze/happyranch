@@ -1910,3 +1910,156 @@ def test_list_roots_severity_rollup_ignores_revisit_chain(db):
     # ROOT-1's rollup should be its own status (COMPLETED), not FAILED from the revisit.
     root1 = [r for r in result if r.id == "ROOT-1"][0]
     assert root1._severity_rollup == 'completed'
+
+
+# ── THR-129 lock instrumentation tests ──────────────────────────────────
+
+
+def test_lock_instrument_hold_warns_on_slow_query(db, caplog):
+    """When a query holds the lock longer than the threshold, a warning is logged."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    # Lower the threshold to trigger on any real query
+    db._lock_warn_threshold_seconds = 0.0
+    # Run a query that takes some measurable time (the grouped active-session
+    # query, even on an empty DB, takes a few ms — not enough for 0.0 s
+    # threshold on a fast machine, but the timing is monotonic so any hold > 0
+    # will trigger). We seed enough rows to guarantee it.
+    for i in range(100):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            (f"2026-06-01T00:00:{i:02d}", f"TASK-{i % 10}", f"agent{i % 5}",
+             "session_start" if i % 2 == 0 else "session_end"),
+        )
+    db._conn.commit()
+    db.fetch_all_readonly("SELECT COUNT(*) FROM audit_log")
+    # With threshold 0.0, any positive hold time triggers a warning
+    hold_warnings = [r for r in caplog.record_tuples
+                     if "hold" in r[2] and "fetch_all_readonly" in r[2]]
+    assert len(hold_warnings) >= 1, f"Expected hold warning, got: {caplog.record_tuples}"
+    # Reset threshold
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_wait_detects_contention(db, caplog):
+    """When two threads contend for the lock, the waiting thread logs a wait warning."""
+    import logging
+    import time
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms — low enough to catch contention
+
+    hold_started = threading.Event()
+    hold_done = threading.Event()
+    wait_observed = threading.Event()
+    wait_warnings: list = []
+
+    def slow_holder():
+        # Acquire lock and hold it for a bit
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)  # hold long enough for the waiter to notice
+        finally:
+            db._lock.release()
+            hold_done.set()
+
+    def waiter():
+        # Wait for holder to start, then try to acquire
+        hold_started.wait()
+        db.fetch_all_readonly("SELECT 1")
+        wait_observed.set()
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    assert wait_observed.is_set(), "waiter never completed"
+    wait_warnings = [r for r in caplog.record_tuples
+                     if "wait" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"Expected wait warning, got records: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_rlock_reentrancy_no_false_wait(db, caplog):
+    """RLock reentrancy: nested acquire by the same thread shows near-zero wait."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.1
+
+    # get_task calls fetch_one_readonly which both go through _synchronized.
+    # The inner call re-acquires the RLock with no contention.
+    db.insert_task(TaskRecord(id="TASK-R", brief="reentrant test"))
+    result = db.get_task("TASK-R")
+    assert result is not None
+
+    # No wait warnings should fire for reentrant acquires (near-zero wait)
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"RLock reentrancy should not log wait warnings, got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_responsiveness_regression(db, caplog):
+    """Durable responsiveness regression: a lightweight read completes quickly
+    even when a concurrent thread holds the lock briefly (Post-Phase 0, the
+    dashboard query is fast — this proves a fast operation is not starved)."""
+    import logging
+    import time
+
+    # Seed some data
+    for i in range(50):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            (f"2026-06-01T00:00:{i:02d}", f"TASK-{i % 5}", f"agent{i % 3}",
+             "session_start" if i % 2 == 0 else "session_end"),
+        )
+    db._conn.commit()
+
+    results: list = []
+    barrier = threading.Barrier(2, timeout=5)
+
+    def fast_query():
+        barrier.wait()
+        t0 = time.monotonic()
+        rows = db.fetch_all_readonly("SELECT COUNT(*) FROM audit_log")
+        elapsed = time.monotonic() - t0
+        results.append(("fast", elapsed, rows))
+
+    def slow_query():
+        barrier.wait()
+        t0 = time.monotonic()
+        # The grouped active-session query (post-Phase 0 fix)
+        rows = db.fetch_all_readonly(
+            "SELECT DISTINCT agent FROM audit_log "
+            "WHERE action IN ('session_start', 'session_end') "
+            "GROUP BY task_id, agent "
+            "HAVING MAX(CASE WHEN action='session_start' THEN timestamp END) IS NOT NULL "
+            "  AND (MAX(CASE WHEN action='session_end' THEN timestamp END) IS NULL "
+            "       OR MAX(CASE WHEN action='session_start' THEN timestamp END) >= "
+            "          MAX(CASE WHEN action='session_end' THEN timestamp END))"
+        )
+        elapsed = time.monotonic() - t0
+        results.append(("grouped", elapsed, rows))
+
+    t1 = threading.Thread(target=fast_query)
+    t2 = threading.Thread(target=slow_query)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(results) == 2
+    # The fast count(*) query should complete in well under 1 second
+    # even when contending with the grouped active-session query.
+    fast_elapsed = [e for label, e, _ in results if label == "fast"][0]
+    assert fast_elapsed < 1.0, (
+        f"Fast query took {fast_elapsed:.3f}s — lock contention regression"
+    )
