@@ -2,8 +2,10 @@
 
 A dependency-light local CI wrapper (`scripts/local_ci.sh`) mirrors GitHub
 Actions commands as closely as practical. Use it for pre-push feedback;
-**GitHub CI remains authoritative** — it runs the full Python 3.12/3.13/3.14
-matrix and nightly integration on clean Ubuntu runners. A local pass is
+**GitHub CI remains authoritative**. GitHub PR CI runs Python unit tests
+on 3.14 plus Web CI. After merges and pushes to main, GitHub CI runs the
+full Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate
+job. A local pass is
 feedforward signal, not a substitute.
 
 ## Prerequisites
@@ -35,8 +37,8 @@ scripts/local_ci.sh help         # List targets and caveats
 
 | Target | Equivalent GHA job | Commands |
 |--------|-------------------|----------|
-| `all` (default) | `python-unit` (3.x) + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` (single Python) | `uv sync --frozen; uv run pytest tests/ -v` |
+| `all` (default) | `python-unit` (3.14) + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `python` | `python-unit` (3.14) | `uv sync --frozen; uv run pytest tests/ -v` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
 
@@ -87,9 +89,10 @@ does **not** touch `.git/hooks` automatically. To disable it, remove
 ## Caveats
 
 - **GitHub CI is authoritative.** The local wrapper gives fast feedback on
-  your machine; the full CI matrix (Python 3.12, 3.13, 3.14; Node 24;
-  separate `nightly-integration` job) runs on clean Ubuntu runners in
-  GitHub Actions.
+  your machine. GitHub PR CI runs Python units on 3.14 only (plus Web CI);
+  after merges and pushes to main, GitHub CI runs the full Python 3.12/3.13/3.14
+  matrix. Nightly integration remains a separate job. All CI runs on clean
+  Ubuntu runners.
 - **Single Python version.** `python` and `integration` targets use the
   installed `uv` + Python interpreter. They do not reproduce the GHA
   `python-version` matrix.
