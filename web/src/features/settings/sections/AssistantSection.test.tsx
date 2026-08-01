@@ -167,6 +167,8 @@ describe('Assistant status polling removal — MSW network evidence', () => {
     const counter = countingStatusStub();
     sessionStorage.setItem('happyranch.token', 'tok');
 
+    // Install fake timers BEFORE mounting.
+    vi.useFakeTimers();
     renderWithProviders(
       <Routes>
         <Route path="/orgs/:slug/settings/assistant" element={<AssistantSection />} />
@@ -174,13 +176,14 @@ describe('Assistant status polling removal — MSW network evidence', () => {
       { route: `/orgs/${SLUG}/settings/assistant` },
     );
 
-    await screen.findByText('Configured');
+    // Flush the initial status fetch + React re-render.
+    await act(() => vi.advanceTimersByTimeAsync(200));
 
     // One request fired on mount (enabled=true).
+    expect(screen.getByText('Configured')).toBeInTheDocument();
     expect(counter.count()).toBe(1);
 
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
-    vi.useFakeTimers();
+    // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
   });

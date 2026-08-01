@@ -177,6 +177,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// ---------------------------------------------------------------------------
+// Helper — fake-timer-aware async flush
+// ---------------------------------------------------------------------------
+
+/** Advance fake timers by `ms` inside act, flushing microtasks + macrotasks. */
+async function flushTimers(ms: number) {
+  await act(() => vi.advanceTimersByTimeAsync(ms));
+}
+
 // ============================================================================
 // NETWORK EVIDENCE — real provider + MSW request counting
 // ============================================================================
@@ -186,12 +195,14 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     const counter = countingStatusStub();
     createMockSocket(); // still needed so the provider doesn't NPE
 
+    // Install fake timers BEFORE mounting so any refetchInterval is captured
+    // by the fake clock and not by a native setInterval.
+    vi.useFakeTimers();
     renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
 
-    // Switch to fake timers for the no-interval proof: advance past the old
-    // 5 000 ms refetchInterval so this assertion fails if polling is restored.
-    vi.useFakeTimers();
-    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    // Advance past the old 5 000 ms refetchInterval so this assertion
+    // FAILS if polling is restored.
+    await flushTimers(6_000);
     expect(counter.count()).toBe(0);
   });
 
@@ -212,15 +223,23 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
 
   test('3. no interval request is scheduled after dock opens', async () => {
     const counter = countingStatusStub();
-    const sock = createMockSocket();
+    createMockSocket();
 
-    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
-    await openDock(sock);
-    await waitFor(() => expect(counter.count()).toBe(1));
-
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    // Install fake timers BEFORE mounting.
     vi.useFakeTimers();
-    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
+
+    // Open dock under fake timers: click trigger, then flush state + fetch.
+    const trigger = document.createElement('span');
+    trigger.setAttribute('data-assistant-open', '');
+    document.body.appendChild(trigger);
+    trigger.click();
+    document.body.removeChild(trigger);
+    await flushTimers(200);
+    expect(counter.count()).toBe(1);
+
+    // Advance past the old 5 000 ms refetchInterval.
+    await flushTimers(6_000);
     expect(counter.count()).toBe(1);
   });
 
@@ -230,31 +249,38 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     // TanStack Query behaviour. For a proof that reopening DOES issue a fresh
     // request when data is stale, see test 5 below.
     const counter = countingStatusStub();
-    const sock = createMockSocket();
+    createMockSocket();
 
+    // Install fake timers BEFORE mounting.
+    vi.useFakeTimers();
     renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
-    await openDock(sock);
-    await waitFor(() => expect(counter.count()).toBe(1));
+
+    // Open dock under fake timers.
+    let triggerEl = document.createElement('span');
+    triggerEl.setAttribute('data-assistant-open', '');
+    document.body.appendChild(triggerEl);
+    triggerEl.click();
+    document.body.removeChild(triggerEl);
+    await flushTimers(200);
+    expect(counter.count()).toBe(1);
 
     // Close via the dialog's close button.
     fireEvent.click(screen.getByRole('button', { name: 'Close assistant' }));
-    await waitFor(() => {
-      const dialog = screen.getByRole('dialog', { name: 'Ranch Assistant' });
-      expect(dialog.className).toContain('translate-x-full');
-    });
+    await flushTimers(200);
+    const dialog = screen.getByRole('dialog', { name: 'Ranch Assistant' });
+    expect(dialog.className).toContain('translate-x-full');
 
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
-    vi.useFakeTimers();
-    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    // Advance past the old 5 000 ms refetchInterval.
+    await flushTimers(6_000);
     expect(counter.count()).toBe(1);
 
     // Re-open — data is still fresh (staleTime 30s), no refetch.
-    const trigger = document.createElement('span');
-    trigger.setAttribute('data-assistant-open', '');
-    document.body.appendChild(trigger);
-    trigger.click();
-    document.body.removeChild(trigger);
-    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    triggerEl = document.createElement('span');
+    triggerEl.setAttribute('data-assistant-open', '');
+    document.body.appendChild(triggerEl);
+    triggerEl.click();
+    document.body.removeChild(triggerEl);
+    await flushTimers(6_000);
     expect(counter.count()).toBe(1); // cache hit, not a second request
   });
 
@@ -267,9 +293,11 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
         queries: { staleTime: 0, refetchOnWindowFocus: false, retry: false },
       },
     });
-    const sock = createMockSocket();
+    createMockSocket();
     const route = '/orgs/test-org';
 
+    // Install fake timers BEFORE mounting.
+    vi.useFakeTimers();
     render(
       <MemoryRouter initialEntries={[route]}>
         <AppProvider client={client}>
@@ -279,27 +307,31 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     );
 
     // Open: 1 request.
-    await openDock(sock);
-    await waitFor(() => expect(counter.count()).toBe(1));
+    let triggerEl = document.createElement('span');
+    triggerEl.setAttribute('data-assistant-open', '');
+    document.body.appendChild(triggerEl);
+    triggerEl.click();
+    document.body.removeChild(triggerEl);
+    await flushTimers(200);
+    expect(counter.count()).toBe(1);
 
     // Close via the dialog's close button.
     fireEvent.click(screen.getByRole('button', { name: 'Close assistant' }));
-    await waitFor(() => {
-      const dialog = screen.getByRole('dialog', { name: 'Ranch Assistant' });
-      expect(dialog.className).toContain('translate-x-full');
-    });
+    await flushTimers(200);
+    const dialog = screen.getByRole('dialog', { name: 'Ranch Assistant' });
+    expect(dialog.className).toContain('translate-x-full');
 
     // Re-open: data is stale → 2nd request.
-    const trigger = document.createElement('span');
-    trigger.setAttribute('data-assistant-open', '');
-    document.body.appendChild(trigger);
-    trigger.click();
-    document.body.removeChild(trigger);
-    await waitFor(() => expect(counter.count()).toBe(2));
+    triggerEl = document.createElement('span');
+    triggerEl.setAttribute('data-assistant-open', '');
+    document.body.appendChild(triggerEl);
+    triggerEl.click();
+    document.body.removeChild(triggerEl);
+    await flushTimers(200);
+    expect(counter.count()).toBe(2);
 
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
-    vi.useFakeTimers();
-    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    // Advance past the old 5 000 ms refetchInterval.
+    await flushTimers(6_000);
     expect(counter.count()).toBe(2);
   });
 });

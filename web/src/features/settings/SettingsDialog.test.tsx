@@ -561,6 +561,8 @@ describe('SettingsDialog — assistant status network evidence', () => {
     const counter = countingAssistantStub();
     sessionStorage.setItem('happyranch.token', 'tok');
 
+    // Install fake timers BEFORE mounting.
+    vi.useFakeTimers();
     renderWithProviders(
       <Routes>
         <Route
@@ -571,8 +573,7 @@ describe('SettingsDialog — assistant status network evidence', () => {
       { route: '/orgs/alpha/dashboard' },
     );
 
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
-    vi.useFakeTimers();
+    // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(0);
   });
@@ -599,6 +600,8 @@ describe('SettingsDialog — assistant status network evidence', () => {
     const counter = countingAssistantStub();
     sessionStorage.setItem('happyranch.token', 'tok');
 
+    // Install fake timers BEFORE mounting.
+    vi.useFakeTimers();
     renderWithProviders(
       <Routes>
         <Route
@@ -609,10 +612,11 @@ describe('SettingsDialog — assistant status network evidence', () => {
       { route: '/orgs/alpha/dashboard' },
     );
 
-    await vi.waitFor(() => expect(counter.count()).toBe(1));
+    // Flush the initial status fetch + React re-render.
+    await act(() => vi.advanceTimersByTimeAsync(200));
+    expect(counter.count()).toBe(1);
 
-    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
-    vi.useFakeTimers();
+    // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
   });
