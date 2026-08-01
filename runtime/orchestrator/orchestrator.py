@@ -21,6 +21,7 @@ from runtime.infrastructure.database import Database
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.models import (
     CompletionReport,
+    LocalCiEvidence,
     NextStep,
     StepRecord,
     TaskRecord,
@@ -535,6 +536,23 @@ class Orchestrator:
     def _read_completion_from_db(
         self, task_id: str, agent: str, session_id: str,
     ) -> CompletionReport | None:
+        def _parse_local_ci(raw: str | None) -> LocalCiEvidence | None:
+            """Parse a stored local_ci JSON string back into a LocalCiEvidence.
+
+            Returns None on absent, empty, or unparseable rows so legacy (NULL)
+            completions and corrupt data never explode — they degrade to None
+            without mutation.
+            """
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return LocalCiEvidence(**parsed)
+            except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
+                pass
+            return None
+
         row = self._db.get_latest_task_result(task_id, agent, session_id)
         if row is None:
             return None
@@ -564,6 +582,7 @@ class Orchestrator:
             suggested_reviewer_focus=[],
             output_dir=row.get("output_dir"),
             waiting_on_job_ids=row.get("waiting_on_job_ids") or [],
+            local_ci=_parse_local_ci(row.get("local_ci")),
         )
 
     def create_task(self, brief: str, team: str = "engineering") -> str:

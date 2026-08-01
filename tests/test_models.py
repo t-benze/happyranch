@@ -296,6 +296,58 @@ def test_completion_report_accepts_optional_verdict():
     assert r2.verdict is None
 
 
+def test_local_ci_evidence_valid():
+    from runtime.models import LocalCiEvidence
+    lc = LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0)
+    assert lc.command == "scripts/local_ci.sh all"
+    assert lc.exit_code == 0
+    assert lc.model_dump() == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+
+
+def test_local_ci_evidence_rejects_wrong_command():
+    import pytest
+    from runtime.models import LocalCiEvidence
+    with pytest.raises(ValueError, match="scripts/local_ci.sh all"):
+        LocalCiEvidence(command="wrong", exit_code=0)
+
+
+def test_local_ci_evidence_rejects_nonzero_exit_code():
+    import pytest
+    from runtime.models import LocalCiEvidence
+    with pytest.raises(ValueError, match="exit_code must be 0"):
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=1)
+
+
+def test_local_ci_evidence_rejects_boolean_exit_code():
+    """Boolean True coerces to 1, which our validator must reject."""
+    import pytest
+    from runtime.models import LocalCiEvidence
+    with pytest.raises(ValueError, match="exit_code must be 0"):
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=True)
+
+
+def test_completion_report_accepts_local_ci():
+    from runtime.models import LocalCiEvidence, CompletionReport
+    lc = LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0)
+    r = CompletionReport(
+        task_id="T", agent="dev_agent", status="completed",
+        confidence=80, output_summary="done", local_ci=lc,
+    )
+    assert r.local_ci == lc
+    dumped = r.model_dump()
+    assert dumped["local_ci"] == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+
+
+def test_completion_report_local_ci_defaults_to_none():
+    from runtime.models import CompletionReport
+    r = CompletionReport(
+        task_id="T", agent="dev_agent", status="completed",
+        confidence=80, output_summary="done",
+    )
+    assert r.local_ci is None
+    assert "local_ci" not in r.model_dump(exclude_none=True)
+
+
 def test_dream_status_values() -> None:
     from runtime.models import DreamStatus
 

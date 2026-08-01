@@ -624,6 +624,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # bypasses the block-on-jobs contract.
     if "waiting_on_job_ids" in data:
         body["waiting_on_job_ids"] = data["waiting_on_job_ids"]
+    # Push-PR local CI evidence. Forward the top-level object verbatim
+    # so the server can validate it before persistence.
+    if data.get("local_ci") is not None:
+        body["local_ci"] = data["local_ci"]
     return data["task_id"], body
 
 

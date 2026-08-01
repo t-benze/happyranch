@@ -1151,6 +1151,10 @@ class Database:
             # next leg without consuming the manager's orchestration_step_count.
             # NULL for non-chain or non-verdict workers.
             "ALTER TABLE task_results ADD COLUMN verdict TEXT",
+            # Push-PR local CI evidence (additive, nullable). A JSON object
+            # with command + exit_code persisted losslessly so audit and
+            # reconstruction round-trips preserve it.
+            "ALTER TABLE task_results ADD COLUMN local_ci TEXT",
             # Thread agent-session resume (issue #53). agent_session_id holds the
             # resumable agent session for this (thread, agent); NULL = none yet /
             # evicted. last_resumed_seq is the highest thread message seq the stored
@@ -2936,14 +2940,15 @@ class Database:
         decision_json: str | None = None,
         waiting_on_job_ids: list[str] | None = None,
         verdict: str | None = None,
+        local_ci_json: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
                 token_count, estimated_cost, output_dir, waiting_on_job_ids,
-                verdict, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                verdict, local_ci, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -2960,6 +2965,7 @@ class Database:
                 output_dir,
                 json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
                 verdict,
+                local_ci_json,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

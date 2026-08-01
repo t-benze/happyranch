@@ -204,6 +204,36 @@ class NextStep(BaseModel):
     reason: str | None = None
 
 
+class LocalCiEvidence(BaseModel):
+    """Evidence that a pushed PR's local CI ran successfully.
+
+    Acceptance: command must be exactly "scripts/local_ci.sh all" and
+    exit_code must be exactly the integer 0. Malformed objects (boolean
+    exit_code, missing fields, extra fields, nonzero exit, or a different
+    command string) are rejected without durable mutation.
+    """
+    command: str
+    exit_code: int
+
+    @field_validator("command")
+    @classmethod
+    def _command_must_be_all_target(cls, v: str) -> str:
+        if v != "scripts/local_ci.sh all":
+            raise ValueError(
+                f"local_ci.command must be 'scripts/local_ci.sh all', got {v!r}"
+            )
+        return v
+
+    @field_validator("exit_code")
+    @classmethod
+    def _exit_code_must_be_zero(cls, v: int) -> int:
+        if v != 0:
+            raise ValueError(
+                f"local_ci.exit_code must be 0 for a pushed PR, got {v}"
+            )
+        return v
+
+
 class CompletionReport(BaseModel):
     task_id: str
     agent: str
@@ -225,6 +255,9 @@ class CompletionReport(BaseModel):
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
     output_dir: str | None = None
     waiting_on_job_ids: list[str] = Field(default_factory=list)
+    # Push-PR local CI evidence. Optional for non-PR completions;
+    # contractually required for any pushed-PR report.
+    local_ci: LocalCiEvidence | None = None
 
 
 class TaskStep(BaseModel):

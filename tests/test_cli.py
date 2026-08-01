@@ -611,6 +611,45 @@ def test_completion_payload_from_file_forwards_explicit_empty_waiting_on_job_ids
     assert body["waiting_on_job_ids"] == []
 
 
+def test_completion_payload_from_file_forwards_local_ci(tmp_path):
+    """When the agent includes `local_ci`, the CLI must forward the object
+    verbatim so the daemon can validate and persist it."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "local-ci.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "s",
+        "agent": "dev_agent",
+        "status": "completed",
+        "confidence": 95,
+        "summary": "done",
+        "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 0},
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "local_ci" in body
+    assert body["local_ci"] == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+
+
+def test_completion_payload_from_file_omits_local_ci_when_absent(tmp_path):
+    """When the agent omits `local_ci`, the CLI must NOT inject it."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "no-local-ci.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "s",
+        "agent": "dev_agent",
+        "status": "completed",
+        "confidence": 95,
+        "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "local_ci" not in body
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required.
     --org IS required for agent callbacks (see test_report_completion_parser_requires_org)."""
