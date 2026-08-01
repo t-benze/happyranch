@@ -309,10 +309,16 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         # ── Dashboard projection cleanup ──────────────────────────────
+        # Cancel FIRST (before any await) so a refresh stuck in its
+        # to_thread/warm path doesn't make daemon shutdown wait for
+        # cooperative stop observation. Then reap to collect outcomes
+        # with return_exceptions — never leave unowned task exceptions.
         for org in state.orgs.values():
-            await org.dashboard_projection.stop_scheduler()
-        for t in _dashboard_tasks:
-            t.cancel()
+            org.dashboard_projection.cancel_scheduler()
+        if _dashboard_tasks:
+            await asyncio.gather(*_dashboard_tasks, return_exceptions=True)
+        for org in state.orgs.values():
+            await org.dashboard_projection.reap_scheduler()
         for t in thread_worker_tasks:
             t.cancel()
         dream_scheduler_task.cancel()

@@ -2063,3 +2063,42 @@ def test_lock_instrument_responsiveness_regression(db, caplog):
     assert fast_elapsed < 1.0, (
         f"Fast query took {fast_elapsed:.3f}s — lock contention regression"
     )
+
+
+def test_lock_instrument_execute_contention_regression(db, caplog):
+    """Database.execute (now @_synchronized) fires wait/hold warnings
+    under contention, proving all shared-connection paths are instrumented."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms
+
+    hold_started = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+
+    def waiter():
+        hold_started.wait()
+        # db.execute() goes through @_synchronized → must log wait
+        db.execute("SELECT 1")
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"db.execute() must log wait warning under contention, "
+        f"got: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0

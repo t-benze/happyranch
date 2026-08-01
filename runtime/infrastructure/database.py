@@ -172,14 +172,20 @@ class Database:
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
 
+    @_synchronized
     def execute(self, sql: str, parameters=()):
         """Passthrough to the underlying sqlite3 connection's execute().
 
         Enables lifecycle stores that accept either raw connections (tests)
         or Database wrappers (production) to call ``db.execute()`` uniformly.
+
+        Lock acquisition is centralized through ``_synchronized`` (same as all
+        other public methods) so lock wait/hold instrumentation covers every
+        shared-connection path uniformly. RLock reentrancy is preserved —
+        ``execute`` called from within another ``_synchronized`` method
+        re-acquires with near-zero wait.
         """
-        with self._lock:
-            return self._conn.execute(sql, parameters)
+        return self._conn.execute(sql, parameters)
 
     @property
     def path(self) -> Path:
