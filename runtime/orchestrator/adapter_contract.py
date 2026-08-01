@@ -114,7 +114,7 @@ class ResultText(BaseModel):
 
 class AdapterMetadata(BaseModel):
     """Provenance metadata from the adapter (§2.2)."""
-    adapter: str = Field(..., description="Adapter implementation identity")
+    adapter: str = Field(..., description="REQUIRED to exactly equal the stable server-derived canonical_adapter_id from the contract-reference / submitted adapter ID. Never a display name, provider, or arbitrary implementation identity. A mismatch fails the conformance probe at registration AND blocks every launch at runtime.")
     adapter_version: str = Field(..., description="Version of the adapter implementation")
     contract_version: int = Field(..., description="Version of THIS result contract")
 

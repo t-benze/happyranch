@@ -590,6 +590,38 @@ class TestConformanceProbe:
         with pytest.raises(ValueError, match="Kimi AI"):
             run_conformance_probe(str(bad_kimi), "kimi-bad")
 
+    def test_contract_adapter_metadata_adapter_description_exposes_canonical_id_invariant(self):
+        """THR-107 seq268: AdapterMetadata.adapter schema description states the canonical-ID requirement."""
+        from runtime.orchestrator.adapter_contract import AdapterMetadata
+        schema = AdapterMetadata.model_json_schema()
+        adapter_field = schema["properties"]["adapter"]
+        description = adapter_field.get("description", "")
+        # The description MUST assert the canonical-ID invariant
+        assert "canonical_adapter_id" in description
+        assert "contract-reference" in description
+        assert "exactly equal" in description.lower() or "MUST exactly equal" in description
+        assert "display name" in description.lower()
+        assert "provider" in description.lower()
+
+    def test_contract_adapter_output_schema_exposes_adapter_metadata_descriptions(self):
+        """THR-107 seq268: AdapterOutput JSON schema surfaces adapter_metadata with canonical-ID prose."""
+        from runtime.orchestrator.adapter_contract import AdapterOutput
+        schema = AdapterOutput.model_json_schema()
+        # adapter_metadata is defined as a $ref to AdapterMetadata
+        # Resolve it through the $defs
+        adapter_metadata_def = schema["$defs"]["AdapterMetadata"]
+        adapter_field = adapter_metadata_def["properties"]["adapter"]
+        description = adapter_field.get("description", "")
+        assert "canonical_adapter_id" in description
+        assert "display name" in description.lower()
+        assert "provider" in description.lower()
+
+    def test_contract_adapter_metadata_adapter_is_required(self):
+        """THR-107 seq268: adapter_metadata.adapter is a required field in AdapterMetadata."""
+        from runtime.orchestrator.adapter_contract import AdapterMetadata
+        schema = AdapterMetadata.model_json_schema()
+        assert "adapter" in schema.get("required", [])
+
 
 # ---------------------------------------------------------------------------
 # Registration tests (full pipeline)
