@@ -68,16 +68,27 @@ Runs Python integration tests (`-m integration`). The target spawns its own
 isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is **not**
 included in the `all` default.
 
-## Pre-push hook (optional)
+## Pre-push hook
 
 A sample pre-push hook that runs the local PR CI target is at
-`scripts/hooks/pre-push.local-ci.sample`. It is **opt-in only** — copy it to
+`scripts/hooks/pre-push.local-ci.sample`.
+
+**Human normal-checkout installation** is **opt-in only** — copy it to
 `.git/hooks/pre-push` to enable:
 
 ```bash
 cp scripts/hooks/pre-push.local-ci.sample .git/hooks/pre-push
 chmod +x .git/hooks/pre-push
 ```
+
+**HappyRanch agent linked worktrees** receive **mandatory automatic**
+installation via `worktree_guard.py cmd_setup`. The hook is stored under
+the worktree's Git metadata directory (`git rev-parse --git-dir` →
+`happyranch-hooks/pre-push`) and activated via `git config --worktree
+core.hooksPath` scoped to that worktree only. The normal checkout's
+existing hook or hooks path is never touched. See
+`protocol/skills/make-worktree/SKILL.md` for the automatic-installation
+details.
 
 The hook invokes `scripts/local_ci.sh all` (python + web). If any step
 fails the push is blocked. The hook does **not** run integration tests and

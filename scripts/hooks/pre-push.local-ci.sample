@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
-# Sample pre-push hook: runs the local PR CI target before every push.
-# This is OPT-IN only — it is NOT auto-installed and never touches .git/hooks.
+# Pre-push hook: runs the local PR CI target before every push.
 #
-# To install:
+# Human normal-checkout installation is OPT-IN:
 #   cp scripts/hooks/pre-push.local-ci.sample .git/hooks/pre-push
 #   chmod +x .git/hooks/pre-push
 #
+# For HappyRanch agent linked worktrees, installation is MANDATORY and
+# automatic via worktree_guard.py cmd_setup. The hook is stored under the
+# worktree's git metadata directory and activated via git config --worktree
+# core.hooksPath. See docs/local-ci.md and protocol/skills/make-worktree/SKILL.md.
+#
 # The hook runs `scripts/local_ci.sh all` (python + web, mirrors GitHub PR CI).
-# If any step fails the push is blocked.  The hook does NOT run integration
-# tests (those are nightly in GitHub).  GitHub CI remains authoritative; this
-# is pre-push feedback only.
+# If any step fails the push is blocked. The hook does NOT run integration
+# tests (those are nightly in GitHub). GitHub CI remains authoritative; this
+# is pre-push feedback only. The hook CANNOT prevent `git push --no-verify`,
+# which remains prohibited by engineering policy.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Worktree-safe repository root resolution. When stored under the worktree's
+# git metadata directory (git rev-parse --git-dir), relative-path tricks
+# break. Using git rev-parse --show-toplevel always resolves correctly.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 exec "${REPO_ROOT}/scripts/local_ci.sh" all

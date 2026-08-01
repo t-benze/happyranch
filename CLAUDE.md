@@ -51,6 +51,9 @@ scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run
 scripts/local_ci.sh integration  # Python integration tests
 scripts/local_ci.sh help         # List targets and caveats
 # Full guide: docs/local-ci.md
+# Agent worktrees get a mandatory pre-push hook (scripts/local_ci.sh all)
+# automatically via worktree_guard.py cmd_setup. See
+# protocol/skills/make-worktree/SKILL.md and docs/local-ci.md.
 ```
 
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
@@ -77,7 +80,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TASK-3881** (31557 symbols, 76059 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -100,10 +103,10 @@ This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/happyranch/clusters` | All functional areas |
-| `gitnexus://repo/happyranch/processes` | All execution flows |
-| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/TASK-3881/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TASK-3881/clusters` | All functional areas |
+| `gitnexus://repo/TASK-3881/processes` | All execution flows |
+| `gitnexus://repo/TASK-3881/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
