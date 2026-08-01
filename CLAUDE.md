@@ -54,6 +54,9 @@ scripts/local_ci.sh help         # List targets and caveats
 # Agent worktrees get a mandatory pre-push hook (scripts/local_ci.sh all)
 # automatically via worktree_guard.py cmd_setup. See
 # protocol/skills/make-worktree/SKILL.md and docs/local-ci.md.
+# GitHub CI remains authoritative (clean-environment/matrix merge gate).
+# The hook CANNOT prevent git push --no-verify; --no-verify remains
+# prohibited by engineering policy. Local-CI is pre-push feedback only.
 ```
 
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.

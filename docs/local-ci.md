@@ -91,9 +91,30 @@ existing hook or hooks path is never touched. See
 details.
 
 The hook invokes `scripts/local_ci.sh all` (python + web). If any step
-fails the push is blocked. The hook does **not** run integration tests and
-does **not** touch `.git/hooks` automatically. To disable it, remove
-`.git/hooks/pre-push`.
+fails the push is blocked. The hook does **not** run integration tests.
+
+**Disabling / repairing:**
+
+- **Human normal-checkout (opt-in).** If you manually copied the sample
+  hook to `.git/hooks/pre-push`, you may remove that single file to
+  disable it. The agent-worktree automatic hook lives elsewhere and is
+  NOT touched.
+- **Agent worktree (mandatory automatic).** Do NOT delete
+  `.git/hooks/pre-push` — the automatic hook lives under the worktree's
+  Git metadata directory (`git rev-parse --git-dir` →
+  `happyranch-hooks/pre-push`), not in `.git/hooks`. To repair a broken
+  automatic installation, re-run the worktree setup:
+  `python worktree_guard.py setup --worktree-root <wt> --primary-root <pr>`.
+  This re-provisions the hook directory without touching the normal
+  checkout's hooks or config.
+
+**Policy constraints:**
+- The hook CANNOT prevent `git push --no-verify` — `--no-verify`
+  bypasses hooks entirely. It remains **prohibited** by engineering
+  policy regardless.
+- **GitHub CI is authoritative** — it runs the full Python 3.12/3.13/3.14
+  matrix and nightly integration on clean Ubuntu runners and is the
+  only merge gate. Local-CI is pre-push feedback only.
 
 ## Caveats
 

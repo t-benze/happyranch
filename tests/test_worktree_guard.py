@@ -1663,25 +1663,38 @@ class TestHappyRanchPrePushAutoInstall:
             f"core.hooksPath should not be set for non-HappyRanch worktree"
         )
 
-    def test_fails_closed_if_git_dir_fails(self, happyranch_worktree, happyranch_repo, monkeypatch):
-        """If git rev-parse --git-dir fails on a HappyRanch worktree, setup fails
-        with actionable diagnostic."""
-        # We need to monkeypatch _git_out to return empty for --git-dir ONLY
-        # This is tricky because cmd_setup uses _git_out internally.
-        # Instead, test by corrupting the .git file.
-        git_file = happyranch_worktree / ".git"
-        original_content = git_file.read_text()
-        try:
-            git_file.write_text("gitdir: /nonexistent/path\n")
-            with pytest.raises(SystemExit) as exc:
-                cmd_setup(
-                    worktree_root=str(happyranch_worktree),
-                    primary_root=str(happyranch_repo),
-                    task_id="TASK-3881-TEST",
-                )
-            assert exc.value.code == 1
-        finally:
-            git_file.write_text(original_content)
+    def test_fails_closed_if_git_dir_fails(self, happyranch_worktree, happyranch_repo, monkeypatch, capsys):
+        """If git rev-parse --git-dir fails during hook installation on a HappyRanch
+        worktree, setup exits 1 with actionable diagnostic.
+
+        Identity validation (worktree detection, common-dir match, branch name)
+        passed beforehand. This faults the installer seam AFTER identity validation
+        — it does NOT corrupt .git which could break pre-install checks."""
+        import runtime.tools.worktree_guard as guard_mod
+
+        def fake_installer(worktree, primary, task_id=None):
+            print("ERROR: HappyRanch worktree detected but cannot run 'git rev-parse --git-dir'.",
+                  file=sys.stderr)
+            print("  Worktree root: " + str(worktree), file=sys.stderr)
+            print("  Pre-push hook installation is mandatory for agent worktrees.", file=sys.stderr)
+            print("  Corrective: verify this is a valid git worktree and retry.", file=sys.stderr)
+            sys.exit(1)
+
+        monkeypatch.setattr(guard_mod, "_maybe_install_happyranch_pre_push", fake_installer)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_setup(
+                worktree_root=str(happyranch_worktree),
+                primary_root=str(happyranch_repo),
+                task_id="TASK-3881-TEST",
+            )
+        assert exc.value.code == 1
+
+        captured = capsys.readouterr()
+        stderr = captured.err
+        assert "mandatory" in stderr.lower() or "cannot run" in stderr.lower(), (
+            f"Error must reference mandatory hook installation. Got: {stderr}"
+        )
 
 
 class TestPrePushHookBlocksFailingCI:
@@ -1725,12 +1738,20 @@ class TestPrePushHookBlocksFailingCI:
             assert pre_push.is_file()
             assert os.access(str(pre_push), os.X_OK)
 
-            # Make local_ci.sh fail (but record it was called with 'all')
+            # Make local_ci.sh fail (persist proof target was exactly 'all')
+            target_log = tmp_path / "local_ci_target_arg.txt"
             local_ci = wt / "scripts" / "local_ci.sh"
             local_ci.write_text(
                 "#!/usr/bin/env bash\n"
                 "echo \"local_ci called with target: ${1:-all}\"\n"
-                "# Simulate a test failure\n"
+                "# Persist the received target argument for test assertions\n"
+                "echo \"${1:-all}\" > " + shlex.quote(str(target_log)) + "\n"
+                "# Reject any target that is NOT exactly 'all'\n"
+                "if [ \"$1\" != \"all\" ]; then\n"
+                "    echo \"ERROR: local_ci.sh received unexpected target: $1 (expected 'all')\"\n"
+                "    exit 2\n"
+                "fi\n"
+                "# Simulate a test failure (to verify hook blocks push)\n"
                 "exit 1\n"
             )
             local_ci.chmod(0o755)
@@ -1762,6 +1783,16 @@ class TestPrePushHookBlocksFailingCI:
             assert "task/TASK-BLOCK-PUSH" not in remote_refs, (
                 f"Target ref should NOT be on the remote after blocked push.\n"
                 f"Refs on remote: {remote_refs}"
+            )
+
+            # Verify the real installed hook passed exactly 'all' as first arg
+            assert target_log.is_file(), (
+                f"Target log not persisted by fake local_ci.sh: {target_log}"
+            )
+            recorded_target = target_log.read_text().strip()
+            assert recorded_target == "all", (
+                f"Installed pre-push hook must invoke local_ci.sh with target 'all', "
+                f"got: {recorded_target!r}"
             )
 
         finally:

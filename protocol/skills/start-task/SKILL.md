@@ -151,6 +151,13 @@ Parameters:
    the full real suite, state its exact command and exit code; do not claim
    it without output. Tasks that do not push a PR may omit `local_ci`.
 
+   **GitHub CI is authoritative.** Local pre-push hooks provide feedforward
+   signal only. The full Python 3.12/3.13/3.14 matrix and nightly
+   integration runs on clean Ubuntu runners in GitHub Actions are the only
+   merge gate. Local-CI hooks CANNOT prevent `git push --no-verify` —
+   `--no-verify` bypasses hooks entirely and remains prohibited by
+   engineering policy.
+
    For a blocker, set `"status": "blocked"`, `"confidence": 0`, and put the
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
