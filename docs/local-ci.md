@@ -35,12 +35,18 @@ scripts/local_ci.sh help         # List targets and caveats
 
 ## Targets
 
-| Target | Equivalent GHA job | Commands |
-|--------|-------------------|----------|
-| `all` (default) | `python-unit` (3.14) + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` (3.14) | `uv sync --frozen; uv run pytest tests/ -v` |
+| Target | GHA job | Commands |
+|--------|---------|----------|
+| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
+
+Local commands run the same test commands as the corresponding GitHub Actions job
+on your installed Python interpreter (3.12+). They **cannot** select or replace
+the hosted version matrix. GitHub PR CI runs `python-unit` on Python **3.14**
+(plus `web`); push-to-main runs the same test commands across **3.12/3.13/3.14**.
+GitHub CI is authoritative.
 
 ### `all` (default)
 
