@@ -9,7 +9,7 @@ import { useData } from '@/design-system/providers/DataContext';
 
 export const useAssistantStatus: ReturnType<
   typeof useData
->['assistant']['useAssistantStatus'] = () => useData().assistant.useAssistantStatus();
+>['assistant']['useAssistantStatus'] = (enabled: boolean) => useData().assistant.useAssistantStatus(enabled);
 
 export const useInitAssistant: ReturnType<
   typeof useData

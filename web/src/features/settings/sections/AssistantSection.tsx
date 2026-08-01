@@ -68,7 +68,7 @@ function describeRegisterError(err: unknown): string {
 }
 
 export function AssistantSection(): JSX.Element {
-  const statusQuery = useAssistantStatus();
+  const statusQuery = useAssistantStatus(true);
   const status = statusQuery.data;
 
   return (

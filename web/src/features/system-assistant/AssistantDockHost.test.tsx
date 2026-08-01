@@ -89,7 +89,7 @@ const h = vi.hoisted(() => {
 // ---------------------------------------------------------------------------
 
 vi.mock('@/hooks/assistant', () => ({
-  useAssistantStatus: () => h.status,
+  useAssistantStatus: (_enabled: boolean) => h.status,
   useInitAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRegisterAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -316,36 +316,35 @@ describe('AssistantDockHost — DOCK-02 header (THR-030)', () => {
     expect(screen.queryByText('System Assistant')).toBeNull();
   });
 
-  test('connected-status line is rendered in the header', () => {
+  // THR-078: No decorative connection-status line — the dot, label,
+  // "operates your runtime" descriptor, and executor pill are removed.
+  test('header has no connection-status dot, label, descriptor, or executor pill', () => {
     renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
-    // The static descriptor anchors the status line and is always present.
-    expect(screen.getByText(/operates your runtime/)).toBeInTheDocument();
+
+    // The now-removed decorative elements must NOT appear.
+    expect(screen.queryByText(/operates your runtime/)).toBeNull();
+    expect(screen.queryByText('Connected')).toBeNull();
+    expect(screen.queryByText('Connecting…')).toBeNull();
+    expect(screen.queryByText('Not configured')).toBeNull();
+    expect(screen.queryByText('Idle')).toBeNull();
+    expect(screen.queryByText('Checking…')).toBeNull();
+    expect(screen.queryByText('Disconnected')).toBeNull();
   });
 
-  test('status line shows a live "Connected" label after the ready status', async () => {
-    await renderOpen();
-    fireFrame({ type: 'status', code: 'ready' });
-    await waitFor(() => {
-      expect(screen.getByText('Connected')).toBeInTheDocument();
-    });
-  });
-
-  test('executor pill renders the data-backed selected_executor', () => {
+  // The executor data is retained for transcript speaker labels only.
+  test('executor name is NOT rendered as a header pill', () => {
     renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
-    expect(screen.getByText('claude')).toBeInTheDocument();
-  });
-
-  test('executor pill is OMITTED when selected_executor is unbacked (null)', () => {
-    h.status = {
-      data: { state: 'configured', selected_executor: null, workspace_path: '/ws', detail: null },
-      isLoading: false,
-      isError: false,
-      error: null,
-    };
-    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
-    // No hardcoded executor name is fabricated when the field is null.
-    expect(screen.queryByText('claude')).toBeNull();
-    expect(screen.queryByText('codex')).toBeNull();
+    // The mock has selected_executor='claude' but it must not appear as
+    // a header pill — it's only used as the speaker label in MessageBubble.
+    // The header only shows the title, Conversations toggle, and close button.
+    const header = screen.getByRole('dialog', { name: 'Ranch Assistant' });
+    const headerDiv = header.querySelector('.border-b');
+    // Only plain text "Ranch Assistant" and buttons — no pill or dot.
+    const spans = headerDiv?.querySelectorAll('span');
+    const textOnly = Array.from(spans ?? []).every(
+      (el) => el.textContent === 'Ranch Assistant' || el.textContent === 'Conversations',
+    );
+    expect(textOnly).toBe(true);
   });
 });
 

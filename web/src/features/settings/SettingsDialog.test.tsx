@@ -92,7 +92,7 @@ function renderDialog(
     ...assistantOverrides?.status,
   };
 
-  const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+  const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
     data: assistantStatus,
     isLoading: false,
     isError: false,
@@ -215,7 +215,7 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
-    const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+    const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
       data: undefined,
       isLoading: true,
       isError: false,
@@ -281,7 +281,7 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
-    const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+    const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
       data: undefined,
       isLoading: false,
       isError: false,

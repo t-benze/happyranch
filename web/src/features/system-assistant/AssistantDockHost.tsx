@@ -301,9 +301,6 @@ interface UseAssistantAModeChat {
   turns: DockTurn[];
   sendMessage: (text: string) => void;
   connecting: boolean;
-  // True only once the server's "ready" status has arrived and the socket is
-  // still live. Cleared on close/error/reconnect.
-  connected: boolean;
   // A turn is in flight (turn_start seen, turn_end not yet).
   inFlight: boolean;
   turnStartedAt: string | null;
@@ -318,7 +315,6 @@ function useAssistantAModeChat(
 ): UseAssistantAModeChat {
   const [turns, setTurns] = useState<DockTurn[]>([]);
   const [connecting, setConnecting] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [inFlight, setInFlight] = useState(false);
   const [turnStartedAt, setTurnStartedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -347,7 +343,6 @@ function useAssistantAModeChat(
 
     let disposed = false;
     setConnecting(true);
-    setConnected(false);
     setInFlight(false);
     setTurnStartedAt(null);
     setError(null);
@@ -369,9 +364,8 @@ function useAssistantAModeChat(
         case 'status':
           if (frame.code === 'ready') {
             setConnecting(false);
-            setConnected(true);
           } else if (frame.code === 'session_closed') {
-            setConnected(false);
+            // session closed — the socket will close and the cleanup fires
           } else if (frame.code === 'error') {
             setError(frame.detail ?? 'Assistant error.');
             setInFlight(false);
@@ -485,14 +479,12 @@ function useAssistantAModeChat(
         ws.onclose = () => {
           wsRef.current = null;
           setConnecting(false);
-          setConnected(false);
           setInFlight(false);
         };
 
         ws.onerror = () => {
           setError('WebSocket connection failed.');
           setConnecting(false);
-          setConnected(false);
           setInFlight(false);
         };
       })
@@ -500,7 +492,6 @@ function useAssistantAModeChat(
         if (!disposed) {
           setError(`Connection failed: ${String(err)}`);
           setConnecting(false);
-          setConnected(false);
         }
       });
 
@@ -545,7 +536,6 @@ function useAssistantAModeChat(
     turns,
     sendMessage,
     connecting,
-    connected,
     inFlight,
     turnStartedAt,
     error,
@@ -568,14 +558,13 @@ export function AssistantDockHost(): JSX.Element {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
-  const statusQuery = useAssistantStatus();
+  const statusQuery = useAssistantStatus(open);
   const status = statusQuery.data;
 
   const {
     turns,
     sendMessage,
     connecting,
-    connected,
     inFlight,
     turnStartedAt,
     error: wsError,
@@ -699,26 +688,6 @@ export function AssistantDockHost(): JSX.Element {
   // Assistant speaker label — data-backed executor name when available.
   const assistantSpeaker = status?.selected_executor ?? 'assistant';
 
-  // DOCK-02 header — connection status line. Every label below is derived
-  // from state the dock already tracks (status poll + live WS signals); no
-  // connection is asserted that cannot be proven. `tone` selects a token
-  // text-color for the leading dot + label.
-  const connection: { tone: string; label: string } = statusQuery.isLoading
-    ? { tone: 'text-text-muted', label: 'Checking…' }
-    : !assistantConfigured
-      ? { tone: 'text-text-muted', label: 'Not configured' }
-      : wsError
-        ? { tone: 'text-feedback-danger', label: 'Disconnected' }
-        : connecting
-          ? { tone: 'text-feedback-warning', label: 'Connecting…' }
-          : connected
-            ? { tone: 'text-feedback-success', label: 'Connected' }
-            : { tone: 'text-text-muted', label: 'Idle' };
-
-  // Executor pill — rendered only when the selected executor is data-backed
-  // (AssistantStatus.selected_executor). Honestly omitted when null.
-  const executor = status?.selected_executor ?? null;
-
   // Show the loading skeleton only while first connecting with nothing to show;
   // once history has hydrated (or a turn exists) render the conversation.
   const showLoading = connecting && turns.length === 0;
@@ -751,23 +720,6 @@ export function AssistantDockHost(): JSX.Element {
             <span className="text-text-primary font-display block text-base">
               Ranch Assistant
             </span>
-            <div className="mt-0.5 flex items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-1 text-xs ${connection.tone}`}
-              >
-                <span
-                  className="inline-block h-1.5 w-1.5 rounded-full bg-current"
-                  aria-hidden="true"
-                />
-                {connection.label}
-              </span>
-              <span className="text-text-muted text-xs">· operates your runtime</span>
-              {executor && (
-                <span className="bg-surface-sunken text-text-secondary inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">
-                  {executor}
-                </span>
-              )}
-            </div>
           </div>
 
           {/* Conversation switcher toggle — shows the active conversation
