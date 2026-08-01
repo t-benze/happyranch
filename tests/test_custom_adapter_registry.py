@@ -622,6 +622,80 @@ class TestConformanceProbe:
         schema = AdapterMetadata.model_json_schema()
         assert "adapter" in schema.get("required", [])
 
+    def test_documentation_schema_parity_canonical_adapter_id_invariant(self):
+        """THR-107 seq268: Every canonical source — both docs, both schemas — retains
+        the normative invariant that adapter_metadata.adapter MUST exactly equal
+        the canonical_adapter_id, and expressly rejects display name, provider string,
+        and arbitrary implementation identity.
+
+        Robust to harmless prose layout changes; fails only when the requirement
+        is removed or weakened.
+        """
+        here = Path(__file__).parent
+
+        # ── Source 1: agent-executors-and-permissions.md ──────────────────
+        guide_path = (
+            here.parent
+            / "docs"
+            / "agent-guides"
+            / "agent-executors-and-permissions.md"
+        )
+        guide_text = guide_path.read_text()
+        # Invariant: adapter_metadata.adapter MUST equal canonical_adapter_id
+        assert "adapter_metadata.adapter" in guide_text
+        assert "canonical_adapter_id" in guide_text
+        assert "MUST exactly equal" in guide_text
+        # Rejection: display name, provider string, arbitrary identity
+        assert "display name" in guide_text.lower()
+        assert "provider string" in guide_text.lower()
+        assert "arbitrary" in guide_text.lower()
+
+        # ── Source 2: unified-adapter-runtime-architecture.md ────────────
+        arch_path = (
+            here.parent
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-07-24-unified-adapter-runtime-architecture.md"
+        )
+        arch_text = arch_path.read_text()
+        # Invariant
+        assert "adapter_metadata" in arch_text
+        assert "canonical_adapter_id" in arch_text
+        assert "MUST exactly equal" in arch_text
+        # Rejection
+        assert "display name" in arch_text.lower()
+        # "provider" appears in many harmless contexts — check the
+        # rejection-specific phrase from the adapter_metadata comment:
+        # "Never a display name, provider, or arbitrary implementation identity"
+        assert (
+            "never a display name, provider," in arch_text.lower()
+            or "never a display name, provider string" in arch_text.lower()
+        )
+        assert "arbitrary" in arch_text.lower()
+
+        # ── Source 3: AdapterMetadata schema description ─────────────────
+        from runtime.orchestrator.adapter_contract import (
+            AdapterMetadata,
+            AdapterOutput,
+        )
+        meta_schema = AdapterMetadata.model_json_schema()
+        meta_desc = meta_schema["properties"]["adapter"].get("description", "")
+        assert "canonical_adapter_id" in meta_desc
+        assert "exactly equal" in meta_desc.lower()
+        assert "display name" in meta_desc.lower()
+        assert "provider" in meta_desc.lower()
+        assert "arbitrary" in meta_desc.lower()
+
+        # ── Source 4: AdapterOutput schema ($defs resolution) ────────────
+        out_schema = AdapterOutput.model_json_schema()
+        out_meta_def = out_schema["$defs"]["AdapterMetadata"]
+        out_desc = out_meta_def["properties"]["adapter"].get("description", "")
+        assert "canonical_adapter_id" in out_desc
+        assert "display name" in out_desc.lower()
+        assert "provider" in out_desc.lower()
+        assert "arbitrary" in out_desc.lower()
+
 
 # ---------------------------------------------------------------------------
 # Registration tests (full pipeline)
