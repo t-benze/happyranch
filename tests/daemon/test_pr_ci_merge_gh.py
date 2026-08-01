@@ -491,7 +491,7 @@ def test_recall_fetch_verdict_legacy_case_variant_rejected() -> None:
 
 
 def test_recall_fetch_verdict_legacy_malformed_label_rejected() -> None:
-    """Malformed legacy label (e.g. 'APPROVED') is rejected — strict PASS|FAIL|REVISE only."""
+    """Malformed legacy label (e.g. 'APPROVED') is rejected — strict PASS|FAIL|REVISE|APPROVE only."""
     import json
 
     recall_json = json.dumps({
