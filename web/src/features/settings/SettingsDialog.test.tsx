@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
@@ -161,6 +161,10 @@ function renderDialog(
 
 beforeEach(() => {
   vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('SettingsDialog', () => {
@@ -567,8 +571,9 @@ describe('SettingsDialog — assistant status network evidence', () => {
       { route: '/orgs/alpha/dashboard' },
     );
 
-    // Wait to ensure no status request fires when dialog is closed.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(0);
   });
 
@@ -606,8 +611,9 @@ describe('SettingsDialog — assistant status network evidence', () => {
 
     await vi.waitFor(() => expect(counter.count()).toBe(1));
 
-    // No interval fires.
-    await new Promise((r) => setTimeout(r, 2500));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
   });
 });

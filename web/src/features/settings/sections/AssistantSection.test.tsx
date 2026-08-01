@@ -1,8 +1,8 @@
-import { screen, within } from '@testing-library/react';
+import { screen, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { Route, Routes } from 'react-router-dom';
-import { describe, expect, test, beforeEach } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import type { AssistantStatus } from '@/lib/api/types';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -138,6 +138,10 @@ describe('Assistant status polling removal — MSW network evidence', () => {
     // the global beforeEach via setup). Reset our counter per-test.
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function countingStatusStub(): { count: () => number; reset: () => void } {
     let count = 0;
     server.use(
@@ -175,8 +179,9 @@ describe('Assistant status polling removal — MSW network evidence', () => {
     // One request fired on mount (enabled=true).
     expect(counter.count()).toBe(1);
 
-    // Wait 2 seconds — no interval-driven second request.
-    await new Promise((r) => setTimeout(r, 2_000));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
   });
 

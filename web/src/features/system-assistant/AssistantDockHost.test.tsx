@@ -173,6 +173,10 @@ beforeEach(() => {
   stubHappy();
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 // ============================================================================
 // NETWORK EVIDENCE — real provider + MSW request counting
 // ============================================================================
@@ -184,8 +188,10 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
 
     renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
 
-    // Wait to ensure no status request fires while dock stays closed.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Switch to fake timers for the no-interval proof: advance past the old
+    // 5 000 ms refetchInterval so this assertion fails if polling is restored.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(0);
   });
 
@@ -212,8 +218,9 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     await openDock(sock);
     await waitFor(() => expect(counter.count()).toBe(1));
 
-    // Wait 2.5 s — no second request.
-    await new Promise((r) => setTimeout(r, 2500));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
   });
 
@@ -236,17 +243,18 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
       expect(dialog.className).toContain('translate-x-full');
     });
 
-    // Wait: no interval request.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
 
-    // Re-open — data is still fresh, no refetch.
+    // Re-open — data is still fresh (staleTime 30s), no refetch.
     const trigger = document.createElement('span');
     trigger.setAttribute('data-assistant-open', '');
     document.body.appendChild(trigger);
     trigger.click();
     document.body.removeChild(trigger);
-    await new Promise((r) => setTimeout(r, 1000));
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1); // cache hit, not a second request
   });
 
@@ -289,8 +297,9 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     document.body.removeChild(trigger);
     await waitFor(() => expect(counter.count()).toBe(2));
 
-    // Still no interval.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Fake-timer proof: advance past the old 5 000 ms refetchInterval.
+    vi.useFakeTimers();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(2);
   });
 });
