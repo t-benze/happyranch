@@ -1665,22 +1665,31 @@ class TestHappyRanchPrePushAutoInstall:
 
     def test_fails_closed_if_git_dir_fails(self, happyranch_worktree, happyranch_repo, monkeypatch, capsys):
         """If git rev-parse --git-dir fails during hook installation on a HappyRanch
-        worktree, setup exits 1 with actionable diagnostic.
+        worktree, setup exits 1 with the real production diagnostic.
 
         Identity validation (worktree detection, common-dir match, branch name)
-        passed beforehand. This faults the installer seam AFTER identity validation
-        — it does NOT corrupt .git which could break pre-install checks."""
+        completes first. After identity validation succeeds, the installer calls
+        ``_git_out(worktree, "rev-parse", "--git-dir")`` — this test narrowly
+        intercepts ONLY that call, returning empty string to trigger the
+        production fail-closed path. All earlier calls (worktree detection,
+        common-dir match, branch name) and all other calls (e.g. git config)
+        delegate to the real ``_git_out`` so the test proves identity validation
+        completed and exercises the real production diagnostic."""
         import runtime.tools.worktree_guard as guard_mod
 
-        def fake_installer(worktree, primary, task_id=None):
-            print("ERROR: HappyRanch worktree detected but cannot run 'git rev-parse --git-dir'.",
-                  file=sys.stderr)
-            print("  Worktree root: " + str(worktree), file=sys.stderr)
-            print("  Pre-push hook installation is mandatory for agent worktrees.", file=sys.stderr)
-            print("  Corrective: verify this is a valid git worktree and retry.", file=sys.stderr)
-            sys.exit(1)
+        real_git_out = guard_mod._git_out
+        git_dir_call_made = []
 
-        monkeypatch.setattr(guard_mod, "_maybe_install_happyranch_pre_push", fake_installer)
+        def _intercepted_git_out(path: Path, *args: str) -> str:
+            # Intercept ONLY the post-identity rev-parse --git-dir call inside
+            # _maybe_install_happyranch_pre_push. Delegate everything else to
+            # the real function so identity validation runs unmodified.
+            if args == ("rev-parse", "--git-dir") and path == happyranch_worktree:
+                git_dir_call_made.append(True)
+                return ""  # simulate failure → triggers production diagnostic
+            return real_git_out(path, *args)
+
+        monkeypatch.setattr(guard_mod, "_git_out", _intercepted_git_out)
 
         with pytest.raises(SystemExit) as exc:
             cmd_setup(
@@ -1690,10 +1699,23 @@ class TestHappyRanchPrePushAutoInstall:
             )
         assert exc.value.code == 1
 
+        # Prove identity validation completed — the intercepted call was reached.
+        assert len(git_dir_call_made) == 1, (
+            "_git_out(rev-parse --git-dir) must be called exactly once after identity validation"
+        )
+
+        # Assert the real production diagnostic text (from
+        # _maybe_install_happyranch_pre_push lines 223-228).
         captured = capsys.readouterr()
         stderr = captured.err
-        assert "mandatory" in stderr.lower() or "cannot run" in stderr.lower(), (
-            f"Error must reference mandatory hook installation. Got: {stderr}"
+        assert "cannot run 'git rev-parse --git-dir'" in stderr, (
+            f"Must include the production git-dir diagnostic. Got: {stderr}"
+        )
+        assert "mandatory" in stderr.lower(), (
+            f"Must reference mandatory hook installation. Got: {stderr}"
+        )
+        assert "Corrective:" in stderr, (
+            f"Must include a corrective. Got: {stderr}"
         )
 
 
