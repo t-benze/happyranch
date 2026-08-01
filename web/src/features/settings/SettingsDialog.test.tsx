@@ -2,7 +2,10 @@ import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { http, HttpResponse } from 'msw';
 import { DataContext } from '@/design-system/providers/DataContext';
+import { renderWithProviders } from '@/test/render';
+import { server } from '@/test/server';
 import { SettingsDialog } from './SettingsDialog';
 import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch, AssistantStatus, AssistantRegisterBody } from '@/lib/api/types';
 import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
@@ -474,5 +477,137 @@ describe('SettingsDialog', () => {
     expect(screen.queryByRole('button', { name: /^Repair$/i })).toBeNull();
     const link = screen.getByRole('link', { name: /manage in settings/i });
     expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
+  });
+});
+
+// =============================================================================
+// THR-078 — MSW network-evidence: assistant status visibility gate
+// =============================================================================
+
+const SETTINGS_FIXTURE: SettingsSnapshot = {
+  system: {
+    claude_cli_path: { value: '/usr/local/bin/claude', restart_required: true },
+    codex_cli_path: { value: '/usr/local/bin/codex', restart_required: true },
+    opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
+    pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
+    session_timeout_seconds: { value: 1800, restart_required: true },
+    max_orchestration_steps: { value: 50, restart_required: true },
+    queue_workers: { value: 3, restart_required: true },
+    protocol_dir: { value: 'protocol', restart_required: true },
+  },
+  org: {
+    session_timeout_seconds: 3600,
+    dreaming: {
+      enabled: true,
+      schedule: { time: '02:00', timezone: 'UTC' },
+      catch_up_on_startup: true,
+      agents: { mode: 'all', include: [], exclude: [] },
+    },
+    threads: {
+      enabled: true,
+      default_turn_cap: 500,
+      invocation_timeout_seconds: null,
+    },
+    working_hours: {
+      enabled: true,
+      agents: { mode: 'all', include: [], exclude: [] },
+      default: {
+        mode: 'windowed',
+        window: { start: '09:00', end: '17:00', timezone: 'UTC' },
+        interval: '2h',
+        days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+        catch_up_on_startup: false,
+      },
+      teams: {},
+      overrides: {},
+    },
+  },
+};
+
+function stubSettings(snapshot?: SettingsSnapshot) {
+  server.use(
+    http.get('/api/v1/orgs/alpha/settings', () =>
+      HttpResponse.json(snapshot ?? SETTINGS_FIXTURE),
+    ),
+  );
+}
+
+function countingAssistantStub(): { count: () => number } {
+  let count = 0;
+  server.use(
+    http.get('/api/v1/assistant/status', () => {
+      count += 1;
+      return HttpResponse.json({
+        state: 'configured',
+        selected_executor: 'claude',
+        workspace_path: '/rt/system/assistant/workspace',
+        detail: null,
+      } satisfies AssistantStatus);
+    }),
+  );
+  return { count: () => count };
+}
+
+describe('SettingsDialog — assistant status network evidence', () => {
+  beforeEach(() => {
+    stubSettings();
+  });
+
+  test('closed: zero assistant status requests', async () => {
+    const counter = countingAssistantStub();
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/orgs/:slug/dashboard"
+          element={<SettingsDialog open={false} onOpenChange={vi.fn()} />}
+        />
+      </Routes>,
+      { route: '/orgs/alpha/dashboard' },
+    );
+
+    // Wait to ensure no status request fires when dialog is closed.
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(counter.count()).toBe(0);
+  });
+
+  test('open: exactly one fresh status request', async () => {
+    const counter = countingAssistantStub();
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/orgs/:slug/dashboard"
+          element={<SettingsDialog open={true} onOpenChange={vi.fn()} />}
+        />
+      </Routes>,
+      { route: '/orgs/alpha/dashboard' },
+    );
+
+    // The dialog is open → status query enabled → one request.
+    await vi.waitFor(() => expect(counter.count()).toBe(1));
+  });
+
+  test('open: no interval requests', async () => {
+    const counter = countingAssistantStub();
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/orgs/:slug/dashboard"
+          element={<SettingsDialog open={true} onOpenChange={vi.fn()} />}
+        />
+      </Routes>,
+      { route: '/orgs/alpha/dashboard' },
+    );
+
+    await vi.waitFor(() => expect(counter.count()).toBe(1));
+
+    // No interval fires.
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(counter.count()).toBe(1);
   });
 });

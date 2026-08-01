@@ -714,7 +714,7 @@ export function AssistantDockHost(): JSX.Element {
           open ? 'translate-x-0' : 'translate-x-full pointer-events-none',
         ].join(' ')}
       >
-        {/* Header — Pasture font-display heading + connection status line */}
+        {/* Header — Pasture font-display heading */}
         <div className="border-border-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <span className="text-text-primary font-display block text-base">

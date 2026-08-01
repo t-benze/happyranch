@@ -180,13 +180,21 @@ describe('Assistant status polling removal — MSW network evidence', () => {
     expect(counter.count()).toBe(1);
   });
 
-  test('(6) mutation (repair) caches result, no extra status request triggered', async () => {
-    const counter = countingStatusStub();
-    // Repair returns updated status
+  test('(6) mutation (repair) caches result via onSuccess setQueryData, no extra GET', async () => {
+    // Initial status: stale_or_broken → Repair button should be visible.
     server.use(
-      http.post('/api/v1/assistant/repair', () =>
+      http.get('/api/v1/assistant/status', () =>
         HttpResponse.json({
           state: 'stale_or_broken',
+          selected_executor: 'codex',
+          workspace_path: '/rt/system/assistant/workspace',
+          detail: 'workspace missing AGENTS.md',
+        } satisfies AssistantStatus),
+      ),
+      // Repair returns configured/Codex
+      http.post('/api/v1/assistant/repair', () =>
+        HttpResponse.json({
+          state: 'configured',
           selected_executor: 'codex',
           workspace_path: '/rt/system/assistant/workspace',
           detail: null,
@@ -194,18 +202,38 @@ describe('Assistant status polling removal — MSW network evidence', () => {
       ),
     );
 
+    const user = userEvent.setup();
     sessionStorage.setItem('happyranch.token', 'tok');
     render();
 
-    // Mount → 1 request.
-    await screen.findByText('Configured');
-    expect(counter.count()).toBe(1);
+    // Mount → 1 GET (enabled=true on route).
+    await screen.findByText('Stale or broken');
+    expect(screen.getByText('workspace missing AGENTS.md')).toBeInTheDocument();
 
-    // Stub the next status response to stale_or_broken so Repair appears.
-    // (we need to first mount as stale_or_broken)
-    // Actually, the stub is already 'configured', so let's just verify
-    // that after mount, no extra requests fire.
-    await new Promise((r) => setTimeout(r, 1_000));
-    expect(counter.count()).toBe(1);
+    // Now stub a counter for subsequent requests.
+    let getCount = 0;
+    server.use(
+      http.get('/api/v1/assistant/status', () => {
+        getCount += 1;
+        return HttpResponse.json({
+          state: 'configured',
+          selected_executor: 'codex',
+          workspace_path: '/rt/system/assistant/workspace',
+          detail: null,
+        } satisfies AssistantStatus);
+      }),
+    );
+
+    const repairBtn = screen.getByRole('button', { name: /^Repair$/i });
+    expect(repairBtn).toBeInTheDocument();
+
+    // Click Repair.
+    await user.click(repairBtn);
+
+    // After repair, onSuccess setQueryData should render the new status
+    // WITHOUT an additional GET request.
+    await screen.findByText('Configured');
+    expect(screen.getByText('codex')).toBeInTheDocument();
+    expect(getCount).toBe(0);
   });
 });
