@@ -975,14 +975,16 @@ class TestConcurrentMaterialization:
         monkeypatch.undo()  # undo _rendezvous_copy
 
         # ═══ PHASE 2: LOCKED proof — second writer excluded ═══
-        # Re-patch _copy_skills_tree with a version that uses Events
-        # for controlled release. Both threads call the SAME production
-        # entry point materialize_workspace_skills.
-        rendezvous_event = threading.Event()
-        wrapper_entry_events: list[threading.Event] = []
+        # Re-patch _copy_skills_tree with a version that uses per-writer
+        # Events for deterministic seam-entry proof. Both threads call the
+        # SAME production entry point materialize_workspace_skills.
+        release_event = threading.Event()
+        w1_seam_event = threading.Event()  # writer_one signals when inside seam
+        w2_seam_event = threading.Event()  # writer_two signals when inside seam
+        seam_call_count = [0]  # mutable counter to distinguish writers
 
         def _locked_copy(src_p, dst_p, *, slug):
-            """Same wrapper but Event-based for controlled release."""
+            """Production-bound wrapper with per-writer Event signals."""
             if not src_p.exists():
                 return
             dst_p.mkdir(parents=True, exist_ok=True)
@@ -997,13 +999,17 @@ class TestConcurrentMaterialization:
                 if child.is_dir():
                     _copy_skill_dir(child, tmp_target, slug=slug)
                     target.mkdir(parents=True, exist_ok=True)
-                    # Signal entry into the vulnerable window
-                    entry_event = threading.Event()
-                    wrapper_entry_events.append(entry_event)
-                    entry_event.set()
+                    # Signal entry into the vulnerable window.
+                    # First writer to enter → w1_seam_event, second → w2_seam_event.
+                    idx = seam_call_count[0]
+                    seam_call_count[0] += 1
+                    if idx == 0:
+                        w1_seam_event.set()
+                    elif idx == 1:
+                        w2_seam_event.set()
                     # Wait for test to release
-                    assert rendezvous_event.wait(timeout=10), (
-                        "rendezvous event timeout"
+                    assert release_event.wait(timeout=10), (
+                        "release event timeout"
                     )
                     _atomic_replace_dir(tmp_target, target)
                     _remove_stale_entries(child, target)
@@ -1070,18 +1076,12 @@ class TestConcurrentMaterialization:
         t1 = threading.Thread(target=writer_one, daemon=True)
         t1.start()
 
-        # Wait for writer_one to enter the wrapper (inside the lock).
-        # Writer one enters _txn_with_entry_signal (sets txn_entry_event),
-        # acquires the lock, enters _locked_copy, signals wrapper_entry.
-        import time as _time
-        deadline = _time.monotonic() + 10
-        while not wrapper_entry_events and _time.monotonic() < deadline:
-            _time.sleep(0.05)
-        assert wrapper_entry_events, "Writer one never entered the wrapper"
-
-        # Clear entry tracking so we can detect writer_two
-        txn_entry_event.clear()
-        wrapper_entry_events.clear()
+        # Wait for writer_one to enter the vulnerable seam while holding
+        # the real canonical workspace transaction. Deterministic Event
+        # wait — no polling, no sleeps.
+        assert w1_seam_event.wait(timeout=10), (
+            "LOCKED: writer-one never entered the vulnerable seam"
+        )
 
         # Start writer_two — it must reach the transaction boundary and block
         t2 = threading.Thread(target=writer_two, daemon=True)
@@ -1095,17 +1095,27 @@ class TestConcurrentMaterialization:
             "transaction boundary"
         )
 
-        # Writer_two must NOT have entered the vulnerable wrapper
+        # Writer_two must NOT have entered the vulnerable seam
         # while writer_one holds the canonical workspace lock.
-        assert not wrapper_entry_events, (
-            "LOCKED: writer-two entered the vulnerable wrapper "
+        assert not w2_seam_event.is_set(), (
+            "LOCKED: writer-two entered the vulnerable seam "
             "while writer-one held the canonical workspace lock!"
         )
 
         # Release writer_one — it completes its transaction and releases lock
-        rendezvous_event.set()
+        release_event.set()
         t1.join(timeout=15)
+        assert not t1.is_alive(), "Writer one did not terminate"
+
+        # Writer_two must now enter and complete the same instrumented
+        # production seam after the lock is released.
+        assert w2_seam_event.wait(timeout=10), (
+            "LOCKED: writer-two never entered the vulnerable seam "
+            "after writer-one released the lock"
+        )
+
         t2.join(timeout=15)
+        assert not t2.is_alive(), "Writer two did not terminate"
 
         # No errors expected
         assert not errors_locked, (
