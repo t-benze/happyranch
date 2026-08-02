@@ -1025,19 +1025,30 @@ class TestConcurrentMaterialization:
 
         monkeypatch.setattr(wa, "_copy_skills_tree", _locked_copy)
 
-        # Instrument _workspace_skills_transaction to signal when any writer
-        # enters the transaction boundary — immediately before lock acquisition.
+        # Instrument _workspace_skills_transaction with a writer-two-
+        # specific entry signal. Writer one does NOT set this event,
+        # eliminating the risk of a stale writer-one signal satisfying
+        # the writer-two assertion.
         original_txn = wa._workspace_skills_transaction
 
+        txn_call_count = [0]
+        txn_count_lock = threading.Lock()
+
         @contextmanager
-        def _txn_with_entry_signal(workspace_path):
-            """Signal entry event, then delegate to real transaction."""
-            txn_entry_event.set()
+        def _txn_with_w2_signal(workspace_path):
+            """Signal writer-two-specific entry event, then delegate
+            to the real transaction. Writer one (idx 0) never sets
+            the event; only writer two (idx 1) does."""
+            with txn_count_lock:
+                idx = txn_call_count[0]
+                txn_call_count[0] += 1
+            if idx == 1:  # writer two
+                w2_txn_entry_event.set()
             with original_txn(workspace_path):
                 yield
 
         monkeypatch.setattr(
-            wa, "_workspace_skills_transaction", _txn_with_entry_signal,
+            wa, "_workspace_skills_transaction", _txn_with_w2_signal,
         )
 
         # Clear the lock registry so we start fresh
@@ -1071,7 +1082,11 @@ class TestConcurrentMaterialization:
             except Exception as e:
                 errors_locked.append(e)
 
-        txn_entry_event = threading.Event()
+        # Writer-two-specific transaction-entry Event. Only writer two
+        # sets this (writer one never touches it), so a successful wait
+        # is definitive proof that writer two — not writer one — reached
+        # the transaction boundary.
+        w2_txn_entry_event = threading.Event()
 
         t1 = threading.Thread(target=writer_one, daemon=True)
         t1.start()
@@ -1087,10 +1102,11 @@ class TestConcurrentMaterialization:
         t2 = threading.Thread(target=writer_two, daemon=True)
         t2.start()
 
-        # Wait for writer_two to signal transaction-entry (proves it
-        # reached _workspace_skills_transaction and is about to block on
-        # the lock that writer_one still holds).
-        assert txn_entry_event.wait(timeout=10), (
+        # Wait for writer-two-specific transaction-entry signal. Only
+        # writer two sets this event, so this is definitive proof that
+        # writer two reached _workspace_skills_transaction and is about
+        # to block on the lock that writer_one still holds.
+        assert w2_txn_entry_event.wait(timeout=10), (
             "LOCKED: writer-two never reached the workspace skills "
             "transaction boundary"
         )
