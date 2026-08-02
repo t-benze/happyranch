@@ -361,14 +361,26 @@ refreshes — if the previous tick is still in flight, the current tick is skipp
 - **No event-triggered invalidation.** The design explicitly avoids cache
   invalidation on audit writes, task transitions, or any other event.
 - **Last-known-good failure semantics.** A failed refresh (timeout, DB error,
-  transient issue) logs a warning and keeps the prior successful projection.
-  The HTTP route never returns stale-only data from a failed compose.
+  transient issue) logs a warning and keeps the prior successful projection
+  in memory. The durable sidecar is atomically replaced via `os.replace`
+  (write-tmp-then-replace; the canonical file is never unlinked first), so a
+  crash or failure during persist cannot corrupt or lose the prior sidecar.
+- **No non-atomic recovery.** Because `os.replace` guarantees the canonical
+  path is never damaged, there is no recovery code that writes the canonical
+  file non-atomically after a failure.
 
 #### Cold-start
 
-At daemon startup the persisted projection is loaded from disk (no-op if
-missing). One initial warm is performed **before serving traffic** so the
-first request doesn't hit a 503. After warm, the periodic scheduler takes over.
+At daemon startup the persisted projection is loaded from disk synchronously
+(no-op if missing — a fast filesystem read, no DB access). The initial warm
+runs **asynchronously** — the lifespan yields immediately without awaiting
+a DB compose. The route returns 503 until the first warm completes.
+
+When a valid persisted projection exists from a prior daemon run,
+`GET /dashboard/summary` serves it immediately on the next startup.
+When no projection exists (first-ever cold-start or cleaned cache), the
+route returns **503 Service Unavailable** until the background warm finishes
+(typically within one 10 s tick).
 
 #### HTTP response
 

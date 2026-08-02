@@ -2201,3 +2201,130 @@ def test_lock_instrument_no_sql_param_leakage(db, caplog):
         )
 
     db._lock_warn_threshold_seconds = 1.0
+
+
+# ── THR-129 fix-forward round 3: execute hold/wait + nested reentrancy ──
+
+def test_execute_hold_warns_at_threshold_boundary(db, caplog):
+    """Database.execute itself records hold warnings when execution time
+    exceeds the threshold. Proves the @_synchronized instrumentation covers
+    the execute() path, not just the higher-level query methods."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.0  # trigger on any positive hold
+
+    # A query that takes measurable time by doing multiple UNION ALL scans
+    db.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+    )
+    hold_warnings = [r for r in caplog.record_tuples
+                     if "hold" in r[2] and "execute" in r[2]]
+    assert len(hold_warnings) >= 1, (
+        f"Expected hold warning for execute(), got: {caplog.record_tuples}"
+    )
+    # Verify no SQL leakage in warnings
+    for _, _, msg in hold_warnings:
+        assert "SELECT" not in msg.upper(), f"Warning leaks SQL: {msg[:100]}"
+        assert "sqlite_master" not in msg, f"Warning leaks table name: {msg[:100]}"
+
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_execute_wait_warns_at_threshold_boundary(db, caplog):
+    """Database.execute itself records wait warnings under contention,
+    proving all shared-connection paths are instrumented."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms
+
+    hold_started = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+
+    def waiter():
+        hold_started.wait()
+        # Direct execute() call via @_synchronized — must log wait
+        result = db.execute("SELECT 1")
+        list(result)  # consume iterator
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    wait_warnings = [r for r in caplog.record_tuples
+                     if "wait" in r[2] and "execute" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"db.execute() must log wait warning under contention, "
+        f"got: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_execute_nested_reentrant_no_false_wait(db, caplog):
+    """Genuinely nested Database.execute call within another
+    @_synchronized method: the inner execute re-acquires the RLock with
+    near-zero wait and must not produce false-positive wait warnings.
+    This proves RLock reentrancy for execute-within-locked-context,
+    exercising the exact execute→execute nesting path."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.01  # very low threshold
+
+    # Acquire the lock explicitly, then call execute() multiple times from
+    # the same thread. Each inner execute() is @_synchronized and will
+    # re-acquire the RLock — this is the genuinely nested execute path.
+    def nested_executes():
+        db._lock.acquire()
+        try:
+            # First execute (outer lock held by us)
+            r1 = db.execute("SELECT 1")
+            list(r1)
+            # Second execute — also re-acquires RLock
+            r2 = db.execute("SELECT 2")
+            list(r2)
+            # Third execute
+            r3 = db.execute("SELECT 3")
+            list(r3)
+            # insert_task calls self.execute() internally via @_synchronized
+            db.insert_task(TaskRecord(id="TASK-NESTX", brief="nested exec"))
+        finally:
+            db._lock.release()
+
+    t = threading.Thread(target=nested_executes)
+    t.start()
+    t.join()
+
+    # Zero wait warnings — all acquires were reentrant (same thread)
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"Nested/reentrant execute calls must not log wait warnings, "
+        f"got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0

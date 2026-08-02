@@ -269,13 +269,17 @@ async def _lifespan(app: FastAPI):
 
     # ── Dashboard projection cold-start + periodic refresh ────────────
     # THR-129: per-org durable last-known-good cache, refreshed every 10s.
-    # Load persisted snapshot, warm once before serving, then start coalesced
-    # periodic scheduler. Each org's manager owns its own scheduler task.
+    # Load persisted snapshot synchronously (never block the event loop),
+    # then start an async bootstrap-and-schedule task. The lifespan must
+    # NOT await a DB compose before yielding — the initial warm runs in
+    # the background. Cache-only GET /dashboard/summary returns 503 until
+    # the first warm completes.
     from runtime.infrastructure.kb_store import KBStore
     _dashboard_tasks: list[asyncio.Task] = []
     for org in state.orgs.values():
         mgr = org.dashboard_projection
-        # Load persisted snapshot from disk (no-op if missing)
+        # Load persisted snapshot from disk synchronously (no-op if missing).
+        # This is a fast filesystem read — no DB access, no event-loop block.
         persisted = mgr.load_from_disk()
         if persisted is not None:
             mgr._projection = persisted
@@ -283,25 +287,13 @@ async def _lifespan(app: FastAPI):
                 "dashboard projection loaded from disk for org %s (generated_at=%s)",
                 org.slug, persisted.generated_at.isoformat(),
             )
-        # Perform one initial warm so the first request doesn't get 503.
-        # Runs in a thread via asyncio.to_thread to avoid blocking the event
-        # loop for the (now-fast, grouped) SQL query.
+        # Start the bootstrap-then-schedule task. The initial warm runs
+        # asynchronously — the lifespan yields immediately. The route
+        # returns 503 until warm completes (cache-only, never synchronous).
         kb_store = KBStore(org.root / "kb")
-        ok = await mgr.warm(db=org.db, kb_store=kb_store, teams=org.teams)
-        if ok:
-            _logger.info(
-                "dashboard projection initial warm succeeded for org %s",
-                org.slug,
-            )
-        else:
-            _logger.warning(
-                "dashboard projection initial warm FAILED for org %s "
-                "— will retry on periodic scheduler tick",
-                org.slug,
-            )
-        # Start the coalesced periodic refresh scheduler (10s interval).
         task = mgr.start_scheduler(
-            db=org.db, kb_store=kb_store, teams=org.teams, loop=_main_loop,
+            db=org.db, kb_store=kb_store, teams=org.teams,
+            loop=_main_loop, initial_warm=True,
         )
         _dashboard_tasks.append(task)
 

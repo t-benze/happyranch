@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -502,12 +503,13 @@ def test_warm_preserves_prior_on_serialization_failure(
     assert current_bytes == old_bytes, "old sidecar bytes must be preserved byte-for-byte"
 
 
-def test_warm_preserves_prior_on_rename_failure(
+def test_warm_preserves_prior_on_os_replace_failure(
     tmp_home, org_state, monkeypatch,
 ) -> None:
-    """When compose + serialize succeed but the disk rename fails
-    (tmp written ok, rename throws), the prior in-memory projection AND
-    the exact old sidecar bytes are preserved. The tmp file is cleaned up."""
+    """When compose + serialize succeed but os.replace fails, the prior
+    in-memory projection AND the exact old sidecar bytes are preserved.
+    os.replace never unlinks the canonical file first — the old sidecar
+    is intact byte-for-byte without any non-atomic recovery rewrite."""
     import asyncio
     kb_store = KBStore(org_state.root / "kb")
     mgr = org_state.dashboard_projection
@@ -530,32 +532,33 @@ def test_warm_preserves_prior_on_rename_failure(
     mgr.persist(prior)
     old_bytes = mgr.projection_path.read_bytes()
 
-    # Monkeypatch Path.rename to raise (simulating rename failure after tmp
-    # write succeeds). The warm() code restores old sidecar bytes on failure.
-    original_rename = Path.rename
-    def failing_rename(self, target):
-        raise OSError("simulated rename failure")
-    monkeypatch.setattr(Path, "rename", failing_rename)
+    # Monkeypatch os.replace to raise — simulates replace failure after tmp
+    # write succeeds. The canonical file must be untouched because os.replace
+    # never unlinks the target first.
+    original_replace = os.replace
+    def failing_replace(src, dst):
+        raise OSError("simulated os.replace failure")
+    monkeypatch.setattr(os, "replace", failing_replace)
 
     ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
-    assert ok is False, "warm should return False on rename failure"
+    assert ok is False, "warm should return False on replace failure"
     # Prior projection in memory
     current = mgr.get_projection()
     assert current is not None, "prior projection must be preserved in memory"
     assert current.payload["heartbeat"][0]["steps"] == 55, "prior payload preserved"
-    # Sidecar bytes: the _atomic_persist unlinks the original before
-    # rename, so after the failed rename the original is gone. The warm()
-    # catch block restores old_sidecar_bytes. Verify they match.
+    # Sidecar bytes: os.replace never unlinks the target before replacement,
+    # so the canonical file is automatically intact on failure — no
+    # non-atomic recovery rewrite needed.
     current_bytes = mgr.projection_path.read_bytes()
     assert current_bytes == old_bytes, (
-        "old sidecar bytes must be restored byte-for-byte after rename failure"
+        f"old sidecar bytes must be preserved byte-for-byte; "
+        f"os.replace guarantees this (no unlink-then-rename window). "
+        f"old={len(old_bytes)}B, current={len(current_bytes)}B"
     )
-    # Tmp file debris should not be left behind
+    # Tmp file debris is tolerated — it cannot affect the canonical cache.
     tmp_path = mgr.projection_path.with_suffix(
         mgr.projection_path.suffix + ".tmp"
     )
-    # It's okay if tmp exists (rename didn't clean it) but the canonical
-    # path must hold the old content.
 
 
 # ── THR-129 fix-forward round 2: real scheduler shutdown test ───────────────
@@ -624,3 +627,187 @@ def test_scheduler_cancel_during_blocking_warm_no_hang(tmp_home, org_state, monk
             loop.close()
     finally:
         mgr.warm = original_warm
+
+
+# ── THR-129 fix-forward round 3: strict validation + async startup ──────
+
+def test_load_from_disk_rejects_numeric_generated_at(tmp_home, org_state) -> None:
+    """Numeric generated_at (e.g. 12345) must be rejected by strict
+    envelope validation — never coerced to a datetime."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": 12345,  # numeric, not ISO string
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Numeric generated_at should be rejected, got {result}"
+
+
+def test_load_from_disk_rejects_boolean_generated_at(tmp_home, org_state) -> None:
+    """Boolean generated_at (e.g. true) must be rejected by strict
+    envelope validation."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": True,  # boolean, not ISO string
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Boolean generated_at should be rejected, got {result}"
+
+
+def test_load_from_disk_retains_validated_payload(tmp_home, org_state) -> None:
+    """A valid sidecar passes strict validation AND the returned projection
+    carries the validated (re-serialized) payload from DashboardSummaryResponse,
+    not the raw on-disk dict. This proves validation output is not discarded."""
+    import asyncio
+    kb_store = KBStore(org_state.root / "kb")
+    mgr = org_state.dashboard_projection
+    # Write a real valid projection via warm (which composes + persists)
+    ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
+    assert ok is True, "warm must succeed to seed a valid projection"
+    # Now load it — the result must be a valid DashboardProjection
+    result = mgr.load_from_disk()
+    assert result is not None, "valid sidecar must load successfully"
+    assert isinstance(result, DashboardProjection)
+    # The payload must be the validated/re-serialized form (with all expected keys)
+    assert isinstance(result.payload, dict)
+    assert "heartbeat" in result.payload
+    assert "narrative_counts" in result.payload
+    assert "server_now" in result.payload
+    # server_now in the persisted payload matches the generated_at time
+    assert result.payload["generated_at"] is None  # null per DashboardSummaryResponse default
+    # generated_at is the projection timestamp
+    assert result.generated_at is not None
+
+
+def test_load_from_disk_rejects_payload_with_extra_fields(tmp_home, org_state) -> None:
+    """Payload with unknown/extra fields (not in DashboardSummaryResponse)
+    must be rejected by strict validation."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None,
+                     "extra_payload_field": "should_be_rejected"},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Payload with extra fields should be rejected, got {result}"
+
+
+def test_startup_async_warm_serves_503_while_compose_blocked(
+    tmp_home, org_state, app, auth_headers, monkeypatch,
+) -> None:
+    """Lifespan-level test: when the initial warm's compose is blocked in a
+    real worker thread, GET /dashboard/summary returns 503 (cache-only)
+    before the warm completes. The blocked worker is tracked, observed,
+    cancelled, reaped, and released without unowned exceptions."""
+    import threading
+
+    from runtime.orchestrator import dashboard_projection as dp_mod
+
+    mgr = org_state.dashboard_projection
+    # Ensure no prior projection
+    assert mgr.get_projection() is None
+
+    # Patch compose_dashboard_summary to block in a real thread
+    compose_entered = threading.Event()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+
+    original_compose = dp_mod.compose_dashboard_summary
+    def blocking_compose(*, db, kb_store, teams, now):
+        compose_entered.set()
+        # Block until released — simulates a slow DB compose
+        compose_unblock.wait(timeout=10)
+        result = original_compose(db=db, kb_store=kb_store, teams=teams, now=now)
+        compose_done.set()
+        return result
+    monkeypatch.setattr(dp_mod, "compose_dashboard_summary", blocking_compose)
+
+    # Shorten the refresh interval so the periodic tick fires quickly
+    monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
+
+    try:
+        # Start the scheduler with initial_warm=True (simulates daemon lifespan)
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            from runtime.infrastructure.kb_store import KBStore
+            kb_store = KBStore(org_state.root / "kb")
+            task = mgr.start_scheduler(
+                db=org_state.db, kb_store=kb_store,
+                teams=org_state.teams, loop=loop, initial_warm=True,
+            )
+
+            async def _async_test():
+                # Wait for compose to enter its blocking path
+                await asyncio.to_thread(compose_entered.wait, 5.0)
+                assert compose_entered.is_set(), (
+                    "compose_dashboard_summary should have been entered "
+                    "by the background warm task"
+                )
+
+                # Now hit the route — it must return 503 because no
+                # projection exists yet (warm is still blocked)
+                client = TestClient(app)
+                r = client.get(
+                    f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
+                    headers=auth_headers,
+                )
+                assert r.status_code == 503, (
+                    f"Expected 503 while warm is blocked, got {r.status_code}"
+                )
+                assert "not yet available" in r.json()["detail"]
+
+                # Cancel the scheduler (cancel BEFORE await)
+                mgr.cancel_scheduler()
+                # Reap under bounded timeout
+                await asyncio.wait_for(mgr.reap_scheduler(), timeout=3.0)
+                # Release the blocked worker thread
+                compose_unblock.set()
+                # Wait for the worker to complete (so it's accounted for)
+                await asyncio.to_thread(compose_done.wait, 5.0)
+                assert compose_done.is_set(), (
+                    "blocked compose should have completed after release"
+                )
+                # Verify task is cleaned up
+                assert mgr._refresh_task is None, (
+                    "_refresh_task should be None after reap"
+                )
+
+            loop.run_until_complete(_async_test())
+        finally:
+            # Clean up any remaining tasks
+            pending = asyncio.all_tasks(loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.close()
+    finally:
+        dp_mod.compose_dashboard_summary = original_compose
