@@ -740,6 +740,95 @@ def test_load_from_disk_rejects_payload_with_extra_fields(tmp_home, org_state) -
     )
 
 
+def _bounded_lifespan_context(
+    *,
+    app,
+    compose_entered: "threading.Event",
+    compose_unblock: "threading.Event",
+    compose_done: "threading.Event",
+    deadline_seconds: float,
+    auth_headers,
+    org_slug: str,
+) -> None:
+    """Enter the real FastAPI TestClient lifespan in a NON-DAEMON thread
+    with a bounded-join watchdog.  On success the function returns normally.
+    On watchdog expiry it performs terminal owned cleanup — release the
+    blocked compose worker, wait for compose_done, join the TestClient
+    thread under bounded second-stage deadlines, and ONLY then raises
+    AssertionError.  Never leaves an unowned thread or worker behind."""
+    import threading
+
+    _completed = threading.Event()
+    _error = [None]
+
+    def _runner() -> None:
+        try:
+            with TestClient(app) as client:
+                assert compose_entered.wait(timeout=10), (
+                    "compose_dashboard_summary must be entered by "
+                    "lifespan's initial warm task"
+                )
+                r = client.get(
+                    f"/api/v1/orgs/{org_slug}/dashboard/summary",
+                    headers=auth_headers,
+                )
+                assert r.status_code == 503, (
+                    f"Expected 503 while warm is blocked, got {r.status_code}"
+                )
+                assert "not yet available" in r.json()["detail"]
+        except Exception as exc:
+            _error[0] = exc
+        finally:
+            _completed.set()
+
+    _thread = threading.Thread(target=_runner, daemon=False)
+    _thread.start()
+    _thread.join(timeout=deadline_seconds)
+
+    if not _completed.is_set():
+        # ── Watchdog expired — deterministic terminal cleanup ───────
+        _diagnostic = (
+            f"TestClient lifespan shutdown exceeded bounded deadline "
+            f"({deadline_seconds}s) — cancel_scheduler/reap regression: "
+            f"the lifespan shutdown did not complete within the bounded "
+            f"watchdog; cancel_scheduler may not have properly cancelled "
+            f"the warm task, or asyncio.gather may be blocked"
+        )
+
+        # Release the blocked compose so the worker thread can exit.
+        compose_unblock.set()
+
+        # Bounded second-stage: wait for the worker.
+        _worker_clean = compose_done.wait(timeout=deadline_seconds)
+
+        # Bounded second-stage: join the TestClient context thread.
+        _thread.join(timeout=deadline_seconds)
+        _thread_clean = not _thread.is_alive()
+
+        # Build cleanup-failure context.
+        _cleanup_detail = ""
+        if not _worker_clean:
+            _cleanup_detail += (
+                "; worker compose_done timed out during cleanup"
+            )
+        if not _thread_clean:
+            _cleanup_detail += (
+                "; TestClient thread did not exit during cleanup"
+            )
+
+        if _worker_clean and _thread_clean:
+            # Terminal: both owned — raise the original diagnostic.
+            raise AssertionError(_diagnostic + _cleanup_detail)
+        else:
+            raise AssertionError(
+                "Watchdog cleanup incomplete: cannot terminally own all "
+                "resources" + _cleanup_detail
+            )
+
+    if _error[0] is not None:
+        raise _error[0]
+
+
 def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     tmp_home, daemon_state, auth_headers, monkeypatch,
 ) -> None:
@@ -757,15 +846,14 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     (cancel_scheduler → reap_scheduler). It does NOT call
     manager.start_scheduler manually.
 
-    The TestClient lifespan context is run in a daemon thread with a bounded
-    join-timeout watchdog. If the lifespan shutdown hangs — e.g. a regression
+    The TestClient lifespan context runs in a non-daemon thread with a
+    bounded-join watchdog. If the lifespan shutdown hangs — e.g. a regression
     where cancel_scheduler does not properly cancel the warm task and
-    asyncio.gather blocks — the join times out and the test fails promptly
-    with a clear diagnostic, instead of hanging until the outer pytest/CI
-    timeout."""
+    asyncio.gather blocks — the watchdog performs deterministic terminal
+    cleanup (release worker, join thread, assert ownership) and fails with a
+    clear diagnostic, instead of hanging until the outer pytest/CI timeout."""
     import threading
 
-    from fastapi.testclient import TestClient
     from runtime.daemon.app import create_app
     from runtime.orchestrator import dashboard_projection as dp_mod
 
@@ -827,90 +915,16 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     try:
         app = create_app(daemon_state)
 
-        # ── Bounded-deadline lifespan watchdog ──────────────────────
-        # Run the TestClient lifespan context in a daemon thread with a
-        # bounded join timeout. If the lifespan shutdown hangs — e.g. a
-        # regression where cancel_scheduler does not properly cancel the
-        # warm task and asyncio.gather blocks — the join times out and the
-        # test fails promptly with a clear diagnostic, instead of hanging
-        # until the outer pytest/CI timeout.
         _DEADLINE_SECONDS = 5.0
-        _context_completed = threading.Event()
-        _context_error = [None]
-
-        def _run_context():
-            try:
-                with TestClient(app) as client:
-                    # Warm must enter the blocked compose — proves the
-                    # lifespan yielded before warm completed (no sync await).
-                    assert compose_entered.wait(timeout=10), (
-                        "compose_dashboard_summary must be entered by "
-                        "lifespan's initial warm task"
-                    )
-                    # Cache-only dashboard route must return 503 — the warm
-                    # is still blocked, no projection in memory.
-                    r = client.get(
-                        f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
-                        headers=auth_headers,
-                    )
-                    assert r.status_code == 503, (
-                        f"Expected 503 while warm is blocked, got {r.status_code}"
-                    )
-                    assert "not yet available" in r.json()["detail"]
-                    # DO NOT release compose — exit while warm is in-flight
-                    # so lifespan shutdown exercises cancel-before-await/reap.
-                # Lifespan shutdown completed in __exit__.
-            except Exception as exc:
-                _context_error[0] = exc
-            finally:
-                _context_completed.set()
-
-        _context_thread = threading.Thread(target=_run_context, daemon=True)
-        _context_thread.start()
-        _context_thread.join(timeout=_DEADLINE_SECONDS)
-
-        if not _context_completed.is_set():
-            # ── Deterministic failure-only cleanup ──────────────────
-            # The lifespan shutdown hung — record the original
-            # watchdog diagnostic, then release the blocked worker
-            # and account for cleanup under a second bounded deadline
-            # before asserting. This prevents leaving an unowned
-            # executor worker thread or a live TestClient thread when
-            # the watchdog expires.
-            _watchdog_diagnostic = (
-                f"TestClient lifespan shutdown exceeded bounded deadline "
-                f"({_DEADLINE_SECONDS}s) — cancel_scheduler/reap regression: "
-                f"the lifespan shutdown did not complete within the bounded "
-                f"watchdog; cancel_scheduler may not have properly cancelled "
-                f"the warm task, or asyncio.gather may be blocked"
-            )
-
-            # Release the blocked compose so the worker thread can exit.
-            compose_unblock.set()
-
-            # Wait for the blocked compose to finish under a second
-            # bounded deadline.
-            _worker_clean = compose_done.wait(timeout=_DEADLINE_SECONDS)
-
-            # Wait for the TestClient context thread to finish.
-            _context_thread.join(timeout=_DEADLINE_SECONDS)
-            _thread_clean = not _context_thread.is_alive()
-
-            # Accumulate cleanup-failure context for the assertion.
-            _cleanup_detail = ""
-            if not _worker_clean:
-                _cleanup_detail += (
-                    "; worker compose_done timed out during cleanup"
-                )
-            if not _thread_clean:
-                _cleanup_detail += (
-                    "; TestClient thread did not exit during cleanup"
-                )
-
-            raise AssertionError(_watchdog_diagnostic + _cleanup_detail)
-
-        if _context_error[0] is not None:
-            raise _context_error[0]
+        _bounded_lifespan_context(
+            app=app,
+            compose_entered=compose_entered,
+            compose_unblock=compose_unblock,
+            compose_done=compose_done,
+            deadline_seconds=_DEADLINE_SECONDS,
+            auth_headers=auth_headers,
+            org_slug=org_state.slug,
+        )
 
         # ── Post-shutdown assertions ────────────────────────────────
         # The lifespan shutdown has completed: cancel_scheduler,
@@ -935,3 +949,109 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     finally:
         dp_mod.compose_dashboard_summary = original_compose
         mgr.reap_scheduler = original_reap
+
+
+def test_forced_watchdog_regression_cleanup_ownership(
+    tmp_home, daemon_state, auth_headers, monkeypatch,
+) -> None:
+    """Forced-watchdog regression: prove the deterministic cleanup path
+    actually owns both the compose worker and the TestClient context thread.
+
+    Uses a deliberately short watchdog deadline while the lifespan shutdown
+    takes slightly longer (via a brief cancel_scheduler delay), forcing the
+    watchdog to expire.  The cleanup path must release compose_unblock, wait
+    for compose_done, join the TestClient thread under second-stage
+    deadlines, and assert both are dead before raising — never leaving an
+    unowned thread or worker.
+
+    This test exercises the cleanup mechanism without permanently hanging a
+    real TestClient shutdown: after compose_unblock is released the lifespan
+    completes cleanly."""
+    import threading
+    import time
+
+    import pytest
+
+    from runtime.daemon.app import create_app
+    from runtime.orchestrator import dashboard_projection as dp_mod
+
+    # Ensure no prior projection for the alpha org.
+    org_state = daemon_state.orgs["alpha"]
+    assert org_state.dashboard_projection.get_projection() is None
+
+    # Patch compose_dashboard_summary to block in a real worker thread.
+    compose_entered = threading.Event()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+    # Track whether cancel+reap have completed.
+    cancel_reap_done = threading.Event()
+
+    original_compose = dp_mod.compose_dashboard_summary
+    def blocking_compose(*, db, kb_store, teams, now):
+        compose_entered.set()
+        compose_unblock.wait()
+        compose_done.set()
+        return {
+            "heartbeat": [],
+            "narrative_counts": {
+                "completed_today": 0, "failed_today": 0,
+                "escalated_open": 0, "kb_added_today": 0,
+                "agents_active_now": 0, "spend_today_usd": 0.0,
+            },
+            "escalations": [], "stale_escalations": [],
+            "active_by_team": [], "recent_activity": [],
+            "updates_this_week": [], "org_pulse": [],
+            "org_age_days": 0, "server_now": "2026-01-01T00:00:00",
+            "generated_at": None,
+        }
+    monkeypatch.setattr(dp_mod, "compose_dashboard_summary", blocking_compose)
+
+    # Shorten the refresh interval.
+    monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
+
+    # Monkeypatch reap_scheduler to release the blocked worker AFTER
+    # cancel+reap complete (same as the main success-path test).
+    mgr = org_state.dashboard_projection
+    original_reap = mgr.reap_scheduler
+    async def _reap_and_release():
+        await original_reap()
+        cancel_reap_done.set()
+        compose_unblock.set()
+    monkeypatch.setattr(mgr, "reap_scheduler", _reap_and_release)
+
+    # Deliberately slow down cancel_scheduler so the lifespan shutdown
+    # takes longer than the watchdog deadline.  The cleanup path will
+    # release compose_unblock first, the worker finishes, and once
+    # cancel_scheduler returns the remaining shutdown is fast.
+    original_cancel = mgr.cancel_scheduler
+    def _slow_cancel():
+        time.sleep(0.8)
+        original_cancel()
+    monkeypatch.setattr(mgr, "cancel_scheduler", _slow_cancel)
+
+    try:
+        app = create_app(daemon_state)
+
+        # Watchdog deadline deliberately short to force expiry.
+        _DEADLINE_SECONDS = 0.5
+
+        with pytest.raises(AssertionError, match="bounded deadline"):
+            _bounded_lifespan_context(
+                app=app,
+                compose_entered=compose_entered,
+                compose_unblock=compose_unblock,
+                compose_done=compose_done,
+                deadline_seconds=_DEADLINE_SECONDS,
+                auth_headers=auth_headers,
+                org_slug=org_state.slug,
+            )
+
+        # After the cleanup path raises, both the compose worker and
+        # the TestClient context thread must be terminated.
+        assert compose_done.is_set(), (
+            "compose worker must be terminated after cleanup"
+        )
+    finally:
+        dp_mod.compose_dashboard_summary = original_compose
+        mgr.reap_scheduler = original_reap
+        mgr.cancel_scheduler = original_cancel
