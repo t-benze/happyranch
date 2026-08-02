@@ -1019,6 +1019,21 @@ class TestConcurrentMaterialization:
 
         monkeypatch.setattr(wa, "_copy_skills_tree", _locked_copy)
 
+        # Instrument _workspace_skills_transaction to signal when any writer
+        # enters the transaction boundary — immediately before lock acquisition.
+        original_txn = wa._workspace_skills_transaction
+
+        @contextmanager
+        def _txn_with_entry_signal(workspace_path):
+            """Signal entry event, then delegate to real transaction."""
+            txn_entry_event.set()
+            with original_txn(workspace_path):
+                yield
+
+        monkeypatch.setattr(
+            wa, "_workspace_skills_transaction", _txn_with_entry_signal,
+        )
+
         # Clear the lock registry so we start fresh
         with wa._lock_registry_lock:
             wa._workspace_lock_registry.clear()
@@ -1050,10 +1065,14 @@ class TestConcurrentMaterialization:
             except Exception as e:
                 errors_locked.append(e)
 
+        txn_entry_event = threading.Event()
+
         t1 = threading.Thread(target=writer_one, daemon=True)
         t1.start()
 
-        # Wait for writer_one to enter the wrapper (inside the lock)
+        # Wait for writer_one to enter the wrapper (inside the lock).
+        # Writer one enters _txn_with_entry_signal (sets txn_entry_event),
+        # acquires the lock, enters _locked_copy, signals wrapper_entry.
         import time as _time
         deadline = _time.monotonic() + 10
         while not wrapper_entry_events and _time.monotonic() < deadline:
@@ -1061,15 +1080,23 @@ class TestConcurrentMaterialization:
         assert wrapper_entry_events, "Writer one never entered the wrapper"
 
         # Clear entry tracking so we can detect writer_two
+        txn_entry_event.clear()
         wrapper_entry_events.clear()
 
-        # Start writer_two — it must block at the transaction lock
+        # Start writer_two — it must reach the transaction boundary and block
         t2 = threading.Thread(target=writer_two, daemon=True)
         t2.start()
 
-        _time.sleep(0.3)  # Give writer_two time to hit the lock
+        # Wait for writer_two to signal transaction-entry (proves it
+        # reached _workspace_skills_transaction and is about to block on
+        # the lock that writer_one still holds).
+        assert txn_entry_event.wait(timeout=10), (
+            "LOCKED: writer-two never reached the workspace skills "
+            "transaction boundary"
+        )
 
-        # Writer_two must NOT have entered the wrapper while lock is held
+        # Writer_two must NOT have entered the vulnerable wrapper
+        # while writer_one holds the canonical workspace lock.
         assert not wrapper_entry_events, (
             "LOCKED: writer-two entered the vulnerable wrapper "
             "while writer-one held the canonical workspace lock!"
@@ -1246,30 +1273,30 @@ class TestConcurrentMaterialization:
         self, tmp_path, monkeypatch,
     ):
         """A realistic OSError at the production materialization binding
-        prevents executor launch and produces a named actionable error.
+        prevents executor launch, produces named actionable terminal failure,
+        and is persisted by the real task runner (run_step_impl).
 
-        Exercises the REAL _run_agent pre-spawn task runner path: sets up
-        a task, patches _build_executor to return a mock with a run() spy,
-        injects OSError at _copy_skills_tree (the production materialization
-        binding inside materialize_workspace_skills), and calls _run_agent.
+        Exercises the REAL task runner persistence path: sets up an
+        Orchestrator with DB and workspace, creates a task, patches
+        _build_executor to return a mock with run() spy, injects
+        OSError(errno 28) at _copy_skills_tree, and calls orch.run_step()
+        which drives run_step_impl — the actual runner that catches the
+        exception, calls _fail, and persists the terminal FAILED state.
 
         Asserts:
-        - _build_executor IS called (executor object created before
-          materialization check in _run_agent).
-        - The injected OSError propagates with errno 28 and an
-          actionable message.
-        - mock_executor.run() is NEVER called — no subprocess launch
-          when materialization fails."""
-        import threading
+        - After run_step returns, the persisted task is TaskStatus.FAILED.
+        - The persisted note contains the underlying "Errno 28" / "No space
+          left on device" cause, wrapped in the runner's
+          "agent invocation failed: ..." envelope.
+        - mock_executor.run() is NEVER called — no subprocess launch when
+          materialization fails."""
         import runtime.orchestrator.workspace_adapters as wa
-        from runtime.orchestrator.workspace_adapters import (
-            materialize_workspace_skills,
-        )
         from runtime.config import Settings
         from runtime.infrastructure.database import Database
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator._paths import OrgPaths
         from runtime.runtime import RuntimeDir
+        from runtime.models import TaskStatus
 
         # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
@@ -1287,8 +1314,6 @@ class TestConcurrentMaterialization:
         db = Database(org_paths.db_path)
         settings = Settings(project_root=tmp_path)
 
-        # Set up workspace with _readiness_marker so _run_agent can proceed
-        # past the WorkspaceNotInitialized check.
         from runtime.orchestrator.teams import TeamsRegistry
         teams = TeamsRegistry.load(org_paths.root)
         orch = Orchestrator(
@@ -1317,30 +1342,42 @@ class TestConcurrentMaterialization:
         monkeypatch.setattr(wa, "_copy_skills_tree", _failing_copy)
 
         # ── Mock executor with run() spy ──
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch as mock_patch
         mock_executor = MagicMock()
         mock_executor.run = MagicMock(
             return_value=MagicMock(
                 success=True, duration_seconds=1, session_id="sess-test",
             )
         )
-        from unittest.mock import patch as mock_patch
+
         with mock_patch.object(orch, "_build_executor", return_value=mock_executor):
-            # Create a task and call _run_agent — the real pre-spawn runner path
+            # Create task and set assigned_agent so _default_agent_for_root
+            # (which requires a configured teams registry) is not invoked.
             task_id = orch.create_task(
                 "Test permission error fail-closed", team="engineering",
             )
+            db.update_task(task_id, assigned_agent="dev_agent")
 
-            with pytest.raises(OSError) as exc_info:
-                orch._run_agent(task_id, "dev_agent", "")
+            # Drive the REAL task runner: run_step → run_step_impl which
+            # calls _run_agent. Materialization fails with OSError, the
+            # except clause catches it, _fail persists terminal FAILED.
+            orch.run_step(task_id)
 
-        # ── Assert named actionable error ──
-        err = exc_info.value
-        assert isinstance(err, OSError), (
-            f"Expected OSError, got {type(err).__name__}: {err}"
+        # ── Assert terminal FAILED persistence ──
+        task = db.get_task(task_id)
+        assert task is not None, "Task was deleted"
+        assert task.status == TaskStatus.FAILED, (
+            f"Expected FAILED, got {task.status}"
         )
-        assert "Errno 28" in str(err), (
-            f"Error must carry the real errno: {err}"
+        note = task.note or ""
+        assert "Errno 28" in note, (
+            f"Note must carry the real errno: {note!r}"
+        )
+        assert "No space left on device" in note, (
+            f"Note must carry 'No space left': {note!r}"
+        )
+        assert "agent invocation failed" in note, (
+            f"Note must carry the runner's failure wrapper: {note!r}"
         )
 
         # ── Assert no executor subprocess launch ──
