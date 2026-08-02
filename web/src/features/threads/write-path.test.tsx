@@ -6,6 +6,21 @@ import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
+// THR-137 helpers — stub roster that includes both a participant
+// and an extra non-participant approved agent.
+function stubRosterWithExtra() {
+  server.use(
+    http.get('/api/v1/orgs/alpha/agents', () =>
+      HttpResponse.json({
+        agents: [
+          { name: 'agent_a', team: 'core', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+          { name: 'agent_extra', team: 'support', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+        ],
+      }),
+    ),
+  );
+}
+
 const SLUG = 'alpha';
 
 function stubBaseHandlers() {
@@ -743,6 +758,57 @@ describe('ThreadsPage — write path', () => {
         ).toBeInTheDocument();
       });
       expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+  });
+
+  describe('Composer mention autocomplete (THR-137)', () => {
+    test('only offers thread participants in @-mention autocomplete, not full roster', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      // Roster includes agent_a (participant) + agent_extra (approved but NOT a
+      // participant). Only agent_a should appear in the composer autocomplete.
+      stubRosterWithExtra();
+
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-137`, () =>
+          HttpResponse.json({
+            thread_id: 'THR-137',
+            subject: 'Mention filter test',
+            status: 'open',
+            started_at: '2026-07-01T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 0,
+            summary: null,
+            transcript_path: null,
+            participants: ['agent_a'],
+            messages: [],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-137/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-137/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-137` });
+
+      // Type '@' in the thread-detail composer to trigger @-mention autocomplete.
+      const composer = await screen.findByLabelText(/Compose follow-up/i);
+      await user.type(composer, '@');
+
+      // The autocomplete listbox should appear with agent_a (participant).
+      const listbox = await screen.findByRole('listbox', { name: /Mention agents/i });
+      expect(within(listbox).getByRole('option', { name: /agent_a/i })).toBeInTheDocument();
+
+      // agent_extra is an approved agent but NOT a participant — it must NOT
+      // appear in the autocomplete.
+      expect(within(listbox).queryByRole('option', { name: /agent_extra/i })).not.toBeInTheDocument();
     });
   });
 });
