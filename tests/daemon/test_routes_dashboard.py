@@ -869,13 +869,46 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
         _context_thread.start()
         _context_thread.join(timeout=_DEADLINE_SECONDS)
 
-        assert _context_completed.is_set(), (
-            f"TestClient lifespan shutdown exceeded bounded deadline "
-            f"({_DEADLINE_SECONDS}s) — cancel_scheduler/reap regression: "
-            f"the lifespan shutdown did not complete within the bounded "
-            f"watchdog; cancel_scheduler may not have properly cancelled "
-            f"the warm task, or asyncio.gather may be blocked"
-        )
+        if not _context_completed.is_set():
+            # ── Deterministic failure-only cleanup ──────────────────
+            # The lifespan shutdown hung — record the original
+            # watchdog diagnostic, then release the blocked worker
+            # and account for cleanup under a second bounded deadline
+            # before asserting. This prevents leaving an unowned
+            # executor worker thread or a live TestClient thread when
+            # the watchdog expires.
+            _watchdog_diagnostic = (
+                f"TestClient lifespan shutdown exceeded bounded deadline "
+                f"({_DEADLINE_SECONDS}s) — cancel_scheduler/reap regression: "
+                f"the lifespan shutdown did not complete within the bounded "
+                f"watchdog; cancel_scheduler may not have properly cancelled "
+                f"the warm task, or asyncio.gather may be blocked"
+            )
+
+            # Release the blocked compose so the worker thread can exit.
+            compose_unblock.set()
+
+            # Wait for the blocked compose to finish under a second
+            # bounded deadline.
+            _worker_clean = compose_done.wait(timeout=_DEADLINE_SECONDS)
+
+            # Wait for the TestClient context thread to finish.
+            _context_thread.join(timeout=_DEADLINE_SECONDS)
+            _thread_clean = not _context_thread.is_alive()
+
+            # Accumulate cleanup-failure context for the assertion.
+            _cleanup_detail = ""
+            if not _worker_clean:
+                _cleanup_detail += (
+                    "; worker compose_done timed out during cleanup"
+                )
+            if not _thread_clean:
+                _cleanup_detail += (
+                    "; TestClient thread did not exit during cleanup"
+                )
+
+            raise AssertionError(_watchdog_diagnostic + _cleanup_detail)
+
         if _context_error[0] is not None:
             raise _context_error[0]
 
