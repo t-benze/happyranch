@@ -342,6 +342,16 @@ export function ThreadsPage(): JSX.Element {
   // Active-thread data
   const activeThread = useThread(threadId);
   const activeMessagesQuery = useThreadMessages(threadId);
+  // THR-137: Restrict the thread-detail Composer's @-mention suggestions to
+  // only approved agents who are also participants in the currently loaded
+  // thread. useMemo recomputes when the thread detail refetches after
+  // participant invite/remove invalidation. NewThreadDialog and InviteDialog
+  // still receive the full roster (agents), not this filtered set.
+  const composerAgents = useMemo(() => {
+    if (!activeThread.data?.participants) return agents;
+    const participantSet = new Set(activeThread.data.participants);
+    return agents.filter((a) => participantSet.has(a.name));
+  }, [agents, activeThread.data?.participants]);
   useThreadTailSSE(threadId);
 
   // Non-scroll-gated auto-page loop: fetch all remaining pages so the full
@@ -650,7 +660,7 @@ export function ThreadsPage(): JSX.Element {
           onRemoveParticipant={setRemoveTarget}
           composer={
             <Composer
-              agents={agents}
+              agents={composerAgents}
               threadId={threadId ?? ''}
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
