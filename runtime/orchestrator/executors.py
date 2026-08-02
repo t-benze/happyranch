@@ -178,6 +178,33 @@ def _callee_env() -> dict[str, str]:
     return dict(os.environ)
 
 
+def _resolve_happyranch_callback_path() -> str:
+    """Resolve the directory containing the ``happyranch`` CLI binary.
+
+    Searches the daemon's normalized PATH for the first executable named
+    ``happyranch``, returning its parent directory. The result is used by
+    ``CustomAdapterExecutor`` to inject a narrow-scope PATH entry so a
+    dependency-manifest adapter's child agent can invoke the mandatory
+    ``happyranch report-completion`` callback without exposing executor
+    binaries or other ambient PATH tools.
+
+    Returns the empty string when ``happyranch`` cannot be resolved — the
+    adapter launch PATH falls back to ``/usr/bin:/bin`` (the legacy
+    behavior), and the child session will fail with ``command not found``
+    on the callback, producing the same self-diagnosing error as today.
+    """
+    full_env = _callee_env()
+    path_entries = full_env.get("PATH", "").split(":")
+    for entry in path_entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+        candidate = os.path.join(entry, "happyranch")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return entry
+    return ""
+
+
 def _claude_canonical_model(obj: dict) -> str | None:
     """Resolve the session's model id from a Claude result envelope.
 
@@ -1510,11 +1537,22 @@ class CustomAdapterExecutor:
             # environment with PATH scrubbed to only /usr/bin:/bin so the
             # adapter wrapper MUST use the declared absolute child paths.
             # Legacy entries (no manifest) retain their existing env.
+            #
+            # TASK-3973: The adapter's child agent needs the ``happyranch``
+            # CLI for its mandatory completion callback.  We resolve its
+            # absolute directory from the daemon's normalized environment
+            # and append it as a single narrow-scope PATH entry — the
+            # callback command becomes available without exposing executor
+            # binaries or other ambient tools.
             if self._dependency_manifest_version is not None and self._dependencies:
                 base_env = _callee_env()
-                # Keep only /usr/bin:/bin as safe system directories
-                # so core system utilities (sh, env, etc.) still work.
-                base_env["PATH"] = "/usr/bin:/bin"
+                # Keep /usr/bin:/bin as safe system directories so core
+                # system utilities (sh, env, etc.) still work.
+                callback_dir = _resolve_happyranch_callback_path()
+                if callback_dir:
+                    base_env["PATH"] = f"/usr/bin:/bin:{callback_dir}"
+                else:
+                    base_env["PATH"] = "/usr/bin:/bin"
                 launch_env = base_env
             else:
                 launch_env = _callee_env()

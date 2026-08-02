@@ -772,6 +772,184 @@ class TestPreLaunchDependencyRevalidation:
 
         assert result.success
 
+    def test_callback_command_in_adapter_path(self, tmp_path: Path, monkeypatch):
+        """TASK-3973: Manifest adapter launch PATH includes happyranch callback directory.
+
+        When a dependency manifest is declared, the adapter subprocess PATH
+        must include the happyranch CLI directory (so the adapter's child agent
+        can invoke `happyranch report-completion`) alongside the scrubbed
+        /usr/bin:/bin base.
+        """
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        dep_exe = _make_fake_exe(tmp_path, "cb-dep")
+        dep_hash = compute_sha256(str(dep_exe))
+        adapter = _make_fake_adapter_with_deps(
+            tmp_path, "cb-adapter", dep_exes=[dep_exe], adapter_id="cb-adapter"
+        )
+
+        entry = register_custom_adapter(
+            executable=str(adapter),
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
+        )
+
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        assert approved.status == "approved"
+
+        # Create a fake happyranch CLI in a temp directory and put it on PATH
+        happyranch_dir = tmp_path / "fake-happyranch-bin"
+        happyranch_dir.mkdir()
+        hrc = happyranch_dir / "happyranch"
+        hrc.write_text("#!/bin/sh\necho fake-happyranch\n")
+        hrc.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{happyranch_dir}:/usr/bin:/bin")
+
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = CustomAdapterExecutor(
+            profile_name="test-profile",
+            adapter_entry_id=entry.id,
+            adapter_executable=entry.executable,
+            adapter_hash=entry.executable_hash,
+            adapter_version=entry.version,
+            adapter_contract_version=entry.contract_version,
+            provider="test",
+        )
+        executor.set_dependency_manifest(
+            1, [{"executable": str(dep_exe), "sha256": dep_hash}]
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        # Patch _resolve_happyranch_callback_path to return our fake dir
+        import runtime.orchestrator.executors as exec_mod
+        original_resolve = exec_mod._resolve_happyranch_callback_path
+        monkeypatch.setattr(
+            exec_mod, "_resolve_happyranch_callback_path",
+            lambda: str(happyranch_dir),
+        )
+
+        workspace = tmp_path / "ws-cb"
+        workspace.mkdir()
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=10,
+        )
+
+        assert result.success
+
+    def test_executor_path_not_discoverable_in_manifest_adapter_launch(self, tmp_path: Path, monkeypatch):
+        """TASK-3973: Executor binaries are NOT discoverable on manifest adapter PATH.
+
+        When a dependency manifest is declared, the adapter launch PATH must NOT
+        include directories containing executor binaries (claude, codex, opencode,
+        pi) — only /usr/bin:/bin plus the happyranch callback directory.
+        """
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        dep_exe = _make_fake_exe(tmp_path, "no-exec-dep")
+        dep_hash = compute_sha256(str(dep_exe))
+        adapter = _make_fake_adapter_with_deps(
+            tmp_path, "no-exec-adapter", dep_exes=[dep_exe], adapter_id="no-exec-adapter"
+        )
+
+        entry = register_custom_adapter(
+            executable=str(adapter),
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
+        )
+
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        assert approved.status == "approved"
+
+        # Create executor-like binaries in a directory that should NOT appear on PATH
+        executor_dir = tmp_path / "fake-executor-bin"
+        executor_dir.mkdir()
+        for exe_name in ("claude", "codex", "opencode", "pi"):
+            p = executor_dir / exe_name
+            p.write_text("#!/bin/sh\necho fake\n")
+            p.chmod(0o755)
+
+        # Put executor_dir on the daemon's normalized PATH
+        happyranch_dir = tmp_path / "fake-happyranch2"
+        happyranch_dir.mkdir()
+        hrc = happyranch_dir / "happyranch"
+        hrc.write_text("#!/bin/sh\necho fake-happyranch\n")
+        hrc.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{happyranch_dir}:{executor_dir}:/usr/bin:/bin")
+
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = CustomAdapterExecutor(
+            profile_name="test-profile",
+            adapter_entry_id=entry.id,
+            adapter_executable=entry.executable,
+            adapter_hash=entry.executable_hash,
+            adapter_version=entry.version,
+            adapter_contract_version=entry.contract_version,
+            provider="test",
+        )
+        executor.set_dependency_manifest(
+            1, [{"executable": str(dep_exe), "sha256": dep_hash}]
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        # The real _resolve_happyranch_callback_path sees both executor_dir
+        # and happyranch_dir; it must pick happyranch_dir (the first hit
+        # for the happyranch name).  Verify it does not return executor_dir.
+        import runtime.orchestrator.executors as exec_mod
+        callback_dir = exec_mod._resolve_happyranch_callback_path()
+        assert callback_dir == str(happyranch_dir), (
+            f"_resolve_happyranch_callback_path returned {callback_dir!r}, "
+            f"expected {str(happyranch_dir)!r} — it must find happyranch, "
+            f"not executor binaries"
+        )
+        # The callback directory must NOT be the executor directory
+        assert callback_dir != str(executor_dir), (
+            "_resolve_happyranch_callback_path must NOT return "
+            "an executor binary directory"
+        )
+
+        # Now verify that a real launch with our fake happyranch succeeds
+        monkeypatch.setattr(
+            exec_mod, "_resolve_happyranch_callback_path",
+            lambda: str(happyranch_dir),
+        )
+        workspace = tmp_path / "ws-no-exec"
+        workspace.mkdir()
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=10,
+        )
+
+        assert result.success
+
     def test_legacy_adapter_launches_with_normal_env(self, tmp_path: Path, monkeypatch):
         """Legacy adapter (no manifest, loaded from persisted store) uses normal env."""
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
