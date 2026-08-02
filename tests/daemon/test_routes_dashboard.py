@@ -755,7 +755,14 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
 
     This test exercises app.py's shipping lifespan ownership + cleanup path
     (cancel_scheduler → reap_scheduler). It does NOT call
-    manager.start_scheduler manually."""
+    manager.start_scheduler manually.
+
+    The TestClient lifespan context is run in a daemon thread with a bounded
+    join-timeout watchdog. If the lifespan shutdown hangs — e.g. a regression
+    where cancel_scheduler does not properly cancel the warm task and
+    asyncio.gather blocks — the join times out and the test fails promptly
+    with a clear diagnostic, instead of hanging until the outer pytest/CI
+    timeout."""
     import threading
 
     from fastapi.testclient import TestClient
@@ -819,37 +826,64 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
 
     try:
         app = create_app(daemon_state)
-        # Enter the FastAPI lifespan via TestClient as a context manager.
-        # The lifespan's startup triggers initial_warm which calls our
-        # blocked compose in a real worker thread via asyncio.to_thread.
-        with TestClient(app) as client:
-            # Warm must enter the blocked compose — proves the lifespan
-            # yielded before warm completed (no synchronous await).
-            assert compose_entered.wait(timeout=10), (
-                "compose_dashboard_summary must be entered by lifespan's "
-                "initial warm task"
-            )
 
-            # Cache-only dashboard route must return 503 — the warm is
-            # still blocked, no projection in memory.
-            r = client.get(
-                f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
-                headers=auth_headers,
-            )
-            assert r.status_code == 503, (
-                f"Expected 503 while warm is blocked, got {r.status_code}"
-            )
-            assert "not yet available" in r.json()["detail"]
+        # ── Bounded-deadline lifespan watchdog ──────────────────────
+        # Run the TestClient lifespan context in a daemon thread with a
+        # bounded join timeout. If the lifespan shutdown hangs — e.g. a
+        # regression where cancel_scheduler does not properly cancel the
+        # warm task and asyncio.gather blocks — the join times out and the
+        # test fails promptly with a clear diagnostic, instead of hanging
+        # until the outer pytest/CI timeout.
+        _DEADLINE_SECONDS = 5.0
+        _context_completed = threading.Event()
+        _context_error = [None]
 
-            # DO NOT release the blocked compose — exit TestClient while
-            # the warm is still in-flight so the lifespan shutdown exercises
-            # the real cancel-before-await/reap path.
+        def _run_context():
+            try:
+                with TestClient(app) as client:
+                    # Warm must enter the blocked compose — proves the
+                    # lifespan yielded before warm completed (no sync await).
+                    assert compose_entered.wait(timeout=10), (
+                        "compose_dashboard_summary must be entered by "
+                        "lifespan's initial warm task"
+                    )
+                    # Cache-only dashboard route must return 503 — the warm
+                    # is still blocked, no projection in memory.
+                    r = client.get(
+                        f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
+                        headers=auth_headers,
+                    )
+                    assert r.status_code == 503, (
+                        f"Expected 503 while warm is blocked, got {r.status_code}"
+                    )
+                    assert "not yet available" in r.json()["detail"]
+                    # DO NOT release compose — exit while warm is in-flight
+                    # so lifespan shutdown exercises cancel-before-await/reap.
+                # Lifespan shutdown completed in __exit__.
+            except Exception as exc:
+                _context_error[0] = exc
+            finally:
+                _context_completed.set()
 
-        # After exiting TestClient, lifespan shutdown has run:
-        # cancel_scheduler() → gather(tasks, return_exceptions=True)
-        # → reap_scheduler(). Inside reap_scheduler, we released the
-        # worker and set cancel_reap_done. Shutdown completed without
-        # hanging — reaching here proves bounded-deadline completion.
+        _context_thread = threading.Thread(target=_run_context, daemon=True)
+        _context_thread.start()
+        _context_thread.join(timeout=_DEADLINE_SECONDS)
+
+        assert _context_completed.is_set(), (
+            f"TestClient lifespan shutdown exceeded bounded deadline "
+            f"({_DEADLINE_SECONDS}s) — cancel_scheduler/reap regression: "
+            f"the lifespan shutdown did not complete within the bounded "
+            f"watchdog; cancel_scheduler may not have properly cancelled "
+            f"the warm task, or asyncio.gather may be blocked"
+        )
+        if _context_error[0] is not None:
+            raise _context_error[0]
+
+        # ── Post-shutdown assertions ────────────────────────────────
+        # The lifespan shutdown has completed: cancel_scheduler,
+        # asyncio.gather (return_exceptions=True), and reap_scheduler
+        # all finished. Inside the monkeypatched reap_scheduler, we
+        # released the worker thread and set cancel_reap_done.
 
         # Verify that cancel+reap completed (and released the worker).
         assert cancel_reap_done.is_set(), (
