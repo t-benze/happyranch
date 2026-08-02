@@ -234,6 +234,18 @@ with actionable re-registration/approval error.
 unknown-version, oversized (>1MB) output; adapter identity/version/contract
 mismatch; session-id echo mismatch; success/returncode inconsistency.
 
+**Canonical adapter ID provenance invariant (THR-107 seq268):** the
+``adapter_metadata.adapter`` field MUST exactly equal the stable
+server-derived canonical adapter ID (e.g. ``kimi-adapter``), obtained
+from the ``canonical_adapter_id`` field of the contract-reference
+endpoint response. The value is a machine-stable slug derived from the
+submission profile — never a display name, provider string, or arbitrary
+implementation identity. A mismatch fails the conformance probe at
+registration AND blocks every launch at runtime (D7B). The
+contract-reference's self-test/probe fixture uses the same real
+token-derived ID so adapter authors can verify exact-ID compatibility
+before submission.
+
 **Rollback:** re-register the profile with ``command_adapter_id: generic-cli``
 or revert the deployment. Legacy stored profiles are never auto-mutated.
 

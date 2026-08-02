@@ -83,10 +83,10 @@ out = {{
     "returncode": 0,
     "adapter_metadata": {{
         "adapter_id": "{adapter_id}",
-        "adapter_name": "test-adapter",
+        "adapter_name": "{adapter_id}",
         "adapter_version": "1.0.0",
         "contract_version": 1,
-        "adapter": "test-adapter"
+        "adapter": "{adapter_id}"
     }},
     "stdout": "ok",
     "stderr": "",
@@ -1788,6 +1788,29 @@ class TestContractReferenceHappyPath:
         # Token is still valid (not consumed)
         assert store.validate_runtime(token) is not None
 
+    def test_contract_reference_includes_canonical_adapter_id(self, app_and_client, token_store):
+        """THR-107 seq268: contract-reference response includes canonical_adapter_id derived from token."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "kimi")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # canonical_adapter_id must be server-derived from token's intended_profile_name
+        assert data["canonical_adapter_id"] == "kimi-adapter"
+        assert "canonical_adapter_id_description" in data
+        assert "kimi-adapter" in data["canonical_adapter_id_description"]
+
+        # Self-test fixture must use the real adapter ID, not a static placeholder
+        probe = data["probe"]["self_test_fixture"]
+        assert probe["expected_output"]["adapter_metadata"]["adapter"] == "kimi-adapter"
+        assert probe["input"]["executor_context"]["provider"] == "kimi-adapter"
+
     def test_contract_reference_then_submit_still_works(self, app_and_client, route_setup, token_store):
         """Fetching contract reference does not interfere with subsequent submit."""
         app, master_token, store = app_and_client
@@ -2148,7 +2171,7 @@ class TestSubmitStrictManifestVersion:
 
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "cli-int-1")
-        script = _make_conformant_adapter_script(route_setup, "int1-adapter")
+        script = _make_conformant_adapter_script(route_setup, "cli-int-1-adapter")
 
         client = TestClient(app)
         resp = client.post(

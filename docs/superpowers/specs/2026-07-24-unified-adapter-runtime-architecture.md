@@ -171,7 +171,7 @@ TARGET (this spec):
   "agent_session_id": "abc123",               // string | null. The agent CLI's own session id (for resume).
   "rate_limited": false,                     // bool. Did the provider rate-limit this attempt?
   "adapter_metadata": {                      // object, required. ADDITIVE field.
-    "adapter": "happyranch-claude-adapter",   // string. Adapter implementation identity.
+    "adapter": "happyranch-claude-adapter",   // string, required. MUST exactly equal the stable server-derived canonical_adapter_id from the contract-reference / submitted adapter ID. Never a display name, provider, or arbitrary implementation identity. A mismatch fails the conformance probe at registration AND blocks every launch at runtime (D7B).
     "adapter_version": "1.0.0",              // string. Version of the adapter implementation.
     "contract_version": 1                    // int. Version of THIS result contract.
   },

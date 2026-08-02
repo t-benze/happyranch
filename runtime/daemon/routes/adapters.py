@@ -928,10 +928,18 @@ def get_contract_reference(request: Request) -> dict:
     # proceeding to conformance check-ins and submission.
 
     from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
-    from runtime.orchestrator.custom_adapter_registry import build_probe_input
+    from runtime.orchestrator.custom_adapter_registry import build_probe_input, generate_adapter_id
+
+    # Derive the canonical server-authoritative adapter ID from the token's
+    # intended_profile_name — this is the same stable ID generation used at
+    # submission time.  The adapter wrapper MUST echo this exact ID in
+    # adapter_metadata.adapter (provenance invariant).
+    canonical_adapter_id = generate_adapter_id(
+        f"{token_record.intended_profile_name}-adapter"
+    )
 
     # Build a minimal self-test fixture from the real probe builder.
-    probe_input = build_probe_input("example-adapter")
+    probe_input = build_probe_input(canonical_adapter_id)
     probe_fixture = {
         "description": (
             "A minimal self-test input/output fixture. The adapter receives "
@@ -957,7 +965,7 @@ def get_contract_reference(request: Request) -> dict:
             "agent_session_id": None,
             "rate_limited": False,
             "adapter_metadata": {
-                "adapter": "example-adapter",
+                "adapter": canonical_adapter_id,
                 "adapter_version": "1.0.0",
                 "contract_version": 1,
             },
@@ -968,6 +976,15 @@ def get_contract_reference(request: Request) -> dict:
 
     return {
         "contract_version": 1,
+        "canonical_adapter_id": canonical_adapter_id,
+        "canonical_adapter_id_description": (
+            f"The stable server-derived adapter ID for this token's "
+            f"intended profile. The adapter wrapper's "
+            f"adapter_metadata.adapter MUST exactly equal this value "
+            f"({canonical_adapter_id!r}) — never a display name, provider "
+            f"string, or arbitrary identity. A mismatch fails the conformance "
+            f"probe at registration AND blocks every launch at runtime."
+        ),
         "adapter_input_schema": AdapterInput.model_json_schema(),
         "adapter_output_schema": AdapterOutput.model_json_schema(),
         "rules": {

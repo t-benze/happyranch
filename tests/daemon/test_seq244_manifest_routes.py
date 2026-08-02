@@ -58,7 +58,7 @@ out = {{
         "adapter_name": "test-adapter",
         "adapter_version": "1.0.0",
         "contract_version": 1,
-        "adapter": "test-adapter"
+        "adapter": "{adapter_id}-script"
     }},
     "stdout": "ok",
     "stderr": "",
