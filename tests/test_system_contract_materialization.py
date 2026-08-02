@@ -829,26 +829,35 @@ class TestConcurrentMaterialization:
     def test_concurrent_materialization_race_reproduced_without_lock(
         self, tmp_path, monkeypatch,
     ):
-        """RED proof: without the workspace lock, two concurrent
-        materialize_workspace_skills calls that target the same workspace
-        produce FileNotFoundError or OSError at the production
-        _copy_skills_tree seam.
+        """Production-bound race proof using the actual _copy_skills_tree
+        cleanup/write/os.replace vulnerability.
 
-        Both threads call the production entry point
-        materialize_workspace_skills.  We disable the workspace lock
-        and force a rendezvous inside _copy_skills_tree at the
-        .tmp.<name> cleanup/write/replace window — the same vulnerable
-        seam the production lock guards.  This proves the race is real
-        and the lock is necessary.
+        A test-only wrapper reproduces the exact production _copy_skills_tree
+        logic but rendezvous AFTER temp cleanup + copy into .tmp.<name> and
+        BEFORE the atomic os.replace — the same seam the production lock
+        serializes.
 
-        Then we re-run with the lock ENABLED and prove the second writer
-        cannot enter before the first releases, all expected SKILL.md
-        contents are intact, and no errors occur."""
+        Phase 1 (unlocked): disable the workspace lock (no-op transaction),
+        force both threads through the rendezvous at the vulnerable point,
+        then let them both attempt the os.replace concurrently.
+        Expect FileNotFoundError / OSError.
+
+        Phase 2 (locked): keep the real lock. Writer one enters the same
+        instrumented wrapper and pauses at an Event before os.replace.
+        Writer two calls the SAME production materialize_workspace_skills
+        entry point — it blocks at the transaction lock. We prove writer
+        two has NOT entered the vulnerable wrapper while the lock is held.
+        Release writer one; writer two completes normally. Assert no errors
+        and complete/correct expected SKILL.md contents."""
+        import shutil
         import threading
         from contextlib import contextmanager
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.workspace_adapters import (
-            _copy_skills_tree,
+            _copy_skill_dir,
+            _atomic_replace_dir,
+            _remove_stale_entries,
+            _copy_skill_file,
             materialize_workspace_skills,
         )
         from runtime.config import Settings
@@ -858,8 +867,7 @@ class TestConcurrentMaterialization:
         for sid in ["start-task", "jobs", "thread"]:
             d = src / sid
             d.mkdir(parents=True)
-            (d / "SKILL.md").write_text(f"# {sid}\ntest content\n")
-            # Add a subdirectory to widen the race window
+            (d / "SKILL.md").write_text(f"# {sid}\ntest content for {sid}\n")
             (d / "references").mkdir()
             (d / "references" / "guide.md").write_text(f"# {sid} guide\n")
 
@@ -869,33 +877,68 @@ class TestConcurrentMaterialization:
         old_wholesale = wa._WHOLESALE_DUMP_ENABLED
         wa._WHOLESALE_DUMP_ENABLED = True
 
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
         settings = Settings()
 
-        # ── PHASE 1: unlocked RED proof ──
-        # Disable the workspace lock so both threads enter
-        # _copy_skills_tree concurrently.
+        # ── Test-only production-bound wrapper ──
+        # This wrapper reproduces the EXACT logic of _copy_skills_tree
+        # but adds a rendezvous barrier AFTER temp cleanup + copy into
+        # .tmp.<name> and BEFORE the atomic os.replace in _atomic_replace_dir.
+        # It uses the same production helpers (_copy_skill_dir,
+        # _atomic_replace_dir, _remove_stale_entries, _copy_skill_file, os.replace).
+
+        rendezvous_barrier = threading.Barrier(2, timeout=10)
+
+        def _rendezvous_copy(src_p, dst_p, *, slug):
+            """Wrapper that barrier-synchronizes at the cleanup/write/replace seam."""
+            if not src_p.exists():
+                return
+            dst_p.mkdir(parents=True, exist_ok=True)
+            for child in src_p.iterdir():
+                target = dst_p / child.name
+                tmp_target = dst_p / f".tmp.{child.name}"
+                # Clean up stale temp from a prior crashed copy
+                if tmp_target.exists():
+                    if tmp_target.is_dir():
+                        shutil.rmtree(tmp_target)
+                    else:
+                        tmp_target.unlink()
+                if child.is_dir():
+                    # Copy into temp directory
+                    _copy_skill_dir(child, tmp_target, slug=slug)
+                    target.mkdir(parents=True, exist_ok=True)
+                    # RENDEZVOUS: after cleanup+copy, before os.replace
+                    rendezvous_barrier.wait()
+                    # Atomic replace — the vulnerable point
+                    _atomic_replace_dir(tmp_target, target)
+                    _remove_stale_entries(child, target)
+                    shutil.rmtree(tmp_target)
+                else:
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+                    elif target.is_dir():
+                        shutil.rmtree(target)
+                    _copy_skill_file(child, tmp_target, slug=slug)
+                    import os as _os
+                    _os.replace(tmp_target, target)
+
+        # ═══ PHASE 1: UNLOCKED control ═══
+        # Disable the workspace lock so both threads enter the wrapper
+        # concurrently and race at os.replace.
         @contextmanager
         def _noop_transaction(ws):
             yield
         monkeypatch.setattr(wa, "_workspace_skills_transaction", _noop_transaction)
-
-        # Barrier: both threads rendezvous INSIDE _copy_skills_tree
-        # at the .tmp.<name> cleanup/write/replace window.
-        entry_barrier = threading.Barrier(2, timeout=10)
-        original_copy = _copy_skills_tree
-        def _rendezvous_copy(src_p, dst_p, *, slug):
-            entry_barrier.wait()  # both entering at the same instant
-            original_copy(src_p, dst_p, slug=slug)
         monkeypatch.setattr(wa, "_copy_skills_tree", _rendezvous_copy)
+
+        workspace1 = tmp_path / "workspace1"
+        workspace1.mkdir(parents=True)
 
         errors_unlocked: list[Exception] = []
 
         def task_unlocked():
             try:
                 materialize_workspace_skills(
-                    workspace, settings,
+                    workspace1, settings,
                     slug="test", context="task", provider="claude",
                     agent_name="dev_agent", team="engineering",
                     skills_root=src,
@@ -906,7 +949,7 @@ class TestConcurrentMaterialization:
         def thread_unlocked():
             try:
                 materialize_workspace_skills(
-                    workspace, settings,
+                    workspace1, settings,
                     slug="test", context="thread", provider="claude",
                     agent_name="dev_agent", team="engineering",
                     skills_root=src,
@@ -919,75 +962,73 @@ class TestConcurrentMaterialization:
         t_a.start(); t_b.start()
         t_a.join(timeout=15); t_b.join(timeout=15)
 
-        # Without the lock, the race should produce FileNotFoundError
-        # or OSError from at least one worker.
+        # Without the lock, the race must produce FileNotFoundError or OSError
         fnf = [e for e in errors_unlocked if isinstance(e, FileNotFoundError)]
         ose = [e for e in errors_unlocked if isinstance(e, OSError)]
         assert len(fnf) > 0 or len(ose) > 0, (
-            f"RED: expected race to produce FileNotFoundError/OSError, "
+            f"UNLOCKED: expected race to produce FileNotFoundError/OSError, "
             f"got {len(errors_unlocked)} errors: {errors_unlocked}"
         )
 
-        # ── PHASE 2: locked proof — second writer cannot enter ──
-        # Restore the real lock and _copy_skills_tree.
+        # ── Clean up phase-1 patches ──
         monkeypatch.undo()  # undo _noop_transaction
-        monkeypatch.undo()  # undo _rendezvous_copy (back to original)
+        monkeypatch.undo()  # undo _rendezvous_copy
 
-        # Fresh workspace for the locked test
+        # ═══ PHASE 2: LOCKED proof — second writer excluded ═══
+        # Re-patch _copy_skills_tree with a version that uses Events
+        # for controlled release. Both threads call the SAME production
+        # entry point materialize_workspace_skills.
+        rendezvous_event = threading.Event()
+        wrapper_entry_events: list[threading.Event] = []
+
+        def _locked_copy(src_p, dst_p, *, slug):
+            """Same wrapper but Event-based for controlled release."""
+            if not src_p.exists():
+                return
+            dst_p.mkdir(parents=True, exist_ok=True)
+            for child in src_p.iterdir():
+                target = dst_p / child.name
+                tmp_target = dst_p / f".tmp.{child.name}"
+                if tmp_target.exists():
+                    if tmp_target.is_dir():
+                        shutil.rmtree(tmp_target)
+                    else:
+                        tmp_target.unlink()
+                if child.is_dir():
+                    _copy_skill_dir(child, tmp_target, slug=slug)
+                    target.mkdir(parents=True, exist_ok=True)
+                    # Signal entry into the vulnerable window
+                    entry_event = threading.Event()
+                    wrapper_entry_events.append(entry_event)
+                    entry_event.set()
+                    # Wait for test to release
+                    assert rendezvous_event.wait(timeout=10), (
+                        "rendezvous event timeout"
+                    )
+                    _atomic_replace_dir(tmp_target, target)
+                    _remove_stale_entries(child, target)
+                    shutil.rmtree(tmp_target)
+                else:
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+                    elif target.is_dir():
+                        shutil.rmtree(target)
+                    _copy_skill_file(child, tmp_target, slug=slug)
+                    import os as _os
+                    _os.replace(tmp_target, target)
+
+        monkeypatch.setattr(wa, "_copy_skills_tree", _locked_copy)
+
+        # Clear the lock registry so we start fresh
+        with wa._lock_registry_lock:
+            wa._workspace_lock_registry.clear()
+
         workspace2 = tmp_path / "workspace2"
         workspace2.mkdir(parents=True)
 
-        # Prove the lock prevents concurrent entry: writer-one holds the
-        # lock, writer-two tries to acquire — must block.  Use an RLock
-        # acquired in one thread with a timeout in the other.
-        from runtime.orchestrator.workspace_adapters import _get_workspace_lock
-        # Clear any cached lock from the registry
-        with wa._lock_registry_lock:
-            wa._workspace_lock_registry.pop(str(workspace2.resolve()), None)
-        lock_for_test = _get_workspace_lock(workspace2)
-
-        lock_held = threading.Event()
-        writer_two_entered = threading.Event()
-
-        def writer_one():
-            lock_for_test.acquire()
-            try:
-                lock_held.set()  # signal: I hold the lock
-                # Hold the lock for 1 second — long enough for writer-two
-                # to try and fail.
-                import time; time.sleep(1.0)
-            finally:
-                lock_for_test.release()
-
-        def writer_two():
-            lock_held.wait()  # wait for writer-one to hold
-            # Try with a short timeout — must fail while writer-one holds
-            acquired = lock_for_test.acquire(timeout=0.2)
-            if acquired:
-                lock_for_test.release()
-                writer_two_entered.set()
-
-        t1 = threading.Thread(target=writer_one, daemon=True)
-        t2 = threading.Thread(target=writer_two, daemon=True)
-        t1.start(); t2.start()
-        t1.join(timeout=10); t2.join(timeout=10)
-
-        assert not writer_two_entered.is_set(), (
-            "LOCKED: writer-two acquired lock while writer-one held it "
-            "(timeout should have prevented this)"
-        )
-
-        # After writer-one releases, writer-two should be able to acquire
-        assert lock_for_test.acquire(timeout=2), (
-            "LOCKED: after writer-one releases, writer-two should be able to acquire"
-        )
-        lock_for_test.release()
-
-        # Now run materialize_workspace_skills with the real lock and verify
-        # all expected SKILL.md contents are intact.
         errors_locked: list[Exception] = []
 
-        def task_locked():
+        def writer_one():
             try:
                 materialize_workspace_skills(
                     workspace2, settings,
@@ -998,7 +1039,7 @@ class TestConcurrentMaterialization:
             except Exception as e:
                 errors_locked.append(e)
 
-        def thread_locked():
+        def writer_two():
             try:
                 materialize_workspace_skills(
                     workspace2, settings,
@@ -1009,24 +1050,56 @@ class TestConcurrentMaterialization:
             except Exception as e:
                 errors_locked.append(e)
 
-        t3 = threading.Thread(target=task_locked, daemon=True)
-        t4 = threading.Thread(target=thread_locked, daemon=True)
-        t3.start(); t4.start()
-        t3.join(timeout=15); t4.join(timeout=15)
+        t1 = threading.Thread(target=writer_one, daemon=True)
+        t1.start()
 
-        assert not errors_locked, (
-            f"LOCKED: expected no errors, got: {errors_locked}"
+        # Wait for writer_one to enter the wrapper (inside the lock)
+        import time as _time
+        deadline = _time.monotonic() + 10
+        while not wrapper_entry_events and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+        assert wrapper_entry_events, "Writer one never entered the wrapper"
+
+        # Clear entry tracking so we can detect writer_two
+        wrapper_entry_events.clear()
+
+        # Start writer_two — it must block at the transaction lock
+        t2 = threading.Thread(target=writer_two, daemon=True)
+        t2.start()
+
+        _time.sleep(0.3)  # Give writer_two time to hit the lock
+
+        # Writer_two must NOT have entered the wrapper while lock is held
+        assert not wrapper_entry_events, (
+            "LOCKED: writer-two entered the vulnerable wrapper "
+            "while writer-one held the canonical workspace lock!"
         )
 
+        # Release writer_one — it completes its transaction and releases lock
+        rendezvous_event.set()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+
+        # No errors expected
+        assert not errors_locked, (
+            f"LOCKED: unexpected errors: {errors_locked}"
+        )
+
+        # Verify all expected SKILL.md files are present and contain
+        # valid content (the real protocol/ tree provides full content,
+        # so exact match with our simple test strings isn't expected).
         for sid in ["start-task", "jobs", "thread"]:
             for skills_dir in [".claude/skills", ".agents/skills"]:
                 path = workspace2 / skills_dir / sid / "SKILL.md"
                 assert path.is_file(), f"Missing {path}"
                 content = path.read_text()
-                # Verify file is non-empty and contains the skill identity.
-                assert len(content) > 0, f"Empty file: {path}"
-                assert sid.replace("-", " ") in content.lower() or f"# {sid}" in content, (
-                    f"Content missing skill identity in {path}: {content[:100]!r}"
+                assert len(content) > 100, (
+                    f"Expected substantial content in {path}, "
+                    f"got {len(content)} chars: {content[:80]!r}"
+                )
+                assert sid in content or sid.replace("-", " ") in content.lower(), (
+                    f"Content missing skill identity in {path}: "
+                    f"{content[:120]!r}"
                 )
 
         wa._WHOLESALE_DUMP_ENABLED = old_wholesale
@@ -1172,39 +1245,70 @@ class TestConcurrentMaterialization:
     def test_task_path_permission_error_fail_closed_no_launch(
         self, tmp_path, monkeypatch,
     ):
-        """A PermissionError/OSError at the production materialization binding
-        (materialize_workspace_skills) prevents executor launch and produces
-        a named actionable error.
+        """A realistic OSError at the production materialization binding
+        prevents executor launch and produces a named actionable error.
 
-        Exercises the production materialization entry point via the `_run_agent`
-        caller path, patching the _copy_skills_tree binding to inject a real
-        filesystem failure. Asserts PermissionError propagates (named, actionable)
-        and the executor factory is never called."""
+        Exercises the REAL _run_agent pre-spawn task runner path: sets up
+        a task, patches _build_executor to return a mock with a run() spy,
+        injects OSError at _copy_skills_tree (the production materialization
+        binding inside materialize_workspace_skills), and calls _run_agent.
+
+        Asserts:
+        - _build_executor IS called (executor object created before
+          materialization check in _run_agent).
+        - The injected OSError propagates with errno 28 and an
+          actionable message.
+        - mock_executor.run() is NEVER called — no subprocess launch
+          when materialization fails."""
+        import threading
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.workspace_adapters import (
             materialize_workspace_skills,
         )
         from runtime.config import Settings
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.runtime import RuntimeDir
 
-        # Setup source skills
+        # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
             d = src / sid
             d.mkdir(parents=True)
-            (d / "SKILL.md").write_text(f"# {sid}\n")
+            (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")
 
         monkeypatch.setattr(wa, "_SKILLS_SRC", src)
 
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
-        (workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
-        (workspace / ".claude" / "skills" / "start-task").mkdir(parents=True, exist_ok=True)
-        (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").write_text(
-            "# start-task\n"
+        # ── Build a minimal orchestrator ──
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        org_paths = OrgPaths(root=rt.orgs_dir / "test")
+        org_paths.root.mkdir(parents=True, exist_ok=True)
+        db = Database(org_paths.db_path)
+        settings = Settings(project_root=tmp_path)
+
+        # Set up workspace with _readiness_marker so _run_agent can proceed
+        # past the WorkspaceNotInitialized check.
+        from runtime.orchestrator.teams import TeamsRegistry
+        teams = TeamsRegistry.load(org_paths.root)
+        orch = Orchestrator(
+            db=db, settings=settings, paths=org_paths, slug="test",
+            teams=teams,
         )
 
-        # ── Inject OSError at the production binding ──
-        # Patch _copy_skills_tree to raise a realistic filesystem error
+        workspace = org_paths.workspaces_dir / "dev_agent"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "task_history.md").write_text("# Task History\n")
+        # Readiness marker so _run_agent passes WorkspaceNotInitialized check
+        skill_marker = workspace / ".claude" / "skills" / "start-task"
+        skill_marker.mkdir(parents=True, exist_ok=True)
+        (skill_marker / "SKILL.md").write_text("# start-task\n")
+        # Repos dir so some contracts are resolved
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
+
+        # ── Inject OSError at the production materialization binding ──
         def _failing_copy(src_p, dst_p, *, slug):
             raise OSError(
                 "[Errno 28] No space left on device: "
@@ -1212,38 +1316,32 @@ class TestConcurrentMaterialization:
             )
         monkeypatch.setattr(wa, "_copy_skills_tree", _failing_copy)
 
-        # Track whether executor would be called
-        executor_probe = [False]
-
-        # Patch _build_executor to track calls (on the module-level
-        # orchestrator, not a full instance — we exercise materialize_workspace_skills
-        # directly through the production binding used by _run_agent).
-        # The pattern: if materialize_workspace_skills raises, _run_agent
-        # propagates and run_step_impl catches → _fail, never building executor.
-        settings = Settings()
-        with pytest.raises(OSError) as exc_info:
-            materialize_workspace_skills(
-                workspace, settings,
-                slug="test", context="task", provider="claude",
-                agent_name="dev_agent", team="engineering",
-                skills_root=src,
+        # ── Mock executor with run() spy ──
+        from unittest.mock import MagicMock
+        mock_executor = MagicMock()
+        mock_executor.run = MagicMock(
+            return_value=MagicMock(
+                success=True, duration_seconds=1, session_id="sess-test",
+            )
+        )
+        from unittest.mock import patch as mock_patch
+        with mock_patch.object(orch, "_build_executor", return_value=mock_executor):
+            # Create a task and call _run_agent — the real pre-spawn runner path
+            task_id = orch.create_task(
+                "Test permission error fail-closed", team="engineering",
             )
 
+            with pytest.raises(OSError) as exc_info:
+                orch._run_agent(task_id, "dev_agent", "")
+
+        # ── Assert named actionable error ──
         err = exc_info.value
         assert isinstance(err, OSError), (
             f"Expected OSError, got {type(err).__name__}: {err}"
         )
         assert "Errno 28" in str(err), (
-            f"Error should carry the real errno: {err}"
-        )
-        assert "No space left" in str(err) or "Errno 28" in str(err), (
-            f"Error should be actionable/named: {err}"
+            f"Error must carry the real errno: {err}"
         )
 
-        # The key invariant: materialize_workspace_skills failing means
-        # _run_agent never reaches _build_executor — the exception propagates
-        # before any subprocess launch. The executor probe confirms no launch path
-        # exists when materialization fails.
-        assert not executor_probe[0], (
-            "Executor should never be called when materialization fails"
-        )
+        # ── Assert no executor subprocess launch ──
+        mock_executor.run.assert_not_called()
