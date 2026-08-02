@@ -5,6 +5,8 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +35,61 @@ def _resolve_skills_src(settings: Settings) -> Path:
     if _SKILLS_SRC is not None:
         return _SKILLS_SRC
     return settings.get_protocol_dir() / "skills"
+
+
+# ── Process-local workspace skill materialization lock ─────────────
+#
+# Concurrent pre-spawn materialization paths (task, thread, wake, dream,
+# schedule, bootstrap) can target the same agent workspace. Without
+# serialization, _copy_skills_tree's predictable .tmp.<name> cleanup/write/
+# replace window is a multi-writer race: one writer may delete another's
+# temporary file between write and os.replace, causing FileNotFoundError.
+#
+# This registry holds one threading.Lock per canonical (resolved) workspace
+# path. All pre-spawn materialization — wholesale refresh (when enabled),
+# system-contract injection+verification, and managed-skill injection — runs
+# under this lock so concurrent callers serialize their complete transaction.
+#
+# The lock is process-local only — it does NOT coordinate across daemon
+# processes. Cross-process protection for the same agent workspace is the
+# daemon's own per-agent concurrency ceiling (at most one run_step session
+# plus one thread invocation per agent).
+
+_workspace_lock_registry: dict[str, threading.Lock] = {}
+_lock_registry_lock = threading.Lock()
+
+
+def _get_workspace_lock(workspace: Path) -> threading.Lock:
+    """Return the process-local lock for *workspace*, creating one if needed.
+
+    Keyed by canonical (resolved) path so symlinks and relative differences
+    converge to the same lock.
+    """
+    canonical = str(workspace.resolve())
+    with _lock_registry_lock:
+        if canonical not in _workspace_lock_registry:
+            _workspace_lock_registry[canonical] = threading.RLock()
+        return _workspace_lock_registry[canonical]
+
+
+@contextmanager
+def _workspace_skills_transaction(workspace: Path):
+    """Context manager that acquires the workspace-scoped materialization lock.
+
+    All pre-spawn skill materialization (wholesale refresh, system-contract
+    injection, managed-skill injection) must run inside this context so
+    concurrent task/thread/wake/dream/schedule callers targeting the same
+    workspace serialize their complete transaction.
+
+    Fail-closed: any exception inside the transaction propagates with the
+    lock released — a failed materialization must not block the next spawn.
+    """
+    lock = _get_workspace_lock(workspace)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
@@ -296,6 +353,73 @@ def refresh_session_skills(
     src = _resolve_skills_src(settings)
     _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
     _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
+
+
+def materialize_workspace_skills(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+    provider: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db: "Database | None" = None,  # noqa: F821
+) -> None:
+    """Serialize the complete pre-spawn skill materialization transaction.
+
+    All three materialization steps — wholesale refresh (when
+    ``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
+    on-disk verification, and managed-skill injection — run under a
+    process-local lock keyed by the canonical workspace path so concurrent
+    task/thread/wake/dream/schedule/bootstrap callers targeting the same
+    workspace serialize their complete transaction.
+
+    Fail-closed: any error raises immediately. A failed materialization must
+    not leave a partially-populated skills directory passing as complete.
+
+    This is the single helper boundary used by all pre-spawn paths. No
+    caller may directly invoke ``refresh_session_skills``,
+    ``ensure_system_contracts_materialized``, or ``inject_managed_skills``
+    outside this transaction — doing so would bypass the workspace lock
+    and re-introduce the multi-writer race described in issue #536.
+
+    Args:
+        workspace: agent workspace root
+        settings: project Settings
+        slug: org slug for ``{ORG_SLUG}`` substitution
+        context: session context ("task", "thread", "wake", "dream")
+        provider: executor provider name ("claude", "codex", "opencode", "pi")
+        agent_name: agent to resolve eligibility for
+        team: agent's team name
+        skills_root: directory containing managed-catalog skill packages
+        org_root: per-org root (optional; for lifecycle ledger resolution)
+        db: optional DB handle for recording materialization events
+    """
+    with _workspace_skills_transaction(workspace):
+        # 1. Wholesale refresh (no-op when _WHOLESALE_DUMP_ENABLED is False).
+        #    This re-copies the bundled protocol/skills/ tree.
+        refresh_session_skills(workspace, settings, slug=slug)
+
+        # 2. System-contract injection + on-disk verification.
+        #    Raises SystemContractMaterializationError on failure.
+        ensure_system_contracts_materialized(
+            workspace, settings, slug=slug, context=context, provider=provider,
+        )
+
+        # 3. Managed-skill injection from the catalog + lifecycle ledger.
+        #    Fail-closed: any error raises immediately.
+        inject_managed_skills(
+            workspace, settings,
+            slug=slug,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
+            org_root=org_root,
+            db=db,
+        )
 
 
 def inject_system_contracts(
@@ -1386,14 +1510,20 @@ class ClaudeWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".claude" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".claude" / "skills",
+                slug=self._slug,
+            )
 
 
 class CodexWorkspaceAdapter:
@@ -1457,14 +1587,20 @@ class CodexWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".agents" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".agents" / "skills",
+                slug=self._slug,
+            )
 
     def ensure_workspace_ready(
         self,
@@ -1552,14 +1688,20 @@ class OpencodeWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".agents" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".agents" / "skills",
+                slug=self._slug,
+            )
 
     def ensure_workspace_ready(
         self,

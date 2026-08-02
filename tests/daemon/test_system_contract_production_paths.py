@@ -296,33 +296,50 @@ async def test_wake_spawn_stops_on_missing_contracts(org_state, tmp_path, monkey
     proto_skills = tmp_path / "protocol" / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
 
-    # NOTE: wake_runner already calls ensure_system_contracts_materialized
-    # WITHOUT try/except wrapping (correct pattern). The error propagates
-    # and the wake worker loop catches it. We verify the error is raised.
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-    )
+    # NOTE: wake_runner calls materialize_workspace_skills which wraps
+    # the complete pre-spawn materialization. On failure it persists a
+    # terminal WorkHourStatus.FAILED and returns BEFORE executor spawn —
+    # the error does NOT propagate to the caller (the wake worker loop).
+    # We verify the work hour was persisted as FAILED and the executor
+    # was never spawned.
+
+    executor_spawned = False
 
     class _FakeExec:
         def __init__(self, **kwargs):
             pass
 
         def run(self, **kwargs):
+            nonlocal executor_spawned
+            executor_spawned = True
             from runtime.orchestrator.executors import ExecutorResult
             return ExecutorResult(success=True, duration_seconds=0, session_id="fake")
 
     fake_exec = _FakeExec()
 
-    with pytest.raises(SystemContractMaterializationError) as exc_info:
-        await run_wake(
-            org_state=org_state,
-            work_hour_id="WH-002",
-            settings=settings,
-            executor_factory=lambda *a, **kw: fake_exec,
-        )
-    msg = str(exc_info.value)
-    assert "contract" in msg.lower()
-    assert "Errno 2" not in msg
+    # run_wake should complete without raising — it catches the
+    # materialization error internally and records it as a failure.
+    await run_wake(
+        org_state=org_state,
+        work_hour_id="WH-002",
+        settings=settings,
+        executor_factory=lambda *a, **kw: fake_exec,
+    )
+
+    # Executor was NOT spawned (fail-closed pre-spawn)
+    assert not executor_spawned, (
+        "executor was spawned despite missing contracts"
+    )
+
+    # Work hour is marked FAILED with a materialization error
+    wh = db.work_hours.get("WH-002")
+    assert wh is not None
+    assert wh.status == WorkHourStatus.FAILED, (
+        f"Expected FAILED status, got {wh.status}"
+    )
+    assert "materialization_failed" in (wh.error or ""), (
+        f"Error message should reference materialization failure: {wh.error}"
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

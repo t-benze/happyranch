@@ -45,10 +45,77 @@ from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
     SystemContractMaterializationError,
+    _workspace_skills_transaction,
     ensure_system_contracts_materialized,
 )
 
 router = APIRouter(dependencies=[require_token()])
+
+
+def _executor_switch_materialize(
+    workspace: Path,
+    org: OrgState,
+    paths: OrgPaths,
+    agent_name: str,
+    system_prompt: str,
+    provider: str,
+) -> list[str]:
+    """Materialize skills during executor switch under the workspace lock.
+
+    Serializes the complete bootstrap materialization (ensure_workspace_ready
+    which includes adapter _copy_skills + system-contract injection for all
+    4 session contexts) under the process-local workspace lock so a concurrent
+    session-time task/thread spawn cannot interleave inside _copy_skills_tree.
+
+    Returns a list of materialization error messages (empty on success).
+    The lock is an RLock — adapter _copy_skills called inside
+    ensure_workspace_ready safely re-enters the lock.
+    """
+    _logger = logging.getLogger(__name__)
+    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+
+    with _workspace_skills_transaction(workspace):
+        # Bootstrap wholesale copy (runs adapter _copy_skills which
+        # re-enters the RLock — safe).
+        ctx.ensure_workspace_ready(
+            workspace,
+            agent_name,
+            system_prompt,
+            provider=provider,
+        )
+
+        # Materialize system contracts for ALL 4 session contexts so
+        # skills are present the INSTANT the switch completes (not one
+        # session later).  Complements #378's spawn precondition.
+        #
+        # Decision (1): No single context is a strict superset — 'task'
+        # misses 'dream'; 'dream' misses 'start-task' and 'thread'.
+        # Loop over all 4 to guarantee every contract any future session
+        # could need is on disk.
+        #
+        # Decision (2): Failure is NON-FATAL — steps 1-3 have already
+        # mutated org .md irreversibly; #378 guarantees
+        # correctness at next spawn regardless.  Surface errors in the
+        # response body + warning log.
+        errors: list[str] = []
+        for ctx_name in ("task", "thread", "wake", "dream"):
+            try:
+                ensure_system_contracts_materialized(
+                    workspace,
+                    org.settings,
+                    slug=org.slug,
+                    context=ctx_name,
+                    provider=provider,
+                )
+            except SystemContractMaterializationError as e:
+                errors.append(str(e))
+                _logger.warning(
+                    "Executor switch: system contract materialization "
+                    "failed for context=%s provider=%s agent=%s: %s",
+                    ctx_name, provider, agent_name, e,
+                )
+
+    return errors
 
 
 class InitBody(BaseModel):
@@ -828,53 +895,18 @@ async def set_agent_executor(
         # agent.yaml reconcile.  The .md frontmatter is the single
         # source of truth.
         after_ws = before_ws
-        # regenerate the executor bootstrap with the NEW provider.
-        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-        await asyncio.to_thread(
-            ctx.ensure_workspace_ready,
-            workspace,
-            agent_name,
-            existing.system_prompt,
-            provider=body.executor,
+        # Issue #536: wrap the complete executor-switch materialization
+        # (bootstrap wholesale copy + system-contract injection for all
+        # 4 contexts) under the same process-local workspace lock used
+        # by session-time materialization.  This prevents a concurrent
+        # task/thread spawn from racing bootstrap inside _copy_skills_tree.
+        # The lock is an RLock so the adapter _copy_skills (called inside
+        # ensure_workspace_ready) can safely re-enter.
+        materialization_errors = await asyncio.to_thread(
+            _executor_switch_materialize,
+            workspace, org, paths, agent_name,
+            existing.system_prompt, body.executor,
         )
-        # 5. Materialize system contracts for ALL 4 session contexts so
-        #    skills are present the INSTANT the switch completes (not one
-        #    session later).  Complements #378's spawn precondition.
-        #
-        #    Decision (1): No single context is a strict superset — 'task'
-        #    misses 'dream'; 'dream' misses 'start-task' and 'thread'.
-        #    Loop over all 4 to guarantee every contract any future session
-        #    could need is on disk.
-        #
-        #    Decision (2): Failure is NON-FATAL — steps 1-3 have already
-        #    mutated org .md irreversibly; #378 guarantees
-        #    correctness at next spawn regardless.  Surface errors in the
-        #    response body + warning log.
-        #
-        #    Decision (3): provider=body.executor matches existing step-3
-        #    convention.  Standard claude/codex/opencode/pi names route to
-        #    the correct .claude/ or .agents/ skills root.  A custom profile
-        #    on the claude adapter with a non-"claude" name would mis-route
-        #    the verify path — flagged, out of scope for this change.
-        materialization_errors = []
-        _logger = logging.getLogger(__name__)
-        for ctx in ("task", "thread", "wake", "dream"):
-            try:
-                await asyncio.to_thread(
-                    ensure_system_contracts_materialized,
-                    workspace,
-                    org.settings,
-                    slug=org.slug,
-                    context=ctx,
-                    provider=body.executor,
-                )
-            except SystemContractMaterializationError as e:
-                materialization_errors.append(str(e))
-                _logger.warning(
-                    "Executor switch: system contract materialization "
-                    "failed for context=%s provider=%s agent=%s: %s",
-                    ctx, body.executor, agent_name, e,
-                )
 
         # 4. stale Claude-only files when switching AWAY from a Claude
         #    adapter. Check the profile's canonical workspace_adapter_id (D6),
