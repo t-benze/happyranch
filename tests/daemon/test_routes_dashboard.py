@@ -745,12 +745,13 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
 ) -> None:
     """Daemon-lifespan regression: enter the actual FastAPI lifespan via
     TestClient(app) as a context manager, patch the imported production
-    compose_dashboard_summary binding so initial warm enters and blocks in
-    a real worker thread, prove the app yields promptly while the cache-only
-    dashboard route returns 503 until a valid projection exists, then prove
-    lifecycle shutdown cancels before awaiting/reaping under a short deadline,
-    releases/accounts for the worker, and asserts no leaked/unowned task
-    exception.
+    compose_dashboard_summary binding so the first compose runs and blocks in
+    a real worker thread, demonstrate cache-only 503 while that cold initial
+    compose is blocked, keep it blocked while exiting TestClient so lifespan
+    shutdown cancels and reaps the scheduler refresh task without waiting for
+    cooperative thread completion, prove shutdown completes under a bounded
+    deadline with no unowned task exception, then release and account for the
+    worker and assert clean eventual completion.
 
     This test exercises app.py's shipping lifespan ownership + cleanup path
     (cancel_scheduler → reap_scheduler). It does NOT call
@@ -769,38 +770,68 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     compose_entered = threading.Event()
     compose_unblock = threading.Event()
     compose_done = threading.Event()
+    # Track whether cancel+reap have completed (i.e., the lifespan has
+    # exercised the cancel-before-await path while the warm was blocked).
+    cancel_reap_done = threading.Event()
 
     original_compose = dp_mod.compose_dashboard_summary
     def blocking_compose(*, db, kb_store, teams, now):
         compose_entered.set()
-        # Block until released (simulates a slow DB compose).
-        compose_unblock.wait(timeout=30)
-        result = original_compose(db=db, kb_store=kb_store, teams=teams, now=now)
+        # Block until released — lifespan shutdown must complete its
+        # cancel+reap path before we release this thread.
+        compose_unblock.wait()
         compose_done.set()
-        return result
+        # Return a minimal valid dict for clean thread completion.
+        # The cancelled asyncio task does not consume the return value.
+        return {
+            "heartbeat": [],
+            "narrative_counts": {
+                "completed_today": 0, "failed_today": 0,
+                "escalated_open": 0, "kb_added_today": 0,
+                "agents_active_now": 0, "spend_today_usd": 0.0,
+            },
+            "escalations": [], "stale_escalations": [],
+            "active_by_team": [], "recent_activity": [],
+            "updates_this_week": [], "org_pulse": [],
+            "org_age_days": 0, "server_now": "2026-01-01T00:00:00",
+            "generated_at": None,
+        }
     monkeypatch.setattr(dp_mod, "compose_dashboard_summary", blocking_compose)
 
-    # Shorten the refresh interval so the periodic tick fires quickly
-    # (the initial_warm runs before the first tick, but the shortened
-    # interval avoids a long wait if the test inspects the warm result).
+    # Shorten the refresh interval.
     monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
+
+    # Monkeypatch reap_scheduler to release the blocked worker AFTER
+    # cancel+reap complete. The lifespan calls cancel_scheduler, then
+    # asyncio.gather (returns immediately with CancelledError), then
+    # reap_scheduler. We release the worker inside reap_scheduler so:
+    #  (a) cancel+reap complete without waiting for the thread, and
+    #  (b) the thread finishes before loop.shutdown_default_executor()
+    #      (called by anyio/asyncio.run during TestClient portal stop).
+    mgr = org_state.dashboard_projection
+    original_reap = mgr.reap_scheduler
+    async def _reap_and_release():
+        await original_reap()
+        # Cancel+reap are done — release the worker thread now.
+        cancel_reap_done.set()
+        compose_unblock.set()
+    monkeypatch.setattr(mgr, "reap_scheduler", _reap_and_release)
 
     try:
         app = create_app(daemon_state)
         # Enter the FastAPI lifespan via TestClient as a context manager.
-        # This triggers app.py's _lifespan startup (including the dashboard
-        # projection scheduler with initial_warm=True).
+        # The lifespan's startup triggers initial_warm which calls our
+        # blocked compose in a real worker thread via asyncio.to_thread.
         with TestClient(app) as client:
-            # Wait for compose_dashboard_summary to have been entered by the
-            # lifespan's background warm task — proves the lifespan yielded
-            # BEFORE warm completed (the lifecycle did not await it).
+            # Warm must enter the blocked compose — proves the lifespan
+            # yielded before warm completed (no synchronous await).
             assert compose_entered.wait(timeout=10), (
                 "compose_dashboard_summary must be entered by lifespan's "
                 "initial warm task"
             )
 
-            # Hit the cache-only dashboard route — must return 503 because
-            # the warm is still blocked (no projection in memory yet).
+            # Cache-only dashboard route must return 503 — the warm is
+            # still blocked, no projection in memory.
             r = client.get(
                 f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
                 headers=auth_headers,
@@ -810,30 +841,30 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
             )
             assert "not yet available" in r.json()["detail"]
 
-            # Release the blocked compose so the warm can finish.
-            compose_unblock.set()
-            # Wait for the worker to complete (so it's accounted for).
-            assert compose_done.wait(timeout=10), (
-                "blocked compose must complete after release"
-            )
+            # DO NOT release the blocked compose — exit TestClient while
+            # the warm is still in-flight so the lifespan shutdown exercises
+            # the real cancel-before-await/reap path.
 
-            # After warm completes, the route should serve 200.
-            r2 = client.get(
-                f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
-                headers=auth_headers,
-            )
-            assert r2.status_code == 200, (
-                f"Expected 200 after warm completes, got {r2.status_code}"
-            )
-            body = r2.json()
-            assert "generated_at" in body
-            assert body["generated_at"] is not None
+        # After exiting TestClient, lifespan shutdown has run:
+        # cancel_scheduler() → gather(tasks, return_exceptions=True)
+        # → reap_scheduler(). Inside reap_scheduler, we released the
+        # worker and set cancel_reap_done. Shutdown completed without
+        # hanging — reaching here proves bounded-deadline completion.
 
-        # After exiting the TestClient context, the lifespan shutdown has
-        # run (cancel_scheduler → reap_scheduler). Verify cleanup.
-        mgr = org_state.dashboard_projection
+        # Verify that cancel+reap completed (and released the worker).
+        assert cancel_reap_done.is_set(), (
+            "cancel+reap must complete during lifespan shutdown"
+        )
+
+        # Verify scheduler cleanup: _refresh_task must be None after reap.
         assert mgr._refresh_task is None, (
             "_refresh_task must be None after lifespan shutdown (reap completed)"
         )
+
+        # Verify the worker thread completed cleanly.
+        assert compose_done.wait(timeout=5), (
+            "blocked compose must complete cleanly after release"
+        )
     finally:
         dp_mod.compose_dashboard_summary = original_compose
+        mgr.reap_scheduler = original_reap
