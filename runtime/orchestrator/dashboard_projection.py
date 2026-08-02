@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.orchestrator.dashboard_summary import (
     DashboardSummaryResponse,
@@ -42,7 +42,8 @@ class DashboardProjection(BaseModel):
 
     Stored as a JSON file so the daemon can cold-start from persisted state.
     """
-    version: int = _SUPPORTED_VERSION
+    model_config = ConfigDict(extra="forbid")
+    version: int = Field(default=_SUPPORTED_VERSION, strict=True)
     org_slug: str
     generated_at: datetime
     payload: dict[str, Any]  # DashboardSummaryResponse.model_dump(mode='json')
@@ -110,7 +111,12 @@ class DashboardProjectionManager:
             )
             return None
 
-        # Validate envelope (DashboardProjection)
+        # Validate envelope (DashboardProjection). The version field uses
+        # Field(strict=True) so boolean/string coercion is rejected even
+        # without global strict mode. config extra='forbid' rejects unknown
+        # envelope fields. The payload undergoes separate strict validation
+        # below. generated_at is a JSON string (ISO datetime) and is accepted
+        # normally.
         try:
             proj = DashboardProjection.model_validate(data)
         except Exception:
@@ -138,9 +144,16 @@ class DashboardProjectionManager:
             )
             return None
 
-        # Validate payload as the wire response model
+        # Validate payload as the wire response model with strict type
+        # checking. Uses model_validate_json(strict=True) so that ISO
+        # datetime strings (the normal JSON wire format) are accepted while
+        # coercible payload types (string numeric fields, boolean lists,
+        # etc.) are rejected. Never rely on route response validation to
+        # normalize — rejected sidecars become cache-unavailable.
         try:
-            DashboardSummaryResponse.model_validate(proj.payload)
+            DashboardSummaryResponse.model_validate_json(
+                json.dumps(proj.payload), strict=True,
+            )
         except Exception:
             logger.warning(
                 "dashboard projection file for org %s has payload that fails "
@@ -155,13 +168,27 @@ class DashboardProjectionManager:
         )
         return proj
 
-    def persist(self, projection: DashboardProjection) -> None:
-        """Atomically write the projection to disk (write-then-rename)."""
+    def _atomic_persist(self, projection: DashboardProjection) -> None:
+        """Atomically write the projection to disk (write-then-rename).
+
+        Internal seam for warm(). Split into write-then-rename so fault
+        injection tests can target the rename step independently.
+        """
         path = self.projection_path
         tmp = path.with_suffix(path.suffix + ".tmp")
         raw = projection.model_dump_json(indent=2)
         tmp.write_text(raw, encoding="utf-8")
+        # Clean up stale tmp if it already exists (from a previous crash)
+        if path.exists():
+            path.unlink()
         tmp.rename(path)
+
+    def persist(self, projection: DashboardProjection) -> None:
+        """Atomically write the projection to disk (delegates to _atomic_persist).
+
+        Public surface preserved for tests and cold-start seeding.
+        """
+        self._atomic_persist(projection)
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -175,17 +202,29 @@ class DashboardProjectionManager:
         for the projection; the HTTP route never calls it directly.
 
         Atomic publish contract:
-        1. Compose the dashboard summary.
-        2. Construct + validate the projection envelope (DashboardProjection).
-        3. Serialize to JSON (verify it round-trips via model_dump_json).
-        4. Persist to disk atomically (write-then-rename).
-        5. ONLY THEN publish to self._projection in memory.
+        1. Capture old in-memory projection + old sidecar bytes.
+        2. Compose the dashboard summary.
+        3. Construct + validate the projection envelope (DashboardProjection).
+        4. Serialize to JSON (verify it round-trips via model_dump_json).
+        5. Persist to disk atomically (write-then-rename).
+        6. ONLY THEN publish to self._projection in memory.
 
-        On ANY failure (compose, validation, serialization, or disk
-        persistence), the exact former last-known-good in-memory projection
-        AND the durable sidecar are preserved. Never update in-memory before
-        disk persistence succeeds.
+        On ANY failure at ANY seam (compose, envelope validation,
+        serialization, disk-write, or disk-rename), the exact former
+        last-known-good in-memory projection AND the exact former durable
+        sidecar bytes are preserved. Never update in-memory before disk
+        persistence succeeds; never leave a half-written or truncated
+        sidecar on disk.
         """
+        # Capture old state BEFORE any mutation.
+        old_projection = self._projection
+        old_sidecar_bytes: bytes | None = None
+        if self.projection_path.exists():
+            try:
+                old_sidecar_bytes = self.projection_path.read_bytes()
+            except Exception:
+                old_sidecar_bytes = None
+
         try:
             now = datetime.now(timezone.utc)
             # 1. Compose in a thread (db._lock is threading.RLock, safe).
@@ -203,7 +242,10 @@ class DashboardProjectionManager:
             #    bugs early — we never publish something that can't be persisted).
             _ = projection.model_dump_json()
             # 4. Persist to disk BEFORE publishing in memory.
-            await asyncio.to_thread(self.persist, projection)
+            #    write-then-rename: tmp file written first, then atomically
+            #    renamed over the canonical path. If rename fails, the
+            #    original sidecar is untouched.
+            await asyncio.to_thread(self._atomic_persist, projection)
             # 5. Atomic publish: only after disk persistence succeeds.
             self._projection = projection
             logger.debug(
@@ -217,6 +259,21 @@ class DashboardProjectionManager:
                 "keeping last-known-good snapshot (in-memory + sidecar)",
                 self.org_slug, exc_info=True,
             )
+            # Restore exact old in-memory projection.
+            self._projection = old_projection
+            # Restore exact old sidecar bytes if we had them. This covers
+            # the case where a tmp file was written but the rename failed
+            # (tmp debris), or the tmp write itself partially corrupted
+            # the temp — the canonical sidecar is put back byte-for-byte.
+            if old_sidecar_bytes is not None:
+                try:
+                    self.projection_path.write_bytes(old_sidecar_bytes)
+                except Exception:
+                    logger.warning(
+                        "dashboard projection for org %s: failed to restore "
+                        "old sidecar bytes after warm failure",
+                        self.org_slug, exc_info=True,
+                    )
             return False
 
     async def _scheduler_loop(

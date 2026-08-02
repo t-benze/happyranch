@@ -2102,3 +2102,102 @@ def test_lock_instrument_execute_contention_regression(db, caplog):
         f"got: {caplog.record_tuples}"
     )
     db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_execute_reentrancy_no_false_wait(db, caplog):
+    """db.execute() called from within another @_synchronized method must
+    show near-zero wait time (RLock reentrancy). The inner execute must
+    not produce a false-positive wait warning."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.01  # very low threshold
+
+    # Insert a task (goes through @_synchronized). get_task internally
+    # calls fetch_one_readonly which goes through @_synchronized. The
+    # inner call re-acquires the RLock with near-zero wait.
+    db.insert_task(TaskRecord(id="TASK-REX", brief="reentrant exec test"))
+    result = db.get_task("TASK-REX")
+    assert result is not None
+
+    # Also test execute() called directly from within a @_synchronized
+    # method. insert_task calls self.execute() internally.
+    # Direct execute() should show no wait warning when called reentrantly.
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"RLock reentrancy should not log wait warnings for execute, "
+        f"got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_no_sql_param_leakage(db, caplog):
+    """Lock instrumentation log messages must NEVER contain SQL text or
+    query parameters. Only duration, threshold, class name, and method
+    name are safe to emit. Any SQL/param leakage is a security risk."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.0  # trigger on any positive hold
+    hold_started = threading.Event()
+    hold_done = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+            hold_done.set()
+
+    def waiter():
+        hold_started.wait()
+        # This query has a distinctive SQL pattern and parameter
+        db.fetch_all_readonly(
+            "SELECT COUNT(*) AS n FROM tasks WHERE id = ?",
+            ("TASK-SECRET-LEAK-TEST",),
+        )
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    # Collect all lock warning messages
+    lock_warnings = [
+        r[2] for r in caplog.record_tuples
+        if "Database._lock" in r[2]
+    ]
+    assert len(lock_warnings) >= 1, (
+        "Expected at least one lock warning, got none"
+    )
+
+    # Verify no SQL or parameter leakage
+    for msg in lock_warnings:
+        # SQL keywords
+        assert "SELECT" not in msg.upper(), (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "INSERT" not in msg.upper(), (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "FROM" not in msg, (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "WHERE" not in msg, (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        # Task IDs / parameters
+        assert "TASK-SECRET-LEAK-TEST" not in msg, (
+            f"Lock warning leaks query parameter: {msg[:100]}"
+        )
+        # Verify safe fields are present
+        assert "Database._lock" in msg, (
+            f"Lock warning missing class info: {msg[:100]}"
+        )
+
+    db._lock_warn_threshold_seconds = 1.0

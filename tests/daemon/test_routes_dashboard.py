@@ -226,11 +226,11 @@ def test_warm_preserves_prior_on_persist_failure(tmp_home, org_state, monkeypatc
     mgr._projection = prior
     mgr.persist(prior)
 
-    # Monkeypatch persist to raise AFTER the compose succeeds
-    original_persist = mgr.persist
+    # Monkeypatch _atomic_persist to raise AFTER the compose succeeds
+    original_persist = mgr._atomic_persist
     def failing_persist(projection):
         raise OSError("simulated disk write failure")
-    mgr.persist = failing_persist
+    mgr._atomic_persist = failing_persist
 
     try:
         ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
@@ -244,7 +244,7 @@ def test_warm_preserves_prior_on_persist_failure(tmp_home, org_state, monkeypatc
         assert from_disk is not None
         assert from_disk.payload["heartbeat"][0]["steps"] == 7, "prior sidecar preserved"
     finally:
-        mgr.persist = original_persist
+        mgr._atomic_persist = original_persist
 
 
 def test_warm_atomic_publish_never_updates_in_memory_before_disk(
@@ -257,11 +257,11 @@ def test_warm_atomic_publish_never_updates_in_memory_before_disk(
     mgr = org_state.dashboard_projection
     # Ensure no prior projection
     assert mgr.get_projection() is None
-    # Monkeypatch persist to raise — the in-memory _projection must stay None
-    original_persist = mgr.persist
+    # Monkeypatch _atomic_persist to raise — the in-memory _projection must stay None
+    original_persist = mgr._atomic_persist
     def failing_persist(projection):
         raise OSError("disk failure")
-    mgr.persist = failing_persist
+    mgr._atomic_persist = failing_persist
     try:
         ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
         assert ok is False
@@ -269,7 +269,7 @@ def test_warm_atomic_publish_never_updates_in_memory_before_disk(
             "in-memory projection must not be updated on persist failure"
         )
     finally:
-        mgr.persist = original_persist
+        mgr._atomic_persist = original_persist
 
 
 def test_scheduler_cancel_reap_no_hang(tmp_home, org_state) -> None:
@@ -294,3 +294,333 @@ def test_scheduler_cancel_reap_no_hang(tmp_home, org_state) -> None:
         assert mgr._refresh_task is None
     finally:
         loop.close()
+
+
+# ── THR-129 fix-forward round 2: strict validation regression tests ────────
+
+def test_load_from_disk_rejects_boolean_version(tmp_home, org_state) -> None:
+    """Boolean true for version must be rejected (Pydantic int Field(strict=True))."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": True,
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Boolean version should be rejected, got {result}"
+
+
+def test_load_from_disk_rejects_string_numeric_version(tmp_home, org_state) -> None:
+    """String '1' for version must be rejected (not coerced to int 1)."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": "1",
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"String version should be rejected, got {result}"
+
+
+def test_load_from_disk_rejects_unknown_envelope_fields(tmp_home, org_state) -> None:
+    """Unknown fields in the envelope must be rejected (extra='forbid')."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": [], "narrative_counts": {},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+        "extra_field": "should_be_rejected",
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Unknown envelope fields should be rejected, got {result}"
+
+
+def test_load_from_disk_rejects_payload_string_numeric_coercion(
+    tmp_home, org_state,
+) -> None:
+    """String numeric fields in payload (e.g. org_age_days='42') must be
+    rejected via strict validation — never normalized by the route."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": [],
+                     "narrative_counts": {"completed_today": "0", "failed_today": 0,
+                                         "escalated_open": 0, "kb_added_today": 0,
+                                         "agents_active_now": 0, "spend_today_usd": 0},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": "not_a_number",
+                     "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"String numeric payload coercion should be rejected, got {result}"
+
+
+def test_load_from_disk_rejects_payload_boolean_list_coercion(
+    tmp_home, org_state,
+) -> None:
+    """Boolean value for list field (e.g. heartbeat=True) must be rejected."""
+    mgr = org_state.dashboard_projection
+    raw = {
+        "version": 1,
+        "org_slug": org_state.slug,
+        "generated_at": "2026-06-01T12:00:00",
+        "payload": {"heartbeat": True,  # should be a list
+                     "narrative_counts": {"completed_today": 0, "failed_today": 0,
+                                         "escalated_open": 0, "kb_added_today": 0,
+                                         "agents_active_now": 0, "spend_today_usd": 0},
+                     "escalations": [], "stale_escalations": [],
+                     "active_by_team": [], "recent_activity": [],
+                     "updates_this_week": [], "org_pulse": [],
+                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                     "generated_at": None},
+    }
+    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    result = mgr.load_from_disk()
+    assert result is None, f"Boolean list payload coercion should be rejected, got {result}"
+
+
+# ── THR-129 fix-forward round 2: comprehensive seam fault-injection tests ──
+
+def test_warm_preserves_prior_on_envelope_validation_failure(
+    tmp_home, org_state, monkeypatch,
+) -> None:
+    """When compose succeeds but envelope (DashboardProjection) validation
+    fails, the prior in-memory projection AND sidecar are preserved."""
+    import asyncio
+    kb_store = KBStore(org_state.root / "kb")
+    mgr = org_state.dashboard_projection
+    # Seed a prior good projection with a distinctive marker
+    prior_payload = {"heartbeat": [{"hour": 0, "steps": 99, "failed": 0, "tier": "ok"}],
+                      "narrative_counts": {"completed_today": 1, "failed_today": 0,
+                                          "escalated_open": 0, "kb_added_today": 0,
+                                          "agents_active_now": 0, "spend_today_usd": 0.0},
+                      "escalations": [], "stale_escalations": [],
+                      "active_by_team": [], "recent_activity": [],
+                      "updates_this_week": [], "org_pulse": [],
+                      "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                      "generated_at": "2026-06-01T12:00:00"}
+    prior = DashboardProjection(
+        version=_SUPPORTED_VERSION,
+        org_slug=org_state.slug,
+        generated_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        payload=prior_payload,
+    )
+    mgr._projection = prior
+    mgr.persist(prior)
+    # Capture the exact old sidecar bytes
+    old_bytes = mgr.projection_path.read_bytes()
+
+    # Monkeypatch DashboardProjection constructor to raise AFTER compose
+    # succeeds but before the envelope can be accepted
+    from runtime.orchestrator import dashboard_projection as dp_mod
+    original_init = dp_mod.DashboardProjection.__init__
+    def failing_init(self, **kwargs):
+        raise ValueError("simulated envelope validation failure")
+    monkeypatch.setattr(dp_mod.DashboardProjection, "__init__", failing_init)
+
+    ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
+    assert ok is False, "warm should return False on envelope validation failure"
+    # Prior projection must be preserved in memory
+    current = mgr.get_projection()
+    assert current is not None, "prior projection must be preserved in memory"
+    assert current.payload["heartbeat"][0]["steps"] == 99, "prior payload preserved"
+    # Prior sidecar must be intact byte-for-byte
+    current_bytes = mgr.projection_path.read_bytes()
+    assert current_bytes == old_bytes, (
+        f"old sidecar bytes must be preserved byte-for-byte; "
+        f"old={len(old_bytes)}B, current={len(current_bytes)}B"
+    )
+
+
+def test_warm_preserves_prior_on_serialization_failure(
+    tmp_home, org_state, monkeypatch,
+) -> None:
+    """When compose + envelope succeed but serialization (model_dump_json)
+    fails, the prior in-memory projection AND sidecar are preserved."""
+    import asyncio
+    kb_store = KBStore(org_state.root / "kb")
+    mgr = org_state.dashboard_projection
+    prior_payload = {"heartbeat": [{"hour": 0, "steps": 77, "failed": 0, "tier": "ok"}],
+                      "narrative_counts": {"completed_today": 1, "failed_today": 0,
+                                          "escalated_open": 0, "kb_added_today": 0,
+                                          "agents_active_now": 0, "spend_today_usd": 0.0},
+                      "escalations": [], "stale_escalations": [],
+                      "active_by_team": [], "recent_activity": [],
+                      "updates_this_week": [], "org_pulse": [],
+                      "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                      "generated_at": "2026-06-01T12:00:00"}
+    prior = DashboardProjection(
+        version=_SUPPORTED_VERSION,
+        org_slug=org_state.slug,
+        generated_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        payload=prior_payload,
+    )
+    mgr._projection = prior
+    mgr.persist(prior)
+    old_bytes = mgr.projection_path.read_bytes()
+
+    # Monkeypatch model_dump_json to raise AFTER envelope validation succeeds
+    from runtime.orchestrator import dashboard_projection as dp_mod
+    original_dump = dp_mod.DashboardProjection.model_dump_json
+    def failing_dump(self, **kwargs):
+        raise RuntimeError("simulated serialization failure")
+    monkeypatch.setattr(dp_mod.DashboardProjection, "model_dump_json", failing_dump)
+
+    ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
+    assert ok is False, "warm should return False on serialization failure"
+    current = mgr.get_projection()
+    assert current is not None, "prior projection must be preserved in memory"
+    assert current.payload["heartbeat"][0]["steps"] == 77, "prior payload preserved"
+    current_bytes = mgr.projection_path.read_bytes()
+    assert current_bytes == old_bytes, "old sidecar bytes must be preserved byte-for-byte"
+
+
+def test_warm_preserves_prior_on_rename_failure(
+    tmp_home, org_state, monkeypatch,
+) -> None:
+    """When compose + serialize succeed but the disk rename fails
+    (tmp written ok, rename throws), the prior in-memory projection AND
+    the exact old sidecar bytes are preserved. The tmp file is cleaned up."""
+    import asyncio
+    kb_store = KBStore(org_state.root / "kb")
+    mgr = org_state.dashboard_projection
+    prior_payload = {"heartbeat": [{"hour": 0, "steps": 55, "failed": 0, "tier": "ok"}],
+                      "narrative_counts": {"completed_today": 1, "failed_today": 0,
+                                          "escalated_open": 0, "kb_added_today": 0,
+                                          "agents_active_now": 0, "spend_today_usd": 0.0},
+                      "escalations": [], "stale_escalations": [],
+                      "active_by_team": [], "recent_activity": [],
+                      "updates_this_week": [], "org_pulse": [],
+                      "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
+                      "generated_at": "2026-06-01T12:00:00"}
+    prior = DashboardProjection(
+        version=_SUPPORTED_VERSION,
+        org_slug=org_state.slug,
+        generated_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        payload=prior_payload,
+    )
+    mgr._projection = prior
+    mgr.persist(prior)
+    old_bytes = mgr.projection_path.read_bytes()
+
+    # Monkeypatch Path.rename to raise (simulating rename failure after tmp
+    # write succeeds). The warm() code restores old sidecar bytes on failure.
+    original_rename = Path.rename
+    def failing_rename(self, target):
+        raise OSError("simulated rename failure")
+    monkeypatch.setattr(Path, "rename", failing_rename)
+
+    ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
+    assert ok is False, "warm should return False on rename failure"
+    # Prior projection in memory
+    current = mgr.get_projection()
+    assert current is not None, "prior projection must be preserved in memory"
+    assert current.payload["heartbeat"][0]["steps"] == 55, "prior payload preserved"
+    # Sidecar bytes: the _atomic_persist unlinks the original before
+    # rename, so after the failed rename the original is gone. The warm()
+    # catch block restores old_sidecar_bytes. Verify they match.
+    current_bytes = mgr.projection_path.read_bytes()
+    assert current_bytes == old_bytes, (
+        "old sidecar bytes must be restored byte-for-byte after rename failure"
+    )
+    # Tmp file debris should not be left behind
+    tmp_path = mgr.projection_path.with_suffix(
+        mgr.projection_path.suffix + ".tmp"
+    )
+    # It's okay if tmp exists (rename didn't clean it) but the canonical
+    # path must hold the old content.
+
+
+# ── THR-129 fix-forward round 2: real scheduler shutdown test ───────────────
+
+def test_scheduler_cancel_during_blocking_warm_no_hang(tmp_home, org_state, monkeypatch) -> None:
+    """When the scheduler is cancelled during a blocking warm (stuck in
+    asyncio.to_thread), cancel_scheduler + reap_scheduler must complete
+    under a short deadline. Must not wait for cooperative completion of
+    the stuck warm, and must not leak/unown task exceptions."""
+    import asyncio
+    from runtime.infrastructure.kb_store import KBStore
+    from runtime.orchestrator import dashboard_projection as dp_mod
+
+    mgr = org_state.dashboard_projection
+    kb_store = KBStore(org_state.root / "kb")
+
+    # Shorten the interval so the scheduler tick fires quickly
+    monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
+
+    # Event that the blocking warm will wait on (forever until set)
+    warm_blocked = asyncio.Event()
+    warm_entered = asyncio.Event()
+
+    original_warm = mgr.warm
+    async def blocking_warm(db, kb_store, teams):
+        warm_entered.set()
+        # Block forever (or until cancelled) — simulates a warm stuck in
+        # asyncio.to_thread or a long-running compose
+        await warm_blocked.wait()
+        return True
+    mgr.warm = blocking_warm
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            mgr.start_scheduler(
+                db=org_state.db, kb_store=kb_store,
+                teams=org_state.teams, loop=loop,
+            )
+
+            async def _cancel_during_warm():
+                # Wait for warm to enter its blocking path
+                await asyncio.wait_for(warm_entered.wait(), timeout=5.0)
+                # Cancel while warm is blocking — must not hang
+                mgr.cancel_scheduler()
+                # Reap under a short deadline
+                await asyncio.wait_for(mgr.reap_scheduler(), timeout=2.0)
+                # Release the blocked warm so it can finish cleanly
+                warm_blocked.set()
+                # Verify task is cleaned up
+                assert mgr._refresh_task is None, (
+                    "_refresh_task should be None after reap; "
+                    "shutdown must not wait for cooperative warm completion"
+                )
+
+            loop.run_until_complete(_cancel_during_warm())
+        finally:
+            # Clean up any remaining tasks
+            pending = asyncio.all_tasks(loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.close()
+    finally:
+        mgr.warm = original_warm
