@@ -938,12 +938,45 @@ This replaces the legacy model where agents read protocol docs from the
 ``repos/happyranch/protocol/`` clone (which was fresh only at
 once-per-session git-pull).
 
-**Session-path coverage.** The four session-creation paths that inject the
+**Session-path coverage.** The five materialization callers that inject the
 manifest and refresh skills are:
-1. ``Orchestrator._run_agent`` (task/subtask)
-2. ``wake_runner.run_wake`` (working-hours wake)
-3. ``thread_runner.run_invocation`` (thread reply/bootstrap)
-4. ``dream_runner.run_dream`` (private dream)
+1. ``Orchestrator._run_agent`` (task/subtask) — ``TASK`` context
+2. ``wake_runner.run_wake`` (working-hours wake) — ``WAKE`` context
+3. ``thread_runner.run_invocation`` (thread reply/bootstrap) — ``THREAD`` context
+4. ``dream_runner.run_dream`` (private dream) — ``DREAM`` context
+5. ``schedule_runner.run_schedule_fire`` (schedule fire) — ``TASK`` context
+
+Additionally, the **executor-switch/bootstrap** path (set-executor route in
+``runtime/daemon/routes/agents.py`` + adapter ``_copy_skills`` in
+``workspace_adapters.py``) is a sixth writer: when ``_WHOLESALE_DUMP_ENABLED``
+is ``True``, the three adapter wholesale copies (Claude ``.claude/skills/``,
+Codex/Opencode ``.agents/skills/``) run under the same process-local workspace
+lock (§4.6.1).
+
+**Process-local workspace serialization (Issue #536).** All pre-spawn skill
+materialization for a given agent workspace — wholesale refresh (when
+``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
+on-disk verification, and managed-skill injection — runs inside a single
+unified transaction (``materialize_workspace_skills``) protected by a
+process-local ``threading.RLock`` keyed by the canonical (resolved) workspace
+path. The adapter ``_copy_skills`` bootstrap writers and the executor-switch
+route also participate in this lock. Concurrent task, thread, wake, dream,
+schedule, and bootstrap callers targeting the same workspace serialize their
+complete pre-spawn materialization so they never overlap inside
+``_copy_skills_tree``'s predictable ``.tmp.<name>`` cleanup/write/replace
+window. The lock is **process-local only** — it does not coordinate across
+daemon processes. Cross-process protection for the same agent workspace relies
+on the daemon's per-agent concurrency ceiling.
+
+Per-file ``os.replace`` reader safety is preserved: a concurrent reader always
+sees either the complete old or complete new skill file, never a half-written
+one. The lock serializes writers only; it does NOT block readers.
+
+Named fail-closed behavior: a materialization failure produces a named
+actionable error (``SystemContractMaterializationError``,
+``LifecycleMaterializationError``, ``PermissionError``, or ``OSError``) — never
+a bare ``FileNotFoundError``. The caller persists the terminal failure and no
+agent subprocess is launched.
 
 **Hard constraints.** Skill refresh and manifest injection are additive only —
 they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_index``,
@@ -1235,8 +1268,8 @@ complete required set without the wholesale dump. The test asserts:
 - ``dream`` is excluded from non-dream contexts.
 - ``make-worktree`` is repo-gated.
 
-**Session-path coverage.** ``inject_managed_skills`` is wired into all 4
-session-creation callers:
+**Session-path coverage.** ``inject_managed_skills`` is wired into all 5
+session-creation callers via ``materialize_workspace_skills``:
 1. ``Orchestrator._run_agent`` (task/subtask) — resolves team via
    ``load_agent``.
 2. ``thread_runner.run_invocation`` (thread reply/bootstrap) — resolves
@@ -1245,6 +1278,13 @@ session-creation callers:
    ``agent_def``.
 4. ``dream_runner.run_dream`` (private dream) — resolves team via
    ``load_agent``.
+5. ``schedule_runner.run_schedule_fire`` (schedule fire) — resolves team
+   via ``load_agent``.
+
+When ``_WHOLESALE_DUMP_ENABLED`` is ``True``, the three executor adapter
+``_copy_skills`` bootstrap writers (Claude, Codex, Opencode) and the
+set-executor route's all-context materialization also participate in the
+same process-local workspace lock (§4.6.1).
 
 **Fences.** Phase 4 does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)

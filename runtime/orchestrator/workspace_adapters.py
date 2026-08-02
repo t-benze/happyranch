@@ -68,7 +68,7 @@ def _get_workspace_lock(workspace: Path) -> threading.Lock:
     canonical = str(workspace.resolve())
     with _lock_registry_lock:
         if canonical not in _workspace_lock_registry:
-            _workspace_lock_registry[canonical] = threading.Lock()
+            _workspace_lock_registry[canonical] = threading.RLock()
         return _workspace_lock_registry[canonical]
 
 
@@ -1510,14 +1510,20 @@ class ClaudeWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".claude" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".claude" / "skills",
+                slug=self._slug,
+            )
 
 
 class CodexWorkspaceAdapter:
@@ -1581,14 +1587,20 @@ class CodexWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".agents" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".agents" / "skills",
+                slug=self._slug,
+            )
 
     def ensure_workspace_ready(
         self,
@@ -1676,14 +1688,20 @@ class OpencodeWorkspaceAdapter:
         OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
         ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
         delivery path.
+
+        **Issue #536:** the wholesale copy is serialized under the
+        process-local workspace lock so bootstrap writers cannot race
+        concurrent session-time materialization inside
+        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
         """
         if not _WHOLESALE_DUMP_ENABLED:
             return
-        _copy_skills_tree(
-            _resolve_skills_src(self._settings),
-            workspace / ".agents" / "skills",
-            slug=self._slug,
-        )
+        with _workspace_skills_transaction(workspace):
+            _copy_skills_tree(
+                _resolve_skills_src(self._settings),
+                workspace / ".agents" / "skills",
+                slug=self._slug,
+            )
 
     def ensure_workspace_ready(
         self,

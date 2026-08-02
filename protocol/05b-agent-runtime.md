@@ -291,14 +291,21 @@ materialization for a given agent workspace — wholesale refresh (when
 ``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
 on-disk verification, and managed-skill injection — runs inside a single
 unified transaction (``materialize_workspace_skills``) protected by a
-process-local ``threading.Lock`` keyed by the canonical (resolved) workspace
-path. Concurrent task, thread, wake, dream, and schedule callers targeting
-the same workspace serialize their complete pre-spawn materialization so
-they never overlap inside ``_copy_skills_tree``'s predictable ``.tmp.<name>``
-cleanup/write/replace window. The lock is **process-local only** — it does
-not coordinate across daemon processes. Cross-process protection for the
+process-local ``threading.RLock`` (re-entrant lock) keyed by the canonical
+(resolved) workspace path. Concurrent task, thread, wake, dream, schedule,
+and executor-switch/bootstrap callers targeting the same workspace serialize
+their complete pre-spawn materialization so they never overlap inside
+``_copy_skills_tree``'s predictable ``.tmp.<name>`` cleanup/write/replace
+window. The three executor adapter ``_copy_skills`` methods (Claude, Codex,
+Opencode) and the set-executor route's all-context materialization also
+participate in this lock boundary. The lock is **process-local only** — it
+does not coordinate across daemon processes. Cross-process protection for the
 same agent workspace relies on the daemon's per-agent concurrency ceiling
 (at most one ``run_step`` session plus one thread invocation per agent).
+
+The RLock allows safe re-entrant use: when the executor-switch route
+acquires the lock and calls ``ensure_workspace_ready``, the adapter's
+``_copy_skills`` can re-acquire the same lock without deadlocking.
 
 Per-file ``os.replace`` reader safety is preserved: a concurrent reader
 (or an agent session already running in the workspace) always sees either
