@@ -41,10 +41,8 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
     inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
     refresh_workspace_repos,
 )
 from runtime.orchestrator.teams import TeamsRegistry
@@ -675,15 +673,37 @@ class Orchestrator:
                 task_id=task_id,
             )
 
-        # TASK-2511: materialize system-contract skills BEFORE the readiness
-        # marker check. Post-Phase-4 cutover, inject_system_contracts is the
-        # sole delivery path; a fresh/reset workspace has no marker until
-        # injection runs. The ensure call injects + verifies, raising a named
-        # SystemContractMaterializationError on failure (retry-eligible),
-        # never a bare Errno 2.
-        ensure_system_contracts_materialized(
-            workspace, self._settings, slug=self._slug, context="task",
+        # Resolve agent team + managed-skill paths before the unified
+        # materialization call.
+        try:
+            from runtime.orchestrator.prompt_loader import load_agent
+            agent_def = load_agent(self._paths, agent_name)
+            team = agent_def.team if agent_def else "engineering"
+        except Exception:
+            team = "engineering"
+        skills_root = self._settings.project_root / "runtime" / "skills"
+        org_root = self._paths.root
+
+        # Issue #536: serialize the complete pre-spawn skill materialization
+        # transaction under a process-local workspace lock so concurrent
+        # task/thread/wake/dream/schedule callers targeting the same workspace
+        # cannot race on the predictable .tmp.<name> cleanup/write/replace
+        # window in _copy_skills_tree.
+        #
+        # This single call replaces the previous three separate calls:
+        #   refresh_session_skills (wholesale when enabled)
+        #   ensure_system_contracts_materialized (inject + verify)
+        #   inject_managed_skills (managed-catalog + lifecycle)
+        materialize_workspace_skills(
+            workspace, self._settings,
+            slug=self._slug,
+            context="task",
             provider=provider,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
+            org_root=org_root,
+            db=self.db,
         )
 
         # The orchestrator relies on the start-task skill to bridge prompt →
@@ -732,42 +752,11 @@ class Orchestrator:
             paths=self._paths, agent_name=agent_name,
         )
 
-        # Refresh on-disk skill bodies from the bundled protocol/skills/ on EVERY
-        # session so edits to system/contract skills reach agents without a
-        # lifecycle event (THR-070).
-        refresh_session_skills(workspace, self._settings, slug=self._slug)
-
         # THR-103: fast-forward-refresh every cloned repo so the agent has
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
         refresh_workspace_repos(workspace)
-
-        # System-contract injection was done above by ensure_system_contracts_materialized
-        # (TASK-2511). Do NOT call inject_system_contracts here — it would be a
-        # redundant second injection.
-
-        # Managed-catalog skill injection (THR-055 Phase 4).
-        # Resolves the two-gated catalog + eligibility policy and injects
-        # managed skills (reflection, manage-agent, manage-repo) into the
-        # workspace alongside system contracts.
-        try:
-            from runtime.orchestrator.prompt_loader import load_agent
-            agent_def = load_agent(self._paths, agent_name)
-            team = agent_def.team if agent_def else "engineering"
-        except Exception:
-            team = "engineering"
-        skills_root = self._settings.project_root / "runtime" / "skills"
-        org_root = self._paths.root
-        inject_managed_skills(
-            workspace, self._settings,
-            slug=self._slug,
-            agent_name=agent_name,
-            team=team,
-            skills_root=skills_root,
-            org_root=org_root,
-            db=self.db,
-        )
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
         protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)

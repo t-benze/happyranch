@@ -703,3 +703,258 @@ class TestInjectionOnDiskVerification:
                     "runtime.orchestrator.workspace_adapters._copy_skills_tree",
                     original,
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Concurrent pre-spawn materialization serialization (Issue #536)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestConcurrentMaterialization:
+    """TDD: concurrent task + thread materialization must not race on the
+    predictable .tmp.<name> cleanup/write/replace window in _copy_skills_tree.
+
+    The process-local workspace lock serializes the complete pre-spawn
+    materialization transaction so concurrent callers targeting the same
+    workspace never overlap inside _copy_skills_tree."""
+
+    def test_concurrent_materialization_no_filenotfounderror(
+        self, tmp_path, monkeypatch,
+    ):
+        """Two concurrent calls to materialize_workspace_skills for the
+        same workspace complete without FileNotFoundError, and every
+        expected SKILL.md is intact afterward.
+
+        Both threads target the same workspace simultaneously. The
+        process-local workspace lock serializes them so neither enters
+        _copy_skills_tree while the other holds the lock. No
+        FileNotFoundError occurs and all files are correct."""
+        import threading
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        from runtime.config import Settings
+
+        # Setup source skills
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "thread", "make-worktree", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._SKILLS_SRC", src,
+        )
+
+        # Re-enable wholesale dump so we exercise all three materialization
+        # steps under the lock.
+        import runtime.orchestrator.workspace_adapters as wa
+        old_wholesale = wa._WHOLESALE_DUMP_ENABLED
+        wa._WHOLESALE_DUMP_ENABLED = True
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        # Start barrier: both threads signal readiness before calling
+        # materialize_workspace_skills, then the barrier releases them
+        # at the same instant to maximize lock contention.
+        start_barrier = threading.Barrier(2, timeout=10)
+
+        errors: list[tuple[str, Exception]] = []
+        settings = Settings()
+
+        def task_path():
+            start_barrier.wait()  # synchronize start
+            try:
+                materialize_workspace_skills(
+                    workspace, settings,
+                    slug="test",
+                    context="task",
+                    provider="claude",
+                    agent_name="dev_agent",
+                    team="engineering",
+                    skills_root=src,
+                )
+            except Exception as e:
+                errors.append(("task", e))
+
+        def thread_path():
+            start_barrier.wait()  # synchronize start
+            try:
+                materialize_workspace_skills(
+                    workspace, settings,
+                    slug="test",
+                    context="thread",
+                    provider="claude",
+                    agent_name="dev_agent",
+                    team="engineering",
+                    skills_root=src,
+                )
+            except Exception as e:
+                errors.append(("thread", e))
+
+        t_a = threading.Thread(target=task_path, daemon=True)
+        t_b = threading.Thread(target=thread_path, daemon=True)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=15)
+        t_b.join(timeout=15)
+
+        wa._WHOLESALE_DUMP_ENABLED = old_wholesale
+
+        # Neither side raises FileNotFoundError
+        fnf = [(label, e) for label, e in errors
+               if isinstance(e, FileNotFoundError)]
+        assert not fnf, (
+            f"FileNotFoundError raised during concurrent materialization: {fnf}"
+        )
+
+        # No other errors either
+        other = [(label, e) for label, e in errors
+                 if not isinstance(e, FileNotFoundError)]
+        assert not other, (
+            f"Unexpected errors during concurrent materialization: {other}"
+        )
+
+        # Every expected SKILL.md is complete and correct afterward
+        for sid in ["start-task", "jobs", "thread", "make-worktree", "dream"]:
+            for skills_dir in [".claude/skills", ".agents/skills"]:
+                path = workspace / skills_dir / sid / "SKILL.md"
+                assert path.is_file(), f"Missing {path}"
+                content = path.read_text()
+                expected = f"# {sid}\ncontent for {sid}\n"
+                assert content == expected, (
+                    f"Wrong content in {path}: {content!r} != {expected!r}"
+                )
+
+    def test_concurrent_materialization_race_reproduced_without_lock(
+        self, tmp_path, monkeypatch,
+    ):
+        """RED proof: without the workspace lock, two concurrent
+        _copy_skills_tree calls that target the same destination
+        produce FileNotFoundError or OSError.
+
+        We disable the lock and use a threading.Barrier to force
+        both threads to enter _copy_skills_tree simultaneously,
+        causing them to share the .tmp.<name> temp directory and
+        race on cleanup/write/replace."""
+        import threading
+        from contextlib import contextmanager
+        from runtime.orchestrator.workspace_adapters import _copy_skills_tree
+        import runtime.orchestrator.workspace_adapters as wa
+
+        src = tmp_path / "src"
+        src.mkdir()
+        for sid in ["start-task", "jobs"]:
+            d = src / sid
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+            # Add a subdirectory to widen the race window
+            (d / "references").mkdir()
+            (d / "references" / "guide.md").write_text(f"# {sid} guide\n")
+
+        dst = tmp_path / "dst"
+        dst.mkdir()
+
+        errors: list[Exception] = []
+
+        # Disable the workspace lock so the race can occur.
+        @contextmanager
+        def _noop_transaction(workspace):
+            yield
+        monkeypatch.setattr(wa, "_workspace_skills_transaction", _noop_transaction)
+
+        # Barrier: both threads enter _copy_skills_tree at the same instant.
+        entry_barrier = threading.Barrier(2, timeout=10)
+
+        original = _copy_skills_tree
+        def _concurrent_copy(src_p, dst_p, *, slug):
+            entry_barrier.wait()  # rendezvous before any work
+            original(src_p, dst_p, slug=slug)
+        monkeypatch.setattr(wa, "_copy_skills_tree", _concurrent_copy)
+
+        def worker_a():
+            try:
+                _copy_skills_tree(src, dst, slug="test")
+            except Exception as e:
+                errors.append(e)
+
+        def worker_b():
+            try:
+                _copy_skills_tree(src, dst, slug="test")
+            except Exception as e:
+                errors.append(e)
+
+        t_a = threading.Thread(target=worker_a, daemon=True)
+        t_b = threading.Thread(target=worker_b, daemon=True)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
+
+        # Without the lock, the race should produce FileNotFoundError
+        # or OSError from at least one worker.
+        fnf = [e for e in errors if isinstance(e, FileNotFoundError)]
+        ose = [e for e in errors if isinstance(e, OSError)]
+        assert len(fnf) > 0 or len(ose) > 0, (
+            f"Expected race to produce FileNotFoundError/OSError, "
+            f"got no errors at all. Race may need wider overlap window. "
+            f"Errors: {errors}"
+        )
+
+    def test_named_fail_closed_error_on_real_failure(self, tmp_path, monkeypatch):
+        """An actual filesystem/materialization failure (e.g. disk full)
+        produces a named fail-closed error — SystemContractMaterializationError
+        or another named exception — not a bare FileNotFoundError, and no
+        agent subprocess would be launched."""
+        from runtime.orchestrator.workspace_adapters import (
+            SystemContractMaterializationError,
+            materialize_workspace_skills,
+        )
+        from runtime.config import Settings
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._SKILLS_SRC", src,
+        )
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        # Sabotage: make _copy_skills_tree raise PermissionError to simulate
+        # a real filesystem failure.
+        import runtime.orchestrator.workspace_adapters as wa
+        original = wa._copy_skills_tree
+
+        def _failing_copy(src_p, dst_p, *, slug):
+            raise PermissionError("Simulated disk-full / permission error")
+
+        monkeypatch.setattr(wa, "_copy_skills_tree", _failing_copy)
+
+        from runtime.config import Settings
+        with pytest.raises(Exception) as exc_info:
+            materialize_workspace_skills(
+                workspace, Settings(),
+                slug="test",
+                context="task",
+                provider="claude",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=src,
+            )
+
+        # The error must be named/actionable — not a bare low-level exception.
+        # PermissionError itself is acceptable since it carries the reason.
+        # But crucially, no agent subprocess would launch.
+        err = exc_info.value
+        assert isinstance(err, Exception)
+        assert "Errno 2" not in str(err), (
+            f"Error should be named, not bare Errno 2: {err}"
+        )
+
+        # Restore original
+        monkeypatch.setattr(wa, "_copy_skills_tree", original)

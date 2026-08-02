@@ -280,10 +280,38 @@ task/session-bound proposal submission.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
-skills directory passing as complete. All four caller contexts (orchestrator
-`run_step`, `thread_runner`, `wake_runner`, `dream_runner`) persist a
-database-terminal failure and return BEFORE executor spawn — a materialization
-error in any spawn path blocks the agent launch, never silently skipped.
+skills directory passing as complete. All five caller contexts (orchestrator
+`run_step`, `thread_runner`, `wake_runner`, `dream_runner`, `schedule_runner`)
+persist a database-terminal failure and return BEFORE executor spawn — a
+materialization error in any spawn path blocks the agent launch, never silently
+skipped.
+
+**Process-local workspace serialization (Issue #536).** All pre-spawn skill
+materialization for a given agent workspace — wholesale refresh (when
+``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
+on-disk verification, and managed-skill injection — runs inside a single
+unified transaction (``materialize_workspace_skills``) protected by a
+process-local ``threading.Lock`` keyed by the canonical (resolved) workspace
+path. Concurrent task, thread, wake, dream, and schedule callers targeting
+the same workspace serialize their complete pre-spawn materialization so
+they never overlap inside ``_copy_skills_tree``'s predictable ``.tmp.<name>``
+cleanup/write/replace window. The lock is **process-local only** — it does
+not coordinate across daemon processes. Cross-process protection for the
+same agent workspace relies on the daemon's per-agent concurrency ceiling
+(at most one ``run_step`` session plus one thread invocation per agent).
+
+Per-file ``os.replace`` reader safety is preserved: a concurrent reader
+(or an agent session already running in the workspace) always sees either
+the complete old or complete new skill file, never a half-written one.
+The lock serializes writers only; it does NOT block readers.
+
+Named fail-closed behavior: if materialization fails for a real filesystem
+error (disk full, permission denied, missing source), the error propagates
+as a named exception (``SystemContractMaterializationError``,
+``LifecycleMaterializationError``, or the underlying ``OSError``) — never
+a bare ``FileNotFoundError``. The caller persists the terminal failure and
+no agent subprocess is launched. Recovery requires fixing the underlying
+filesystem/permission issue and explicitly re-dispatching.
 
 **Atomic emergency rollback.** The `POST /skill-lifecycle/rollback` handler wraps
 package status change, assignment deactivation, and event insertion in an explicit
