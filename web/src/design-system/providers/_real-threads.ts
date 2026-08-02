@@ -201,9 +201,11 @@ function useThreadTailSSE(threadId: string | undefined): void {
             },
           );
         } else {
-          // Preview or invocation-lifecycle event — invalidate to refetch the
-          // canonical rows (responder_status, incl. queued/working, lives there).
+          // Preview, invocation-lifecycle, or system event — invalidate to
+          // refetch the canonical rows (responder_status lives in messages;
+          // dispatched tasks live in thread-tasks).
           qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+          qc.invalidateQueries({ queryKey: ['thread-tasks', slug, threadId] });
         }
       },
     }).catch(() => {
