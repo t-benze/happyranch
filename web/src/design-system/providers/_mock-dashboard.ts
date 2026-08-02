@@ -89,6 +89,7 @@ const FIXTURE: DashboardSummaryResponse = {
   ],
   org_age_days: 14,
   server_now: '2026-05-30T12:00:00Z',
+  generated_at: '2026-05-30T12:00:00Z',
 };
 
 export const mockDashboardApi: DashboardApi = {

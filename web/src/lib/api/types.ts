@@ -557,6 +557,7 @@ export interface DashboardSummaryResponse {
   org_pulse: TeamPulseRow[];
   org_age_days: number;
   server_now: string;
+  generated_at: string | null;
 }
 
 // ---------------------------------------------------------------------------

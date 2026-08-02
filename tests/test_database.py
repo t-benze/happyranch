@@ -2040,3 +2040,421 @@ def test_list_roots_severity_rollup_ignores_revisit_chain(db):
     # ROOT-1's rollup should be its own status (COMPLETED), not FAILED from the revisit.
     root1 = [r for r in result if r.id == "ROOT-1"][0]
     assert root1._severity_rollup == 'completed'
+
+
+# ── THR-129 lock instrumentation tests ──────────────────────────────────
+
+
+def test_lock_instrument_hold_warns_on_slow_query(db, caplog):
+    """When a query holds the lock longer than the threshold, a warning is logged."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    # Lower the threshold to trigger on any real query
+    db._lock_warn_threshold_seconds = 0.0
+    # Run a query that takes some measurable time (the grouped active-session
+    # query, even on an empty DB, takes a few ms — not enough for 0.0 s
+    # threshold on a fast machine, but the timing is monotonic so any hold > 0
+    # will trigger). We seed enough rows to guarantee it.
+    for i in range(100):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            (f"2026-06-01T00:00:{i:02d}", f"TASK-{i % 10}", f"agent{i % 5}",
+             "session_start" if i % 2 == 0 else "session_end"),
+        )
+    db._conn.commit()
+    db.fetch_all_readonly("SELECT COUNT(*) FROM audit_log")
+    # With threshold 0.0, any positive hold time triggers a warning
+    hold_warnings = [r for r in caplog.record_tuples
+                     if "hold" in r[2] and "fetch_all_readonly" in r[2]]
+    assert len(hold_warnings) >= 1, f"Expected hold warning, got: {caplog.record_tuples}"
+    # Reset threshold
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_wait_detects_contention(db, caplog):
+    """When two threads contend for the lock, the waiting thread logs a wait warning."""
+    import logging
+    import time
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms — low enough to catch contention
+
+    hold_started = threading.Event()
+    hold_done = threading.Event()
+    wait_observed = threading.Event()
+    wait_warnings: list = []
+
+    def slow_holder():
+        # Acquire lock and hold it for a bit
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)  # hold long enough for the waiter to notice
+        finally:
+            db._lock.release()
+            hold_done.set()
+
+    def waiter():
+        # Wait for holder to start, then try to acquire
+        hold_started.wait()
+        db.fetch_all_readonly("SELECT 1")
+        wait_observed.set()
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    assert wait_observed.is_set(), "waiter never completed"
+    wait_warnings = [r for r in caplog.record_tuples
+                     if "wait" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"Expected wait warning, got records: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_rlock_reentrancy_no_false_wait(db, caplog):
+    """RLock reentrancy: nested acquire by the same thread shows near-zero wait."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.1
+
+    # get_task calls fetch_one_readonly which both go through _synchronized.
+    # The inner call re-acquires the RLock with no contention.
+    db.insert_task(TaskRecord(id="TASK-R", brief="reentrant test"))
+    result = db.get_task("TASK-R")
+    assert result is not None
+
+    # No wait warnings should fire for reentrant acquires (near-zero wait)
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"RLock reentrancy should not log wait warnings, got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_responsiveness_regression(db, caplog):
+    """Durable responsiveness regression: a lightweight read completes quickly
+    even when a concurrent thread holds the lock briefly (Post-Phase 0, the
+    dashboard query is fast — this proves a fast operation is not starved)."""
+    import logging
+    import time
+
+    # Seed some data
+    for i in range(50):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            (f"2026-06-01T00:00:{i:02d}", f"TASK-{i % 5}", f"agent{i % 3}",
+             "session_start" if i % 2 == 0 else "session_end"),
+        )
+    db._conn.commit()
+
+    results: list = []
+    barrier = threading.Barrier(2, timeout=5)
+
+    def fast_query():
+        barrier.wait()
+        t0 = time.monotonic()
+        rows = db.fetch_all_readonly("SELECT COUNT(*) FROM audit_log")
+        elapsed = time.monotonic() - t0
+        results.append(("fast", elapsed, rows))
+
+    def slow_query():
+        barrier.wait()
+        t0 = time.monotonic()
+        # The grouped active-session query (post-Phase 0 fix)
+        rows = db.fetch_all_readonly(
+            "SELECT DISTINCT agent FROM audit_log "
+            "WHERE action IN ('session_start', 'session_end') "
+            "GROUP BY task_id, agent "
+            "HAVING MAX(CASE WHEN action='session_start' THEN timestamp END) IS NOT NULL "
+            "  AND (MAX(CASE WHEN action='session_end' THEN timestamp END) IS NULL "
+            "       OR MAX(CASE WHEN action='session_start' THEN timestamp END) >= "
+            "          MAX(CASE WHEN action='session_end' THEN timestamp END))"
+        )
+        elapsed = time.monotonic() - t0
+        results.append(("grouped", elapsed, rows))
+
+    t1 = threading.Thread(target=fast_query)
+    t2 = threading.Thread(target=slow_query)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(results) == 2
+    # The fast count(*) query should complete in well under 1 second
+    # even when contending with the grouped active-session query.
+    fast_elapsed = [e for label, e, _ in results if label == "fast"][0]
+    assert fast_elapsed < 1.0, (
+        f"Fast query took {fast_elapsed:.3f}s — lock contention regression"
+    )
+
+
+def test_lock_instrument_execute_contention_regression(db, caplog):
+    """Database.execute (now @_synchronized) fires wait/hold warnings
+    under contention, proving all shared-connection paths are instrumented."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms
+
+    hold_started = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+
+    def waiter():
+        hold_started.wait()
+        # db.execute() goes through @_synchronized → must log wait
+        db.execute("SELECT 1")
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"db.execute() must log wait warning under contention, "
+        f"got: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_execute_reentrancy_no_false_wait(db, caplog):
+    """db.execute() called from within another @_synchronized method must
+    show near-zero wait time (RLock reentrancy). The inner execute must
+    not produce a false-positive wait warning."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.01  # very low threshold
+
+    # Insert a task (goes through @_synchronized). get_task internally
+    # calls fetch_one_readonly which goes through @_synchronized. The
+    # inner call re-acquires the RLock with near-zero wait.
+    db.insert_task(TaskRecord(id="TASK-REX", brief="reentrant exec test"))
+    result = db.get_task("TASK-REX")
+    assert result is not None
+
+    # Also test execute() called directly from within a @_synchronized
+    # method. insert_task calls self.execute() internally.
+    # Direct execute() should show no wait warning when called reentrantly.
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"RLock reentrancy should not log wait warnings for execute, "
+        f"got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_lock_instrument_no_sql_param_leakage(db, caplog):
+    """Lock instrumentation log messages must NEVER contain SQL text or
+    query parameters. Only duration, threshold, class name, and method
+    name are safe to emit. Any SQL/param leakage is a security risk."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.0  # trigger on any positive hold
+    hold_started = threading.Event()
+    hold_done = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+            hold_done.set()
+
+    def waiter():
+        hold_started.wait()
+        # This query has a distinctive SQL pattern and parameter
+        db.fetch_all_readonly(
+            "SELECT COUNT(*) AS n FROM tasks WHERE id = ?",
+            ("TASK-SECRET-LEAK-TEST",),
+        )
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    # Collect all lock warning messages
+    lock_warnings = [
+        r[2] for r in caplog.record_tuples
+        if "Database._lock" in r[2]
+    ]
+    assert len(lock_warnings) >= 1, (
+        "Expected at least one lock warning, got none"
+    )
+
+    # Verify no SQL or parameter leakage
+    for msg in lock_warnings:
+        # SQL keywords
+        assert "SELECT" not in msg.upper(), (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "INSERT" not in msg.upper(), (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "FROM" not in msg, (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        assert "WHERE" not in msg, (
+            f"Lock warning leaks SQL: {msg[:100]}"
+        )
+        # Task IDs / parameters
+        assert "TASK-SECRET-LEAK-TEST" not in msg, (
+            f"Lock warning leaks query parameter: {msg[:100]}"
+        )
+        # Verify safe fields are present
+        assert "Database._lock" in msg, (
+            f"Lock warning missing class info: {msg[:100]}"
+        )
+
+    db._lock_warn_threshold_seconds = 1.0
+
+
+# ── THR-129 fix-forward round 3: execute hold/wait + nested reentrancy ──
+
+def test_execute_hold_warns_at_threshold_boundary(db, caplog):
+    """Database.execute itself records hold warnings when execution time
+    exceeds the threshold. Proves the @_synchronized instrumentation covers
+    the execute() path, not just the higher-level query methods."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.0  # trigger on any positive hold
+
+    # A query that takes measurable time by doing multiple UNION ALL scans
+    db.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+        "UNION ALL SELECT COUNT(*) FROM sqlite_master "
+    )
+    hold_warnings = [r for r in caplog.record_tuples
+                     if "hold" in r[2] and "execute" in r[2]]
+    assert len(hold_warnings) >= 1, (
+        f"Expected hold warning for execute(), got: {caplog.record_tuples}"
+    )
+    # Verify no SQL leakage in warnings
+    for _, _, msg in hold_warnings:
+        assert "SELECT" not in msg.upper(), f"Warning leaks SQL: {msg[:100]}"
+        assert "sqlite_master" not in msg, f"Warning leaks table name: {msg[:100]}"
+
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_execute_wait_warns_at_threshold_boundary(db, caplog):
+    """Database.execute itself records wait warnings under contention,
+    proving all shared-connection paths are instrumented."""
+    import logging
+    import time
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.05  # 50ms
+
+    hold_started = threading.Event()
+
+    def slow_holder():
+        db._lock.acquire()
+        try:
+            hold_started.set()
+            time.sleep(0.3)
+        finally:
+            db._lock.release()
+
+    def waiter():
+        hold_started.wait()
+        # Direct execute() call via @_synchronized — must log wait
+        result = db.execute("SELECT 1")
+        list(result)  # consume iterator
+
+    t_holder = threading.Thread(target=slow_holder)
+    t_waiter = threading.Thread(target=waiter)
+    t_holder.start()
+    t_waiter.start()
+    t_holder.join()
+    t_waiter.join()
+
+    wait_warnings = [r for r in caplog.record_tuples
+                     if "wait" in r[2] and "execute" in r[2]]
+    assert len(wait_warnings) >= 1, (
+        f"db.execute() must log wait warning under contention, "
+        f"got: {caplog.record_tuples}"
+    )
+    db._lock_warn_threshold_seconds = 1.0
+
+
+def test_execute_nested_reentrant_no_false_wait(db, caplog):
+    """Genuinely nested Database.execute call within another
+    @_synchronized method: the inner execute re-acquires the RLock with
+    near-zero wait and must not produce false-positive wait warnings.
+    This proves RLock reentrancy for execute-within-locked-context,
+    exercising the exact execute→execute nesting path."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="happyranch.database.lock")
+    db._lock_warn_threshold_seconds = 0.01  # very low threshold
+
+    # Acquire the lock explicitly, then call execute() multiple times from
+    # the same thread. Each inner execute() is @_synchronized and will
+    # re-acquire the RLock — this is the genuinely nested execute path.
+    def nested_executes():
+        db._lock.acquire()
+        try:
+            # First execute (outer lock held by us)
+            r1 = db.execute("SELECT 1")
+            list(r1)
+            # Second execute — also re-acquires RLock
+            r2 = db.execute("SELECT 2")
+            list(r2)
+            # Third execute
+            r3 = db.execute("SELECT 3")
+            list(r3)
+            # insert_task calls self.execute() internally via @_synchronized
+            db.insert_task(TaskRecord(id="TASK-NESTX", brief="nested exec"))
+        finally:
+            db._lock.release()
+
+    t = threading.Thread(target=nested_executes)
+    t.start()
+    t.join()
+
+    # Zero wait warnings — all acquires were reentrant (same thread)
+    wait_warnings = [r for r in caplog.record_tuples if "wait" in r[2]]
+    assert len(wait_warnings) == 0, (
+        f"Nested/reentrant execute calls must not log wait warnings, "
+        f"got: {wait_warnings}"
+    )
+    db._lock_warn_threshold_seconds = 1.0

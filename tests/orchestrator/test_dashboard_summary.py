@@ -140,6 +140,197 @@ def test_narrative_counts_populated(db: Database, mock_kb_store: _MockKbStore) -
     assert counts.spend_today_usd == pytest.approx(2.50)
 
 
+# ── Phase 0 adversarial parity tests ──────────────────────────────────────
+# These prove the new grouped MAX(session_start) vs MAX(session_end) query
+# is semantically identical to the original correlated NOT EXISTS query
+# across all edge cases identified in the TASK-3878 root-cause report.
+
+def _seed_session(db: Database, ts: datetime, task_id: str, agent: str,
+                  action: str) -> None:
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, ?, ?, ?, NULL)",
+        (ts.isoformat(), task_id, agent, action),
+    )
+
+
+def test_agents_active_open_session_no_end(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """An unmatched session_start → agent is active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_closed_session_not_active(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """A session_start followed by a later session_end → agent is NOT active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 0
+
+
+def test_agents_active_equal_timestamps_stays_active(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """End whose timestamp EQUALS (not > ) a start does NOT close it.
+    The original > semantic leaves it active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = now - timedelta(hours=1)
+    _seed_session(db, ts, "TASK-A", "agent1", "session_start")
+    _seed_session(db, ts, "TASK-A", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_restarted_session_open_after_close(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Restarted session: close old, start new, no close → still active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=4), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_end")
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_restarted_fully_closed_not_active(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Restarted session that was fully closed → not active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=4), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_end")
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 0
+
+
+def test_agents_active_multiple_tasks_one_open(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """One agent in two tasks: one closed, one open → still active (distinct-agent count, not per-session)."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # Task A: closed
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_end")
+    # Task B: still open
+    _seed_session(db, now - timedelta(hours=1), "TASK-B", "agent1", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_multiple_tasks_all_closed(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """One agent in two tasks: both closed → not active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=4), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_end")
+    _seed_session(db, now - timedelta(hours=2), "TASK-B", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=1), "TASK-B", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 0
+
+
+def test_agents_active_distinct_agents_counted_separately(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Two different agents, both active → count = 2 (distinct agents)."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=1), "TASK-B", "agent2", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 2
+
+
+def test_agents_active_duplicate_agent_starts_one_task_counted_once(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Same agent, same task → distinct agent count = 1 (agent is counted once regardless of how many tasks they're active in)."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_no_sessions(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """No session rows at all → 0 active agents."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 0
+
+
+def test_agents_active_end_before_start_different_task_irrelevant(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """An end for a different task_id should not affect the active count for another task."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # Task A: agent1 is open
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_start")
+    # Task B: agent1 has an end but no start (should not close Task A's start)
+    _seed_session(db, now - timedelta(hours=2), "TASK-B", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_only_session_ends_no_starts(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Only session_end rows (no session_start) → 0 active agents."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 0
+
+
+def test_agents_active_overlapping_mixed_agents(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Two agents with overlapping sessions: one open, one closed → count = 1."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # agent1: closed
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_end")
+    # agent2: open
+    _seed_session(db, now - timedelta(hours=1), "TASK-B", "agent2", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_multiple_restarts_last_open(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Agent restarts 3 times: the last start is unmatched → active."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    _seed_session(db, now - timedelta(hours=6), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=5), "TASK-A", "agent1", "session_end")
+    _seed_session(db, now - timedelta(hours=4), "TASK-A", "agent1", "session_start")
+    _seed_session(db, now - timedelta(hours=3), "TASK-A", "agent1", "session_end")
+    _seed_session(db, now - timedelta(hours=2), "TASK-A", "agent1", "session_start")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.agents_active_now == 1
+
+
+def test_agents_active_parity_regression_safety(db: Database, mock_kb_store: _MockKbStore) -> None:
+    """Brute-force parity check: seed a variety of overlapping/restarted
+    sessions and verify agents_active_now is deterministic and ≥ 0."""
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # agent1: open (TASK-A)
+    _seed_session(db, now - timedelta(hours=1), "TASK-A", "agent1", "session_start")
+    # agent2: closed (TASK-B) then open (TASK-C)
+    _seed_session(db, now - timedelta(hours=5), "TASK-B", "agent2", "session_start")
+    _seed_session(db, now - timedelta(hours=4), "TASK-B", "agent2", "session_end")
+    _seed_session(db, now - timedelta(hours=1), "TASK-C", "agent2", "session_start")
+    # agent3: closed (TASK-D)
+    _seed_session(db, now - timedelta(hours=3), "TASK-D", "agent3", "session_start")
+    _seed_session(db, now - timedelta(hours=2), "TASK-D", "agent3", "session_end")
+    # agent4: no sessions at all
+    # agent5: equal-timestamp pair (should stay active)
+    ts_eq = now - timedelta(hours=1, minutes=30)
+    _seed_session(db, ts_eq, "TASK-E", "agent5", "session_start")
+    _seed_session(db, ts_eq, "TASK-E", "agent5", "session_end")
+    db._conn.commit()
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    # agent1 (active), agent2 (active in TASK-C), agent5 (equal timestamps → active)
+    assert counts.agents_active_now == 3, f"expected 3 active agents, got {counts.agents_active_now}"
+
+
 from runtime.orchestrator.dashboard_summary import compute_heartbeat_24h
 
 

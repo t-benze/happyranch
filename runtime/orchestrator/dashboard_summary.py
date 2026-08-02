@@ -95,6 +95,14 @@ class DashboardSummaryResponse(BaseModel):
     org_pulse: list[TeamPulse]
     org_age_days: int
     server_now: datetime
+    generated_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the projection was last successfully refreshed "
+            "(cache-only: never a synchronous compose). None when no "
+            "projection exists yet (cold-start before first refresh)."
+        ),
+    )
 
 
 def compute_org_age_days(db: Database, *, now: datetime | None = None) -> int:
@@ -165,15 +173,26 @@ def compute_narrative_counts_today(
     )
     escalated = int(escalated_row["n"]) if escalated_row else 0
 
-    # Distinct agents with an unmatched session_start
+    # Distinct agents whose most recent session_start (per task_id,agent) is
+    # unmatched by a later session_end. Uses a single grouped scan instead of a
+    # correlated NOT EXISTS — the old O(n²) query held the per-org SQLite
+    # Database._lock for 15+ seconds with 39k audit_log rows, blocking all
+    # other org routes (THR-129 / TASK-3878 root cause).
+    #
+    # Semantics verified by adversarial parity tests:
+    #   - An end whose timestamp EQUALS (not >) a start does NOT close it.
+    #   - An agent is counted once (DISTINCT agent) regardless of how many
+    #     tasks they're active in.
+    #   - Restarted/overlapping sessions: only the MAX timestamp per
+    #     (task_id, agent) matters — the last open stays open.
     active_rows = db.fetch_all_readonly(
-        "SELECT DISTINCT a.agent FROM audit_log a "
-        "WHERE a.action = 'session_start' "
-        "AND NOT EXISTS ("
-        "  SELECT 1 FROM audit_log b "
-        "  WHERE b.task_id = a.task_id AND b.agent = a.agent "
-        "  AND b.action = 'session_end' AND b.timestamp > a.timestamp"
-        ")"
+        "SELECT DISTINCT agent FROM audit_log "
+        "WHERE action IN ('session_start', 'session_end') "
+        "GROUP BY task_id, agent "
+        "HAVING MAX(CASE WHEN action = 'session_start' THEN timestamp END) IS NOT NULL "
+        "  AND (MAX(CASE WHEN action = 'session_end' THEN timestamp END) IS NULL "
+        "       OR MAX(CASE WHEN action = 'session_start' THEN timestamp END) >= "
+        "          MAX(CASE WHEN action = 'session_end' THEN timestamp END))"
     )
     active_now = len(active_rows)
 

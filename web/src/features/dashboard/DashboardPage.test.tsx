@@ -46,6 +46,7 @@ function emptySummary(): DashboardSummaryResponse {
     org_pulse: [],
     org_age_days: 0,
     server_now: '2026-05-30T12:00:00Z',
+    generated_at: '2026-05-30T12:00:00Z',
   };
 }
 

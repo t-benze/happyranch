@@ -61,6 +61,7 @@ function seedSidebarShell(
         org_pulse: [],
         org_age_days: summary.org_age_days ?? 0,
         server_now: '2026-06-17T12:00:00Z',
+        generated_at: '2026-06-17T12:00:00Z',
       }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
@@ -290,6 +291,7 @@ describe('IA-2: Default landing = Home', () => {
           org_pulse: [],
           org_age_days: 0,
           server_now: '2026-06-17T12:00:00Z',
+          generated_at: '2026-06-17T12:00:00Z',
         }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
