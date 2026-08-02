@@ -140,6 +140,23 @@ class DashboardProjectionManager:
             )
             return None
 
+        # Reject payload containing unknown/extra fields BEFORE Pydantic
+        # validation. DashboardSummaryResponse uses the BaseModel default
+        # extra='ignore', so model_validate_json(strict=True) alone silently
+        # drops unknown fields instead of rejecting them. Explicit pre-check
+        # guarantees every on-disk key maps to a canonical response field.
+        valid_payload_keys = set(DashboardSummaryResponse.model_fields.keys())
+        payload_keys = set(proj.payload.keys())
+        extra_keys = payload_keys - valid_payload_keys
+        if extra_keys:
+            _extra = sorted(extra_keys)
+            logger.warning(
+                "dashboard projection file for org %s has payload with "
+                "%d unknown field(s): %s",
+                self.org_slug, len(_extra), _extra,
+            )
+            return None
+
         # Validate payload against DashboardSummaryResponse with strict type
         # checking AND retain the validated output. model_validate_json with
         # strict=True rejects coercible payload types (string numeric fields,

@@ -698,41 +698,74 @@ def test_load_from_disk_retains_validated_payload(tmp_home, org_state) -> None:
 
 def test_load_from_disk_rejects_payload_with_extra_fields(tmp_home, org_state) -> None:
     """Payload with unknown/extra fields (not in DashboardSummaryResponse)
-    must be rejected by strict validation."""
+    must be rejected by strict validation.
+
+    This regression seeds a FULLY VALID canonical payload (every required
+    field present), adds exactly one unknown key, and proves load_from_disk()
+    returns None (cache-unavailable) without mutating the old projection or
+    altering the canonical sidecar bytes."""
+    import asyncio
     mgr = org_state.dashboard_projection
-    raw = {
-        "version": 1,
-        "org_slug": org_state.slug,
-        "generated_at": "2026-06-01T12:00:00",
-        "payload": {"heartbeat": [], "narrative_counts": {},
-                     "escalations": [], "stale_escalations": [],
-                     "active_by_team": [], "recent_activity": [],
-                     "updates_this_week": [], "org_pulse": [],
-                     "org_age_days": 0, "server_now": "2026-06-01T12:00:00",
-                     "generated_at": None,
-                     "extra_payload_field": "should_be_rejected"},
-    }
-    mgr.projection_path.write_text(json.dumps(raw), encoding="utf-8")
+    kb_store = KBStore(org_state.root / "kb")
+
+    # Seed a valid canonical projection via warm (compose + persist),
+    # ensuring the sidecar holds a complete DashboardSummaryResponse.
+    ok = asyncio.run(mgr.warm(db=org_state.db, kb_store=kb_store, teams=org_state.teams))
+    assert ok is True, "warm must succeed to seed a valid projection"
+    # Verify it loads cleanly before tampering
+    before = mgr.load_from_disk()
+    assert before is not None, "canonical sidecar must load cleanly"
+    old_bytes = mgr.projection_path.read_bytes()
+
+    # Now add exactly one unknown key to the payload, keep everything else
+    # identical (the payload is a full DashboardSummaryResponse).
+    tampered = json.loads(old_bytes)
+    tampered["payload"]["extra_payload_field"] = "should_be_rejected"
+    mgr.projection_path.write_text(json.dumps(tampered), encoding="utf-8")
+
     result = mgr.load_from_disk()
-    assert result is None, f"Payload with extra fields should be rejected, got {result}"
+    assert result is None, (
+        f"Payload with extra fields should be rejected, got {result}"
+    )
+    # Prove the sidecar was not mutated by the load attempt
+    current_bytes = mgr.projection_path.read_bytes()
+    assert current_bytes == json.dumps(tampered).encode("utf-8"), (
+        "canonical sidecar bytes must be unchanged after rejection"
+    )
+    # Prove the in-memory projection is not affected (old projection
+    # was None before warm — warm set it, but load_from_disk failure
+    # should not alter the in-memory ref)
+    assert mgr.get_projection() is not None, (
+        "in-memory projection must not be altered by load-from-disk rejection"
+    )
 
 
-def test_startup_async_warm_serves_503_while_compose_blocked(
-    tmp_home, org_state, app, auth_headers, monkeypatch,
+def test_lifespan_async_warm_serves_503_and_clean_shutdown(
+    tmp_home, daemon_state, auth_headers, monkeypatch,
 ) -> None:
-    """Lifespan-level test: when the initial warm's compose is blocked in a
-    real worker thread, GET /dashboard/summary returns 503 (cache-only)
-    before the warm completes. The blocked worker is tracked, observed,
-    cancelled, reaped, and released without unowned exceptions."""
+    """Daemon-lifespan regression: enter the actual FastAPI lifespan via
+    TestClient(app) as a context manager, patch the imported production
+    compose_dashboard_summary binding so initial warm enters and blocks in
+    a real worker thread, prove the app yields promptly while the cache-only
+    dashboard route returns 503 until a valid projection exists, then prove
+    lifecycle shutdown cancels before awaiting/reaping under a short deadline,
+    releases/accounts for the worker, and asserts no leaked/unowned task
+    exception.
+
+    This test exercises app.py's shipping lifespan ownership + cleanup path
+    (cancel_scheduler → reap_scheduler). It does NOT call
+    manager.start_scheduler manually."""
     import threading
 
+    from fastapi.testclient import TestClient
+    from runtime.daemon.app import create_app
     from runtime.orchestrator import dashboard_projection as dp_mod
 
-    mgr = org_state.dashboard_projection
-    # Ensure no prior projection
-    assert mgr.get_projection() is None
+    # Ensure no prior projection for the alpha org.
+    org_state = daemon_state.orgs["alpha"]
+    assert org_state.dashboard_projection.get_projection() is None
 
-    # Patch compose_dashboard_summary to block in a real thread
+    # Patch compose_dashboard_summary to block in a real worker thread.
     compose_entered = threading.Event()
     compose_unblock = threading.Event()
     compose_done = threading.Event()
@@ -740,74 +773,67 @@ def test_startup_async_warm_serves_503_while_compose_blocked(
     original_compose = dp_mod.compose_dashboard_summary
     def blocking_compose(*, db, kb_store, teams, now):
         compose_entered.set()
-        # Block until released — simulates a slow DB compose
-        compose_unblock.wait(timeout=10)
+        # Block until released (simulates a slow DB compose).
+        compose_unblock.wait(timeout=30)
         result = original_compose(db=db, kb_store=kb_store, teams=teams, now=now)
         compose_done.set()
         return result
     monkeypatch.setattr(dp_mod, "compose_dashboard_summary", blocking_compose)
 
     # Shorten the refresh interval so the periodic tick fires quickly
+    # (the initial_warm runs before the first tick, but the shortened
+    # interval avoids a long wait if the test inspects the warm result).
     monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
 
     try:
-        # Start the scheduler with initial_warm=True (simulates daemon lifespan)
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            from runtime.infrastructure.kb_store import KBStore
-            kb_store = KBStore(org_state.root / "kb")
-            task = mgr.start_scheduler(
-                db=org_state.db, kb_store=kb_store,
-                teams=org_state.teams, loop=loop, initial_warm=True,
+        app = create_app(daemon_state)
+        # Enter the FastAPI lifespan via TestClient as a context manager.
+        # This triggers app.py's _lifespan startup (including the dashboard
+        # projection scheduler with initial_warm=True).
+        with TestClient(app) as client:
+            # Wait for compose_dashboard_summary to have been entered by the
+            # lifespan's background warm task — proves the lifespan yielded
+            # BEFORE warm completed (the lifecycle did not await it).
+            assert compose_entered.wait(timeout=10), (
+                "compose_dashboard_summary must be entered by lifespan's "
+                "initial warm task"
             )
 
-            async def _async_test():
-                # Wait for compose to enter its blocking path
-                await asyncio.to_thread(compose_entered.wait, 5.0)
-                assert compose_entered.is_set(), (
-                    "compose_dashboard_summary should have been entered "
-                    "by the background warm task"
-                )
+            # Hit the cache-only dashboard route — must return 503 because
+            # the warm is still blocked (no projection in memory yet).
+            r = client.get(
+                f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
+                headers=auth_headers,
+            )
+            assert r.status_code == 503, (
+                f"Expected 503 while warm is blocked, got {r.status_code}"
+            )
+            assert "not yet available" in r.json()["detail"]
 
-                # Now hit the route — it must return 503 because no
-                # projection exists yet (warm is still blocked)
-                client = TestClient(app)
-                r = client.get(
-                    f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
-                    headers=auth_headers,
-                )
-                assert r.status_code == 503, (
-                    f"Expected 503 while warm is blocked, got {r.status_code}"
-                )
-                assert "not yet available" in r.json()["detail"]
+            # Release the blocked compose so the warm can finish.
+            compose_unblock.set()
+            # Wait for the worker to complete (so it's accounted for).
+            assert compose_done.wait(timeout=10), (
+                "blocked compose must complete after release"
+            )
 
-                # Cancel the scheduler (cancel BEFORE await)
-                mgr.cancel_scheduler()
-                # Reap under bounded timeout
-                await asyncio.wait_for(mgr.reap_scheduler(), timeout=3.0)
-                # Release the blocked worker thread
-                compose_unblock.set()
-                # Wait for the worker to complete (so it's accounted for)
-                await asyncio.to_thread(compose_done.wait, 5.0)
-                assert compose_done.is_set(), (
-                    "blocked compose should have completed after release"
-                )
-                # Verify task is cleaned up
-                assert mgr._refresh_task is None, (
-                    "_refresh_task should be None after reap"
-                )
+            # After warm completes, the route should serve 200.
+            r2 = client.get(
+                f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
+                headers=auth_headers,
+            )
+            assert r2.status_code == 200, (
+                f"Expected 200 after warm completes, got {r2.status_code}"
+            )
+            body = r2.json()
+            assert "generated_at" in body
+            assert body["generated_at"] is not None
 
-            loop.run_until_complete(_async_test())
-        finally:
-            # Clean up any remaining tasks
-            pending = asyncio.all_tasks(loop)
-            for t in pending:
-                t.cancel()
-            if pending:
-                loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
-            loop.close()
+        # After exiting the TestClient context, the lifespan shutdown has
+        # run (cancel_scheduler → reap_scheduler). Verify cleanup.
+        mgr = org_state.dashboard_projection
+        assert mgr._refresh_task is None, (
+            "_refresh_task must be None after lifespan shutdown (reap completed)"
+        )
     finally:
         dp_mod.compose_dashboard_summary = original_compose
