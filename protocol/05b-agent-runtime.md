@@ -193,8 +193,8 @@ chmod, chown, or mutate canonical content through workspace symlinks.
 **Isolation contract (macOS):**
 - The daemon/materializer and executor MUST be distinct OS identities with
 different uid/gid.
-- Executor processes are launched via setgid/setuid to the restricted executor
-account. Same-owner launch is REJECTED.
+- Executor processes are launched via `sudo -n -u <executor>` identity handoff
+(non-root daemon model). Same-owner launch is REJECTED.
 - Canonical store ownership and permissions are verified before every launch.
 - Ordinary directories, malicious/broken/external/wrong-version links, unsafe
 targets, failed permission check, missing account, or repair errors fail closed

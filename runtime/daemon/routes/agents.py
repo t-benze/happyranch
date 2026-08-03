@@ -54,28 +54,32 @@ router = APIRouter(dependencies=[require_token()])
 def _executor_switch_materialize(
     workspace: Path,
     org: OrgState,
-    paths: OrgPaths,
     agent_name: str,
-    system_prompt: str,
     provider: str,
 ) -> list[str]:
-    """Materialize skills during executor switch under the workspace lock.
+    """Materialize the six-context canonical skill union during executor switch.
 
-    Serializes the complete bootstrap materialization (ensure_workspace_ready
-    which includes adapter _copy_skills + system-contract injection for all
-    4 session contexts) under the process-local workspace lock so a concurrent
-    session-time task/thread spawn cannot interleave inside _copy_skills_tree.
+    Runs under the process-local workspace RLock so a concurrent
+    session-time task/thread spawn cannot interleave inside the
+    materialization tree. Returns a list of materialization error
+    messages (empty on success).
 
-    Returns a list of materialization error messages (empty on success).
-    The lock is an RLock — adapter _copy_skills called inside
-    ensure_workspace_ready safely re-enters the lock.
+    This function does ONLY the union materialization. Bootstrap files
+    (CLAUDE.md/AGENTS.md, .claude/settings.json, memory, task_history)
+    are NOT written here — they are handled by the caller AFTER this
+    function succeeds and before the new executor frontmatter is
+    persisted. This ordering guarantees:
+
+    1. Union failure → no bootstrap files, no config change, no audit.
+    2. Union success + bootstrap failure → safe compensation cleans up
+       any partial bootstrap files BEFORE any config/audit mutation.
+    3. Union success + bootstrap success → config + audit proceed.
     """
     _logger = logging.getLogger(__name__)
-    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
 
     # Resolve agent team for the unified call
     try:
-        agent_def = prompt_loader.load_agent(paths, agent_name)
+        agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), agent_name)
         agent_team = agent_def.team if agent_def else "engineering"
     except Exception:
         agent_team = "engineering"
@@ -83,13 +87,6 @@ def _executor_switch_materialize(
     skills_root = org.settings.project_root / "runtime" / "skills"
 
     with _workspace_skills_transaction(workspace):
-        # ── Step A: Materialize the six-context canonical union FIRST.
-        # This MUST complete before any persistent workspace mutation
-        # (bootstrap files, agent.yaml, frontmatter, audit log).
-        # If materialization fails, the workspace is left unchanged —
-        # no bootstrap files are written for the new executor, no
-        # audit row is created, and the route returns HTTP 400.
-        # FAIL-CLOSED: materialization failure prevents executor switch.
         errors: list[str] = []
         try:
             from runtime.orchestrator.workspace_adapters import (
@@ -114,22 +111,7 @@ def _executor_switch_materialize(
                 "context-union provider=%s agent=%s: %s",
                 provider, agent_name, e,
             )
-            # Return immediately — do NOT write any bootstrap files.
-            # The caller checks errors and refuses to persist the new
-            # executor. The previous executor config, frontmatter,
-            # workspace state, and audit state are all preserved.
             return errors
-
-        # ── Step B: Bootstrap persistent files ONLY after
-        # materialization succeeds. These include the executor's
-        # bootstrap document (CLAUDE.md/AGENTS.md), memory dir,
-        # task_history, and .claude/settings.json.
-        ctx.ensure_workspace_ready(
-            workspace,
-            agent_name,
-            system_prompt,
-            provider=provider,
-        )
 
     return errors
 
@@ -883,8 +865,7 @@ async def set_agent_executor(
     if has_workspace:
         materialization_errors = await asyncio.to_thread(
             _executor_switch_materialize,
-            workspace, org, paths, agent_name,
-            existing.system_prompt, body.executor,
+            workspace, org, agent_name, body.executor,
         )
         if materialization_errors:
             raise HTTPException(
@@ -900,8 +881,68 @@ async def set_agent_executor(
                 },
             )
 
-    # ── Step 2: Persist the new executor frontmatter ──
-    # Only reached if materialization succeeded (or no workspace exists).
+    # ── Step 2: Bootstrap persistent workspace files ──
+    # Run AFTER successful union but BEFORE frontmatter/audit persistence.
+    # A bootstrap failure must clean up any partial files and refuse the
+    # switch — no config change, no audit row. Only if this succeeds does
+    # the switch become durable.
+    if has_workspace:
+        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+        try:
+            ctx.ensure_workspace_ready(
+                workspace,
+                agent_name,
+                existing.system_prompt,
+                provider=body.executor,
+            )
+        except Exception as e:
+            _logger = logging.getLogger(__name__)
+            _logger.error(
+                "Executor switch: bootstrap failed after successful "
+                "union for provider=%s agent=%s: %s",
+                body.executor, agent_name, e,
+            )
+            # Safe compensation: remove any new-executor bootstrap files
+            # that were partially written. The old executor's bootstrap
+            # files (if any) are preserved.
+            _BOOTSTRAP_FILES: list[str] = [
+                "CLAUDE.md", "AGENTS.md",
+            ]
+            _BOOTSTRAP_DIRS: list[str] = [
+                ".claude", ".agents",
+            ]
+            for fname in _BOOTSTRAP_FILES:
+                fp = workspace / fname
+                if fp.exists():
+                    try:
+                        fp.unlink()
+                    except OSError:
+                        pass
+            for dname in _BOOTSTRAP_DIRS:
+                dp = workspace / dname
+                if dp.exists() and dp.is_dir():
+                    try:
+                        shutil.rmtree(dp)
+                    except OSError:
+                        pass
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": str(e),
+                    "message": (
+                        "Executor workspace bootstrap failed after "
+                        "successful skill materialization. The previous "
+                        "executor has been preserved. Any partial "
+                        "bootstrap files have been cleaned up. "
+                        "Resolve the bootstrap error before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 3: Persist the new executor frontmatter ──
+    # Only reached if union materialization AND bootstrap both succeeded
+    # (or no workspace exists).
     updated = AgentDef(
         name=existing.name,
         team=existing.team,
