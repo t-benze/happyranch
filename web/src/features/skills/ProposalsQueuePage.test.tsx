@@ -332,10 +332,34 @@ describe('ProposalsQueue route precedence', () => {
 
   test('/skills/proposals/:versionId coexists with skills/proposals', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    // The restored full ProposalDetailPage fetches detail data — provide a
+    // minimal response so the component renders rather than hanging in loading.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/42`, () =>
+        HttpResponse.json({
+          version_id: 42,
+          skill_id: 'hr:test',
+          slug: 'test',
+          name: 'Test Skill',
+          version: '1.0.0',
+          content_hash: 'abc',
+          status: 'proposed',
+          proposer_agent: 'dev_agent',
+          events: [],
+          assignments: [],
+          materializations: [],
+          last_event_id: 0,
+          created_at: '2026-08-01T00:00:00Z',
+        }),
+      ),
+    );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals/42` });
     await waitFor(() => {
-      expect(screen.getByText('Proposal Detail')).toBeInTheDocument();
+      expect(screen.getByText('Proposal')).toBeInTheDocument();
     });
-    expect(screen.getByText(/Version ID: 42/)).toBeInTheDocument();
+    // The restored full ProposalDetailPage renders the skill_id from the response
+    // (appears in breadcrumb + evidence rail, so expect multiple instances)
+    const skillIdElements = screen.getAllByText('hr:test');
+    expect(skillIdElements.length).toBeGreaterThanOrEqual(1);
   });
 });
