@@ -11,7 +11,7 @@ fail closed with an explicit error.
 - Daemon/materializer identity alone may mutate canonical store + workspace
   managed-skill-root entries.
 - Executor processes launch as a DISTINCT restricted macOS identity via
-  setgid/setuid.
+  ``sudo -n -u <executor>`` identity handoff (non-root daemon model).
 - Same-owner executor launch is NEVER accepted.
 - Fail-closed: any isolation violation raises before subprocess launch.
 """
@@ -176,13 +176,16 @@ class PlatformIsolation(ABC):
         stderr=subprocess.PIPE,
         text: bool = True,
     ) -> subprocess.Popen:
-        """Launch a subprocess as the restricted executor identity via
-        setgid/setuid preexec_fn.
+        """Launch a subprocess as the restricted executor identity.
+
+        On macOS this is achieved via ``sudo -n -u <executor>`` identity
+        handoff (non-root daemon model). Direct setgid/setuid from
+        preexec_fn is NOT available to non-root daemon processes.
 
         Raises PlatformIsolationError if:
         - No restricted executor identity is provisioned
         - The executor identity is the SAME as the daemon identity
-        - The privilege drop fails
+        - sudo capability or authorization is unavailable
         """
         ...
 
@@ -513,6 +516,11 @@ class _MacOSPlatformIsolation(PlatformIsolation):
 
         Same-owner launch is REJECTED — executor identity MUST differ from
         daemon.
+
+        The provided *env* is merged on top of the daemon's current
+        environment so sudo itself always has at least PATH and HOME.
+        This prevents environment-starvation failures when a caller
+        passes an empty or minimal env dict.
         """
         self._assert_executor_distinct()
         assert self._executor_identity is not None  # narrow type for mypy
@@ -523,6 +531,10 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         # Build sudo invocation: sudo -n -u <executor_user> -- <cmd>
         sudo_cmd = ["sudo", "-n", "-u", executor_user, "--"] + list(cmd)
 
+        # Merge caller env on top of daemon env so sudo never starves.
+        base_env = os.environ.copy()
+        base_env.update(env)
+
         try:
             return subprocess.Popen(
                 sudo_cmd,
@@ -531,7 +543,7 @@ class _MacOSPlatformIsolation(PlatformIsolation):
                 stdout=stdout,
                 stderr=stderr,
                 text=text,
-                env=env,
+                env=base_env,
             )
         except PlatformIsolationError:
             raise

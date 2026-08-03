@@ -2162,7 +2162,14 @@ def test_set_executor_materialization_failure_fail_closed(
 ) -> None:
     """When canonical union materialization fails during executor switch,
     the route must fail closed: HTTP 400, previous executor preserved,
-    no partial state mutation."""
+    no partial state mutation.
+
+    Specifically asserts:
+    - HTTP 400 with named error code
+    - agent.yaml executor key unchanged (still old executor)
+    - agent .md frontmatter executor field unchanged
+    - No bootstrap file from the new executor written
+    - No audit row produced (no audit_log entry for this switch)"""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2172,12 +2179,27 @@ def test_set_executor_materialization_failure_fail_closed(
         SystemContractMaterializationError,
     )
 
+    # Record pristine workspace state before the failing request
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # Check if any bootstrap files exist before (new-executor files)
+    bootstrap_candidates_before = set()
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists():
+            bootstrap_candidates_before.add(candidate)
+
     with patch(
         "runtime.daemon.routes.agents.ContextBuilder"
     ) as MockCB, patch(
         "runtime.orchestrator.workspace_adapters.materialize_workspace_skills_union"
     ) as mock_mat:
-        MockCB.return_value.ensure_workspace_ready.return_value = None
+        # DO NOT mock ensure_workspace_ready to assert it is never called
+        MockCB.return_value.ensure_workspace_ready.side_effect = RuntimeError(
+            "ensure_workspace_ready must NOT be called before materialization"
+        )
         mock_mat.side_effect = SystemContractMaterializationError(
             missing_contracts=["start-task"],
             workspace=workspace,
@@ -2200,3 +2222,27 @@ def test_set_executor_materialization_failure_fail_closed(
     assert len(body["detail"]["errors"]) >= 1, (
         f"Expected at least 1 materialization error, got {body}"
     )
+
+    # ── Assert unchanged state ──
+    # agent.yaml must still say "claude", not "codex"
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        f"agent.yaml was mutated on failure: before={agent_yaml_before!r}, "
+        f"after={agent_yaml_after!r}"
+    )
+
+    # Agent frontmatter must be unchanged
+    if frontmatter_before is not None:
+        frontmatter_after = agent_md_path.read_text()
+        assert frontmatter_after == frontmatter_before, (
+            "Agent frontmatter was mutated on materialization failure"
+        )
+
+    # No new bootstrap files should have been written by the new executor
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists() and candidate not in bootstrap_candidates_before:
+            pytest.fail(
+                f"Bootstrap file {candidate} was written before "
+                "materialization failed — violates materialize-first contract"
+            )
