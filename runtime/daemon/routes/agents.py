@@ -83,23 +83,13 @@ def _executor_switch_materialize(
     skills_root = org.settings.project_root / "runtime" / "skills"
 
     with _workspace_skills_transaction(workspace):
-        # Bootstrap persistent files (memory, task_history, bootstrap doc, settings).
-        # Note: adapter _copy_skills is a no-op in the canonical architecture.
-        ctx.ensure_workspace_ready(
-            workspace,
-            agent_name,
-            system_prompt,
-            provider=provider,
-        )
-
-        # Materialize skills for the switched workspace using a SINGLE
-        # full-expected-spec union from all six session contexts.
-        # Sequential per-context calls would allow the LAST context
-        # (bootstrap, which has no system contracts) to withdraw
-        # system-contract links created by earlier contexts.
+        # ── Step A: Materialize the six-context canonical union FIRST.
+        # This MUST complete before any persistent workspace mutation
+        # (bootstrap files, agent.yaml, frontmatter, audit log).
+        # If materialization fails, the workspace is left unchanged —
+        # no bootstrap files are written for the new executor, no
+        # audit row is created, and the route returns HTTP 400.
         # FAIL-CLOSED: materialization failure prevents executor switch.
-        # The caller MUST check errors and refuse to persist the new
-        # executor on any materialization failure.
         errors: list[str] = []
         try:
             from runtime.orchestrator.workspace_adapters import (
@@ -124,6 +114,22 @@ def _executor_switch_materialize(
                 "context-union provider=%s agent=%s: %s",
                 provider, agent_name, e,
             )
+            # Return immediately — do NOT write any bootstrap files.
+            # The caller checks errors and refuses to persist the new
+            # executor. The previous executor config, frontmatter,
+            # workspace state, and audit state are all preserved.
+            return errors
+
+        # ── Step B: Bootstrap persistent files ONLY after
+        # materialization succeeds. These include the executor's
+        # bootstrap document (CLAUDE.md/AGENTS.md), memory dir,
+        # task_history, and .claude/settings.json.
+        ctx.ensure_workspace_ready(
+            workspace,
+            agent_name,
+            system_prompt,
+            provider=provider,
+        )
 
     return errors
 
