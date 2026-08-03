@@ -85,8 +85,11 @@ submissions MUST declare a versioned dependency manifest
 ``{executable: absolute-path, sha256: hex}`` records).  Each declared child
 executable is validated at registration (absolute path, regular file,
 executable, SHA-256 match) and re-validated before EVERY launch attempt.
-An adapter with a declared manifest cannot silently rely on ambient PATH
-(the runtime scrubs PATH to ``/usr/bin:/bin`` for manifest-adapters).
+An adapter with a declared manifest forbids HappyRanch's selection of
+wrapper/agentic child executors by ambient PATH — they are explicitly
+absolute and hash-pinned/revalidated with no executor fallback. The
+adapter process inherits normalized PATH for normal callback/utility
+availability.
 An adapter declaring ``token_metering`` capability MUST produce a valid
 non-null ``token_usage`` at conformance time.  Legacy entries without the
 manifest retain their exact current launch behavior and are never

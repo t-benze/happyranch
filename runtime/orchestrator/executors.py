@@ -1504,20 +1504,14 @@ class CustomAdapterExecutor:
                             ),
                         )
 
-            # ── THR-107 seq244: PATH-scrubbed process environment ──
-            # When a dependency manifest is declared, the adapter cannot
-            # silently rely on ambient PATH.  We construct a narrowly scoped
-            # environment with PATH scrubbed to only /usr/bin:/bin so the
-            # adapter wrapper MUST use the declared absolute child paths.
-            # Legacy entries (no manifest) retain their existing env.
-            if self._dependency_manifest_version is not None and self._dependencies:
-                base_env = _callee_env()
-                # Keep only /usr/bin:/bin as safe system directories
-                # so core system utilities (sh, env, etc.) still work.
-                base_env["PATH"] = "/usr/bin:/bin"
-                launch_env = base_env
-            else:
-                launch_env = _callee_env()
+            # ── THR-107 seq268 (seq315 correction): inherited normalized PATH ──
+            # The adapter-launched process receives the same inherited
+            # normalized environment as normal launches (_callee_env()).
+            # The adapter wrapper and every declared child dependency remain
+            # explicitly absolute and hash-pinned/revalidated — the runtime
+            # never selects an agentic CLI from ambient PATH.  Pre-Popen
+            # wrapper/dependency validation is retained exactly.
+            launch_env = _callee_env()
 
             try:
                 proc = subprocess.Popen(
