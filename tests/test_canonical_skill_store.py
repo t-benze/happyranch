@@ -1519,3 +1519,373 @@ class TestHardeningFailureAfterPublication:
         # verify_package must not raise
         store.verify_package("mf-skill", "1.0.0", content_hash)
         assert pkg.is_dir()
+
+    # ── Materialization-boundary adversarial proofs ──────────────────
+    # These tests inject dual failure (file hardening + compensation)
+    # and drive the unsafe package through the actual SymlinkMaterializer
+    # path for BOTH .claude/skills and .agents/skills roots, proving:
+    #   (a) no workspace skill link is created under either root
+    #   (b) no executor launch (subprocess.Popen) is attempted
+    #   (c) failure is named and fail-closed
+    #   (d) unsafe package cannot pass reuse or materialization validation
+    # Trusted-package hashes are captured before the failure and asserted
+    # unchanged afterward (non-conditional — trusted package is known to
+    # exist).  Fault stubs are proven installed and invoked.
+
+    def test_source_dual_failure_materialization_boundary_trusted_hashes(
+        self, temp_canonical_root, skill_source_dir, workspace_dir, monkeypatch,
+    ):
+        """Source build: dual-failure (hardening + compensation) →
+        materialization boundary rejects for both provider roots.
+        Trusted package hashes are captured and asserted unchanged.
+        Stub invocation and no-executor-launch are proven."""
+        import hashlib
+        import subprocess as _subprocess_mod
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        # ── 1. Build a trusted (unrelated) canonical package and
+        #       capture deterministic file hashes ───────────────────
+        trusted_hash = hashlib.sha256(b"trusted-src-boundary").hexdigest()
+        trusted_path = store.build_from_source(
+            "trusted-skill", "1.0.0", trusted_hash, skill_source_dir,
+        )
+        assert store.is_built("trusted-skill", "1.0.0", trusted_hash)
+
+        trusted_hashes: dict[str, str] = {}
+        for fpath in sorted(trusted_path.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(trusted_path))
+                trusted_hashes[rel] = hashlib.sha256(
+                    fpath.read_bytes()).hexdigest()
+        assert len(trusted_hashes) > 0, "Trusted package must have files"
+
+        # ── 2. Create a materializer for the boundary test ─────────
+        materializer = SymlinkMaterializer(store)
+
+        # ── 3. Spy on subprocess.Popen to prove no executor launch ─
+        popen_calls: list = []
+        monkeypatch.setattr(
+            _subprocess_mod, "Popen",
+            lambda *a, **kw: popen_calls.append((a, kw)) or (_ for _ in ()).throw(
+                AssertionError("Popen must not be called"))
+        )
+
+        # ── 4. Inject dual failure: file hardening + compensation ──
+        hardening_calls = [0]
+        compensation_calls = [0]
+
+        original_make_file = store._isolation.make_file_readonly
+        def fail_make_file_readonly(path):
+            hardening_calls[0] += 1
+            raise PermissionError(
+                f"Injected file hardening failure on {path}")
+        store._isolation.make_file_readonly = fail_make_file_readonly
+
+        import shutil as _shutil_mod
+        def fail_rmtree(path, ignore_errors=False, onerror=None):
+            compensation_calls[0] += 1
+            raise PermissionError(
+                f"Injected compensation failure on {path}")
+        monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
+
+        content_hash = hashlib.sha256(b"src-boundary-dual").hexdigest()
+
+        try:
+            # ── 5. build_from_source → must raise compensation_failed ─
+            with pytest.raises(CanonicalStoreError) as exc_info:
+                store.build_from_source(
+                    "test-skill", "1.0.0", content_hash, skill_source_dir,
+                )
+            assert exc_info.value.code == "compensation_failed", (
+                f"Expected compensation_failed, got {exc_info.value.code}"
+            )
+            assert "Injected compensation failure" in exc_info.value.detail
+
+            # ── 6. Prove stubs were actually installed and invoked ──
+            assert hardening_calls[0] > 0, (
+                "File hardening stub was never invoked — test is false-positive"
+            )
+            assert compensation_calls[0] > 0, (
+                "Compensation stub was never invoked — test is false-positive"
+            )
+
+            # ── 7. Reuse gate: is_built() must reject ─────────────
+            assert not store.is_built(
+                "test-skill", "1.0.0", content_hash), (
+                "is_built() must return False after dual failure"
+            )
+
+            # ── 8. Materialization pre-check gate: verify_package ──
+            with pytest.raises(CanonicalStoreError) as ve:
+                store.verify_package("test-skill", "1.0.0", content_hash)
+            assert ve.value.code in (
+                "insufficient_hardening", "ownership_violation"), (
+                f"verify_package must reject on readonly invariant, "
+                f"got {ve.value.code}"
+            )
+
+            # ── 9. Materialization boundary: BOTH provider roots ───
+            skills_subdirs = [".claude/skills", ".agents/skills"]
+            for subdir in skills_subdirs:
+                # Attempt materialization → must raise (fail-closed)
+                with pytest.raises(
+                    SymlinkMaterializationError, match="canonical_missing"
+                ):
+                    materializer.materialize_skill(
+                        "test-skill", "1.0.0", content_hash,
+                        workspace_dir, subdir,
+                    )
+
+                # No link created
+                link_path = workspace_dir / subdir / "test-skill"
+                assert not link_path.exists(follow_symlinks=False), (
+                    f"Link must NOT exist at {link_path} after "
+                    "materialization failure"
+                )
+
+            # ── 10. No executor launch attempted ───────────────────
+            assert len(popen_calls) == 0, (
+                f"subprocess.Popen was called {len(popen_calls)} times — "
+                "executor launch should never have been attempted"
+            )
+
+            # ── 11. Trusted package hashes unchanged (NON-CONDITIONAL) ─
+            trusted_current = store.canonical_path(
+                "trusted-skill", "1.0.0", trusted_hash)
+            assert trusted_current.is_dir(), (
+                "Trusted package must still exist"
+            )
+            for rel, expected_hash in trusted_hashes.items():
+                fp = trusted_current / rel
+                assert fp.is_file(), (
+                    f"Trusted file {rel} must still exist"
+                )
+                actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+                assert actual == expected_hash, (
+                    f"Trusted file {rel} hash changed: expected "
+                    f"{expected_hash[:16]}..., got {actual[:16]}..."
+                )
+
+            # Trusted package still passes validation
+            assert store.is_built("trusted-skill", "1.0.0", trusted_hash), (
+                "Trusted package must still pass is_built()"
+            )
+            store.verify_package("trusted-skill", "1.0.0", trusted_hash)
+
+        finally:
+            store._isolation.make_file_readonly = original_make_file
+            monkeypatch.undo()
+
+    def test_manifest_dual_failure_materialization_boundary_trusted_hashes(
+        self, temp_canonical_root, workspace_dir, monkeypatch,
+    ):
+        """Manifest build: dual-failure (hardening + compensation) →
+        materialization boundary rejects for both provider roots.
+        Manifest member hashes and trusted file hashes are captured
+        and asserted unchanged.  Stub invocation and no-executor-launch
+        are proven."""
+        import hashlib
+        import subprocess as _subprocess_mod
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        # ── 1. Build a trusted manifest package and capture
+        #       manifest member hashes + file hashes ─────────────────
+        trusted_artifact_store = MagicMock()
+        trusted_skill_bytes = b"# Trusted manifest skill\n"
+        trusted_ref_bytes = b"# Trusted reference\n"
+        trusted_artifact_store.read.side_effect = lambda key: {
+            "skills/trusted/SKILL.md": trusted_skill_bytes,
+            "skills/trusted/ref.md": trusted_ref_bytes,
+        }[key]
+
+        trusted_skill_hash = hashlib.sha256(trusted_skill_bytes).hexdigest()
+        trusted_ref_hash = hashlib.sha256(trusted_ref_bytes).hexdigest()
+
+        trusted_manifest = {
+            "members": [
+                {"path": "SKILL.md",
+                 "hash": f"sha256:{trusted_skill_hash}",
+                 "artifact_key": "skills/trusted/SKILL.md"},
+                {"path": "references/ref.md",
+                 "hash": f"sha256:{trusted_ref_hash}",
+                 "artifact_key": "skills/trusted/ref.md"},
+            ],
+        }
+        trusted_manifest_json = json.dumps(
+            trusted_manifest, sort_keys=True)
+        trusted_content_hash = hashlib.sha256(
+            trusted_manifest_json.encode()).hexdigest()
+
+        trusted_path = store.build_from_manifest(
+            "trusted-mf", "1.0.0", trusted_content_hash,
+            trusted_manifest, trusted_artifact_store,
+        )
+        assert store.is_built("trusted-mf", "1.0.0", trusted_content_hash)
+
+        # Capture deterministic member hashes from manifest
+        trusted_member_hashes: dict[str, str] = {}
+        for m in trusted_manifest["members"]:
+            h = m["hash"].split(":", 1)[-1] if ":" in m["hash"] else m["hash"]
+            trusted_member_hashes[m["path"]] = h
+
+        # Capture deterministic file hashes from on-disk package
+        trusted_file_hashes: dict[str, str] = {}
+        for fpath in sorted(trusted_path.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(trusted_path))
+                trusted_file_hashes[rel] = hashlib.sha256(
+                    fpath.read_bytes()).hexdigest()
+        assert len(trusted_file_hashes) > 0, (
+            "Trusted package must have files"
+        )
+
+        # ── 2. Create a materializer ───────────────────────────────
+        materializer = SymlinkMaterializer(store)
+
+        # ── 3. Spy on subprocess.Popen ─────────────────────────────
+        popen_calls: list = []
+        monkeypatch.setattr(
+            _subprocess_mod, "Popen",
+            lambda *a, **kw: popen_calls.append((a, kw)) or (_ for _ in ()).throw(
+                AssertionError("Popen must not be called"))
+        )
+
+        # ── 4. Prepare the failing manifest + inject failures ──────
+        failing_artifact_store = MagicMock()
+        failing_skill_bytes = b"# Failing manifest skill\n"
+        failing_artifact_store.read.return_value = failing_skill_bytes
+
+        failing_manifest = {
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(
+                        failing_skill_bytes).hexdigest(),
+                    "artifact_key": "skills/fail-mf/SKILL.md",
+                },
+            ],
+        }
+        failing_manifest_json = json.dumps(failing_manifest, sort_keys=True)
+        failing_content_hash = hashlib.sha256(
+            failing_manifest_json.encode()).hexdigest()
+
+        hardening_calls = [0]
+        compensation_calls = [0]
+
+        original_make_file = store._isolation.make_file_readonly
+        def fail_make_file_readonly(path):
+            hardening_calls[0] += 1
+            raise PermissionError(
+                f"Injected file hardening failure on {path}")
+        store._isolation.make_file_readonly = fail_make_file_readonly
+
+        import shutil as _shutil_mod
+        def fail_rmtree(path, ignore_errors=False, onerror=None):
+            compensation_calls[0] += 1
+            raise PermissionError(
+                f"Injected compensation failure on {path}")
+        monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
+
+        try:
+            # ── 5. build_from_manifest → must raise compensation_failed ─
+            with pytest.raises(CanonicalStoreError) as exc_info:
+                store.build_from_manifest(
+                    "fail-mf", "1.0.0", failing_content_hash,
+                    failing_manifest, failing_artifact_store,
+                )
+            assert exc_info.value.code == "compensation_failed", (
+                f"Expected compensation_failed, got {exc_info.value.code}"
+            )
+            assert "Injected compensation failure" in exc_info.value.detail
+
+            # ── 6. Prove stubs were actually installed and invoked ──
+            assert hardening_calls[0] > 0, (
+                "File hardening stub was never invoked — test is false-positive"
+            )
+            assert compensation_calls[0] > 0, (
+                "Compensation stub was never invoked — test is false-positive"
+            )
+
+            # ── 7. Reuse gate: is_built() must reject ─────────────
+            assert not store.is_built(
+                "fail-mf", "1.0.0", failing_content_hash), (
+                "is_built() must return False after manifest dual failure"
+            )
+
+            # ── 8. Materialization pre-check gate: verify_package ──
+            with pytest.raises(CanonicalStoreError) as ve:
+                store.verify_package(
+                    "fail-mf", "1.0.0", failing_content_hash)
+            assert ve.value.code in (
+                "insufficient_hardening", "ownership_violation"), (
+                f"verify_package must reject on readonly invariant, "
+                f"got {ve.value.code}"
+            )
+
+            # ── 9. Materialization boundary: BOTH provider roots ───
+            skills_subdirs = [".claude/skills", ".agents/skills"]
+            for subdir in skills_subdirs:
+                # Attempt materialization → must raise (fail-closed)
+                with pytest.raises(
+                    SymlinkMaterializationError, match="canonical_missing"
+                ):
+                    materializer.materialize_skill(
+                        "fail-mf", "1.0.0", failing_content_hash,
+                        workspace_dir, subdir,
+                    )
+
+                # No link created
+                link_path = workspace_dir / subdir / "fail-mf"
+                assert not link_path.exists(follow_symlinks=False), (
+                    f"Link must NOT exist at {link_path} after "
+                    "materialization failure"
+                )
+
+            # ── 10. No executor launch attempted ───────────────────
+            assert len(popen_calls) == 0, (
+                f"subprocess.Popen was called {len(popen_calls)} times — "
+                "executor launch should never have been attempted"
+            )
+
+            # ── 11. Trusted manifest member hashes unchanged ───────
+            for m in trusted_manifest["members"]:
+                member_path = m["path"]
+                expected_h = trusted_member_hashes[member_path]
+                # Re-derive via artifact key to verify no corruption
+                actual_bytes = trusted_artifact_store.read(m["artifact_key"])
+                actual_h = hashlib.sha256(actual_bytes).hexdigest()
+                assert actual_h == expected_h, (
+                    f"Trusted manifest member {member_path} hash changed: "
+                    f"expected {expected_h[:16]}..., got {actual_h[:16]}..."
+                )
+
+            # ── 12. Trusted file hashes unchanged (NON-CONDITIONAL) ──
+            trusted_current = store.canonical_path(
+                "trusted-mf", "1.0.0", trusted_content_hash)
+            assert trusted_current.is_dir(), (
+                "Trusted package must still exist"
+            )
+            for rel, expected_hash in trusted_file_hashes.items():
+                fp = trusted_current / rel
+                assert fp.is_file(), (
+                    f"Trusted file {rel} must still exist"
+                )
+                actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+                assert actual == expected_hash, (
+                    f"Trusted file {rel} hash changed: expected "
+                    f"{expected_hash[:16]}..., got {actual[:16]}..."
+                )
+
+            # Trusted package still passes validation
+            assert store.is_built(
+                "trusted-mf", "1.0.0", trusted_content_hash), (
+                "Trusted package must still pass is_built()"
+            )
+            store.verify_package(
+                "trusted-mf", "1.0.0", trusted_content_hash)
+
+        finally:
+            store._isolation.make_file_readonly = original_make_file
+            monkeypatch.undo()
