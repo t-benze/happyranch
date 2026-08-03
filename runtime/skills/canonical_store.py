@@ -190,24 +190,27 @@ class CanonicalSkillStore:
             # The content_hash in the ledger is manifest-based, not tree-based.
             # We preserve the member hashes separately.
 
-            # Provision ownership before exposing
+            # Provision ownership on temp before atomic replace.
+            # (Do NOT make readonly yet — on macOS, rename() requires
+            # write permission on the source directory.)
             self._isolation.provision_canonical_store(tmp)
 
-            # Make all files read-only
-            for fpath in tmp.rglob("*"):
-                if fpath.is_file():
-                    self._isolation.make_file_readonly(fpath)
-            # Make all dirs read+traverse for executor
-            for dpath in tmp.rglob("*"):
-                if dpath.is_dir():
-                    self._isolation.make_dir_readonly_executor(dpath)
-            self._isolation.make_dir_readonly_executor(tmp)
-
-            # Atomic replace
+            # Atomic replace: move temp → final canonical path first,
+            # then apply readonly to the final location.
             if pkg_path.exists():
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
+
+            # Make all files read-only at the final location
+            for fpath in pkg_path.rglob("*"):
+                if fpath.is_file():
+                    self._isolation.make_file_readonly(fpath)
+            # Make all dirs read+traverse for executor
+            for dpath in pkg_path.rglob("*"):
+                if dpath.is_dir():
+                    self._isolation.make_dir_readonly_executor(dpath)
+            self._isolation.make_dir_readonly_executor(pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s (hash=%s) at %s",
@@ -307,21 +310,26 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(member_bytes)
 
-            # Provision ownership + make read-only
+            # Provision ownership on temp before atomic replace.
+            # (Do NOT make readonly yet — on macOS, rename() requires
+            # write permission on the source directory.)
             self._isolation.provision_canonical_store(tmp)
-            for fpath in tmp.rglob("*"):
-                if fpath.is_file():
-                    self._isolation.make_file_readonly(fpath)
-            for dpath in tmp.rglob("*"):
-                if dpath.is_dir():
-                    self._isolation.make_dir_readonly_executor(dpath)
-            self._isolation.make_dir_readonly_executor(tmp)
 
-            # Atomic replace
+            # Atomic replace: move temp → final canonical path first,
+            # then apply readonly to the final location.
             if pkg_path.exists():
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
+
+            # Make all files read-only at the final location
+            for fpath in pkg_path.rglob("*"):
+                if fpath.is_file():
+                    self._isolation.make_file_readonly(fpath)
+            for dpath in pkg_path.rglob("*"):
+                if dpath.is_dir():
+                    self._isolation.make_dir_readonly_executor(dpath)
+            self._isolation.make_dir_readonly_executor(pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s from manifest (hash=%s) at %s",

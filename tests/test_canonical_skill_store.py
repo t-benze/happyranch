@@ -878,3 +878,131 @@ class TestImportSeamCoverage:
         assert isinstance(iso1, PlatformIsolation)
         assert isinstance(iso2, PlatformIsolation)
         assert isinstance(iso3, PlatformIsolation)
+
+
+class TestBuildAtomicOrdering:
+    """macOS CI regression: build_from_source/build_from_manifest
+    must apply readonly permissions AFTER os.replace, not before.
+
+    On macOS, rename() requires write permission on the source
+    directory.  If make_dir_readonly_executor (→ 0555) runs before
+    os.replace, the rename fails with PermissionError [Errno 13].
+    The fix moves os.replace before the readonly steps and applies
+    them to the final package path instead of the temp directory.
+    """
+
+    def test_build_from_source_succeeds_with_readonly_isolation(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """build_from_source completes without PermissionError when
+        make_dir_readonly_executor genuinely removes write bits (0555).
+        """
+        import hashlib
+
+        # Use a store with the test-mode isolation (patched via conftest).
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        # The isolation.make_dir_readonly_executor sets 0555 (no write).
+        # On macOS CI this would block os.replace if applied before the
+        # atomic rename.  The fix ensures os.replace runs first, then
+        # readonly is applied to the final location.
+        content_hash = hashlib.sha256(b"test-content").hexdigest()
+        pkg_path = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert pkg_path.is_dir()
+        # Final package must be read-only (the fix preserves this invariant)
+        mode = stat.S_IMODE(pkg_path.stat().st_mode)
+        assert mode & stat.S_IWGRP == 0, "group must not have write"
+        assert mode & stat.S_IWOTH == 0, "other must not have write"
+
+    def test_build_from_source_idempotent_with_readonly(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """Second build_from_source (idempotent) also succeeds."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"test-content").hexdigest()
+
+        p1 = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        # Second call must succeed (already built path, returns early)
+        p2 = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert p1 == p2
+
+    def test_build_from_source_preserves_file_content(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """After build, package files are present and correct."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"test-content").hexdigest()
+        pkg_path = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        # All source files must be present
+        sk = pkg_path / "SKILL.md"
+        assert sk.is_file()
+        assert "# Test Skill" in sk.read_text()
+
+        ref = pkg_path / "references" / "helper.md"
+        assert ref.is_file()
+        assert "# Helper" in ref.read_text()
+
+    def test_build_from_source_files_readonly_after_build(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """After build, individual package files are read-only (0444)."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"test-content").hexdigest()
+        pkg_path = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        sk = pkg_path / "SKILL.md"
+        mode = stat.S_IMODE(sk.stat().st_mode)
+        assert mode & stat.S_IWGRP == 0
+        assert mode & stat.S_IWOTH == 0
+
+    def test_build_from_manifest_succeeds_with_readonly_isolation(
+        self, temp_canonical_root,
+    ):
+        """build_from_manifest also succeeds when readonly isolation is
+        genuinely removing write bits (0555)."""
+        import hashlib
+
+        # Create a mock artifact store
+        artifact_store = MagicMock()
+        artifact_store.read.return_value = b"# Manifest-built skill\n"
+
+        manifest = {
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(b"# Manifest-built skill\n").hexdigest(),
+                    "artifact_key": "skills/manifest-test/1.0.0/SKILL.md",
+                },
+            ],
+        }
+        manifest_json = json.dumps(manifest, sort_keys=True)
+        content_hash = hashlib.sha256(manifest_json.encode()).hexdigest()
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        pkg_path = store.build_from_manifest(
+            "manifest-skill", "1.0.0", content_hash, manifest, artifact_store,
+        )
+        assert pkg_path.is_dir()
+        sk = pkg_path / "SKILL.md"
+        assert sk.is_file()
+        assert sk.read_text() == "# Manifest-built skill\n"
+
+        # Final package must be read-only
+        mode = stat.S_IMODE(pkg_path.stat().st_mode)
+        assert mode & stat.S_IWGRP == 0
+        assert mode & stat.S_IWOTH == 0
