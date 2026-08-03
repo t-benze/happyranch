@@ -101,7 +101,7 @@ def _executor_switch_materialize(
         # contracts are never withdrawn by a later managed-only repair
         # (TASK-4001 Finding 2 fix).
         errors: list[str] = []
-        for ctx_name in ("task", "thread", "wake", "dream"):
+        for ctx_name in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
             try:
                 materialize_workspace_skills(
                     workspace, org.settings,

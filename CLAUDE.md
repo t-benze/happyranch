@@ -17,6 +17,18 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, tests, OpenAPI snapshots, and implementation. Protocol docs are bundled with the runtime — your session prompt injects a one-line-per-doc manifest with absolute paths for on-demand `Read`. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
+## Architecture: Canonical Skill Store + Workspace Symlinks (macOS-only)
+
+Skill delivery uses an **immutable canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed.
+
+- **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
+- **Isolation:** Distinct daemon/materializer and restricted executor OS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate ACLs through workspace symlinks.
+- **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/repair boundary before launch.
+- **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
+- **Serving deployment** is independently verified after merge.
+
+Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + workspace symlinks", `protocol/05c-orchestrator.md`, `docs/agent-guides/agent-executors-and-permissions.md`.
+
 ## Essentials
 
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` currently builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.

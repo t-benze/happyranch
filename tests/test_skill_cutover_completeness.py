@@ -241,24 +241,15 @@ def _isolate_skills_src_override():
     wa._SKILLS_SRC = original
 
 
-# ── Also ensure _WHOLESALE_DUMP_ENABLED is False at test start ─────────────
-
-
-@pytest.fixture(autouse=True)
-def _ensure_flag_false():
-    """Ensure _WHOLESALE_DUMP_ENABLED starts False for every test.
-    The red-proof test explicitly sets it True and restores False.
-    """
-    import runtime.orchestrator.workspace_adapters as wa
-    wa._WHOLESALE_DUMP_ENABLED = False
-
-
 # ── Bootstrap-no-leak tests: each adapter independently ────────────────────
 
 
 class TestBootstrapNoLeakAllAdapters:
-    """Prove bootstrap leaks NO skills for each executor adapter with the
-    wholesale dump disabled (_WHOLESALE_DUMP_ENABLED = False).
+    """Prove bootstrap leaks NO skills for each executor adapter.
+
+    The canonical store + symlink architecture has permanently superseded
+    the wholesale dump. Bootstrap _copy_skills is a no-op; skills are
+    materialized only at session spawn via the unified canonical boundary.
 
     Each adapter is tested separately so an adapter-specific regression
     (e.g. Codex _copy_skills bypassing the gate) fails independently.
@@ -267,11 +258,6 @@ class TestBootstrapNoLeakAllAdapters:
     def _setup_and_bootstrap(self, test_settings: Settings, test_runtime: OrgPaths,
                              tmp_path: Path, provider: str) -> Path:
         """Set up org config and bootstrap a workspace via the given provider."""
-        import runtime.orchestrator.workspace_adapters as wa
-
-        assert wa._WHOLESALE_DUMP_ENABLED is False, (
-            f"_WHOLESALE_DUMP_ENABLED must be OFF for bootstrap-no-leak test"
-        )
 
         # _SKILLS_SRC is already set by the _isolate_skills_src_override fixture
 
@@ -502,13 +488,11 @@ class TestContractCompletenessPostCutover:
     ):
         """RED-PROOF (POST-CUTOVER): Wholesale dump is permanently removed.
 
-        Even with _WHOLESALE_DUMP_ENABLED=True, the wholesale copy path
-        is a no-op. The canonical store + symlink architecture has
-        superseded all per-session content copying. This verifies that
-        high-policy skills like manage-agent/manage-repo are NOT leaked
-        via the (now-dead) wholesale dump path.
+        The wholesale copy path is permanently removed — no catch-and-copy
+        fallback survives. The canonical store + symlink architecture is
+        the sole delivery path. This verifies that high-policy skills like
+        manage-agent/manage-repo are NOT leaked via bootstrap.
         """
-        import runtime.orchestrator.workspace_adapters as wa
 
         for name, team, role, executor, _notes in _REPRESENTATIVE_ROSTER:
             _write_agent_file(test_runtime, name, team, role, executor)
@@ -516,8 +500,6 @@ class TestContractCompletenessPostCutover:
         _copy_real_eligibility_config(test_settings, test_runtime)
 
         from runtime.orchestrator.context_builder import ContextBuilder
-
-        wa._WHOLESALE_DUMP_ENABLED = True
 
         ws = _build_ws(tmp_path, "red_proof_ws", has_repos=True)
         builder = ContextBuilder(test_settings, test_runtime, slug="test")
@@ -528,7 +510,7 @@ class TestContractCompletenessPostCutover:
         leaked = _collect_skill_ids(ws / ".claude" / "skills")
 
         # POST-CUTOVER: wholesale dump is dead — NO skills should leak via
-        # the wholesale copy path (which is now a no-op regardless of flag).
+        # the wholesale copy path (permanently removed).
         for hi_skill in ("manage-agent", "manage-repo", "reflection"):
             assert hi_skill not in leaked, (
                 f"RED-PROOF FAIL: dead wholesale dump leaked '{hi_skill}' "
@@ -536,8 +518,6 @@ class TestContractCompletenessPostCutover:
                 f"architecture must be the sole delivery path. "
                 f"Leaked set: {leaked}"
             )
-
-        wa._WHOLESALE_DUMP_ENABLED = False
 
 
 # ── Materialization-level regression: guard workflow in delivered skill ────

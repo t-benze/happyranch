@@ -104,16 +104,20 @@ def _workspace_skills_transaction(workspace: Path):
         lock.release()
 
 
-# ── Cutover guards — legacy copy symbols removed ─────────────────
-# The wholesale copy model (_copy_skills_tree, inject_system_contracts,
-# inject_managed_skills) has been ELIMINATED. No executable copy path
-# survives. These guard functions raise on any call to prevent silent
-# fallback to the old copy behavior.
-
-# Sentinel constant for test backward-compatibility.
-# The wholesale dump is permanently disabled; this value is retained
-# so existing test monkeypatch targets do not error on import.
-_WHOLESALE_DUMP_ENABLED: bool = False
+# ── Permanent cutover — canonical store + symlinks only ────────────
+# The pre-canonical per-session content copying (wholesale dump,
+# _copy_skills_tree, refresh_session_skills) has been permanently
+# superseded by the canonical skill store + workspace symlink
+# architecture. No executable copy path survives.
+#
+# Legacy compatibility fallback: if link validation/repair fails,
+# an unsupported platform refuses, or launch cannot proceed, the
+# domain fails closed. There is NO catch-and-copy fallback — the
+# wholesale copy path cannot activate under any condition.
+#
+# The canonical store + symlink architecture is the sole delivery
+# path for all session contexts (task, thread, wake, dream, schedule,
+# bootstrap, executor-switch).
 
 
 def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
@@ -287,9 +291,8 @@ def materialize_workspace_skills(
 ) -> None:
     """Serialize the complete pre-spawn skill materialization transaction.
 
-    All three materialization steps — wholesale refresh (when
-    ``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
-    on-disk verification, and managed-skill injection — run under a
+    All three materialization steps — system-contract injection,
+    managed-skill injection, and lifecycle-ledger injection — run under a
     process-local lock keyed by the canonical workspace path so concurrent
     task/thread/wake/dream/schedule/bootstrap callers targeting the same
     workspace serialize their complete transaction.

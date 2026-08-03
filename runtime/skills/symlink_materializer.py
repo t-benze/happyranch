@@ -127,11 +127,6 @@ class SymlinkMaterializer:
                         link_path, canonical_target,
                     )
                     return
-                # Stale/wrong symlink — remove safely
-                logger.info(
-                    "Removing stale/wrong symlink: %s", link_path,
-                )
-                link_path.unlink()
             elif link_path.is_dir():
                 # Ordinary directory at expected link path — hostile state.
                 # Must NEVER recursively delete attacker-controlled content.
@@ -143,25 +138,47 @@ class SymlinkMaterializer:
                     "Refusing to delete — remove manually or use withdraw_skill first "
                     "after verifying the directory does not contain real work.",
                 )
-            else:
-                # File or other entry — remove
-                logger.warning(
-                    "Removing unexpected non-link entry: %s", link_path,
-                )
-                link_path.unlink()
 
-        # Create the link
+        # Create/replace the link ATOMICALLY using a temp symlink + os.replace.
+        # A bare unlink() + create_relative_symlink() leaves a gap where
+        # concurrent readers see OSError: Invalid argument (the old symlink
+        # is unlinked but the new one hasn't been created yet).
+        # os.replace on a temp symlink makes the transition atomic — readers
+        # see either the old complete symlink or the new one, never nothing.
         try:
-            self._isolation.create_relative_symlink(
-                rel_target, link_path,
-            )
+            tmp_link = link_path.with_name(".tmp." + link_path.name)
+            # Clean up any stale temp from a crashed prior materialization
+            if tmp_link.exists(follow_symlinks=False):
+                tmp_link.unlink()
+            self._isolation.create_relative_symlink(rel_target, tmp_link)
+            try:
+                os.replace(tmp_link, link_path)
+            except OSError:
+                # os.replace may fail if the target is an ordinary dir
+                # (already checked above for is_symlink case, but defend
+                # against race between check and replace)
+                if link_path.is_dir() and not link_path.is_symlink():
+                    tmp_link.unlink()
+                    raise SymlinkMaterializationError(
+                        "ordinary_dir_at_link_path",
+                        f"Expected symlink at {link_path} but found ordinary directory. "
+                        "Refusing to delete.",
+                    )
+                raise
             logger.info(
                 "Created workspace link %s → %s", link_path, rel_target,
             )
+        except SymlinkMaterializationError:
+            raise
         except PlatformIsolationError as exc:
             raise SymlinkMaterializationError(
                 "link_creation_failed",
                 f"Failed to create symlink {link_path} → {rel_target}: {exc}",
+            ) from exc
+        except OSError as exc:
+            raise SymlinkMaterializationError(
+                "link_creation_failed",
+                f"Failed to replace symlink {link_path}: {exc}",
             ) from exc
 
     def withdraw_skill(
