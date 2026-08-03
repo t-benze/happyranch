@@ -780,6 +780,13 @@ class TestUserAuthoredSkillMaterialization:
         from runtime.skills.lifecycle import stores as lifecycle_stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         service = SkillLifecycleService()
         org_root = tmp_dir / "org"
 
@@ -856,6 +863,13 @@ class TestUserAuthoredSkillMaterialization:
         only lifecycle-ledger published+assigned skills reach the workspace."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         org_root = tmp_dir / "org"
         skill_dir = org_root / "skills" / "custom-skill"
         skill_dir.mkdir(parents=True)
@@ -912,6 +926,13 @@ class TestUserAuthoredSkillMaterialization:
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         org_root = tmp_dir / "org"
         skill_md = "# Proposed Skill\n\nShould not appear."
         import hashlib
@@ -959,6 +980,14 @@ class TestUserAuthoredSkillMaterialization:
             inject_managed_skills,
             LifecycleMaterializationError,
         )
+
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
         org_root = tmp_dir / "org"
@@ -1027,6 +1056,12 @@ class TestUserAuthoredSkillMaterialization:
         Proves: (a) named failure reaches the materialization caller;
         (b) no successful launch/readiness/persist/audit progression occurs.
         """
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
         from runtime.orchestrator.workspace_adapters import (
             inject_managed_skills,
             LifecycleMaterializationError,
@@ -1129,6 +1164,13 @@ class TestUserAuthoredSkillMaterialization:
             LifecycleMaterializationError,
         )
         from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
         from runtime.skills.lifecycle.service import SkillLifecycleService
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths

@@ -1018,13 +1018,13 @@ This replaces the legacy model where agents read protocol docs from the
 ``repos/happyranch/protocol/`` clone (which was fresh only at
 once-per-session git-pull).
 
-**Session-path coverage.** The five materialization callers that inject the
+**Session-path coverage.** The six materialization callers that inject the
 manifest and refresh skills are:
 1. ``Orchestrator._run_agent`` (task/subtask) — ``TASK`` context
 2. ``wake_runner.run_wake`` (working-hours wake) — ``WAKE`` context
 3. ``thread_runner.run_invocation`` (thread reply/bootstrap) — ``THREAD`` context
 4. ``dream_runner.run_dream`` (private dream) — ``DREAM`` context
-5. ``schedule_runner.run_schedule_fire`` (schedule fire) — ``TASK`` context
+5. ``schedule_runner.run_schedule_fire`` (schedule fire) — ``SCHEDULE`` context
 
 Additionally, the **executor-switch/bootstrap** path (set-executor route in
 ``runtime/daemon/routes/agents.py``) materializes a single full-expected-spec

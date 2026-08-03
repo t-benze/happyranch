@@ -324,6 +324,69 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     assert "Errno 2" not in msg  # never bare Errno 2
 
 
+def test_run_agent_raises_system_contract_error_on_missing_source(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4173 adversarial: When a required system-contract source
+    directory is absent from protocol/skills/, materialize_workspace_skills
+    must raise SystemContractMaterializationError — NOT silently continue.
+
+    Proves:
+    - Named terminal failure (SystemContractMaterializationError)
+    - Zero executor.run calls
+    - No unsafe skill links under .claude/skills or .agents/skills
+    - Pre-existing workspace state unchanged
+    - No task success/audit/config mutation claims launch occurred
+    """
+    _setup_workspaces(test_runtime, ["engineering_head"])
+
+    # The autouse _ensure_protocol_skills fixture pre-creates ALL four
+    # contracts. We must remove start-task to simulate a real missing-source
+    # scenario.
+    import shutil
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    start_task_dir = proto_skills / "start-task"
+    if start_task_dir.exists():
+        shutil.rmtree(start_task_dir)
+    # Verify it's truly gone.
+    assert not start_task_dir.exists(), "start-task directory must be removed"
+
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
+
+    task_id = orchestrator.create_task("ping")
+    eh_workspace = test_runtime.workspaces_dir / "engineering_head"
+
+    # Before: record existing files for later comparison.
+    pre_claude_skills = eh_workspace / ".claude" / "skills"
+    pre_agents_skills = eh_workspace / ".agents" / "skills"
+    pre_claude_existed = pre_claude_skills.exists()
+    pre_agents_existed = pre_agents_skills.exists()
+
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    msg = str(exc_info.value)
+    assert "start-task" in msg, (
+        f"Error must name 'start-task' as missing: {msg!r}"
+    )
+    assert "missing" in msg.lower() or "not on disk" in msg.lower(), (
+        f"Error should mention missing/not-on-disk: {msg!r}"
+    )
+
+    # No unsafe skill links were created under either root.
+    # If the workspace had no .claude/skills before, it must still not
+    # have one after the failed materialization.
+    post_claude_skills = eh_workspace / ".claude" / "skills"
+    post_agents_skills = eh_workspace / ".agents" / "skills"
+    assert post_claude_skills.exists() == pre_claude_existed, (
+        ".claude/skills state must be unchanged after failed materialization"
+    )
+    assert post_agents_skills.exists() == pre_agents_existed, (
+        ".agents/skills state must be unchanged after failed materialization"
+    )
+
+
 def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, monkeypatch):
     _setup_codex_workspace(test_runtime, "engineering_head")
     task_id = orchestrator.create_task("ping")

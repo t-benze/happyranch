@@ -37,12 +37,22 @@ class TestRefreshSessionSkills:
     uses the unified canonical boundary (canonical store + workspace symlinks).
     refresh_session_skills is a forwarder to materialize_workspace_skills."""
 
+    @staticmethod
+    def _make_task_contracts(settings: Settings) -> None:
+        """Create ALL system contracts required for task context.
+        Without repos, task context requires: start-task, jobs, thread."""
+        skills_root = settings.get_protocol_dir() / "skills"
+        for sid in ("start-task", "jobs", "thread"):
+            (skills_root / sid).mkdir(parents=True, exist_ok=True)
+            if not (skills_root / sid / "SKILL.md").exists():
+                (skills_root / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
     def test_refresh_copies_skills_to_both_targets(
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Skills land in both .claude/skills/ and .agents/skills/."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
         workspace = tmp_path / "workspace"
@@ -60,8 +70,8 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """ACCEPTANCE #1: Edit bundled skill → refresh → workspace reflects edit."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("VERSION 1\n")
 
         workspace = tmp_path / "workspace"
@@ -82,13 +92,9 @@ class TestRefreshSessionSkills:
     def test_refresh_overwrites_existing_in_dst(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Skills in source are always materialized; system contracts only.
-
-        Note: non-system-contract skills (like 'other') are NOT materialized
-        by the canonical store unless registered as release skills.
-        """
+        """Skills in source are always materialized; system contracts only."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("skill v1\n")
 
         workspace = tmp_path / "workspace"
@@ -111,13 +117,10 @@ class TestRefreshSessionSkills:
     def test_refresh_replaces_existing_skill_content(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Existing stale symlink is repaired (replaced with fresh target).
-
-        Ordinary directories at link paths raise (fail-closed); stale
-        symlinks are atomically replaced. This test uses a stale symlink."""
+        """Existing stale symlink is repaired (replaced with fresh target)."""
+        self._make_task_contracts(test_settings)
         import os as _os
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("BUNDLED\n")
         (skills_root / "start-task" / "helper.md").write_text("helper\n")
 
@@ -137,14 +140,9 @@ class TestRefreshSessionSkills:
     def test_refresh_substitutes_org_slug(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """{ORG_SLUG} placeholder is preserved in canonical content.
-
-        The canonical store retains source bytes unchanged. Org context is
-        passed via the HAPPYRANCH_ORG_SLUG environment variable to executor
-        subprocesses, not through literal substitution in skill bodies.
-        """
+        """{ORG_SLUG} placeholder is preserved in canonical content."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text(
             "Run: happyranch --org {ORG_SLUG} do-thing\n"
         )
@@ -160,21 +158,25 @@ class TestRefreshSessionSkills:
     def test_refresh_idempotent_on_missing_source(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """No-op when source directory doesn't exist."""
+        """Fail-closed when source directory doesn't exist.
+        With the source-existence check, missing protocol/skills/ raises
+        SystemContractMaterializationError."""
         # Don't create the skills dir
         workspace = tmp_path / "workspace"
-        refresh_session_skills(workspace, test_settings, slug="test")
-        # Should not crash; destination dirs may or may not exist
-        assert not (workspace / ".claude" / "skills").exists()
-        assert not (workspace / ".agents" / "skills").exists()
+        from runtime.orchestrator.workspace_adapters import (
+            SystemContractMaterializationError,
+        )
+        with pytest.raises(SystemContractMaterializationError):
+            refresh_session_skills(workspace, test_settings, slug="test")
 
     def test_refresh_uses_test_override(
         self, test_settings: Settings, tmp_path: Path,
     ):
         """_SKILLS_SRC override takes precedence over settings-derived path."""
         fake_src = tmp_path / "fake-skills"
-        (fake_src / "start-task").mkdir(parents=True)
-        (fake_src / "start-task" / "SKILL.md").write_text("FAKE\n")
+        for sid in ("start-task", "jobs", "thread"):
+            (fake_src / sid).mkdir(parents=True)
+            (fake_src / sid / "SKILL.md").write_text(f"# {sid}\n\nFAKE\n")
 
         workspace = tmp_path / "workspace"
         with pytest.MonkeyPatch.context() as mp:
@@ -187,7 +189,7 @@ class TestRefreshSessionSkills:
         content = (
             workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         ).read_text()
-        assert content == "FAKE\n"
+        assert "FAKE" in content
 
 
 # ── PART B: resolve_protocol_doc_manifest ──────────────────────────────

@@ -35,6 +35,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
 )
+from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
@@ -171,7 +172,7 @@ async def run_schedule(
         materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
-            context="wake",
+            context=SessionContext.SCHEDULE,
             provider=_prov,
             agent_name=record.agent_name,
             team=agent_def.team,

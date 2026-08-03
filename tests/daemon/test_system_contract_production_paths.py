@@ -19,11 +19,15 @@ from pathlib import Path
 import pytest
 
 from runtime.daemon.dream_runner import run_dream
+from runtime.daemon.schedule_runner import run_schedule
 from runtime.daemon.thread_runner import run_invocation
 from runtime.daemon.wake_runner import run_wake
 from runtime.models import (
     DreamRecord,
     DreamStatus,
+    ScheduleKind,
+    ScheduleRecord,
+    ScheduleStatus,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
     ThreadMessageKind,
@@ -384,6 +388,122 @@ async def test_wake_spawn_stops_on_materialization_error(org_state, tmp_path, mo
     )
     assert "materialization" in (wh.error or "").lower(), (
         f"Error message should reference materialization failure: {wh.error}"
+    )
+
+
+# ── Schedule production path ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
+    """run_schedule must fail BEFORE spawning the executor when
+    materialization of workspace skills raises.
+
+    Also proves that context="schedule" (SessionContext.SCHEDULE) reaches
+    materialize_workspace_skills from the schedule-fire production path —
+    not "wake" or "task"."""
+    db = org_state.db
+    now = datetime.now(timezone.utc)
+
+    # Insert a FIRING schedule record so run_schedule picks it up.
+    db.schedules.insert(ScheduleRecord(
+        id="SCHEDULE-001",
+        agent_name="dev_agent",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        normalized_brief="Test brief",
+        source_instruction="Test instruction",
+        status=ScheduleStatus.FIRING,
+        team="engineering",
+    ))
+
+    # Agent def in org/agents/ needed by load_agent()
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\n"
+        "name: dev_agent\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "---\n\n"
+        "## Routine Tasks\n\n"
+        "- Run routine check.\n"
+    )
+
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+    # Create source skill dirs so canonical store builds succeed.
+    settings = Settings(project_root=tmp_path)
+    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(proto_skills, "start-task")
+    _make_skill_dir(proto_skills, "jobs")
+    _make_skill_dir(proto_skills, "make-worktree")
+    _make_skill_dir(proto_skills, "thread")
+
+    # Intercept materialize_workspace_skills to confirm context="schedule"
+    # reaches it from the schedule-fire production path.
+    # Must monkeypatch the schedule_runner module's own import binding,
+    # not the source module, because schedule_runner does a direct import.
+    captured_context = []
+    from runtime.daemon import schedule_runner as sr_mod
+
+    def _capturing_materialize(workspace, settings, *, slug, context,
+                               provider, agent_name, team, skills_root,
+                               org_root=None, db=None):
+        captured_context.append(context)
+        raise RuntimeError("injected_schedule_materialization_error")
+
+    monkeypatch.setattr(sr_mod, "materialize_workspace_skills", _capturing_materialize)
+
+    executor_spawned = False
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            nonlocal executor_spawned
+            executor_spawned = True
+            from runtime.orchestrator.executors import ExecutorResult
+            return ExecutorResult(success=True, duration_seconds=0, session_id="fake")
+
+    monkeypatch.setattr(
+        "runtime.daemon.schedule_runner._executor_name",
+        lambda paths, agent_name: "claude",
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.schedule_runner._build_executor_for_provider",
+        lambda provider, s, paths: _FakeExec(),
+    )
+
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-001",
+        settings=settings,
+    )
+
+    # Executor was NOT spawned (fail-closed pre-spawn)
+    assert not executor_spawned, (
+        "executor was spawned despite injected materialization error"
+    )
+
+    # Context must be "schedule", not "wake" or "task".
+    assert captured_context == ["schedule"], (
+        f"Expected context=['schedule'], got {captured_context}"
+    )
+
+    # Schedule must be FAILED with a materialization error.
+    refreshed = db.schedules.get("SCHEDULE-001")
+    assert refreshed is not None
+    assert refreshed.status == ScheduleStatus.FAILED, (
+        f"Expected FAILED, got {refreshed.status}"
+    )
+    assert "materialization" in (refreshed.error or "").lower(), (
+        f"Error should mention materialization: {refreshed.error!r}"
     )
 
 

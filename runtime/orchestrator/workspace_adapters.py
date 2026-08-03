@@ -549,7 +549,11 @@ def _materialize_unified_canonical(
         for contract in contracts:
             src_dir = src_root / contract.id
             if not src_dir.is_dir():
-                continue
+                raise SystemContractMaterializationError(
+                    missing_contracts=[contract.id],
+                    workspace=workspace,
+                    provider=provider,
+                )
             content_hash = _compute_dir_hash(src_dir)
             store.build_from_source(contract.id, "system", content_hash, src_dir)
             # Org context is carried via session/task metadata, not

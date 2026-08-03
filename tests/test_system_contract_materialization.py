@@ -717,7 +717,7 @@ class TestConcurrentMaterialization:
         import runtime.orchestrator.workspace_adapters as wa
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -799,8 +799,13 @@ class TestConcurrentMaterialization:
     def test_named_fail_closed_error_on_real_failure(
         self, tmp_path, monkeypatch,
     ):
-        """Empty source directory should not cause FileNotFoundError leak."""
-        from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+        """Empty source directory should not cause FileNotFoundError leak.
+        With the fail-closed source-existence check, empty protocol/skills/
+        produces a named SystemContractMaterializationError."""
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+            SystemContractMaterializationError,
+        )
         src = tmp_path / "protocol" / "skills"
         src.mkdir(parents=True)  # empty dir
         monkeypatch.setattr("runtime.orchestrator.workspace_adapters._SKILLS_SRC", src)
@@ -813,6 +818,9 @@ class TestConcurrentMaterialization:
                 slug="test", context="task", provider="claude",
                 agent_name="dev_agent", team="engineering", skills_root=src,
             )
+            raise AssertionError("Expected SystemContractMaterializationError, got no error")
+        except SystemContractMaterializationError:
+            pass  # expected — empty protocol/skills/ fails with named error
         except FileNotFoundError as e:
             raise AssertionError(f"Bare FileNotFoundError leaked: {e}") from e
 
@@ -840,7 +848,7 @@ class TestConcurrentMaterialization:
 
         # Create source skills so the adapter has something to copy
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs"]:
+        for sid in ["start-task", "jobs", "thread"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -935,7 +943,7 @@ class TestConcurrentMaterialization:
 
         # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")
