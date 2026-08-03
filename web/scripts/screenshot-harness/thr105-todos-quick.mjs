@@ -1,12 +1,21 @@
 /**
- * Quick Mode-A Todos evidence capture — TASK-4084.
- * Captures the list and one detail state at 1440x900 light+dark.
+ * Complete LIGHT desktop Todos evidence capture — TASK-4129.
+ *
+ * Captures the list and every approved detail/status state at 1440x900 light
+ * using the existing Mode-A prod-build + /api mock harness. Each fixture has a
+ * deterministic, unambiguous filename that includes kind + status, so weekly and
+ * one-shot records with the same status never collide.
+ *
+ * Reference images for the two approved design-target states live in
+ * ./reference/ and are used by thr105-todos-diff-light.mjs for numeric diff.
  */
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { modeAProdApi } from './harness.mjs';
 
-const OUT = process.argv[2] || join(process.cwd(), 'scripts/screenshot-harness/out/thr105-quick');
+const HERE = fileURLToPath(new URL('.', import.meta.url));
+const OUT = process.argv[2] || join(HERE, 'out', 'thr105-complete-light');
 const ORG = 'acme';
 const VIEWPORT = [1440, 900];
 
@@ -247,10 +256,17 @@ function scheduleApiRoutes() {
   ];
 }
 
+function safeName(s) {
+  return `${s.kind}_${s.status}_${s.schedule_id}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true });
+
+  const stateMap = [];
   const api = scheduleApiRoutes();
   const shots = [];
+
   shots.push(
     ...(await modeAProdApi({
       route: `/orgs/${ORG}/todos`,
@@ -261,18 +277,35 @@ async function main() {
       viewport: VIEWPORT,
     })),
   );
-  shots.push(
-    ...(await modeAProdApi({
-      route: `/orgs/${ORG}/todos/SCHEDULE-101`,
-      outDir: OUT,
-      name: 'todos-detail-armed',
-      api,
-      orgs: [{ slug: ORG, root: '/tmp/acme' }],
-      viewport: VIEWPORT,
-    })),
+  stateMap.push({ file: 'todos-list-light.png', route: `/orgs/${ORG}/todos`, state: 'List (all groups)' });
+
+  for (const s of SCHEDULES) {
+    const name = `todos-detail-${safeName(s)}`;
+    shots.push(
+      ...(await modeAProdApi({
+        route: `/orgs/${ORG}/todos/${s.schedule_id}`,
+        outDir: OUT,
+        name,
+        api,
+        orgs: [{ slug: ORG, root: '/tmp/acme' }],
+        viewport: VIEWPORT,
+      })),
+    );
+    stateMap.push({
+      file: `${name}-light.png`,
+      route: `/orgs/${ORG}/todos/${s.schedule_id}`,
+      state: `${s.kind} ${s.status} (${s.schedule_id})`,
+    });
+  }
+
+  await writeFile(
+    join(OUT, 'state-map.json'),
+    JSON.stringify({ capturedAt: new Date().toISOString(), viewport: VIEWPORT, states: stateMap }, null, 2),
   );
+
   console.log('Captured:');
   for (const s of shots) console.log(' ', s);
+  console.log(`State map written to ${join(OUT, 'state-map.json')}`);
 }
 
 main().catch((err) => {
