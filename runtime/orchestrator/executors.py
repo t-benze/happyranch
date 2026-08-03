@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING
 from runtime.config import Settings
 from runtime.models import TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.platform.isolation import (
+    PlatformIsolationError,
+    detect_platform_isolation,
+)
 
 if TYPE_CHECKING:
     from runtime.orchestrator.throttle import OnThrottleEvent
@@ -616,15 +620,27 @@ def _run_command(
         # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
         # the process mid-session. stdin=PIPE unconditionally — Codex reads its
         # prompt from stdin; Claude ignores it when nothing is written.
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(workspace),
-            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=_callee_env(),
-        )
+        # Launch as restricted executor identity via platform isolation.
+        # Raises PlatformIsolationError if executor is unprovisioned,
+        # same-owner, or unsupported — fail-closed before any subprocess.
+        isolation = detect_platform_isolation()
+        try:
+            proc = isolation.launch_executor(
+                cmd,
+                cwd=workspace,
+                env=_callee_env(),
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except PlatformIsolationError as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=sid,
+                error=f"Platform isolation failure: {exc}",
+            )
         if on_started is not None:
             on_started(proc.pid)
         try:
