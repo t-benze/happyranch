@@ -1,13 +1,19 @@
 /**
- * Public, provider-aware skills hook. Mirrors `useData().skills` so
+ * Public, provider-aware skills hooks. Mirrors `useData().skills` so
  * compositions never reach into `design-system/providers/` directly (same
  * seam as `@/hooks/audit`).
  *
  * Also the single sanctioned re-export point for the skills row/detail types:
  * `features/*` may not deep-import `@/lib/api/skills` (eslint
  * no-restricted-imports), so the Skills compositions take the types from here.
+ *
+ * THR-055: Proposal Detail hook owns TanStack Query — ProposalDetailPage
+ * consumes this hook and must not directly import getProposalDetail,
+ * ApiError, or useQuery.
  */
+import { useQuery } from '@tanstack/react-query';
 import { useData } from '@/design-system/providers/DataContext';
+import { getProposalDetail } from '@/lib/api/skillLifecycle';
 
 export type {
   AssignSkillRequest,
@@ -23,6 +29,8 @@ export type {
   ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
+
+export type { ProposalDetailResponse } from '@/lib/api/skillLifecycle';
 
 export const useSkillsCatalog: ReturnType<
   typeof useData
@@ -59,3 +67,24 @@ export const useSkillValidation: ReturnType<
   typeof useData
 >['skills']['useSkillValidation'] = (params) =>
   useData().skills.useSkillValidation(params);
+
+// ── THR-055: Proposal Detail (TanStack Query owned here) ────────────────
+
+/**
+ * Fetch a single proposal detail by org slug and version ID.
+ * Returns the same QueryObserverResult shape as useQuery so the page can
+ * inspect isError / isPending / error / data / refetch.
+ */
+export function useProposalDetail(
+  slug: string | undefined,
+  versionId: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['proposal-detail', slug, versionId],
+    queryFn: () => getProposalDetail(slug as string, versionId as number),
+    enabled: !!slug && versionId !== undefined && !Number.isNaN(versionId),
+    staleTime: 30_000,
+  });
+}
+
+export { ApiError } from '@/lib/api/client';

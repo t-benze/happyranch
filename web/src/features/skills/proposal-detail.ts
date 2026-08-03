@@ -13,7 +13,7 @@
  *   - Rejected is terminal/view-only — no action/reopen affordance.
  *   - permitted_next_action is informational context only, never clickable.
  */
-import type { ProposalDetailResponse } from '@/lib/api/skillLifecycle';
+import type { ProposalDetailResponse } from '@/hooks/skills';
 
 // ── Status label maps ───────────────────────────────────────────────────
 
@@ -117,34 +117,46 @@ export interface ReadinessFact {
 }
 
 /**
- * Derive readiness facts from the proposal status — immutable facts about
- * the current state, not actions to take.
+ * Derive readiness facts directly from response facts — events,
+ * assignments, materializations, and supplied status/decision fields.
+ * NEVER infer catalog membership, assignment state, validation success,
+ * claimant, or projection facts from a status enum.
  */
 export function readinessFacts(detail: ProposalDetailResponse): ReadinessFact[] {
   const facts: ReadinessFact[] = [];
   const s = detail.status;
 
-  if (s === 'proposed' || s === 'draft') {
-    facts.push({ label: 'Not in catalog', status: 'none' });
-    facts.push({ label: 'Not assigned', status: 'none' });
-    facts.push({ label: 'Not materialized', status: 'none' });
-  } else if (s === 'validated') {
-    facts.push({ label: 'Passed technical validation', status: 'ok' });
-    facts.push({ label: 'Not in catalog', status: 'none' });
-    facts.push({ label: 'Not assigned', status: 'pending' });
-  } else if (s === 'approved') {
-    facts.push({ label: 'Approved by reviewer', status: 'ok' });
-    facts.push({ label: 'Not yet published', status: 'pending' });
-  } else if (s === 'published') {
+  // Catalog membership: only published is in-catalog
+  if (s === 'published') {
     facts.push({ label: 'In custom catalog', status: 'ok' });
-    const assigned = detail.assignments?.length ?? 0;
-    facts.push({ label: assigned > 0 ? `${assigned} agent(s) assigned` : 'Not assigned', status: assigned > 0 ? 'ok' : 'none' });
-  } else if (s === 'rejected') {
-    facts.push({ label: 'Terminal — no further action', status: 'none' });
+  } else {
     facts.push({ label: 'Not in catalog', status: 'none' });
-  } else if (s === 'validation_failed') {
-    facts.push({ label: 'Failed technical validation', status: 'warning' });
-    facts.push({ label: 'Not in catalog', status: 'none' });
+  }
+
+  // Assignment: derive from actual assignments array, not status
+  const assignedCount = detail.assignments?.length ?? 0;
+  if (assignedCount > 0) {
+    facts.push({ label: `${assignedCount} agent(s) assigned`, status: 'ok' });
+  } else {
+    facts.push({ label: 'No assignments recorded', status: 'none' });
+  }
+
+  // Materialization: derive from actual materializations array
+  const matCount = detail.materializations?.length ?? 0;
+  if (matCount > 0) {
+    const successCount = detail.materializations!.filter((m) => m.success === true).length;
+    facts.push({ label: `${successCount}/${matCount} materialization(s) succeeded`, status: successCount === matCount ? 'ok' : 'warning' });
+  } else {
+    facts.push({ label: 'No materializations recorded', status: 'none' });
+  }
+
+  // Decision: only when review_decision is present (backed by real fields)
+  if (detail.review_decision) {
+    if (detail.review_decision === 'approved') {
+      facts.push({ label: 'Approved by reviewer', status: 'ok' });
+    } else if (detail.review_decision === 'rejected') {
+      facts.push({ label: 'Rejected — terminal', status: 'none' });
+    }
   }
 
   return facts;
@@ -161,10 +173,18 @@ export interface TimelineEvent {
   newStatus: string | null;
   contentHash: string | null;
   metadata: Record<string, unknown> | null;
+  /** Safely extracted metadata facts for display */
+  metadataFacts: MetadataFact[];
   /** Human-readable event label */
   label: string;
   /** Tone for the event row */
   tone: StatusTone;
+}
+
+/** A single fact extracted from event metadata, safe for display. */
+export interface MetadataFact {
+  key: string;
+  value: string;
 }
 
 export const EVENT_LABELS: Record<string, string> = {
@@ -184,11 +204,38 @@ export const EVENT_LABELS: Record<string, string> = {
   materialization_failed: 'Materialization failed',
 };
 
+/**
+ * Safely extract displayable facts from event metadata. Only surfaces known
+ * metadata keys used in audit review — never dumps arbitrary metadata blob.
+ */
+export function metadataFacts(metadata: Record<string, unknown> | null): MetadataFact[] {
+  if (!metadata) return [];
+  const facts: MetadataFact[] = [];
+  const knownKeys: Array<{ key: string; label: string }> = [
+    { key: 'validator_version', label: 'Validator version' },
+    { key: 'validator_key', label: 'Validator key' },
+    { key: 'run_id', label: 'Run' },
+    { key: 'run_identifier', label: 'Run' },
+    { key: 'reason', label: 'Reason' },
+    { key: 'rationale', label: 'Rationale' },
+    { key: 'failure', label: 'Failure' },
+    { key: 'error', label: 'Error' },
+  ];
+  for (const { key, label } of knownKeys) {
+    const v = metadata[key];
+    if (v != null && v !== '') {
+      facts.push({ key: label, value: String(v) });
+    }
+  }
+  return facts;
+}
+
 export function timelineEvents(events: Array<Record<string, unknown>>): TimelineEvent[] {
   return events
     .map((e) => {
       const eventType = String(e.event_type ?? '');
       const newStatus = e.new_status != null ? String(e.new_status) : null;
+      const meta = (e.metadata as Record<string, unknown>) ?? null;
       return {
         eventType,
         actor: String(e.actor ?? ''),
@@ -197,7 +244,8 @@ export function timelineEvents(events: Array<Record<string, unknown>>): Timeline
         previousStatus: e.previous_status != null ? String(e.previous_status) : null,
         newStatus,
         contentHash: e.content_hash != null ? String(e.content_hash) : null,
-        metadata: (e.metadata as Record<string, unknown>) ?? null,
+        metadata: meta,
+        metadataFacts: metadataFacts(meta),
         label: EVENT_LABELS[eventType] ?? eventType,
         tone: newStatus ? statusTone(newStatus) : 'unknown',
       } as TimelineEvent;
@@ -205,7 +253,7 @@ export function timelineEvents(events: Array<Record<string, unknown>>): Timeline
     .sort((a, b) => a.time.localeCompare(b.time));
 }
 
-// ── Assignment projection ────────────────────────────────────────────────
+// ── Assignment & materialization projection ──────────────────────────────
 
 export interface AssignmentProjection {
   agentName: string;
@@ -215,6 +263,13 @@ export interface AssignmentProjection {
   assignedAt: string | null;
 }
 
+export interface MaterializationAttempt {
+  agentName: string;
+  success: boolean | null;
+  errorMessage: string | null;
+  createdAt: string | null;
+}
+
 export function assignmentProjection(assignments: Array<Record<string, unknown>>): AssignmentProjection[] {
   return assignments.map((a) => ({
     agentName: String(a.agent_name ?? ''),
@@ -222,6 +277,22 @@ export function assignmentProjection(assignments: Array<Record<string, unknown>>
     version: a.version != null ? String(a.version) : null,
     assignedBy: a.assigned_by != null ? String(a.assigned_by) : null,
     assignedAt: a.assigned_at != null ? String(a.assigned_at) : null,
+  }));
+}
+
+/**
+ * Map raw materialization records into a narrow projection using actual
+ * server fields: success, error_message, created_at.
+ * Never reads nonexistent materialized_at or labels a record 'pending'.
+ */
+export function materializationProjection(
+  materializations: Array<Record<string, unknown>>,
+): MaterializationAttempt[] {
+  return materializations.map((m) => ({
+    agentName: String(m.agent_name ?? ''),
+    success: typeof m.success === 'boolean' ? m.success : null,
+    errorMessage: m.error_message != null ? String(m.error_message) : null,
+    createdAt: m.created_at != null ? String(m.created_at) : null,
   }));
 }
 

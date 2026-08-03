@@ -27,9 +27,8 @@
  * are visibly distinct. Assignment/materialization are separate from
  * package decision status.
  */
-import { type ReactNode, useCallback, useState } from 'react';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -45,8 +44,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react';
-import { getProposalDetail } from '@/lib/api/skillLifecycle';
-import { ApiError } from '@/lib/api/client';
+import { useProposalDetail, ApiError } from '@/hooks/skills';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import {
   assignmentProjection,
@@ -55,12 +53,14 @@ import {
   isPublished,
   isRejected,
   isTerminal,
+  materializationProjection,
   readinessFacts,
   statusLabel,
   statusTone,
   timelineEvents,
   TONE_CHIP,
   validatorFacts,
+  type MaterializationAttempt,
   type ReadinessFact,
   type TimelineEvent,
 } from './proposal-detail';
@@ -103,7 +103,7 @@ function StatusChip({
   );
 }
 
-/** Copy-to-clipboard button with confirmation. Accessible via keyboard. */
+/** Copy-to-clipboard button with confirmation and failure state. Accessible via keyboard, aria-live region for status feedback. */
 function CopyButton({
   label,
   value,
@@ -115,38 +115,56 @@ function CopyButton({
   ariaLabel: string;
   variant?: 'default' | 'mono';
 }): JSX.Element {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const copy = useCallback(() => {
-    void navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    if (timerRef.current) clearTimeout(timerRef.current);
+    navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        setCopyState('copied');
+        timerRef.current = setTimeout(() => setCopyState('idle'), 2000);
+      })
+      .catch(() => {
+        setCopyState('failed');
+        timerRef.current = setTimeout(() => setCopyState('idle'), 3000);
+      });
   }, [value]);
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={ariaLabel}
-      className={`focus-visible:ring-accent inline-flex items-center gap-1.5 rounded text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 ${
-        variant === 'mono'
-          ? 'text-fg-subtle hover:text-fg font-mono'
-          : 'text-fg-muted hover:text-fg'
-      }`}
-    >
-      {copied ? (
-        <>
-          <ClipboardCheck size={12} aria-hidden="true" className="text-status-open" />
-          <span className="text-status-open">Copied</span>
-        </>
-      ) : (
-        <>
-          <Copy size={12} aria-hidden="true" />
-          {label}
-        </>
-      )}
-    </button>
+    <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={ariaLabel}
+        className={`focus-visible:ring-accent inline-flex items-center gap-1.5 rounded text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 ${
+          variant === 'mono'
+            ? 'text-fg-subtle hover:text-fg font-mono'
+            : 'text-fg-muted hover:text-fg'
+        }`}
+      >
+        {copyState === 'copied' ? (
+          <>
+            <ClipboardCheck size={12} aria-hidden="true" className="text-status-open" />
+            <span className="text-status-open">Copied</span>
+          </>
+        ) : copyState === 'failed' ? (
+          <>
+            <XCircle size={12} aria-hidden="true" className="text-attention-text" />
+            <span className="text-attention-text">Failed</span>
+          </>
+        ) : (
+          <>
+            <Copy size={12} aria-hidden="true" />
+            {label}
+          </>
+        )}
+      </button>
+      <span aria-live="polite" role="status" className="sr-only">
+        {copyState === 'copied' ? 'Copied to clipboard' : copyState === 'failed' ? 'Clipboard copy failed' : ''}
+      </span>
+    </span>
   );
 }
 
@@ -190,6 +208,51 @@ function ReadinessRow({ fact }: { fact: ReadinessFact }): JSX.Element {
   );
 }
 
+// ── Materialization list ─────────────────────────────────────────────────
+
+function MaterializationList({
+  items,
+}: {
+  items: MaterializationAttempt[];
+}): JSX.Element {
+  return (
+    <div className="mt-3">
+      <h4 className="text-fg-subtle text-2xs mb-1.5 font-bold tracking-wide uppercase">
+        Materializations
+      </h4>
+      <ul className="flex flex-col gap-1.5">
+        {items.map((m, i) => (
+          <li key={i} className="text-fg-muted text-body-sm">
+            {m.agentName ? (
+              <code className="text-mono-sm">{m.agentName}</code>
+            ) : null}
+            {m.agentName && m.createdAt ? ' · ' : null}
+            {m.createdAt ? (
+              <time dateTime={m.createdAt} className="text-xs">
+                {m.createdAt}
+              </time>
+            ) : null}
+            {m.success === true ? (
+              <span className="text-status-open ml-1.5 text-xs font-semibold">
+                succeeded
+              </span>
+            ) : m.success === false ? (
+              <span className="text-attention-text ml-1.5 text-xs font-semibold">
+                failed
+              </span>
+            ) : null}
+            {m.errorMessage ? (
+              <span className="text-attention-text ml-1.5 text-xs break-all">
+                {m.errorMessage}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── Timeline ─────────────────────────────────────────────────────────────
 
 function TimelineSection({ events }: { events: TimelineEvent[] }): JSX.Element {
@@ -230,6 +293,26 @@ function TimelineSection({ events }: { events: TimelineEvent[] }): JSX.Element {
                   {ev.actorRole ? ` (${ev.actorRole})` : ''}
                   {ev.time ? ` · ${ev.time}` : ''}
                 </div>
+                {/* Content hash per event, where supplied */}
+                {ev.contentHash ? (
+                  <code className="text-mono-sm text-fg-subtle mt-0.5 block break-all select-all">
+                    {ev.contentHash}
+                  </code>
+                ) : null}
+                {/* Safely rendered metadata facts */}
+                {ev.metadataFacts.length > 0 ? (
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {ev.metadataFacts.map((mf) => (
+                      <span
+                        key={mf.key}
+                        className="text-fg-subtle text-2xs inline-flex items-baseline gap-1"
+                      >
+                        <span className="font-bold uppercase">{mf.key}</span>
+                        <span className="font-mono">{mf.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </li>
           );
@@ -269,12 +352,7 @@ export function ProposalDetailPage(): JSX.Element {
   }>();
   const versionId = versionIdParam ? Number(versionIdParam) : undefined;
 
-  const query = useQuery({
-    queryKey: ['proposal-detail', slug, versionId],
-    queryFn: () => getProposalDetail(slug as string, versionId as number),
-    enabled: !!slug && versionId !== undefined && !Number.isNaN(versionId),
-    staleTime: 30_000,
-  });
+  const query = useProposalDetail(slug, versionId);
 
   const backLink = (
     <Link
@@ -360,6 +438,7 @@ export function ProposalDetailPage(): JSX.Element {
   const detail = query.data;
   const events = timelineEvents(detail.events ?? []);
   const assignments = assignmentProjection(detail.assignments ?? []);
+  const mats = materializationProjection(detail.materializations ?? []);
   const validator = validatorFacts(detail.events ?? []);
   const hash = hashDisplay(detail.content_hash);
   const facts = readinessFacts(detail);
@@ -406,7 +485,7 @@ export function ProposalDetailPage(): JSX.Element {
 
               {/* Full copyable hash */}
               <div className="mt-2 flex items-center gap-2">
-                <code className="text-mono-sm text-fg-muted max-w-full select-all break-all">
+                <code className="text-mono-sm text-fg-muted max-w-full break-all select-all">
                   {hash.full}
                 </code>
                 <CopyButton
@@ -503,7 +582,7 @@ export function ProposalDetailPage(): JSX.Element {
             </div>
 
             {skillMdAvailable ? (
-              <pre className="text-mono-sm text-fg-muted bg-surface-subtle border-border-subtle max-h-96 overflow-auto whitespace-pre-wrap rounded-md border p-4 text-sm leading-relaxed">
+              <pre className="text-mono-sm text-fg-muted bg-surface-subtle border-border-subtle max-h-96 overflow-auto rounded-md border p-4 text-sm leading-relaxed whitespace-pre-wrap">
                 {detail.skill_md}
               </pre>
             ) : (
@@ -532,7 +611,7 @@ export function ProposalDetailPage(): JSX.Element {
 
           {/* Evidence rail (right on desktop, below on mobile) */}
           <aside
-            className="border-border-default bg-surface-raised lg:w-72 lg:shrink-0 rounded-md border p-5 md:p-6"
+            className="border-border-default bg-surface-raised rounded-md border p-5 md:p-6 lg:w-72 lg:shrink-0"
             aria-label="Evidence"
           >
             <Eyebrow>Evidence</Eyebrow>
@@ -789,28 +868,8 @@ export function ProposalDetailPage(): JSX.Element {
                 </div>
               )}
 
-              {detail.materializations?.length > 0 && (
-                <div className="mt-3">
-                  <h4 className="text-fg-subtle text-2xs mb-1.5 font-bold tracking-wide uppercase">
-                    Materializations
-                  </h4>
-                  <ul className="flex flex-col gap-1.5">
-                    {detail.materializations.map((m, i) => (
-                      <li
-                        key={i}
-                        className="text-fg-muted text-body-sm"
-                      >
-                        <code className="text-mono-sm">
-                          {String(m.agent_name ?? '')}
-                        </code>
-                        {' · '}
-                        {m.materialized_at != null
-                          ? String(m.materialized_at)
-                          : 'pending'}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              {mats.length > 0 && (
+                <MaterializationList items={mats} />
               )}
             </>
           ) : (

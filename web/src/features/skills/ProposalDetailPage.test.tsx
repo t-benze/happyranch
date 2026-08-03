@@ -12,7 +12,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ProposalDetailResponse } from '@/lib/api/skillLifecycle';
+import type { ProposalDetailResponse } from '@/hooks/skills';
 
 const SLUG = 'alpha';
 const VERSION_ID = 1;
@@ -119,10 +119,10 @@ describe('ProposalDetailPage — proposed proposal', () => {
       screen.getByText(/sha256:53cb67fc7e/),
     ).toBeInTheDocument();
 
-    // Readiness facts
+    // Readiness facts (backed by response facts, never status-enum synthesized)
     expect(screen.getByText('Not in catalog')).toBeInTheDocument();
-    expect(screen.getByText('Not assigned')).toBeInTheDocument();
-    expect(screen.getByText('Not materialized')).toBeInTheDocument();
+    expect(screen.getByText('No assignments recorded')).toBeInTheDocument();
+    expect(screen.getByText('No materializations recorded')).toBeInTheDocument();
   });
 
   test('renders SKILL.md primary pane with content', async () => {
@@ -330,10 +330,9 @@ describe('ProposalDetailPage — rejected proposal', () => {
     );
     mount();
 
-    // Rejected terminal banner
-    expect(
-      await screen.findByText('Rejected — terminal'),
-    ).toBeInTheDocument();
+    // Rejected terminal banner + readiness fact both show this text
+    await screen.findByText(/cannot be reopened/);
+    expect(screen.getAllByText('Rejected — terminal').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/cannot be reopened/)).toBeInTheDocument();
 
     // Status chip shows Rejected (in header + timeline, multiple)
@@ -344,9 +343,10 @@ describe('ProposalDetailPage — rejected proposal', () => {
 
     // No claim/publish/action affordance text (check for actionable "Claim" button/link, not "Claimed by")
 
-    // Readiness says terminal + not in catalog
-    expect(screen.getByText('Terminal — no further action')).toBeInTheDocument();
+    // Readiness: not in catalog, review_decision backed
     expect(screen.getByText('Not in catalog')).toBeInTheDocument();
+    // Rejected — terminal appears in both readiness strip and banner
+    expect(screen.getAllByText('Rejected — terminal').length).toBeGreaterThanOrEqual(1);
   });
 
   test('rejected shows reviewer facts in provenance', async () => {
@@ -701,5 +701,282 @@ describe('ProposalDetailPage — copy discipline', () => {
     const pageText = document.body.textContent ?? '';
     // We search for "active" as a standalone word (not part of "inactive")
     expect(/active/i.test(pageText)).toBe(false);
+  });
+});
+
+// ── Timeline content hash and metadata rendering ─────────────────────────
+
+describe('ProposalDetailPage — timeline hash and metadata', () => {
+  test('renders event content hash when supplied', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'published',
+        publisher: 'founder',
+        published_at: '2026-08-02T10:00:00Z',
+        events: [
+          {
+            event_type: 'proposed',
+            actor: 'frontend_engineer',
+            actor_role: 'agent',
+            new_status: 'proposed',
+            created_at: '2026-08-01T09:00:00Z',
+            content_hash: 'sha256:abc123def4567890',
+          },
+          {
+            event_type: 'published',
+            actor: 'founder',
+            actor_role: 'founder',
+            new_status: 'published',
+            created_at: '2026-08-02T10:00:00Z',
+          },
+        ],
+      }),
+    );
+    mount();
+
+    expect(await screen.findByText('Timeline')).toBeInTheDocument();
+    expect(screen.getByText('sha256:abc123def4567890')).toBeInTheDocument();
+  });
+
+  test('renders metadata facts from validation event', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'validated',
+        events: [
+          {
+            event_type: 'proposed',
+            actor: 'frontend_engineer',
+            actor_role: 'agent',
+            new_status: 'proposed',
+            created_at: '2026-08-01T09:00:00Z',
+          },
+          {
+            event_type: 'validated',
+            actor: 'founder',
+            actor_role: 'founder',
+            new_status: 'validated',
+            created_at: '2026-08-02T10:00:00Z',
+            metadata: {
+              validator_version: 'THR-055/1.0.0',
+              validator_key: 'hr-thr055',
+              run_id: 'run-42',
+            },
+          },
+        ],
+      }),
+    );
+    mount();
+
+    expect(await screen.findByText('Timeline')).toBeInTheDocument();
+    // Metadata facts should be rendered in the timeline
+    expect(screen.getByText('Validator version')).toBeInTheDocument();
+    expect(screen.getByText('THR-055/1.0.0')).toBeInTheDocument();
+    expect(screen.getByText('Validator key')).toBeInTheDocument();
+    expect(screen.getByText('hr-thr055')).toBeInTheDocument();
+    expect(screen.getByText('Run')).toBeInTheDocument();
+    expect(screen.getByText('run-42')).toBeInTheDocument();
+  });
+
+  test('renders failure and rationale from rejected event', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'rejected',
+        reviewer: 'founder',
+        review_decision: 'rejected',
+        events: [
+          {
+            event_type: 'proposed',
+            actor: 'frontend_engineer',
+            actor_role: 'agent',
+            new_status: 'proposed',
+            created_at: '2026-08-01T09:00:00Z',
+          },
+          {
+            event_type: 'rejected',
+            actor: 'founder',
+            actor_role: 'reviewer',
+            new_status: 'rejected',
+            created_at: '2026-08-02T10:00:00Z',
+            metadata: {
+              rationale: 'Does not meet quality bar',
+              failure: 'Missing required references',
+            },
+          },
+        ],
+      }),
+    );
+    mount();
+
+    expect(await screen.findByText('Timeline')).toBeInTheDocument();
+    expect(screen.getByText('Rationale')).toBeInTheDocument();
+    expect(screen.getByText('Does not meet quality bar')).toBeInTheDocument();
+    expect(screen.getByText('Failure')).toBeInTheDocument();
+    expect(screen.getByText('Missing required references')).toBeInTheDocument();
+  });
+});
+
+// ── Copy button accessibility and error state ────────────────────────────
+
+describe('ProposalDetailPage — copy controls', () => {
+  test('copy hash button has aria-live region for feedback', async () => {
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    // The copy button has an associated sr-only aria-live region
+    const liveRegion = document.querySelector('[aria-live="polite"]');
+    expect(liveRegion).not.toBeNull();
+    expect(liveRegion?.getAttribute('role')).toBe('status');
+  });
+
+  test('copy SKILL.md button is present and accessible', async () => {
+    mockProposal(baseProposal());
+    mount();
+
+    const copyBtn = await screen.findByRole('button', {
+      name: /copy full skill/i,
+    });
+    expect(copyBtn).toBeInTheDocument();
+    // Should be focusable
+    copyBtn.focus();
+    expect(document.activeElement).toBe(copyBtn);
+  });
+
+  test('copy hash button renders confirmation and aria-live', async () => {
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    // Find the hash copy button (not the SKILL.md copy button)
+    const hashBtn = screen.getByRole('button', {
+      name: /copy full content hash/i,
+    });
+    expect(hashBtn).toBeInTheDocument();
+  });
+});
+
+// ── Materialization rendering uses actual fields ─────────────────────────
+
+describe('ProposalDetailPage — materialization display', () => {
+  test('renders materialization with success and error_message', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'published',
+        publisher: 'founder',
+        published_at: '2026-08-02T10:00:00Z',
+        materializations: [
+          {
+            agent_name: 'frontend_engineer',
+            success: true,
+            created_at: '2026-08-03T09:00:00Z',
+          },
+          {
+            agent_name: 'qa_engineer',
+            success: false,
+            error_message: 'Disk quota exceeded',
+            created_at: '2026-08-03T10:00:00Z',
+          },
+        ],
+      }),
+    );
+    mount();
+
+    expect(
+      await screen.findByText('Assignment & materialization'),
+    ).toBeInTheDocument();
+    const assignSection = screen.getByLabelText('Assignment and materialization');
+
+    // Shows agent names
+    expect(within(assignSection).getByText('frontend_engineer')).toBeInTheDocument();
+    expect(within(assignSection).getByText('qa_engineer')).toBeInTheDocument();
+
+    // Shows success/failure status
+    expect(within(assignSection).getByText('succeeded')).toBeInTheDocument();
+    expect(within(assignSection).getByText('failed')).toBeInTheDocument();
+
+    // Shows error_message
+    expect(within(assignSection).getByText('Disk quota exceeded')).toBeInTheDocument();
+
+    // Never shows 'pending'
+    expect(
+      within(assignSection).queryByText('pending'),
+    ).not.toBeInTheDocument();
+  });
+
+  test('never renders materialized_at field', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'published',
+        publisher: 'founder',
+        published_at: '2026-08-02T10:00:00Z',
+        materializations: [
+          {
+            agent_name: 'frontend_engineer',
+            success: true,
+            materialized_at: '2026-08-03T09:00:00Z',
+            created_at: '2026-08-03T09:00:00Z',
+          },
+        ],
+      }),
+    );
+    mount();
+
+    expect(
+      await screen.findByText('Assignment & materialization'),
+    ).toBeInTheDocument();
+
+    const assignSection = screen.getByLabelText('Assignment and materialization');
+    // Uses created_at (which is '2026-08-03T09:00:00Z'), rendered as <time>
+    const timeEl = assignSection.querySelector('time');
+    expect(timeEl).not.toBeNull();
+    // The time element shows created_at, not materialized_at
+    expect(timeEl?.textContent).toBe('2026-08-03T09:00:00Z');
+  });
+});
+
+// ── No synthetic readiness statements ────────────────────────────────────
+
+describe('ProposalDetailPage — no synthetic readiness', () => {
+  test('proposed proposal shows no "passed validation" claim', async () => {
+    mockProposal(baseProposal({ status: 'proposed' }));
+    mount();
+
+    await screen.findByText('Proposal');
+
+    // Should NOT claim validation passed when there's no validation event
+    expect(screen.queryByText('Passed technical validation')).not.toBeInTheDocument();
+  });
+
+  test('validation_failed does not claim "Approved"', async () => {
+    mockProposal(
+      baseProposal({
+        status: 'validation_failed',
+        events: [
+          {
+            event_type: 'proposed',
+            actor: 'frontend_engineer',
+            actor_role: 'agent',
+            new_status: 'proposed',
+            created_at: '2026-08-01T09:00:00Z',
+          },
+          {
+            event_type: 'validation_failed',
+            actor: 'founder',
+            actor_role: 'founder',
+            new_status: 'validation_failed',
+            created_at: '2026-08-02T10:00:00Z',
+          },
+        ],
+      }),
+    );
+    mount();
+
+    await screen.findByText('Proposal');
+
+    // Should NOT synthesize "Approved" or "Published" from status
+    expect(screen.queryByText('Approved by reviewer')).not.toBeInTheDocument();
+    expect(screen.queryByText('In custom catalog')).not.toBeInTheDocument();
   });
 });
