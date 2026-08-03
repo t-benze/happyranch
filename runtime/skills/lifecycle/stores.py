@@ -46,7 +46,9 @@ def _load_skill_md_from_artifact(
     - Missing artifact (cleaned up / expired)
     - Malformed / unreadable artifact
     - No org_root (can't resolve artifact store)
+    - Absent/blank ledger content_hash (cannot prove package intact)
     - Manifest hash mismatch with ledger content_hash (overwritten/forged)
+    - Absent/blank/malformed/non-sha256 member digest (cannot prove member intact)
     - Member hash mismatch with declared member hash (overwritten/forged)
     - Any exception during load
 
@@ -69,11 +71,13 @@ def _load_skill_md_from_artifact(
 
         # Step 2: Prove manifest content is the immutable proposal version.
         # The ledger content_hash is SHA-256 of the canonical manifest.json.
-        # If the artifact has been overwritten, the hash won't match.
-        if content_hash:
-            computed_manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
-            if computed_manifest_hash != content_hash:
-                return None
+        # An absent, blank, or mismatched digest is a fail-closed signal —
+        # the package cannot be proven intact.
+        if not content_hash:
+            return None
+        computed_manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
+        if computed_manifest_hash != content_hash:
+            return None
 
         manifest = json.loads(manifest_raw.decode("utf-8"))
         members = manifest.get("members", [])
@@ -95,12 +99,17 @@ def _load_skill_md_from_artifact(
         # Step 3: Load SKILL.md bytes & prove they match the member's declared hash.
         raw = store.read(skill_key)
 
+        # Step 3: Load SKILL.md bytes & prove they match the member's declared hash.
+        # The canonical member hash format is sha256:<hex> per the manifest
+        # contract.  An absent, blank, malformed, or unsupported-algorithm
+        # digest is a fail-closed signal — the member cannot be proven intact.
         member_hash = skill_md_member.get("hash", "")
-        if member_hash.startswith("sha256:"):
-            expected_hex = member_hash[len("sha256:"):]
-            actual_hex = hashlib.sha256(raw).hexdigest()
-            if actual_hex != expected_hex:
-                return None
+        if not member_hash.startswith("sha256:"):
+            return None
+        expected_hex = member_hash[len("sha256:"):]
+        actual_hex = hashlib.sha256(raw).hexdigest()
+        if actual_hex != expected_hex:
+            return None
 
         return raw.decode("utf-8")
     except Exception:
@@ -118,9 +127,11 @@ def _load_package_members_from_artifact(
     package members (SKILL.md, references/, assets/) with paths, hashes,
     artifact keys, and sizes.
 
-    Verifies the manifest's SHA-256 matches the ledger content_hash before
-    returning members. Returns None on any hash mismatch (overwritten/forged
-    artifact), missing key, malformed JSON, or load failure.
+    Requires a present, well-formed ledger content_hash.  Verifies the
+    manifest's SHA-256 matches the ledger content_hash before returning
+    members.  Returns None on absent/blank/mismatched content_hash, hash
+    mismatch (overwritten/forged artifact), missing key, malformed JSON,
+    or load failure.
     """
     if not content_artifact_key or not org_root:
         return None
@@ -135,10 +146,12 @@ def _load_package_members_from_artifact(
         raw = store.read(content_artifact_key)
 
         # Prove manifest content is the immutable proposal version.
-        if content_hash:
-            computed = hashlib.sha256(raw).hexdigest()
-            if computed != content_hash:
-                return None
+        # An absent, blank, or mismatched digest is a fail-closed signal.
+        if not content_hash:
+            return None
+        computed = hashlib.sha256(raw).hexdigest()
+        if computed != content_hash:
+            return None
 
         manifest = json.loads(raw.decode("utf-8"))
         return manifest.get("members", [])
