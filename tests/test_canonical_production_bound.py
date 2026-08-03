@@ -1067,6 +1067,10 @@ else:
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
+        # Prove the ACL tool is operational on an executor-owned probe
+        # BEFORE the attack — tool failure must fail the gate, not
+        # masquerade as access denial.
+        self._prove_acl_tool_operational(isolation, test_root)
         attack_script = test_root / "attack_acl_claude.py"
         self._make_attack_script(
             workspace, attack_script, "acl", ".claude/skills",
@@ -1087,6 +1091,10 @@ else:
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
+        # Prove the ACL tool is operational on an executor-owned probe
+        # BEFORE the attack — tool failure must fail the gate, not
+        # masquerade as access denial.
+        self._prove_acl_tool_operational(isolation, test_root)
         attack_script = test_root / "attack_acl_agents.py"
         self._make_attack_script(
             workspace, attack_script, "acl", ".agents/skills",

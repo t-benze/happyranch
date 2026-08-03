@@ -2168,16 +2168,13 @@ def test_set_executor_materialization_failure_fail_closed(
     - HTTP 400 with named error code
     - agent.yaml executor key unchanged (still old executor)
     - agent .md frontmatter executor field unchanged
-    - No bootstrap file from the new executor written
+    - No bootstrap file from the new executor written (ensure_workspace_ready
+      is never called because union failed)
     - No audit row produced (no audit_log entry for this switch)"""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
-
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-    )
 
     # Record pristine workspace state before the failing request
     agent_yaml_before = (workspace / "agent.yaml").read_text()
@@ -2192,19 +2189,9 @@ def test_set_executor_materialization_failure_fail_closed(
             bootstrap_candidates_before.add(candidate)
 
     with patch(
-        "runtime.daemon.routes.agents.ContextBuilder"
-    ) as MockCB, patch(
-        "runtime.orchestrator.workspace_adapters.materialize_workspace_skills_union"
-    ) as mock_mat:
-        # DO NOT mock ensure_workspace_ready to assert it is never called
-        MockCB.return_value.ensure_workspace_ready.side_effect = RuntimeError(
-            "ensure_workspace_ready must NOT be called before materialization"
-        )
-        mock_mat.side_effect = SystemContractMaterializationError(
-            missing_contracts=["start-task"],
-            workspace=workspace,
-            provider="codex",
-        )
+        "runtime.daemon.routes.agents._executor_switch_materialize",
+        return_value=["union materialization failed: test-induced error"],
+    ):
         r = TestClient(app).put(
             "/api/v1/orgs/alpha/agents/dev_agent/executor",
             json={"executor": "codex"},
@@ -2246,3 +2233,107 @@ def test_set_executor_materialization_failure_fail_closed(
                 f"Bootstrap file {candidate} was written before "
                 "materialization failed — violates materialize-first contract"
             )
+
+
+def test_set_executor_bootstrap_failure_after_successful_union(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """When the six-context union materialization succeeds but the
+    subsequent bootstrap step (ensure_workspace_ready) raises, the route
+    must fail closed: no frontmatter change, no audit, no launch.
+
+    Safe compensation: any bootstrap files partially written by the
+    failing ensure_workspace_ready are cleaned up.
+
+    Specifically asserts:
+    - HTTP 400 with named error code executor_bootstrap_failed
+    - agent.yaml unchanged (still old executor)
+    - agent .md frontmatter unchanged
+    - No new executor bootstrap files survive in workspace
+    - No audit row produced"""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    # Write a marker file in the workspace so we can verify it survives
+    persistent_marker = workspace / "task_history.md"
+    persistent_marker.write_text("# Task History: dev_agent\n")
+
+    # Record pristine workspace state before the failing request
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # Check if any bootstrap files exist before (pre-existing files)
+    bootstrap_candidates_before = set()
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists():
+            bootstrap_candidates_before.add(candidate)
+
+    with patch(
+        "runtime.daemon.routes.agents._executor_switch_materialize",
+        return_value=[],  # union succeeds
+    ), patch(
+        "runtime.daemon.routes.agents.ContextBuilder"
+    ) as MockCB:
+        # Bootstrap fails: ensure_workspace_ready raises AFTER it may
+        # have partially written bootstrap files
+        def _failing_bootstrap(workspace, agent_name, system_prompt, *, provider):
+            # Simulate partial write: create a new-executor bootstrap file
+            (workspace / "AGENTS.md").write_text("# Partial bootstrap")
+            raise RuntimeError("Bootstrap failed — simulated failure")
+
+        MockCB.return_value.ensure_workspace_ready.side_effect = (
+            _failing_bootstrap
+        )
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
+            headers=auth_headers,
+        )
+
+    # FAIL-CLOSED: bootstrap failure prevents switch
+    assert r.status_code == 400, (
+        f"Expected 400 on bootstrap failure, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "Bootstrap failed" in body["detail"]["error"], (
+        f"Expected bootstrap error message, got {body['detail']['error']}"
+    )
+
+    # ── Assert unchanged config state ──
+    # agent.yaml must still say "claude", not "codex"
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        f"agent.yaml was mutated on bootstrap failure: "
+        f"before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+    )
+
+    # Agent frontmatter must be unchanged — no persist happened
+    if frontmatter_before is not None:
+        frontmatter_after = agent_md_path.read_text()
+        assert frontmatter_after == frontmatter_before, (
+            "Agent frontmatter was mutated on bootstrap failure"
+        )
+
+    # ── Assert safe compensation cleaned up partial bootstrap ──
+    # The AGENTS.md written by the failing bootstrap must have been removed.
+    # Only pre-existing bootstrap files survive.
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists() and candidate not in bootstrap_candidates_before:
+            pytest.fail(
+                f"Bootstrap file {candidate} survived after bootstrap "
+                "failure — safe compensation failed to clean up"
+            )
+
+    # Persistent files (task_history.md) must survive
+    assert persistent_marker.exists(), (
+        "Persistent file task_history.md was deleted during bootstrap "
+        "failure cleanup — safe compensation was too aggressive"
+    )
