@@ -671,7 +671,7 @@ class TestWorkspaceSkillLinkIsolationAttacks:
         root = Path(tempfile.mkdtemp(
             prefix="pytest-hr-attack-", dir="/tmp",
         ))
-        root.chmod(0o755)
+        root.chmod(0o777)
         return root
 
     @staticmethod
@@ -719,6 +719,12 @@ class TestWorkspaceSkillLinkIsolationAttacks:
             f"stdout={create_stdout.strip()}, stderr={create_stderr.strip()}"
         )
         assert probe.exists(), "ACL control: probe not created"
+        # Verify the probe is owned by the executor identity
+        executor_user = _resolve_executor_username(executor_identity)
+        assert create_stdout.strip() == executor_user, (
+            f"ACL control: probe owned by '{create_stdout.strip()}', "
+            f"expected '{executor_user}'"
+        )
 
         # ── Step 2: Apply ACL through executor + verify ──
         apply = isolation.launch_executor(
