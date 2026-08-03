@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
@@ -1302,7 +1302,13 @@ async def list_learnings(
 
 
 @router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}", include_in_schema=False)
-async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
+async def get_learning(
+    slug: str,
+    agent_name: str,
+    id_or_slug: str,
+    org: OrgDep,
+    x_hr_session_id: str = Header(None, alias="X-HappyRanch-Session-Id"),
+) -> dict:
     store = _workspace_memory_store(org, agent_name)
     try:
         entry = store.read_entry(id_or_slug)
@@ -1311,8 +1317,13 @@ async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep)
             status_code=404,
             detail={"error": "id_not_found", "id_or_slug": id_or_slug},
         )
+    # THR-091 Slice 2: pass optional session_id for same-session
+    # source attribution (digest/search/explicit_or_other).
     AuditLogger(org.db).log_memory_read(
-        agent=agent_name, id=entry.id, slug=entry.slug,
+        agent=agent_name,
+        id=entry.id,
+        slug=entry.slug,
+        session_id=x_hr_session_id if x_hr_session_id else None,
     )
     return _entry_to_dict(entry)
 
@@ -1324,6 +1335,9 @@ class LearningSearchBody(BaseModel):
     include_evicted: bool | None = None
     include_superseded: bool | None = None
     include_kb: bool | None = None
+    # THR-091 Slice 2: optional session_id for search telemetry correlation.
+    # Correlation metadata only; never auth.
+    session_id: str | None = None
 
 
 @router.post("/agents/{agent_name}/memory/entries/search")
@@ -1368,6 +1382,18 @@ async def search_learnings(
     # THR-032 P4b: merge + sort combined memory+KB hits, then truncate
     hits.sort(key=lambda h: (-h.score, h.updated_at or "", h.title, h.id))
     hits = hits[:limit]
+    # THR-091 Slice 2: log privacy-preserving search telemetry.
+    # Store only memory IDs (exclude KB hits), plus counts/correlation.
+    # NEVER persist raw query text, snippets, titles, or bodies.
+    memory_hit_ids = [h.id for h in hits if h.source != "kb"]
+    kb_hit_count = sum(1 for h in hits if h.source == "kb")
+    AuditLogger(org.db).log_memory_search(
+        agent=agent_name,
+        session_id=body.session_id,
+        memory_ids=memory_hit_ids,
+        hit_count=len(memory_hit_ids),
+        kb_hit_count=kb_hit_count,
+    )
     result: dict = {
         "hits": [
             {

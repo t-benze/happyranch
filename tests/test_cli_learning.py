@@ -172,8 +172,10 @@ def _install_fake_client(monkeypatch, captured):
             }
 
     class FakeClient:
-        def get(self, path, params=None):
+        def get(self, path, params=None, headers=None):
             captured["path"] = path
+            if headers:
+                captured["headers"] = headers
             return FakeResponse()
 
         def post(self, path, json=None):

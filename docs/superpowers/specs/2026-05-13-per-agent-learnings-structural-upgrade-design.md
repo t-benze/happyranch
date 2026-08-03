@@ -19,6 +19,25 @@
 > **THR-091 (last_verified frontmatter + age at recall).** `MemoryItem` gains an optional `last_verified` frontmatter field (ISO-8601 string, default `None`). When `None`, the key is omitted from serialization so existing entries round-trip byte-identically (same pattern as `provenance`/`scope`/`lifecycle`/`salience`). `MemoryItem.age_summary()` computes `age_days` (now - `updated_at`) and, only when `last_verified` is set, `last_verified_age_days`. The `GET /memory/entries/{id}` response and `happyranch memory get` CLI output surface both ages at recall time. No schema change — `.md` frontmatter only.
 >
 > **THR-032 P4b (opt-in read-only KB federation).** Memory search supports `include_kb`/`--include-kb` flag (default false). KB hits are merged at read time with source labels without altering KB write governance. KB failure returns memory hits with a warning.
+>
+> **THR-091 Slice 2 (memory telemetry — activation vs retrieval measurement).** This slice adds measurement-only telemetry (no push/ranking tuning, no aliases, no embeddings). Three additive audit events enable an honest, role-aware same-session decision about activation versus retrieval:
+>
+> - **`memory_digest_impression`** — emitted once per non-empty digest injected into an agent prompt at the trusted Orchestrator spawn seam. Carries `agent`, `task_id`, `session_id`, `digest_ids` (list of `MEM-NNN`), `digest_count`, and `budget`. Does NOT store digest text, titles, directive/full bodies, prompts, or briefs. Empty/disabled digest → no impression event.
+> - **`memory_read` (extended)** — retains existing `task_id=AGENT-<agent>`, `action=memory_read`, `payload={id, slug}` shape unchanged for legacy consumers. Adds optional `session_id` and `source` fields (`digest`, `search`, or `explicit_or_other`). When `session_id` is provided without an explicit `source`, the daemon auto-resolves attribution by querying the session's `memory_digest_impression` and `memory_search` rows. Same-session only: a read receives `digest` only when its ID is in that exact session's impression; `search` only from that exact session's search result IDs. All other cases → `explicit_or_other`. Never cross-credits a prior/other task/session.
+> - **`memory_search`** — written after every memory search returns. Stores only returned memory IDs (`memory_ids`), `hit_count`, `kb_hit_count`, and correlation metadata (`agent`, optional `session_id`). NEVER persists raw query text, query tokens/hashes, snippets, titles, bodies, KB body content, or prompt text. KB hits are counted in `kb_hit_count` but excluded from `memory_ids`.
+>
+> **Session-correlation design:** The `--session-id` flag is passed by the agent CLI as correlation metadata through an `X-HappyRanch-Session-Id` header on `memory get` requests and as a body field on `memory search` requests. It is correlation only, never auth — bearer-token authentication is unchanged. An agent forging `session_id` only affects attribution labels, not security. The ground truth (digest impression events) is logged server-side at the trusted Orchestrator spawn seam.
+>
+> **Operator CLI report (`happyranch memory report`):** Uses the existing authenticated audit read surface (no new daemon/browser route, no OpenAPI/TS mirror change). Computes from `memory_digest_impression`, `memory_read`, and `memory_search` rows. Outputs JSON and human-readable form. Pre-registers:
+> - Observation starts after the first production `memory_digest_impression` row emitted by the deployed revision.
+> - Requires 14 complete calendar days AND ≥500 sessions with non-empty correlated digests.
+> - Reports `insufficient_sample` if thresholds aren't met.
+> - **Activation loss** only if aggregate pointer-level same-session pull-through <10% AND a majority of eligible roles (≥30 correlated sessions) are <10%. Next step: provenance/push tuning only (no aliases/embeddings).
+> - **Retrieval loss** (evaluated only when activation is NOT triggered) only if search-sourced reads of IDs absent from that session's digest >25% both aggregate AND in any eligible role with ≥30 such reads. Next step: alias/synonym-tag evaluation first. Embeddings remain founder-gated.
+> - Otherwise **no demonstrated problem** — do not tune ranking/push.
+> - Contradictory role visibility is preserved: a global remedy is never applied to a role whose evidence contradicts it.
+>
+> **Hard boundaries preserved:** No SQLite schema migration/column or task_id-semantic change. No authentication/bearer-token/permission-model/Feishu/notification change. No dependency addition. No memory frontmatter write at read time. No digest-budget/pointer/full-body behavior change. No OpenAPI change (no new browser route). No raw search query/body logging. No unrelated refactoring.
 
 ## 1. Goal
 
