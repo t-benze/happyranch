@@ -2081,8 +2081,9 @@ def test_set_executor_claude_to_codex_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Claude→Codex switch leaves .agents/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 4
-    contexts). Files exist BEFORE any new session starts."""
+    contracts any future session context could need (union across all 6
+    contexts: task, thread, wake, dream, schedule, bootstrap).
+    Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2101,10 +2102,9 @@ def test_set_executor_claude_to_codex_materializes_skills(
     body = r.json()
     assert body["materialization_errors"] == []
 
-    # Union of all 4 contexts: start-task(task,wake), jobs(all),
-    # make-worktree(all,requires_repos), thread(task,thread,wake), dream(dream)
+    # Union of all 6 contexts: task, thread, wake, dream, schedule, bootstrap
     all_contracts: set[str] = set()
-    for ctx in ("task", "thread", "wake", "dream"):
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
         all_contracts |= _system_contract_ids_for_context(ctx, workspace)
 
     assert len(all_contracts) >= 1, "at least one contract should be materialized"
@@ -2119,8 +2119,9 @@ def test_set_executor_codex_to_claude_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Codex→Claude switch leaves .claude/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 4
-    contexts). Files exist BEFORE any new session starts."""
+    contracts any future session context could need (union across all 6
+    contexts: task, thread, wake, dream, schedule, bootstrap).
+    Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="codex")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2139,7 +2140,7 @@ def test_set_executor_codex_to_claude_materializes_skills(
     assert body["materialization_errors"] == []
 
     all_contracts: set[str] = set()
-    for ctx in ("task", "thread", "wake", "dream"):
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
         all_contracts |= _system_contract_ids_for_context(ctx, workspace)
 
     assert len(all_contracts) >= 1, "at least one contract should be materialized"
@@ -2153,9 +2154,9 @@ def test_set_executor_codex_to_claude_materializes_skills(
 def test_set_executor_materialization_failure_non_fatal(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """When ensure_system_contracts_materialized raises, the switch still
-    succeeds (steps 1-3 have already mutated state). The error is surfaced
-    in the response body, not as a 500."""
+    """When workspace_skills materialization raises during executor switch,
+    the switch still succeeds (steps 1-3 have already mutated state).
+    The error is surfaced in the response body, not as a 500."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2168,7 +2169,7 @@ def test_set_executor_materialization_failure_non_fatal(
     with patch(
         "runtime.daemon.routes.agents.ContextBuilder"
     ) as MockCB, patch(
-        "runtime.daemon.routes.agents.ensure_system_contracts_materialized"
+        "runtime.orchestrator.workspace_adapters.materialize_workspace_skills_union"
     ) as mock_mat:
         MockCB.return_value.ensure_workspace_ready.return_value = None
         mock_mat.side_effect = SystemContractMaterializationError(
@@ -2187,7 +2188,8 @@ def test_set_executor_materialization_failure_non_fatal(
     body = r.json()
     assert body["before"]["org_executor"] == "claude"
     assert body["after"]["org_executor"] == "codex"
-    # Materialization failure is surfaced non-fatally
-    assert len(body["materialization_errors"]) == 4, (
-        f"Expected 4 materialization errors (one per context), got {body['materialization_errors']}"
+    # Materialization failure is surfaced non-fatally (single union call)
+    assert len(body["materialization_errors"]) == 1, (
+        f"Expected 1 materialization error (single union call), "
+        f"got {body['materialization_errors']}"
     )

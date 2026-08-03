@@ -331,6 +331,175 @@ def materialize_workspace_skills(
         )
 
 
+def materialize_workspace_skills_union(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    contexts: list[str],
+    provider: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db=None,
+) -> None:
+    """Build a single full expected-spec union from MULTIPLE session contexts.
+
+    Unlike ``materialize_workspace_skills`` which reconciles for a single
+    context (and therefore withdraws all links not in that context's expected
+    set), this function unions system-contract expectations from ALL named
+    contexts, computes release-managed and lifecycle specs once, and calls
+    ``repair_workspace_skills`` exactly once with the full union.
+
+    This is the correct executor-switch materialization: the switched
+    workspace must be ready for EVERY possible session context, not only
+    the last one materialized.
+
+    Args:
+        contexts: list of session context names to union (e.g.
+            ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
+    """
+    with _workspace_skills_transaction(workspace):
+        _materialize_context_union(
+            workspace, settings,
+            slug=slug, contexts=contexts, provider=provider,
+            agent_name=agent_name, team=team,
+            skills_root=skills_root, org_root=org_root, db=db,
+        )
+
+
+def _materialize_context_union(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    contexts: list[str],
+    provider: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db=None,
+) -> None:
+    """Core union logic: build expected_specs from all contexts, repair once."""
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+
+    store = CanonicalSkillStore(settings=settings)
+    materializer = SymlinkMaterializer(store)
+    src_root = _resolve_skills_src(settings)
+
+    # ── 1. Union system contracts from ALL contexts ─────────────────
+    seen_system_contracts: set[str] = set()
+    expected_specs: list[dict] = []
+
+    for ctx_name in contexts:
+        try:
+            ctx = SessionContext(ctx_name)
+        except ValueError:
+            # Unknown context name — skip system contracts for it
+            continue
+        contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+        for contract in contracts:
+            if contract.id in seen_system_contracts:
+                continue
+            seen_system_contracts.add(contract.id)
+            src_dir = src_root / contract.id
+            if not src_dir.is_dir():
+                continue
+            content_hash = _compute_dir_hash(src_dir)
+            store.build_from_source(contract.id, "system", content_hash, src_dir)
+            expected_specs.append({
+                "slug": contract.id,
+                "version": "system",
+                "content_hash": content_hash,
+            })
+
+    # ── 2. Release-managed catalog skills (once) ───────────────────
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        release_entries: dict = {}
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+        if release_entries:
+            union_registry = SkillRegistry(skills_root=skills_root)
+            for entry in release_entries.values():
+                union_registry._entries[entry.id] = entry
+
+            policy: dict = {}
+            if org_root is not None:
+                config_path = org_root / "org" / "config.yaml"
+            else:
+                config_path = settings.project_root / "org" / "config.yaml"
+            if config_path.is_file():
+                import yaml
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        policy = raw.get("skills", {})
+                except (yaml.YAMLError, OSError):
+                    pass
+
+            resolver = EligibilityResolver(policy)
+            exposed = resolve_exposed_skills(
+                union_registry, resolver, org=slug, team=team, agent=agent_name,
+            )
+
+            for es in exposed:
+                skill_id_slug = es.skill.slug
+                if es.skill.source == "user_authored" and org_root is not None:
+                    src_dir = org_root / "skills" / skill_id_slug
+                else:
+                    src_dir = skills_root / skill_id_slug
+                if not src_dir.is_dir():
+                    continue
+
+                content_hash = _compute_dir_hash(src_dir)
+                store.build_from_source(
+                    skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                )
+                expected_specs.append({
+                    "slug": skill_id_slug,
+                    "version": es.skill.version or "0",
+                    "content_hash": content_hash,
+                })
+
+                if db is not None:
+                    db.insert_skill_validation_event(
+                        skill_id=es.skill.id,
+                        slug=skill_id_slug,
+                        agent=agent_name,
+                        source="materialization",
+                        severity="info",
+                        ok=True,
+                        version=es.skill.version,
+                    )
+
+    # ── 3. Lifecycle-ledger custom skills (once) ───────────────────
+    if db is not None and org_root is not None:
+        lifecycle_specs = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name=agent_name,
+            slug=slug,
+        )
+        expected_specs.extend(lifecycle_specs)
+
+    # ── Reconcile ONCE with the full union ─────────────────────────
+    for subdir in (".claude/skills", ".agents/skills"):
+        materializer.repair_workspace_skills(
+            expected_specs, workspace, subdir,
+        )
+
+
 def _materialize_unified_canonical(
     workspace: Path,
     settings: Settings,
@@ -487,7 +656,7 @@ def _build_lifecycle_canonical_specs(
     Only PUBLISHED skills with active assignments are resolved.
     Fail-closed: any error raises LifecycleMaterializationError.
     """
-    from runtime.skills.lifecycle.service import SkillLifecycleService
+    from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
     from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
     from runtime.orchestrator._paths import OrgPaths
 
@@ -561,7 +730,9 @@ def _build_lifecycle_canonical_specs(
             "content_hash": pkg.content_hash,
         })
 
-        # Record successful materialization
+        # Record successful materialization — audit persistence is mandatory.
+        # A ledger write failure here means the materialization cannot proceed
+        # unrecorded to a launch-capable successful return.
         try:
             service.record_materialization(
                 db=db,
@@ -573,8 +744,14 @@ def _build_lifecycle_canonical_specs(
                 success=True,
                 session_context="session_spawn",
             )
-        except Exception:
-            pass
+        except LifecycleError:
+            raise
+        except Exception as exc:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Audit persistence failed for successful materialization: {exc}",
+            ) from exc
 
     return specs
 

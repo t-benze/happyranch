@@ -467,6 +467,8 @@ class TestCopySkillsTreeAtomicity:
                         bad_reads.append(f"Unexpected content: {content!r}")
                 except FileNotFoundError:
                     pass  # OK during transition
+                except OSError:
+                    pass  # OK during transition (inode swap on macOS)
                 except Exception as e:
                     bad_reads.append(f"{type(e).__name__}: {e}")
 

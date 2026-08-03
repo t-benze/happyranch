@@ -1017,6 +1017,214 @@ class TestUserAuthoredSkillMaterialization:
             "Missing artifact must NOT leave partial workspace residue"
         )
 
+    def test_audit_persistence_failure_raises_named_error(
+        self, tmp_dir, test_settings, db, monkeypatch,
+    ):
+        """Adversarial: when record_materialization raises (ledger/audit write
+        failure), the materialization MUST raise a named LifecycleMaterializationError
+        and MUST NOT proceed to a launch-capable successful return.
+
+        Proves: (a) named failure reaches the materialization caller;
+        (b) no successful launch/readiness/persist/audit progression occurs.
+        """
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        org_root = tmp_dir / "org"
+        skill_md = "# Audit Fail Skill\n\nTest."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Store a valid artifact
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/audit-fail/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+
+        # Seed PUBLISHED + assigned skill
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:audit-fail",
+            slug="audit-fail",
+            name="Audit Fail",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Will fail audit",
+            skill_md=skill_md,
+            content_artifact_key=artifact_key,
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:audit-fail",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # Inject audit persistence failure: record_materialization raises
+        original_record = SkillLifecycleService.record_materialization
+
+        def _failing_record(self, db, skill_id, agent_name, version_id,
+                            version, content_hash, success, error_message=None,
+                            session_context=None):
+            raise RuntimeError("Simulated ledger write failure")
+
+        monkeypatch.setattr(
+            SkillLifecycleService, "record_materialization", _failing_record,
+        )
+
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+        workspace = tmp_dir / "ws"
+
+        # (a) Named failure MUST reach the materialization caller
+        with pytest.raises(LifecycleMaterializationError, match="audit-fail"):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
+
+        # (b) No successful launch: workspace MUST NOT have symlinked skills
+        claude_skill = workspace / ".claude" / "skills" / "audit-fail" / "SKILL.md"
+        agents_skill = workspace / ".agents" / "skills" / "audit-fail" / "SKILL.md"
+        assert not claude_skill.is_file(), (
+            "Audit persistence failure must block materialization symlinks "
+            "in .claude/skills/"
+        )
+        assert not agents_skill.is_file(), (
+            "Audit persistence failure must block materialization symlinks "
+            "in .agents/skills/"
+        )
+
+    def test_audit_failure_no_false_claim_and_hash_integrity(
+        self, tmp_dir, test_settings, db, monkeypatch,
+    ):
+        """Adversarial: when record_materialization fails, prove:
+        (c) no audit record is falsely claimed;
+        (d) canonical content hashes and pre-existing workspace state
+            obey the documented safety contract.
+        """
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        org_root = tmp_dir / "org"
+        skill_md = "# Hash Integrity Skill\n\nVerify."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Store a valid artifact
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/hash-integrity/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+
+        # Seed PUBLISHED + assigned skill
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:hash-integrity",
+            slug="hash-integrity",
+            name="Hash Integrity",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Hash integrity test",
+            skill_md=skill_md,
+            content_artifact_key=artifact_key,
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:hash-integrity",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # Pre-existing workspace file — must survive the failed materialization
+        workspace = tmp_dir / "ws"
+        workspace.mkdir(parents=True)
+        pre_existing = workspace / "pre_existing.txt"
+        pre_existing_content = "pre-existing workspace state"
+        pre_existing.write_text(pre_existing_content)
+
+        # Inject audit persistence failure
+        def _failing_record(self, db, skill_id, agent_name, version_id,
+                            version, content_hash, success, error_message=None,
+                            session_context=None):
+            raise RuntimeError("Simulated ledger write failure")
+
+        monkeypatch.setattr(
+            SkillLifecycleService, "record_materialization", _failing_record,
+        )
+
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+
+        with pytest.raises(LifecycleMaterializationError):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
+
+        # (c) No audit record falsely claimed — check materialization records
+        mat = lifecycle_stores.get_latest_materialization(
+            db, "hr:hash-integrity", "dev_agent",
+        )
+        assert mat is None, (
+            "No materialization record must be claimed after audit failure"
+        )
+
+        # (d) Pre-existing workspace state must be preserved
+        assert pre_existing.is_file(), (
+            "Pre-existing workspace state must survive a failed materialization"
+        )
+        assert pre_existing.read_text() == pre_existing_content, (
+            "Pre-existing workspace content must be byte-identical after failed materialization"
+        )
+
+        # (d) Canonical content hash must match the original
+        assert pkg.content_hash == content_hash, (
+            "Canonical content hash in ledger must be unchanged"
+        )
+
     def test_system_contract_slug_protected_from_user_authored(
         self, tmp_dir, test_settings, db
     ):
