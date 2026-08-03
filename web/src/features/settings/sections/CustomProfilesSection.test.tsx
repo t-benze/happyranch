@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -10,31 +10,91 @@ interface Profile {
   name: string;
   command: string | null;
   adapter: string | null;
+  workspace_adapter_id: string | null;
+  command_adapter_id: string | null;
   present: boolean;
   path: string | null;
 }
 
-const PROFILE_A: Profile = {
+interface AdapterEntry {
+  id: string;
+  name: string;
+  executable: string;
+  executable_hash: string;
+  version: string;
+  capabilities: string[];
+  contract_version: number;
+  workspace_adapter: string;
+  status: string;
+  registered_at: string;
+  registered_by: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  intended_profile_name: string | null;
+  eligibility: string | null;
+}
+
+const PROFILE_GENERIC: Profile = {
   name: 'my-runner',
   command: 'my-runner-cli',
   adapter: 'claude',
+  workspace_adapter_id: 'claude',
+  command_adapter_id: 'generic-cli',
   present: true,
   path: '/usr/local/bin/my-runner-cli',
 };
-const PROFILE_B: Profile = {
+
+const PROFILE_GHOST: Profile = {
   name: 'ghost-cli',
   command: 'ghost',
   adapter: 'codex',
+  workspace_adapter_id: 'codex',
+  command_adapter_id: 'generic-cli',
   present: false,
   path: null,
 };
 
-/** Static list stub. */
+const PROFILE_ADAPTER_BACKED: Profile = {
+  name: 'adapter-cli',
+  command: null,
+  adapter: 'pi',
+  workspace_adapter_id: 'pi',
+  command_adapter_id: 'custom-adapter:approved-adapter',
+  present: false,
+  path: null,
+};
+
+const APPROVED_ADAPTER: AdapterEntry = {
+  id: 'approved-adapter',
+  name: 'approved-adapter',
+  executable: '/opt/bin/approved-adapter',
+  executable_hash: 'abc123',
+  version: '1.0.0',
+  capabilities: [],
+  contract_version: 1,
+  workspace_adapter: 'pi',
+  status: 'approved',
+  registered_at: '2026-07-31T00:00:00Z',
+  registered_by: 'test',
+  approved_at: '2026-07-31T01:00:00Z',
+  approved_by: 'founder',
+  intended_profile_name: 'adapter-cli',
+  eligibility: 'already_bound',
+};
+
+/** Static profiles list stub. */
 function stubProfiles(profiles: Profile[]) {
   server.use(
     http.get('/api/v1/executors/runtime/profiles', () =>
       HttpResponse.json({ profiles }),
     ),
+  );
+}
+
+/** Static adapters list stub. */
+function stubAdapters(adapters: AdapterEntry[]) {
+  server.use(
+    http.get('/api/v1/runtime/adapters', () => HttpResponse.json(adapters)),
   );
 }
 
@@ -46,6 +106,7 @@ function render() {
 describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () => {
   test('empty: renders the empty state, no rows', async () => {
     stubProfiles([]);
+    stubAdapters([]);
     render();
 
     expect(await screen.findByTestId('custom-profiles-empty')).toBeInTheDocument();
@@ -53,7 +114,8 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
   });
 
   test('populated: one row per profile with name, executable, and present/path health', async () => {
-    stubProfiles([PROFILE_A, PROFILE_B]);
+    stubProfiles([PROFILE_GENERIC, PROFILE_GHOST]);
+    stubAdapters([]);
     render();
 
     const rowA = await screen.findByTestId('profile-row-my-runner');
@@ -78,7 +140,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
   test('remove: guarded confirm calls removeRuntimeProfile then refetches the list', async () => {
     const user = userEvent.setup();
     // Stateful store so the invalidation-driven refetch reflects the removal.
-    let store: Profile[] = [PROFILE_A, PROFILE_B];
+    let store: Profile[] = [PROFILE_GENERIC, PROFILE_GHOST];
     const deleted: string[] = [];
     server.use(
       http.get('/api/v1/executors/runtime/profiles', () =>
@@ -91,6 +153,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
         return HttpResponse.json({ name, removed: true });
       }),
     );
+    stubAdapters([]);
     render();
 
     const rowA = await screen.findByTestId('profile-row-my-runner');
@@ -110,7 +173,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
     const user = userEvent.setup();
     // The profile was concurrently removed: DELETE 404s AND the refetch now
     // returns an empty list.
-    let store: Profile[] = [PROFILE_A];
+    let store: Profile[] = [PROFILE_GENERIC];
     server.use(
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({ profiles: store }),
@@ -123,6 +186,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
         );
       }),
     );
+    stubAdapters([]);
     render();
 
     const rowA = await screen.findByTestId('profile-row-my-runner');
@@ -140,10 +204,113 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
         HttpResponse.json({ detail: 'boom' }, { status: 500 }),
       ),
     );
+    stubAdapters([]);
     render();
 
     expect(
       await screen.findByText(/could not load custom executor profiles/i),
     ).toBeInTheDocument();
+  });
+
+  /* ---- seq334: adapter-backed CLI rows join the approved adapter executable ---- */
+
+  test('adapter-backed CLI row renders the approved adapter executable despite null profile.command', async () => {
+    stubProfiles([PROFILE_ADAPTER_BACKED]);
+    stubAdapters([APPROVED_ADAPTER]);
+    render();
+
+    const row = await screen.findByTestId('profile-row-adapter-cli');
+    // The executable comes from the approved adapter entry, not profile.command.
+    expect(within(row).getByText('/opt/bin/approved-adapter')).toBeInTheDocument();
+    // Generic "No executable recorded" message must NOT appear.
+    expect(within(row).queryByText(/No executable recorded/)).not.toBeInTheDocument();
+    // Adapter implementation terms must not surface in ordinary Settings.
+    expect(within(row).queryByText(/Command adapter:/i)).not.toBeInTheDocument();
+    expect(within(row).queryByText(/Workspace adapter:/i)).not.toBeInTheDocument();
+    expect(within(row).queryByText('approved-adapter')).not.toBeInTheDocument();
+  });
+
+  test('adapter-backed CLI row still shows workspace adapter text for generic rows', async () => {
+    stubProfiles([PROFILE_GENERIC]);
+    stubAdapters([]);
+    render();
+
+    const row = await screen.findByTestId('profile-row-my-runner');
+    // Generic custom CLI presentation is unchanged.
+    expect(within(row).getByText(/Workspace adapter:/i)).toBeInTheDocument();
+    expect(within(row).getByText(/claude/i)).toBeInTheDocument();
+  });
+
+  /* ---- seq334: approved-unbound recovery lives in the Custom CLIs area ---- */
+
+  test('approved ready_to_bind adapter renders a CLI-level recovery affordance', async () => {
+    const recoveryAdapter: AdapterEntry = {
+      ...APPROVED_ADAPTER,
+      eligibility: 'ready_to_bind',
+    };
+    stubProfiles([]);
+    stubAdapters([recoveryAdapter]);
+    render();
+
+    await screen.findByTestId('cli-recovery-row-approved-adapter');
+    expect(screen.getByText(/Finish connecting this CLI/i)).toBeInTheDocument();
+    expect(screen.getByTestId('cli-recovery-name-approved-adapter')).toHaveValue('adapter-cli');
+    expect(screen.getByRole('button', { name: /Bind adapter-cli/i })).toBeInTheDocument();
+  });
+
+  test('approved recovery_ready adapter (no intended name) lets the founder name and bind the CLI', async () => {
+    let adapterStore: AdapterEntry[] = [
+      {
+        ...APPROVED_ADAPTER,
+        intended_profile_name: null,
+        eligibility: 'recovery_ready',
+      },
+    ];
+    stubProfiles([]);
+    server.use(
+      http.get('/api/v1/runtime/adapters', () => HttpResponse.json(adapterStore)),
+      http.post('/api/v1/runtime/adapters/approved-adapter/bind-profile', async ({ request }) => {
+        const body = (await request.json()) as { profile_name: string };
+        expect(body.profile_name).toBe('legacy-cli');
+        adapterStore = [
+          {
+            ...APPROVED_ADAPTER,
+            intended_profile_name: 'legacy-cli',
+            eligibility: 'already_bound',
+          },
+        ];
+        return HttpResponse.json({
+          profile_name: 'legacy-cli',
+          command_adapter_id: 'custom-adapter:approved-adapter',
+          workspace_adapter_id: 'pi',
+          kind: 'custom',
+          status: 'connected',
+          adapter_id: 'approved-adapter',
+        });
+      }),
+    );
+    render();
+
+    await screen.findByTestId('cli-recovery-row-approved-adapter');
+    const input = screen.getByTestId('cli-recovery-name-approved-adapter');
+    expect(input).toHaveValue('');
+
+    const user = userEvent.setup();
+    await user.type(input, 'legacy-cli');
+    await user.click(screen.getByTestId('cli-recovery-bind-approved-adapter'));
+
+    // After successful bind + refetch the recovery row disappears.
+    await waitFor(() => {
+      expect(screen.queryByTestId('cli-recovery-row-approved-adapter')).not.toBeInTheDocument();
+    });
+  });
+
+  test('already_bound adapter does not render a recovery row when its profile is listed', async () => {
+    stubProfiles([PROFILE_ADAPTER_BACKED]);
+    stubAdapters([APPROVED_ADAPTER]);
+    render();
+
+    await screen.findByTestId('profile-row-adapter-cli');
+    expect(screen.queryByTestId('cli-recovery-row-approved-adapter')).not.toBeInTheDocument();
   });
 });

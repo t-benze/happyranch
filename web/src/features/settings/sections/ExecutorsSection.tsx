@@ -37,7 +37,6 @@ import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
 import { PendingAdaptersSection } from './PendingAdaptersSection';
-import { AdapterManagementSection } from './AdapterManagementSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
@@ -102,11 +101,10 @@ export function ExecutorsSection(): JSX.Element {
           <PendingAdaptersSection />
 
           {/* Custom CLIs connected via the shared custom flow — list + remove
-              (THR-107 S4b), consuming the S4a list/remove backend. */}
+              (THR-107 S4b), consuming the S4a list/remove backend. Adapter-backed
+              CLIs join the approved adapter executable here, and approved-unbound
+              recovery affordances live in this area rather than a separate list. */}
           <CustomProfilesSection />
-
-          {/* Custom adapters — list + guarded remove (THR-107 TASK-3792). */}
-          <AdapterManagementSection />
 
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button

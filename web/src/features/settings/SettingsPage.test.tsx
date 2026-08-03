@@ -669,6 +669,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({ profiles: [] }),
       ),
+      // Adapter list is consumed by PendingAdaptersSection + CustomProfilesSection.
+      http.get('/api/v1/runtime/adapters', () => HttpResponse.json([])),
     );
   });
 
@@ -699,6 +701,23 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       screen.queryByTestId('executor-registration-form'),
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Adapter')).not.toBeInTheDocument();
+  });
+
+  test('seq334: ordinary Executors settings shows one Custom CLIs surface and no standalone Custom Adapters list or adapter terminology', async () => {
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await screen.findByTestId('executor-binaries-section');
+
+    // Only the unified Custom CLIs area — no separate Custom Adapters section.
+    expect(screen.queryByText('Custom Adapters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-management-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-rows')).not.toBeInTheDocument();
+
+    // Adapter implementation details (id, eligibility, command/workspace adapter)
+    // must not surface in ordinary founder-facing Settings.
+    expect(screen.queryByText(/Eligibility:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Command adapter:/i)).not.toBeInTheDocument();
+    // The Custom CLIs heading is present.
+    expect(screen.getByText('Custom CLIs')).toBeInTheDocument();
   });
 
   test('manual absolute-path entry is DEMOTED behind an "Advanced" disclosure on each row', async () => {

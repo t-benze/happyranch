@@ -1,12 +1,11 @@
 /**
  * PendingAdaptersSection tests — Settings ▸ Executors founder-only pending
- * adapter approvals (THR-107 seq220, fix-forward TASK-3805).
+ * adapter approvals (THR-107 seq220 + seq334).
  *
  * Covers: pending card fields/placement, hash confirmation, cancel, loading,
  * error; exact snapshot approve + managed auth; reject success/stale/non-pending;
- * shared RecoveryBindCard bind flow; already_bound survives refetch;
- * onboarding separation (renders actual ConnectFlow, proves no Approve/Reject);
- * existing test regression.
+ * seq334 filter — approval queue contains ONLY status=pending adapters;
+ * onboarding separation (renders actual ConnectFlow, proves no Approve/Reject).
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -169,7 +168,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-approve-test-adapter'));
     expect(screen.getByTestId('adapter-confirm-approve-test-adapter')).toBeInTheDocument();
     // Confirm text names the exact full 64-char hash (seq237: approve & connect)
-    expect(screen.getByText(/Confirm approval and connection of adapter/)).toBeInTheDocument();
+    expect(screen.getByText(/Confirm approval and connection/)).toBeInTheDocument();
     // Guard: the full hash (not a prefix) must appear BOTH in the card's SHA-256
     // field AND in the confirm prompt — at least 2 occurrences of the exact 64-char value
     const hashElements = screen.getAllByText(fullHash);
@@ -222,7 +221,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     });
   });
 
-  test('approve: after success, card shows Connected (seq237 auto-bind)', async () => {
+  test('approve: after success/refetch, pending row disappears (no approved cards in queue)', async () => {
     const adapter = makePendingAdapter();
     mockListAdapters(adapter);
 
@@ -269,14 +268,12 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-approve-test-adapter'));
     await user.click(screen.getByTestId('adapter-confirm-approve-test-adapter'));
 
-    // After seq237 approval, adapter shows Connected state (already_bound)
+    // seq334: the approval queue contains ONLY pending adapters. After the
+    // approved already_bound refetch, the row must leave the queue.
     await waitFor(() => {
-      expect(screen.getByTestId('pending-adapter-row-test-adapter')).toBeInTheDocument();
+      expect(screen.queryByTestId('pending-adapter-row-test-adapter')).not.toBeInTheDocument();
     });
-    // The connected card shows the profile name (not a Bind button)
-    expect(screen.getByText(/my-custom-cli/)).toBeInTheDocument();
-    // No Bind button (seq237: already connected, no recovery needed)
-    expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pending-adapter-rows')).not.toBeInTheDocument();
   });
 
   test('approve: error surfaces inline', async () => {
@@ -298,73 +295,43 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     });
   });
 
-  /* ---- already_bound survives refetch (fix-forward TASK-3805) ---- */
+  /* ---- seq334: approval queue contains ONLY pending adapters ---- */
 
-  test('already_bound adapter renders as Connected and survives refetch', async () => {
-    const adapter = makePendingAdapter({
-      status: 'approved',
-      eligibility: 'already_bound',
-    });
-    mockListAdapters(adapter);
-    renderWithProviders(<PendingAdaptersSection />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('pending-adapter-row-test-adapter')).toBeInTheDocument();
-    });
-    // Connected card renders with the profile name and "connected" text
-    const connectedRow = screen.getByTestId('pending-adapter-row-test-adapter');
-    expect(connectedRow).toHaveTextContent('my-custom-cli');
-    expect(connectedRow).toHaveTextContent('connected');
-    expect(screen.getByText(/Profile bound to adapter/)).toBeInTheDocument();
-
-    // No Approve/Reject controls on already_bound cards
-    expect(screen.queryByTestId('adapter-approve-test-adapter')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('adapter-reject-test-adapter')).not.toBeInTheDocument();
-
-    // Refetch — adapter still appears (survives the filter)
-    server.use(
-      http.get(API_BASE, () => HttpResponse.json([adapter])),
-    );
-    // Re-render to simulate fresh render from server
-    renderWithProviders(<PendingAdaptersSection />);
-    await waitFor(() => {
-      expect(screen.getByTestId('pending-adapter-row-test-adapter')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('pending-adapter-row-test-adapter')).toHaveTextContent('connected');
-  });
-
-  test('ready_to_bind adapter renders RecoveryBindCard; already_bound renders Connected', async () => {
-    const readyAdapter = makePendingAdapter({
-      id: 'ready-adapter',
-      status: 'approved',
-      eligibility: 'ready_to_bind',
-      intended_profile_name: 'ready-profile',
-    });
-    const boundAdapter = makePendingAdapter({
-      id: 'bound-adapter',
+  test('mixed PENDING+APPROVED list means only PENDING cards in approval queue', async () => {
+    const pendingAdapter = makePendingAdapter({ id: 'pending-adapter' });
+    const approvedBound = makePendingAdapter({
+      id: 'approved-bound',
       status: 'approved',
       eligibility: 'already_bound',
       intended_profile_name: 'bound-profile',
     });
-    mockListAdapters(readyAdapter, boundAdapter);
+    const approvedReady = makePendingAdapter({
+      id: 'approved-ready',
+      status: 'approved',
+      eligibility: 'ready_to_bind',
+      intended_profile_name: 'ready-profile',
+    });
+    const approvedRecovery = makePendingAdapter({
+      id: 'approved-recovery',
+      status: 'approved',
+      eligibility: 'recovery_ready',
+      intended_profile_name: null,
+    });
+    mockListAdapters(pendingAdapter, approvedBound, approvedReady, approvedRecovery);
     renderWithProviders(<PendingAdaptersSection />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('pending-adapter-row-ready-adapter')).toBeInTheDocument();
+      expect(screen.getByTestId('pending-adapter-row-pending-adapter')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('pending-adapter-row-bound-adapter')).toBeInTheDocument();
 
-    // ready_to_bind shows RecoveryBindCard with Bind button
-    expect(screen.getByRole('button', { name: /bind ready-profile/i })).toBeInTheDocument();
+    // Only the pending card is in the approval queue.
+    expect(screen.queryByTestId('pending-adapter-row-approved-bound')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pending-adapter-row-approved-ready')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pending-adapter-row-approved-recovery')).not.toBeInTheDocument();
 
-    // already_bound shows Connected card
-    const boundRow = screen.getByTestId('pending-adapter-row-bound-adapter');
-    expect(boundRow).toHaveTextContent('bound-profile');
-    expect(boundRow).toHaveTextContent('connected');
-
-    // No Approve/Reject on approved cards
-    expect(screen.queryByTestId('adapter-approve-ready-adapter')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('adapter-reject-ready-adapter')).not.toBeInTheDocument();
+    // No approved Connected/recovery cards or Bind affordances leak into the queue.
+    expect(screen.queryByText(/connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
   });
 
   /* ---- Reject flow ---- */
@@ -382,7 +349,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     // Click Reject → confirm step
     await user.click(screen.getByTestId('adapter-reject-test-adapter'));
     expect(screen.getByTestId('adapter-confirm-reject-test-adapter')).toBeInTheDocument();
-    expect(screen.getByText(/Confirm rejection of adapter/)).toBeInTheDocument();
+    expect(screen.getByText(/Confirm rejection/)).toBeInTheDocument();
     // Guard: the full 64-char hash (not a prefix) must appear in the confirm prompt
     const hashElements = screen.getAllByText(fullHash);
     expect(hashElements.length).toBeGreaterThanOrEqual(2);
