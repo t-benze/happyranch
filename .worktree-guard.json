@@ -1,12 +1,16 @@
 {
   "version": 3,
-  "primary_root": "/Users/tangbz/.local/share/happyranch-runtime/orgs/happyranch/workspaces/dev_agent/repos/happyranch",
-  "worktree_root": "/Users/tangbz/.local/share/happyranch-runtime/orgs/happyranch/workspaces/dev_agent/repos/happyranch/.claude/worktrees/TASK-3887",
-  "task_id": "TASK-3887",
+  "primary_root": "/Users/tangbz/.local/share/happyranch-runtime/orgs/happyranch/workspaces/frontend_engineer/repos/happyranch",
+  "worktree_root": "/Users/tangbz/.local/share/happyranch-runtime/orgs/happyranch/workspaces/frontend_engineer/repos/happyranch/.claude/worktrees/TASK-4084",
+  "task_id": "TASK-4084",
   "primary_baseline": {
-    "status": "",
+    "status": "?? output/\n?? web/scripts/screenshot-harness/shot-2240.mjs",
     "dirty_files": {},
     "staged_files": {},
-    "untracked": {}
+    "untracked": {
+      "output/TASK-4016/screenshots/task-4016-executors-dark.png": "a415959f16fe5aa233d3c5e7bdefbf522b869b9053cba94c6a2e51a4f3a7a8b9",
+      "output/TASK-4016/screenshots/task-4016-executors-light.png": "c3d547376c999506f8700dc29666ecfc73bf86182ddb3d9392d411753ef1c210",
+      "web/scripts/screenshot-harness/shot-2240.mjs": "b8c9ff47304347dda82634ef4303e5c2e1ac0185f13b34158e914972a9d32aec"
+    }
   }
 }
