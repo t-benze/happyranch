@@ -351,14 +351,13 @@ class TestContractCompletenessPostCutover:
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.context_builder import ContextBuilder
         from runtime.orchestrator.workspace_adapters import (
-            inject_system_contracts,
-            inject_managed_skills,
+            materialize_workspace_skills,
         )
 
-        # ── Confirm the flag is OFF ──────────────────────────────────
-        assert wa._WHOLESALE_DUMP_ENABLED is False, (
-            "_WHOLESALE_DUMP_ENABLED must be OFF for the cutover gate test"
-        )
+        # ── Confirm the cutover is complete ──────────────────────────
+        # _WHOLESALE_DUMP_ENABLED no longer exists — the cutover is final.
+        # All materialization uses canonical store + symlinks via
+        # materialize_workspace_skills.
 
         # _SKILLS_SRC is already set by the _isolate_skills_src_override fixture
         # Use the REAL runtime/skills/ as the managed catalog
@@ -409,19 +408,17 @@ class TestContractCompletenessPostCutover:
                             f"({name}, {context_str}, repos={has_repos})"
                         )
 
-                    # ── Step 2: Inject system contracts ──────────────
-                    inject_system_contracts(
-                        ws, test_settings, slug="test",
-                        context=context_str,
-                    )
-
-                    # ── Step 3: Inject managed-catalog skills ────────
-                    inject_managed_skills(
+                    # ── Step 2+3: Materialize all skills (unified) ──
+                    # Use the single unified materialization path.
+                    materialize_workspace_skills(
                         ws, test_settings,
                         slug="test",
+                        context=context_str,
+                        provider=executor,
                         agent_name=name,
                         team=team,
                         skills_root=managed_root,
+                        org_root=test_runtime.root,
                     )
 
                     # ── Step 4: Collect final state ──────────────────
@@ -503,62 +500,44 @@ class TestContractCompletenessPostCutover:
     def test_red_proof_wholesale_dump_leaks_skills(
         self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
     ):
-        """RED-PROOF: The guard MUST fail when _WHOLESALE_DUMP_ENABLED is True.
+        """RED-PROOF (POST-CUTOVER): Wholesale dump is permanently removed.
 
-        With the wholesale dump re-enabled, bootstrap copies the ENTIRE
-        protocol/skills/ tree (including manage-agent and manage-repo) into
-        the workspace skill dirs. This proves the guard would catch a real
-        cutover regression — if someone flips manage-agent to approved or
-        the flag back to True, this test would fail.
-
-        After the red-proof, the flag is restored to False.
+        Even with _WHOLESALE_DUMP_ENABLED=True, the wholesale copy path
+        is a no-op. The canonical store + symlink architecture has
+        superseded all per-session content copying. This verifies that
+        high-policy skills like manage-agent/manage-repo are NOT leaked
+        via the (now-dead) wholesale dump path.
         """
         import runtime.orchestrator.workspace_adapters as wa
 
-        # ── Set up org configuration ─────────────────────────────────
         for name, team, role, executor, _notes in _REPRESENTATIVE_ROSTER:
             _write_agent_file(test_runtime, name, team, role, executor)
         _write_teams_config(test_runtime)
         _copy_real_eligibility_config(test_settings, test_runtime)
 
-        # _SKILLS_SRC is already set by the _isolate_skills_src_override fixture
-
         from runtime.orchestrator.context_builder import ContextBuilder
 
-        # ── Red-proof: enable the wholesale dump ─────────────────────
-        try:
-            wa._WHOLESALE_DUMP_ENABLED = True
+        wa._WHOLESALE_DUMP_ENABLED = True
 
-            ws = _build_ws(tmp_path, "red_proof_ws", has_repos=True)
-            builder = ContextBuilder(test_settings, test_runtime, slug="test")
-            builder.ensure_workspace_ready(
-                ws, "dev_agent", "system prompt", provider="claude",
+        ws = _build_ws(tmp_path, "red_proof_ws", has_repos=True)
+        builder = ContextBuilder(test_settings, test_runtime, slug="test")
+        builder.ensure_workspace_ready(
+            ws, "dev_agent", "system prompt", provider="claude",
+        )
+
+        leaked = _collect_skill_ids(ws / ".claude" / "skills")
+
+        # POST-CUTOVER: wholesale dump is dead — NO skills should leak via
+        # the wholesale copy path (which is now a no-op regardless of flag).
+        for hi_skill in ("manage-agent", "manage-repo", "reflection"):
+            assert hi_skill not in leaked, (
+                f"RED-PROOF FAIL: dead wholesale dump leaked '{hi_skill}' "
+                f"into .claude/skills/. The canonical store + symlink "
+                f"architecture must be the sole delivery path. "
+                f"Leaked set: {leaked}"
             )
 
-            # With the wholesale dump ENABLED, the real protocol/skills/
-            # tree is copied — including manage-agent and manage-repo.
-            # The guard must catch this fail-closed violation.
-            leaked = _collect_skill_ids(ws / ".claude" / "skills")
-
-            # At minimum, manage-agent and manage-repo should be present
-            # (they exist in the real protocol/skills/ dir)
-            for hi_skill in ("manage-agent", "manage-repo"):
-                assert hi_skill in leaked, (
-                    f"RED-PROOF FAIL: wholesale dump did NOT leak '{hi_skill}' "
-                    f"into .claude/skills/. Expected it to be present when "
-                    f"_WHOLESALE_DUMP_ENABLED=True. "
-                    f"Available skills: {leaked}"
-                )
-
-            # Also verify reflection leaks (it's in protocol/skills/ too)
-            assert "reflection" in leaked, (
-                f"RED-PROOF FAIL: wholesale dump did NOT leak 'reflection'. "
-                f"Available: {leaked}"
-            )
-
-        finally:
-            # ── Restore the flag ─────────────────────────────────────
-            wa._WHOLESALE_DUMP_ENABLED = False
+        wa._WHOLESALE_DUMP_ENABLED = False
 
 
 # ── Materialization-level regression: guard workflow in delivered skill ────
