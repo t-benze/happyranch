@@ -247,11 +247,45 @@ describe('ProposalDetailPage — published proposal', () => {
     );
     mount();
 
-    expect(
-      await screen.findByText('Published in custom catalog'),
-    ).toBeInTheDocument();
+    // Banner heading: the published banner region with aria-label="Published"
+    const banner = await screen.findByRole('region', { name: 'Published' });
+    expect(within(banner).getByText('Published')).toBeInTheDocument();
+    // Banner must NOT claim catalog membership
+    expect(within(banner).queryByText(/custom catalog/i)).not.toBeInTheDocument();
+    expect(within(banner).queryByText(/visible in the published/i)).not.toBeInTheDocument();
     // Published appears in header chip + timeline event; check count >= 2
     expect(screen.getAllByText('Published').length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('published with no catalog evidence renders no catalog-membership claim', async () => {
+    // Contrary fixture: a fully-blessed published proposal with every response
+    // field filled still must not render any catalog-membership/visibility
+    // statement because ProposalDetailResponse carries no catalog evidence.
+    mockProposal(
+      baseProposal({
+        status: 'published',
+        publisher: 'founder',
+        published_at: '2026-08-02T10:00:00Z',
+        review_decision: 'approved',
+        assignments: [{ agent_name: 'frontend_engineer', active: true }],
+        materializations: [{ agent_name: 'frontend_engineer', success: true, created_at: '2026-08-03T09:00:00Z' }],
+        events: [
+          { event_type: 'proposed', actor: 'frontend_engineer', actor_role: 'agent', new_status: 'proposed', created_at: '2026-08-01T09:00:00Z' },
+          { event_type: 'published', actor: 'founder', actor_role: 'founder', new_status: 'published', created_at: '2026-08-02T10:00:00Z' },
+        ],
+      }),
+    );
+    mount();
+
+    await screen.findByText('Proposal');
+
+    // No catalog-membership/visibility claim in the published banner
+    const banner = screen.getByRole('region', { name: 'Published' });
+    expect(within(banner).queryByText(/custom catalog/i)).not.toBeInTheDocument();
+    expect(within(banner).queryByText(/visible in the published/i)).not.toBeInTheDocument();
+    // No catalog-membership claim in the readiness strip
+    expect(screen.queryByText('In custom catalog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not in catalog')).not.toBeInTheDocument();
   });
 
   test('shows publisher in provenance', async () => {

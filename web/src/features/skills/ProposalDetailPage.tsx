@@ -548,12 +548,11 @@ export function ProposalDetailPage(): JSX.Element {
           >
             <div className="text-status-open flex items-center gap-2 text-sm font-semibold">
               <CheckCircle2 size={15} aria-hidden="true" />
-              Published in custom catalog
+              Published
             </div>
             <p className="text-fg-muted text-body-sm mt-1.5">
-              This skill is visible in the published custom catalog. Package
-              lifecycle ends here — assignment and effectiveness are a separate
-              projection.
+              Package lifecycle ends here — assignment and effectiveness are a
+              separate projection.
             </p>
           </section>
         )}
