@@ -2186,6 +2186,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/submit-review": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "version_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/validate": {
       "POST": {
         "params": [

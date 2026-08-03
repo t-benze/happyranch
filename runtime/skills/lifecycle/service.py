@@ -450,6 +450,8 @@ class SkillLifecycleService:
           specific validator run (distinct from the event id — the event
           id is a distinct run/event identifier)
         - Re-runs append new events rather than overwriting history
+        - previous_status is captured BEFORE any status update so the event
+          accurately records the prior state for every invocation
         """
         self._ensure_human(actor_kind, "record validation")
         pkg = self._get_package(db, version_id)
@@ -461,6 +463,10 @@ class SkillLifecycleService:
                 detail=f"Cannot validate a package in status '{pkg.status.value}'. Only DRAFT/VALIDATION_FAILED/VALIDATED packages can be validated.",
             )
 
+        # Capture previous_status BEFORE any status update — the event must
+        # record the accurate prior state, not the new state.
+        previous_status = pkg.status.value
+
         new_status = LifecycleStatus.VALIDATED if ok else LifecycleStatus.VALIDATION_FAILED
         stores.update_package_status(db, version_id, new_status)
         pkg.status = new_status
@@ -470,6 +476,8 @@ class SkillLifecycleService:
             meta["validator_version"] = validator_version
         if validator_key:
             meta["validator_key"] = validator_key
+        else:
+            meta["validator_key"] = validator_version or "UNKNOWN"
         # Include immutable content_hash for reproducibility
         meta["content_hash"] = pkg.content_hash
 
@@ -479,7 +487,7 @@ class SkillLifecycleService:
             event_type="validated" if ok else "validation_failed",
             actor="validator",
             actor_role="service",
-            previous_status=pkg.status.value,
+            previous_status=previous_status,
             new_status=new_status.value,
             content_hash=pkg.content_hash,
             metadata=meta,
@@ -504,6 +512,7 @@ class SkillLifecycleService:
                 detail=f"Can only submit VALIDATED packages for review, not '{pkg.status.value}'.",
             )
 
+        previous_status = pkg.status.value
         stores.update_package_status(db, version_id, LifecycleStatus.IN_REVIEW)
         pkg.status = LifecycleStatus.IN_REVIEW
 
@@ -513,7 +522,7 @@ class SkillLifecycleService:
             event_type="submitted_for_review",
             actor=sponsor,
             actor_role="human",
-            previous_status=LifecycleStatus.VALIDATED.value,
+            previous_status=previous_status,
             new_status=LifecycleStatus.IN_REVIEW.value,
             content_hash=pkg.content_hash,
             metadata={
@@ -523,6 +532,21 @@ class SkillLifecycleService:
         ))
 
         return pkg
+
+    # ── Submit for review v2 (concurrency-protected) ───────────────────
+
+    def submit_review_proposal(
+        self, db, actor_kind: str, version_id: int, sponsor: str = "founder",
+        intended_audience: str = "", review_notes: str = "",
+    ) -> PackageVersion:
+        """V2 submit-for-review (Founder-only, concurrency-protected).
+
+        Identical semantics to submit_for_review but intended for the v2
+        proposal-scoped route that includes expected_event_id.
+        """
+        return self.submit_for_review(
+            db, actor_kind, version_id, sponsor, intended_audience, review_notes,
+        )
 
     # ── Approve / reject ──────────────────────────────────────────────────
 
@@ -736,9 +760,11 @@ class SkillLifecycleService:
         """
         self._ensure_human(actor_kind, "rollback")
 
-        # Get the latest package for event metadata only — do NOT mutate
-        # package status. Assignment is a separate projection.
+        # Get the latest package for event metadata + REJECTED guard —
+        # do NOT mutate package status. Assignment is a separate projection.
         pkg = stores.get_latest_package_version(db, skill_id)
+        if pkg is not None:
+            self._ensure_not_rejected(pkg)
 
         count = stores.deactivate_assignments_for_skill(
             db, skill_id,
@@ -771,7 +797,14 @@ class SkillLifecycleService:
         self, db, actor_kind: str, skill_id: str, reason: str,
         retired_by: str = "founder",
     ) -> PackageVersion:
-        """Retire a published skill. Stops future materialization."""
+        """Retire a published skill. Stops future materialization.
+
+        Assignment-level operation only — does NOT mutate package decision
+        status. Package lifecycle ends at published (or rejected terminal);
+        assignment/unassignment is a separate append-only projection.
+        Only PUBLISHED packages may be retired; REJECTED and all non-PUBLISHED
+        states are rejected.
+        """
         self._ensure_human(actor_kind, "retire")
         pkg = stores.get_latest_package_version(db, skill_id)
         if pkg is None:
@@ -781,11 +814,17 @@ class SkillLifecycleService:
                 status_code=404,
             )
 
-        stores.update_package_status(db, pkg.id, LifecycleStatus.RETIRED)
-        pkg.status = LifecycleStatus.RETIRED
+        self._ensure_not_rejected(pkg)
+        if pkg.status != LifecycleStatus.PUBLISHED:
+            raise LifecycleError(
+                code="invalid_transition",
+                detail=f"Can only retire PUBLISHED packages, not '{pkg.status.value}'.",
+            )
 
-        # Also deactivate all assignments
-        stores.deactivate_assignments_for_skill(
+        # Deactivate all assignments — do NOT mutate package status.
+        # Package lifecycle ends at published; assignment deactivation
+        # is a separate append-only projection.
+        count = stores.deactivate_assignments_for_skill(
             db, skill_id, rolled_back_by=retired_by, reason=reason,
         )
 
@@ -795,10 +834,10 @@ class SkillLifecycleService:
             event_type="retired",
             actor=retired_by,
             actor_role="human",
-            previous_status=LifecycleStatus.PUBLISHED.value,
-            new_status=LifecycleStatus.RETIRED.value,
+            previous_status=pkg.status.value,
+            new_status=None,  # Assignment projection — does not mutate package status
             content_hash=pkg.content_hash,
-            metadata={"reason": reason},
+            metadata={"reason": reason, "assignments_deactivated": count},
         ))
 
         return pkg
@@ -810,7 +849,22 @@ class SkillLifecycleService:
         version: str, content_hash: str, success: bool, error_message: str | None = None,
         session_context: str | None = None,
     ) -> MaterializationRecord:
-        """Record a skill materialization attempt at session spawn."""
+        """Record a skill materialization attempt at session spawn.
+
+        Guarded: materialization must not proceed for terminally REJECTED packages.
+        """
+        # Check rejected terminal gate — materialization must not proceed for REJECTED.
+        pkg = stores.get_package_version(db, version_id)
+        if pkg is not None:
+            # Rejection is terminal — no materialization event for rejected packages.
+            if pkg.status == LifecycleStatus.REJECTED:
+                raise LifecycleError(
+                    code="rejected_terminal",
+                    detail=f"Package version {version_id} is terminally REJECTED. "
+                           f"No materialization is permitted.",
+                    status_code=409,
+                )
+
         mat = MaterializationRecord(
             skill_id=skill_id,
             agent_name=agent_name,
@@ -874,8 +928,25 @@ class SkillLifecycleService:
         return skills
 
     def list_catalog(self, db) -> list[PackageVersion]:
-        """List all published custom skills for the union catalog."""
-        return stores.list_package_versions(db, status=LifecycleStatus.PUBLISHED)
+        """List all published custom skills for the union catalog.
+
+        Excludes packages that have been explicitly retired (have a 'retired'
+        lifecycle event AND no active assignments). Freshly published packages
+        without assignments still appear in the catalog.
+        """
+        pkgs = stores.list_package_versions(db, status=LifecycleStatus.PUBLISHED)
+        active = []
+        for pkg in pkgs:
+            # Check for an explicit retire event
+            events = stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+            has_retire_event = any(e.event_type == "retired" for e in events)
+            has_active_assignments = bool(
+                stores.get_all_active_assignments_for_skill(db, pkg.skill_id)
+            )
+            if has_retire_event and not has_active_assignments:
+                continue  # Explicitly retired — exclude from catalog
+            active.append(pkg)
+        return active
 
     # ── THR-055 Founder-only proposal review ────────────────────────────
 

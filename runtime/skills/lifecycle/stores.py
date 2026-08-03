@@ -325,9 +325,26 @@ def list_package_versions(
 
 
 def count_published_packages(db) -> int:
-    """Count currently published packages (for cap enforcement)."""
-    row = db.execute(
-        "SELECT COUNT(*) FROM skill_lifecycle_packages WHERE status = ?",
+    """Count currently published packages (for cap enforcement).
+
+    A published package counts toward the cap unless it has been explicitly
+    retired (has a 'retired' lifecycle event AND no active assignments).
+    Freshly published packages without assignments still count.
+    """
+    conn = _get_conn(db)
+    row = conn.execute(
+        """SELECT COUNT(*) FROM skill_lifecycle_packages p
+           WHERE p.status = ?
+           AND NOT (
+               EXISTS (
+                   SELECT 1 FROM skill_lifecycle_events e
+                   WHERE e.skill_id = p.skill_id AND e.event_type = 'retired'
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM skill_lifecycle_assignments a
+                   WHERE a.skill_id = p.skill_id AND a.active = 1
+               )
+           )""",
         (LifecycleStatus.PUBLISHED.value,),
     ).fetchone()
     return row[0] if row else 0

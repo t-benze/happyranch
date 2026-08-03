@@ -365,6 +365,13 @@ class AssignProposalRequest(BaseModel):
     expected_event_id: int  # Concurrency marker from detail
 
 
+class SubmitReviewProposalRequest(BaseModel):
+    """Founder submit-review from VALIDATED to IN_REVIEW with concurrency."""
+    expected_event_id: int  # Concurrency marker from detail
+    intended_audience: str = ""
+    review_notes: str = ""
+
+
 class RollbackProposalRequest(BaseModel):
     """Founder rollback (assignment-level only, never mutates package status)."""
     reason: str = ""

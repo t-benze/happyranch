@@ -131,6 +131,7 @@
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/review",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/publish",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/assign",
+    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/submit-review",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/rollback",
     "GET /api/v1/runtime/adapters/{adapter_id}",
     "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile",

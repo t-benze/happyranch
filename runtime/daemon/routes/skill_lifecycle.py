@@ -62,6 +62,7 @@ from runtime.skills.lifecycle.models import (
     RollbackProposalRequest,
     RollbackRequest,
     SubmitForReviewRequest,
+    SubmitReviewProposalRequest,
     ValidateProposalRequest,
 )
 from runtime.skills.lifecycle.service import (
@@ -704,6 +705,8 @@ def validate_version(
     """Human-only: record validation result for a draft version.
 
     Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Legacy route; uses a default validator_version for backward compatibility.
+    Prefer the v2 concurrency-protected /proposals/{version_id}/validate route.
     """
     try:
         pkg = _service.record_validation(
@@ -712,6 +715,8 @@ def validate_version(
             version_id=version_id,
             ok=True,
             findings=[],
+            validator_version="LEGACY/1.0.0",
+            validator_key="LEGACY/1.0.0",
         )
     except LifecycleError as e:
         raise HTTPException(
@@ -736,6 +741,8 @@ def submit_for_review(
     """Human-only: submit a validated version for review.
 
     Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Legacy route; prefer the v2 concurrency-protected
+    POST /proposals/{version_id}/submit-review route.
     """
     try:
         pkg = _service.submit_for_review(
@@ -875,11 +882,14 @@ def rollback(
 
     Atomically unassigns affected assignments while retaining immutable
     history/content references. All operations execute within an explicit
-    ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so package status,
-    assignment deactivation, and event insertion roll back together.
+    ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so assignment deactivation
+    and event insertion roll back together.
 
     After the ledger transaction commits, prior materialized custom-skill
     workspace residue is cleaned from agent workspaces.
+
+    Guarded: REJECTED packages cannot be rolled back. Package decision status
+    is never mutated — assignment is a separate append-only projection.
 
     Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
@@ -891,6 +901,7 @@ def rollback(
     # Disable implicit transactions so explicit BEGIN IMMEDIATE works.
     # The route manages transactions explicitly.
     prev_isolation = getattr(conn, 'isolation_level', None)
+
     try:
         conn.isolation_level = None
         # Explicit transaction wrapping for atomicity on the raw connection
@@ -974,11 +985,17 @@ def retire(
 ) -> dict:
     """Human-only: retire a published skill.
 
+    Deactivates all assignments without mutating package decision status.
+    Only PUBLISHED packages may be retired; REJECTED and all non-PUBLISHED
+    states are rejected.
+
     Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
+    db = _get_db(org)
+
     try:
         pkg = _service.retire(
-            db=_get_db(org),
+            db=db,
             actor_kind="human",
             skill_id=skill_id,
             reason=reason,
@@ -1000,6 +1017,65 @@ def retire(
 # ═══════════════════════════════════════════════════════════════════════════
 # THR-055 Founder-only proposal review routes
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _run_concurrent_mutation(
+    db, version_id: int, expected_event_id: int,
+    mutation_fn, *,
+    rollback_on_lifecycle: bool = True,
+) -> dict:
+    """Run a state-changing proposal action inside an atomic transaction.
+
+    The concurrency check AND the mutation execute within the same
+    ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so two identical-marker
+    requests result in exactly one mutation success and one 409
+    stale_concurrency.
+
+    ``mutation_fn`` is called with the db parameter (inside the
+    transaction). Its return value is returned to the caller.
+
+    Raises HTTPException for stale_concurrency (409) or any LifecycleError
+    the mutation may raise.
+    """
+    conn = db._conn if hasattr(db, '_conn') else db
+    prev_isolation = getattr(conn, 'isolation_level', None)
+    try:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+
+        # Check concurrency INSIDE the transaction — this makes the
+        # read + conditional-write atomic.
+        try:
+            _service.check_concurrency(db, version_id, expected_event_id)
+        except LifecycleError as e:
+            conn.execute("ROLLBACK")
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+        try:
+            result = mutation_fn(db)
+        except LifecycleError as e:
+            if rollback_on_lifecycle:
+                conn.execute("ROLLBACK")
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+        conn.execute("COMMIT")
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        if prev_isolation is not None:
+            conn.isolation_level = prev_isolation
 
 @dual_router.get("/proposals/queue", dependencies=[Depends(_require_human)])
 def get_proposals_queue(
@@ -1064,22 +1140,22 @@ def claim_proposal_v2(
     org: OrgDep,
     body: ClaimProposalV2Request,
 ) -> dict:
-    """Founder-only: claim proposal with concurrency protection.
+    """Founder-only: claim proposal with atomic concurrency protection.
 
     Accepts expected_event_id as concurrency marker.
+    Check + mutation execute in one serialized transaction — two
+    identical-marker requests produce exactly one success and one 409.
     Returns 409 with conflict details if the marker is stale.
     """
-    db = _get_db(org)
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        pkg = _service.claim_proposal_v2(
-            db=db, actor_kind="human", version_id=version_id, sponsor="founder",
+        pkg = _run_concurrent_mutation(
+            _get_db(org), version_id, body.expected_event_id,
+            lambda db: _service.claim_proposal_v2(
+                db=db, actor_kind="human", version_id=version_id, sponsor="founder",
+            ),
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+    except HTTPException:
+        raise
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,
@@ -1097,25 +1173,55 @@ def validate_proposal(
     org: OrgDep,
     body: ValidateProposalRequest,
 ) -> dict:
-    """Founder-only: validate proposal with reproducible metadata and concurrency.
+    """Founder-only: validate proposal with reproducible metadata and atomic concurrency.
 
     Records validator_version and a stable deterministic validator_key.
     Re-runs append new events rather than overwriting history.
+    Check + mutation execute in one serialized transaction.
     Returns 409 on stale concurrency marker.
     """
-    db = _get_db(org)
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        pkg = _service.validate_proposal(
-            db=db, actor_kind="human", version_id=version_id,
-            validator_version=body.validator_version,
-            validator_key=body.validator_version,
+        pkg = _run_concurrent_mutation(
+            _get_db(org), version_id, body.expected_event_id,
+            lambda db: _service.validate_proposal(
+                db=db, actor_kind="human", version_id=version_id,
+                validator_version=body.validator_version,
+                validator_key=body.validator_version,
+            ),
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
+    except HTTPException:
+        raise
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "status": pkg.status.value,
+        "version": pkg.version,
+    }
+
+
+@dual_router.post("/proposals/{version_id}/submit-review", dependencies=[Depends(_require_human)])
+def submit_review_proposal(
+    slug: str,
+    version_id: int,
+    org: OrgDep,
+    body: SubmitReviewProposalRequest,
+) -> dict:
+    """Founder-only: submit-review (VALIDATED → IN_REVIEW) with atomic concurrency.
+
+    V2 proposal-scoped route. Check + mutation execute in one serialized
+    transaction. Returns 409 on stale concurrency marker.
+    """
+    try:
+        pkg = _run_concurrent_mutation(
+            _get_db(org), version_id, body.expected_event_id,
+            lambda db: _service.submit_review_proposal(
+                db=db, actor_kind="human", version_id=version_id, sponsor="founder",
+                intended_audience=body.intended_audience,
+                review_notes=body.review_notes,
+            ),
         )
+    except HTTPException:
+        raise
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,
@@ -1131,23 +1237,22 @@ def review_proposal(
     org: OrgDep,
     body: ReviewProposalRequest,
 ) -> dict:
-    """Founder-only: review decision with concurrency protection.
+    """Founder-only: review decision with atomic concurrency protection.
 
     REJECTED is terminal — blocks all subsequent mutations.
+    Check + mutation execute in one serialized transaction.
     Returns 409 on stale concurrency marker.
     """
-    db = _get_db(org)
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        pkg = _service.review_proposal(
-            db=db, actor_kind="human", version_id=version_id,
-            decision=body.decision, rationale=body.rationale, reviewer="founder",
+        pkg = _run_concurrent_mutation(
+            _get_db(org), version_id, body.expected_event_id,
+            lambda db: _service.review_proposal(
+                db=db, actor_kind="human", version_id=version_id,
+                decision=body.decision, rationale=body.rationale, reviewer="founder",
+            ),
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+    except HTTPException:
+        raise
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,
@@ -1163,22 +1268,21 @@ def publish_proposal(
     org: OrgDep,
     body: PublishProposalRequest,
 ) -> dict:
-    """Founder-only: publish with approval event id and concurrency protection.
+    """Founder-only: publish with approval event id and atomic concurrency.
 
+    Check + mutation execute in one serialized transaction.
     Returns 409 on stale concurrency marker.
     """
-    db = _get_db(org)
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        pkg = _service.publish_proposal(
-            db=db, actor_kind="human", version_id=version_id,
-            approval_event_id=body.approval_event_id, publisher="founder",
+        pkg = _run_concurrent_mutation(
+            _get_db(org), version_id, body.expected_event_id,
+            lambda db: _service.publish_proposal(
+                db=db, actor_kind="human", version_id=version_id,
+                approval_event_id=body.approval_event_id, publisher="founder",
+            ),
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+    except HTTPException:
+        raise
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,
@@ -1195,29 +1299,31 @@ def assign_proposal(
     org: OrgDep,
     body: AssignProposalRequest,
 ) -> dict:
-    """Founder-only: assign to agent with concurrency protection.
+    """Founder-only: assign to agent with atomic concurrency protection.
 
+    Check + mutation execute in one serialized transaction.
     Returns 409 on stale concurrency marker.
     """
     db = _get_db(org)
-    # Resolve skill_id from the version
-    pkg = lifecycle_stores.get_package_version(db, version_id)
-    if pkg is None:
+    # Resolve skill_id from the version (read-only, outside the transaction)
+    pkg_lookup = lifecycle_stores.get_package_version(db, version_id)
+    if pkg_lookup is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "detail": f"Version {version_id} not found."},
         )
+    skill_id = pkg_lookup.skill_id
+
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        assign = _service.assign_proposal(
-            db=db, actor_kind="human", skill_id=pkg.skill_id,
-            agent_name=body.agent_name, version_id=version_id, assigner="founder",
+        assign = _run_concurrent_mutation(
+            db, version_id, body.expected_event_id,
+            lambda d: _service.assign_proposal(
+                db=d, actor_kind="human", skill_id=skill_id,
+                agent_name=body.agent_name, version_id=version_id, assigner="founder",
+            ),
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+    except HTTPException:
+        raise
     return {
         "skill_id": assign.skill_id,
         "agent_name": assign.agent_name,
@@ -1234,32 +1340,35 @@ def rollback_proposal(
     org: OrgDep,
     body: RollbackProposalRequest,
 ) -> dict:
-    """Founder-only: rollback (assignment-level only) with concurrency.
+    """Founder-only: rollback (assignment-level only) with atomic concurrency.
 
     Does NOT mutate package decision status. Assignment is a separate projection.
+    Check + mutation execute in one serialized transaction.
     Returns 409 on stale concurrency marker.
     """
     db = _get_db(org)
-    # Resolve skill_id from the version
-    pkg = lifecycle_stores.get_package_version(db, version_id)
-    if pkg is None:
+    # Resolve skill_id from the version (read-only, outside the transaction)
+    pkg_lookup = lifecycle_stores.get_package_version(db, version_id)
+    if pkg_lookup is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "detail": f"Version {version_id} not found."},
         )
+    skill_id = pkg_lookup.skill_id
+
     try:
-        _service.check_concurrency(db, version_id, body.expected_event_id)
-        count = _service.rollback_proposal(
-            db=db, actor_kind="human", skill_id=pkg.skill_id,
-            reason=body.reason, rolled_back_by="founder",
+        count = _run_concurrent_mutation(
+            db, version_id, body.expected_event_id,
+            lambda d: _service.rollback_proposal(
+                db=d, actor_kind="human", skill_id=skill_id,
+                reason=body.reason, rolled_back_by="founder",
+            ),
+            rollback_on_lifecycle=False,
         )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+    except HTTPException:
+        raise
     return {
-        "skill_id": pkg.skill_id,
+        "skill_id": skill_id,
         "assignments_deactivated": count,
         "reason": body.reason,
     }

@@ -429,6 +429,27 @@ export const assignProposal = (
     body,
   });
 
+export interface SubmitReviewProposalRequest {
+  expected_event_id: number;
+  intended_audience?: string;
+  review_notes?: string;
+}
+
+export const submitReviewProposal = (
+  slug: string,
+  versionId: number,
+  body: SubmitReviewProposalRequest,
+): Promise<{
+  skill_id: string;
+  version_id: number;
+  status: string;
+  version: string;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/submit-review`, {
+    method: 'POST',
+    body,
+  });
+
 export interface RollbackProposalRequest {
   reason?: string;
   expected_event_id: number;
