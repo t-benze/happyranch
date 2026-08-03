@@ -581,21 +581,82 @@ describe('ThreadsPage — write path', () => {
       });
     });
 
-    test('submits only the first agent name when multiple comma-separated tokens are entered', async () => {
+    test('submits comma-separated multi-agent selection as sequential individual invites, deduplicates, and updates the participant rail', async () => {
       sessionStorage.setItem('happyranch.token', 'tok');
       stubBaseHandlers();
-      stubInviteStubs();
 
-      let inviteBody: unknown = null;
+      // Mutable participants so the thread-detail GET reflects successful invites.
+      const participantsRef = { current: ['founder', 'agent_a'] };
+
+      // Roster includes agent_b and agent_c (non-participants) + agent_a (participant).
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+          HttpResponse.json({
+            agents: [
+              { name: 'agent_a', team: 'core', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+              { name: 'agent_b', team: 'core', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+              { name: 'agent_c', team: 'support', role: 'manager', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+            ],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}`, () =>
+          HttpResponse.json({
+            thread_id: INVITE_THREAD_ID,
+            subject: 'Invite test thread',
+            status: 'open',
+            started_at: '2026-06-30T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 2,
+            summary: null,
+            transcript_path: null,
+            participants: [...participantsRef.current],
+            messages: [
+              {
+                seq: 1,
+                speaker: 'founder',
+                kind: 'message',
+                body_markdown: 'Hello',
+                decline_reason: null,
+                system_payload: null,
+                created_at: '2026-06-30T00:00:00Z',
+                responder_status: [],
+                attachments: [],
+              },
+            ],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+
+      const inviteCalls: unknown[] = [];
       server.use(
         http.post(
           `/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/invite`,
           async ({ request: req }) => {
-            inviteBody = await req.json();
+            const body = await req.json();
+            inviteCalls.push(body);
+            // Reflect the invite in the thread detail so the participant rail
+            // updates after invalidation, matching the real useInviteAgent
+            // onSuccess invalidate of ['thread', slug, threadId].
+            const name = (body as { agent_name: string }).agent_name;
+            if (!participantsRef.current.includes(name)) {
+              participantsRef.current.push(name);
+            }
             return HttpResponse.json({
               thread_id: INVITE_THREAD_ID,
-              agent_name: 'agent_a',
-              system_message_seq: 2,
+              agent_name: name,
+              system_message_seq: 2 + inviteCalls.length,
             });
           },
         ),
@@ -607,18 +668,43 @@ describe('ThreadsPage — write path', () => {
       // Open the Invite participant dialog.
       await user.click(await screen.findByRole('button', { name: /Invite participant/i }));
 
-      // Type multiple comma-separated agent names.
       const input = screen.getByLabelText(/^Agent name$/i);
-      await user.type(input, 'agent_a, agent_b');
+
+      // --- Select agent_b via autocomplete ---
+      await user.type(input, 'agent_b');
+      const listbox1 = await screen.findByRole('listbox', { name: /Mention agents/i });
+      expect(within(listbox1).getByRole('option', { name: /agent_b/i })).toBeInTheDocument();
+      await user.keyboard('{Enter}');
+      await waitFor(() => {
+        expect(input).toHaveValue('agent_b, ');
+      });
+
+      // --- Select agent_c via autocomplete ---
+      await user.type(input, 'agent_c');
+      const listbox2 = await screen.findByRole('listbox', { name: /Mention agents/i });
+      expect(within(listbox2).getByRole('option', { name: /agent_c/i })).toBeInTheDocument();
+      await user.keyboard('{Enter}');
+      await waitFor(() => {
+        expect(input).toHaveValue('agent_b, agent_c, ');
+      });
 
       // Submit via the dialog's Invite button.
       const dialog = screen.getByRole('dialog');
       await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
 
-      // Assert only the first name is sent.
+      // Assert TWO individual POSTs in deterministic selected-token order.
       await waitFor(() => {
-        expect(inviteBody).toEqual({ agent_name: 'agent_a' });
+        expect(inviteCalls).toHaveLength(2);
+        expect(inviteCalls[0]).toEqual({ agent_name: 'agent_b' });
+        expect(inviteCalls[1]).toEqual({ agent_name: 'agent_c' });
       });
+
+      // Assert the participant rail reflects both new participants without
+      // manual reload — the ['thread', ...] invalidation triggers a refetch.
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /^Remove agent_b$/i })).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /^Remove agent_c$/i })).toBeInTheDocument();
     });
 
     test('validates empty input and shows error', async () => {

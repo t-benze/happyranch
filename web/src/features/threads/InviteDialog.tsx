@@ -37,19 +37,32 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     setErrorMsg(null);
-    // Take the first non-empty token as the single agent name to invite.
-    const firstName = recipientsRaw
+    // Parse comma-separated tokens, trim, discard empties, deduplicate
+    // preserving selection order — RecipientsInput builds comma-separated
+    // selected names, and the backend POST /threads/{id}/invite accepts
+    // one { agent_name } request per participant. Submit every selected
+    // name through that unchanged single-agent API sequentially.
+    const names = recipientsRaw
       .split(',')
       .map((s) => s.trim())
-      .find(Boolean);
-    if (!firstName) {
+      .filter(Boolean);
+    if (names.length === 0) {
       setErrorMsg('Agent name is required.');
       return;
     }
+    const uniqueNames = [...new Set(names)];
     try {
-      await invite.mutateAsync({ agent_name: firstName });
+      // Sequential awaits — deterministic order, matches the non-batch
+      // server contract one-agent-per-request.
+      for (const name of uniqueNames) {
+        await invite.mutateAsync({ agent_name: name });
+      }
       onClose();
     } catch (err) {
+      // Honest partial failure: any succeeding invite mutated before the
+      // failure landed — the dialog stays open so the user can retry or
+      // close. useInviteAgent onSuccess invalidates ['thread', slug, threadId]
+      // on every individual success, so successful invites are reflected.
       setErrorMsg(
         err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
       );

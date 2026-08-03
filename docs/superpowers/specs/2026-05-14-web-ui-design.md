@@ -202,7 +202,7 @@ Two-pane grid. Top bar with org dropdown + feature tabs. Left pane: inbox. Right
 | `MessageBubble` | Speaker chip, timestamp, `addressed_to` chips, markdown body; `kind='decline'` in red; `kind='system'` as a slim event row |
 | `Composer` | Markdown textarea + `To:` chip-picker (default `@all`, picker constrained to current participants), Send button, Ctrl+Enter |
 | `NewThreadDialog` | Subject, recipients (autocomplete from `GET /agents`), body; reused for "Forward" with prefilled quoted excerpt |
-| `InviteDialog` | Agent autocomplete |
+| `InviteDialog` | Multi-agent comma-separated autocomplete; submits each selected name as an individual `POST /threads/{id}/invite` request |
 | `ArchiveDialog` | Summary textarea + "request close-outs" checkbox (default on) |
 | `AbandonDialog` | Reason input |
 | `KeyboardShortcuts` | Headless component binding keys |
