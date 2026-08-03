@@ -670,7 +670,9 @@ def _materialize_lifecycle_skills(
     import logging
     import shutil
 
-    from runtime.skills.lifecycle.service import SkillLifecycleService
+    from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
+    from runtime.skills.lifecycle.models import LifecycleStatus
+    from runtime.skills.lifecycle import stores
 
     logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
     service = SkillLifecycleService()
@@ -689,6 +691,37 @@ def _materialize_lifecycle_skills(
         skill_slug = pkg.slug
         dest_claude = workspace / ".claude" / "skills" / skill_slug
         dest_agents = workspace / ".agents" / "skills" / skill_slug
+
+        # ── Preflight: reject materialization of terminally REJECTED
+        #    packages BEFORE any filesystem bytes are written.
+        #    This guard must fire before creating directories or
+        #    writing content — rejected attempts fail closed with
+        #    no workspace residue.
+        fresh_pkg = stores.get_package_version(db, pkg.id)
+        if fresh_pkg is not None and fresh_pkg.status == LifecycleStatus.REJECTED:
+            error_msg = (
+                f"Package version {pkg.id} is terminally REJECTED. "
+                f"Materialization is blocked."
+            )
+            try:
+                service.record_materialization(
+                    db=db,
+                    skill_id=pkg.skill_id,
+                    agent_name=agent_name,
+                    version_id=pkg.id,
+                    version=pkg.version,
+                    content_hash=pkg.content_hash,
+                    success=False,
+                    error_message=error_msg,
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            )
 
         # ArtifactStore-backed content is the ONLY valid source.
         if not pkg.content_artifact_key:
@@ -871,7 +904,12 @@ def _materialize_lifecycle_skills(
                     reason=error_msg,
                 ) from exc
 
-        # Record successful materialization
+        # Record successful materialization.
+        # The preflight above guards against a REJECTED version BEFORE
+        # filesystem writes, but an adversarial interleaving can flip
+        # PUBLISHED→REJECTED between preflight and success recording.
+        # record_materialization's own rejected_terminal gate catches
+        # this at the success boundary — we must NOT broadly swallow it.
         try:
             service.record_materialization(
                 db=db,
@@ -883,6 +921,25 @@ def _materialize_lifecycle_skills(
                 success=True,
                 session_context="session_spawn",
             )
+        except LifecycleError as e:
+            if e.code == "rejected_terminal":
+                # Adversarial interleaving: package flipped to REJECTED
+                # after bytes landed on disk. Clean both destination
+                # trees and raise so NO session spawns with rejected
+                # content — fail-closed, zero materialized-success events.
+                for d in (dest_claude, dest_agents):
+                    if d.exists():
+                        shutil.rmtree(d, ignore_errors=True)
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=(
+                        f"Package version {pkg.id} became REJECTED during "
+                        f"materialization — terminal lifecycle gate blocked "
+                        f"at success-recording seam"
+                    ),
+                ) from e
+            # Non-rejected LifecycleError: best-effort pass.
         except Exception:
             pass
 

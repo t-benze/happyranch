@@ -3,6 +3,10 @@
  * All lifecycle route types and fetch functions follow the same pattern as
  * ``lib/api/skills.ts``. Feature folders NEVER call ``fetch`` directly —
  * see ``web/ARCHITECTURE.md``.
+ *
+ * All queue/detail/action routes are Founder-only (bearer-required).
+ * The agent proposal route is agent-only (session-binding, no bearer).
+ * The catalog route is dual-auth (published skills only).
  */
 import { request } from './client';
 
@@ -251,4 +255,216 @@ export const retire = (
   request(`/orgs/${slug}/skill-lifecycle/retire`, {
     method: 'POST',
     params: { skill_id: skillId, reason },
+  });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THR-055 Founder-only proposal review API mirror
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Founder-only proposal queue ─────────────────────────────────────────
+
+export interface ProposalQueueItem {
+  version_id: number;
+  skill_id: string;
+  slug: string;
+  name: string;
+  version: string;
+  content_hash: string;
+  proposer_agent: string;
+  claimed_by: string | null;
+  proposal_task_id: string | null;
+  proposal_session_id: string | null;
+  status: string;
+  latest_validator_version: string | null;
+  latest_validator_key: string | null;
+  permitted_next_action: string | null;
+  assigned_agent_count: number;
+  assigned_agents: string[];
+  created_at: string;
+}
+
+export interface ProposalQueueResponse {
+  items: ProposalQueueItem[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export const getProposalsQueue = (
+  slug: string,
+  params?: { status?: string; page?: number; page_size?: number },
+): Promise<ProposalQueueResponse> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/queue`, { params });
+
+// ── Founder-only proposal detail ────────────────────────────────────────
+
+export interface ProposalDetailResponse {
+  version_id: number;
+  skill_id: string;
+  slug: string;
+  name: string;
+  version: string;
+  description: string;
+  content_hash: string;
+  content_artifact_key: string | null;
+  policy_class: string;
+  status: string;
+  proposer_agent: string | null;
+  proposal_task_id: string | null;
+  proposal_session_id: string | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  reviewer: string | null;
+  review_decision: string | null;
+  review_rationale: string | null;
+  reviewed_at: string | null;
+  publisher: string | null;
+  published_at: string | null;
+  events: Array<Record<string, unknown>>;
+  assignments: Array<Record<string, unknown>>;
+  materializations: Array<Record<string, unknown>>;
+  last_event_id: number | null;
+  created_at: string;
+}
+
+export const getProposalDetail = (
+  slug: string,
+  versionId: number,
+): Promise<ProposalDetailResponse> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}`);
+
+// ── Founder-only proposal actions (concurrency-protected) ──────────────
+
+export interface ClaimProposalV2Request {
+  expected_event_id: number;
+}
+
+export const claimProposalV2 = (
+  slug: string,
+  versionId: number,
+  body: ClaimProposalV2Request,
+): Promise<{
+  skill_id: string;
+  version_id: number;
+  status: string;
+  version: string;
+  claimed_by: string | null;
+  claimed_at: string | null;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/claim`, {
+    method: 'POST',
+    body,
+  });
+
+export interface ValidateProposalRequest {
+  validator_version: string;
+  expected_event_id: number;
+}
+
+export const validateProposal = (
+  slug: string,
+  versionId: number,
+  body: ValidateProposalRequest,
+): Promise<{ skill_id: string; version_id: number; status: string; version: string }> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/validate`, {
+    method: 'POST',
+    body,
+  });
+
+export interface ReviewProposalRequest {
+  decision: 'approved' | 'rejected';
+  rationale?: string;
+  expected_event_id: number;
+}
+
+export const reviewProposal = (
+  slug: string,
+  versionId: number,
+  body: ReviewProposalRequest,
+): Promise<{ skill_id: string; version_id: number; status: string; decision: string }> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/review`, {
+    method: 'POST',
+    body,
+  });
+
+export interface PublishProposalRequest {
+  approval_event_id: number;
+  expected_event_id: number;
+}
+
+export const publishProposal = (
+  slug: string,
+  versionId: number,
+  body: PublishProposalRequest,
+): Promise<{
+  skill_id: string;
+  version_id: number;
+  status: string;
+  version: string;
+  published_at: string | null;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/publish`, {
+    method: 'POST',
+    body,
+  });
+
+export interface AssignProposalRequest {
+  agent_name: string;
+  expected_event_id: number;
+}
+
+export const assignProposal = (
+  slug: string,
+  versionId: number,
+  body: AssignProposalRequest,
+): Promise<{
+  skill_id: string;
+  agent_name: string;
+  version: string;
+  content_hash: string;
+  assigned_at: string;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/assign`, {
+    method: 'POST',
+    body,
+  });
+
+export interface SubmitReviewProposalRequest {
+  expected_event_id: number;
+  intended_audience?: string;
+  review_notes?: string;
+}
+
+export const submitReviewProposal = (
+  slug: string,
+  versionId: number,
+  body: SubmitReviewProposalRequest,
+): Promise<{
+  skill_id: string;
+  version_id: number;
+  status: string;
+  version: string;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/submit-review`, {
+    method: 'POST',
+    body,
+  });
+
+export interface RollbackProposalRequest {
+  reason?: string;
+  expected_event_id: number;
+}
+
+export const rollbackProposal = (
+  slug: string,
+  versionId: number,
+  body: RollbackProposalRequest,
+): Promise<{
+  skill_id: string;
+  assignments_deactivated: number;
+  reason: string;
+}> =>
+  request(`/orgs/${slug}/skill-lifecycle/proposals/${versionId}/rollback`, {
+    method: 'POST',
+    body,
   });
