@@ -720,6 +720,142 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(screen.getByText('Custom CLIs')).toBeInTheDocument();
   });
 
+  test('seq334 integration: approving a named pending adapter atomically connects it as one Custom CLI row with truthful executable', async () => {
+    const adapterId = 'seq334-pending-adapter';
+    const profileName = 'seq334-custom-cli';
+    const executable = '/usr/local/bin/seq334-cli';
+    const hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+    const pendingAdapter = {
+      id: adapterId,
+      name: adapterId,
+      executable,
+      executable_hash: hash,
+      version: '1.0.0',
+      capabilities: ['token_metering'],
+      contract_version: 1,
+      workspace_adapter: 'pi',
+      status: 'pending',
+      registered_at: '2024-01-01T00:00:00Z',
+      registered_by: 'test',
+      approved_at: null,
+      approved_by: null,
+      intended_profile_name: profileName,
+      eligibility: null,
+      dependency_manifest_version: null,
+      dependencies: null,
+    };
+
+    const approvedAdapter = {
+      ...pendingAdapter,
+      status: 'approved',
+      approved_at: '2024-01-01T00:00:01Z',
+      approved_by: 'founder',
+      eligibility: 'already_bound',
+    };
+
+    const boundProfile = {
+      name: profileName,
+      command: null,
+      command_adapter_id: `custom-adapter:${adapterId}`,
+      workspace_adapter_id: 'pi',
+      adapter: null,
+      adapter_id: null,
+      command_adapter: null,
+      present: true,
+      path: executable,
+      envelope_policy: 'strict',
+    };
+
+    let adapterGets = 0;
+    let profileGets = 0;
+    let approved = false;
+
+    server.use(
+      http.get('/api/v1/runtime/adapters', () => {
+        adapterGets += 1;
+        return HttpResponse.json(approved ? [approvedAdapter] : [pendingAdapter]);
+      }),
+      http.get('/api/v1/executors/runtime/profiles', () => {
+        profileGets += 1;
+        return HttpResponse.json({ profiles: approved ? [boundProfile] : [] });
+      }),
+      http.post(`/api/v1/runtime/adapters/${adapterId}/approve`, async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        expect(body).toMatchObject({
+          executable,
+          executable_hash: hash,
+          version: '1.0.0',
+          capabilities: pendingAdapter.capabilities,
+          contract_version: 1,
+          workspace_adapter: 'pi',
+        });
+        approved = true;
+        return HttpResponse.json({
+          ...approvedAdapter,
+          profile_bound: {
+            profile_name: profileName,
+            command_adapter_id: `custom-adapter:${adapterId}`,
+            workspace_adapter_id: 'pi',
+            kind: 'custom',
+            status: 'connected',
+            adapter_id: adapterId,
+          },
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Initial load: pending queue shows the adapter, Custom CLIs is empty.
+    await screen.findByTestId(`pending-adapter-row-${adapterId}`);
+    expect(
+      screen.getByTestId(`adapter-intended-profile-${adapterId}`),
+    ).toHaveTextContent(profileName);
+    expect(screen.getByTestId('custom-profiles-empty')).toBeInTheDocument();
+
+    const getsBeforeApprove = { adapters: adapterGets, profiles: profileGets };
+
+    // Approve & connect.
+    await user.click(screen.getByTestId(`adapter-approve-${adapterId}`));
+    await user.click(screen.getByTestId(`adapter-confirm-approve-${adapterId}`));
+
+    // After both refetches: pending queue is empty.
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId(`pending-adapter-row-${adapterId}`),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('pending-adapter-rows')).not.toBeInTheDocument();
+
+    // Custom CLIs shows the connected profile exactly once.
+    await waitFor(() => {
+      expect(screen.getByTestId(`profile-row-${profileName}`)).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId(/^profile-row-/).length).toBe(1);
+
+    // No recovery affordances or duplicate pending surfaces.
+    expect(screen.queryByTestId('cli-recovery-rows')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`cli-recovery-row-${adapterId}`),
+    ).not.toBeInTheDocument();
+
+    // Adapter-backed executable is displayed truthfully (from adapter, since command is null).
+    const row = screen.getByTestId(`profile-row-${profileName}`);
+    const executablePara = within(row).getByText(/Executable:/i).closest('p');
+    expect(executablePara).not.toBeNull();
+    expect(within(executablePara!).getByText(executable)).toBeInTheDocument();
+
+    // No standalone Custom Adapters section or adapter implementation terminology.
+    expect(screen.queryByText('Custom Adapters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-management-section')).not.toBeInTheDocument();
+
+    // Both management queries were refetched after the approve mutation.
+    expect(adapterGets).toBeGreaterThan(getsBeforeApprove.adapters);
+    expect(profileGets).toBeGreaterThan(getsBeforeApprove.profiles);
+  });
+
   test('manual absolute-path entry is DEMOTED behind an "Advanced" disclosure on each row', async () => {
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
