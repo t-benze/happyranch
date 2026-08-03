@@ -85,7 +85,7 @@ export function TodosPage(): JSX.Element {
               type="button"
               onClick={() => setActiveFilter(fg.key)}
               className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                'rounded-md px-4 py-2 text-sm font-medium transition-colors',
                 activeFilter === fg.key
                   ? 'bg-bg-raised text-fg shadow-sm'
                   : 'text-fg-muted hover:text-fg',

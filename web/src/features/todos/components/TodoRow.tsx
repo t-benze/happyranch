@@ -17,22 +17,28 @@ interface TodoRowProps {
   schedule: ScheduleRecord
 }
 
-/** Describe the schedule type in a concise human line using the stored tz. */
+/** Describe the schedule type in a concise, status-aware human line using the stored tz. */
 function scheduleLine(s: ScheduleRecord): string {
   const tz = s.timezone || 'UTC'
+  const isPast = ['fired', 'failed', 'timeout', 'expired', 'cancelled'].includes(s.status)
+
   if (s.kind === 'one_shot') {
     if (s.fire_at) {
       const formatted = formatFireAtInTz(s.fire_at, tz)
-      if (formatted !== s.fire_at) return `Once · ${formatted}`
+      if (formatted !== s.fire_at) {
+        return isPast ? `Once on ${formatted}` : `Once on ${formatted}`
+      }
     }
     return 'One-shot'
   }
+
   const day = s.recurrence?.day ?? ''
   const time = s.recurrence?.time ?? ''
+  const prefix = isPast ? 'Was every' : 'Every'
   if (s.indefinite) {
-    return `Every ${day} at ${time} · ${TODO_STRINGS.indefiniteLabel}`
+    return `${prefix} ${day} at ${time} · ${TODO_STRINGS.indefiniteLabel}`
   }
-  return `Every ${day} at ${time}`
+  return `${prefix} ${day} at ${time}`
 }
 
 /** Expiry / review line for the row. */

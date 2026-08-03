@@ -70,7 +70,7 @@ export function statusPillClass(status: ScheduleStatus): string {
     case 'cancelled':
     case 'expired':
     default:
-      return 'text-status-archived border border-border-default bg-transparent'
+      return 'text-status-archived bg-bg-muted'
   }
 }
 

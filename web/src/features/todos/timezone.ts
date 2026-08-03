@@ -63,6 +63,58 @@ function tzParts(date: Date, tz: string) {
 }
 
 /**
+ * Serialize a one-shot local date/time (YYYY-MM-DD + HH:MM) in IANA
+ * timezone `tz` to a UTC ISO-8601 instant string (e.g.
+ * "2026-08-01T01:00:00Z") or null.
+ *
+ * The local date/time is interpreted in the named timezone, including DST,
+ * and converted to the corresponding UTC instant.
+ */
+export function serializeOneShotInTz(
+  dateStr: string,
+  timeStr: string,
+  tz: string,
+): string | null {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const [hour, minute] = timeStr.split(':').map(Number)
+  if (
+    Number.isNaN(year) ||
+    Number.isNaN(month) ||
+    Number.isNaN(day) ||
+    Number.isNaN(hour) ||
+    Number.isNaN(minute)
+  ) {
+    return null
+  }
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date())
+  } catch {
+    return null
+  }
+
+  // Iterate to find the UTC instant whose local representation in `tz`
+  // equals the supplied date/time. This handles DST transitions correctly.
+  let candidate = Date.UTC(year, month - 1, day, hour, minute, 0)
+  for (let i = 0; i < 5; i++) {
+    const parts = tzParts(new Date(candidate), tz)
+    if (
+      parts.year === year &&
+      parts.month === month - 1 &&
+      parts.day === day &&
+      parts.hour === hour &&
+      parts.minute === minute
+    ) {
+      return new Date(candidate).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    }
+    const offset = tzOffsetMinutes(new Date(candidate), tz)
+    candidate = candidate - offset * 60_000
+  }
+
+  return new Date(candidate).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+/**
  * Compute the next occurrence of `day` at `timeStr` (HH:MM) in IANA
  * timezone `tz`, strictly AFTER `after` (default: now). Walks at most 366
  * days. Returns a UTC ISO-8601 string (e.g. "2026-08-01T01:00:00Z") or null.

@@ -487,7 +487,7 @@ describe('TodoDetailPage — indefinite flag', () => {
     mockDetail(ARMED_WEEKLY_TZ)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
-    expect(screen.queryByText('Indefinite · no expiry')).not.toBeInTheDocument()
+    expect(screen.queryByText('Indefinite')).not.toBeInTheDocument()
     expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
   })
 
@@ -495,7 +495,7 @@ describe('TodoDetailPage — indefinite flag', () => {
     mockDetail(FIRING)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-064` })
     await waitForDetailHeading('Run the nightly regression sweep')
-    expect(screen.getByText('Indefinite · no expiry')).toBeInTheDocument()
+    expect(screen.getByText('Indefinite')).toBeInTheDocument()
     expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
   })
 })
@@ -539,7 +539,7 @@ describe('TodoDetailPage — provenance and links', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-019` })
     await waitForDetailHeading('Check the release health metric')
     expect(screen.queryByText('Pause')).toBeNull()
-    expect(screen.queryByText('Edit timing')).toBeNull()
+    expect(screen.queryByText('Edit')).toBeNull()
     expect(screen.queryByText('Cancel')).toBeNull()
   })
 
@@ -548,7 +548,7 @@ describe('TodoDetailPage — provenance and links', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
     expect(screen.getByText('Pause')).toBeTruthy()
-    expect(screen.getByText('Edit timing')).toBeTruthy()
+    expect(screen.getByText('Edit')).toBeTruthy()
     expect(screen.getByText('Cancel')).toBeTruthy()
   })
 
@@ -558,7 +558,7 @@ describe('TodoDetailPage — provenance and links', () => {
     await waitForDetailHeading('Review roadmap risks')
     expect(screen.queryByText('Pause')).toBeNull()
     expect(screen.queryByText('Resume')).toBeNull()
-    expect(screen.getByText('Edit timing')).toBeTruthy()
+    expect(screen.getByText('Edit')).toBeTruthy()
     expect(screen.getByText('Cancel')).toBeTruthy()
   })
 
@@ -730,7 +730,7 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
     await screen.findByRole('heading', { name: 'Edit timing' })
     await userEvent.click(screen.getByText('Save changes'))
 
@@ -759,7 +759,7 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-099` })
     await waitForDetailHeading('Tokyo market briefing')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
     await screen.findByRole('heading', { name: 'Edit timing' })
     await userEvent.click(screen.getByText('Save changes'))
 
@@ -774,6 +774,39 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     })
     expect(capturedBody!.timezone).toBe('Asia/Tokyo')
     expect(capturedBody!.fire_at).toBeDefined()
+  })
+
+  it('serializes one-shot fire_at as the stored-IANA UTC instant, not browser-local time', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_ONESHOT, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_ONESHOT)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-058` })
+    await waitForDetailHeading('Follow up on the Acme trial issue')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    // Schedule is America/New_York; change the local date/time and save.
+    const dateInput = screen.getByLabelText('Date')
+    const timeInput = screen.getByLabelText('Time')
+    await userEvent.clear(dateInput)
+    await userEvent.type(dateInput, '2026-08-05')
+    await userEvent.clear(timeInput)
+    await userEvent.type(timeInput, '09:00')
+
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => {
+      expect(capturedBody).not.toBeNull()
+    })
+
+    // 2026-08-05 09:00 America/New_York (EDT, UTC-4) = 2026-08-05T13:00:00Z
+    expect(capturedBody!.fire_at).toBe('2026-08-05T13:00:00Z')
+    expect(capturedBody!.timezone).toBe('America/New_York')
+    expect((capturedBody!.fire_at as string).endsWith('Z')).toBe(true)
   })
 
   it('computes nextWeeklyOccurrence correctly for a boundary next-week case', async () => {
@@ -801,6 +834,17 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     const { nextWeeklyOccurrence } = await import('./timezone')
     const result = nextWeeklyOccurrence('Mon', '09:00', 'Invalid/Timezone')
     expect(result).toBeNull()
+  })
+
+  it('serializeOneShotInTz converts local date/time in non-browser IANA zone to UTC', async () => {
+    const { serializeOneShotInTz } = await import('./timezone')
+    expect(serializeOneShotInTz('2026-08-05', '09:00', 'Asia/Shanghai')).toBe(
+      '2026-08-05T01:00:00Z',
+    )
+    expect(serializeOneShotInTz('2026-08-05', '09:00', 'America/New_York')).toBe(
+      '2026-08-05T13:00:00Z',
+    )
+    expect(serializeOneShotInTz('2026-08-05', '09:00', 'UTC')).toBe('2026-08-05T09:00:00Z')
   })
 })
 
@@ -837,12 +881,48 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
     await screen.findByRole('heading', { name: 'Edit timing' })
     await userEvent.click(screen.getByText('Save changes'))
 
     await screen.findByText('This Todo was modified')
     expect(screen.getByText('Reload record')).toBeTruthy()
+  })
+
+  it('409 conflict prompt uses neutral wording and does not claim the Todo fired', async () => {
+    server.use(
+      ...bootstrap(),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(ARMED_WEEKLY_TZ),
+      ),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
+      ),
+      http.patch(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(
+          {
+            code: 'state_conflict',
+            message: 'cannot edit SCHEDULE-042: status firing is not armed or paused',
+          },
+          { status: 409 },
+        ),
+      ),
+      http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
+    )
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByText('Save changes'))
+
+    const conflictDialog = await screen.findByRole('dialog')
+    const dialogText = conflictDialog.textContent ?? ''
+    expect(dialogText).toContain('This Todo changed while you were editing it')
+    expect(dialogText).not.toContain('most likely it fired')
+    expect(dialogText).not.toContain('fired')
+    expect(dialogText).not.toContain('saved')
   })
 
   it('shows validation error inline on non-409 error', async () => {
@@ -866,7 +946,7 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
     await screen.findByRole('heading', { name: 'Edit timing' })
     await userEvent.click(screen.getByText('Save changes'))
 

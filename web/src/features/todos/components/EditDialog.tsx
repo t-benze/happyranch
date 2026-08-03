@@ -26,7 +26,11 @@ import {
   SelectItem,
 } from '@/design-system/primitives/Select'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
-import { nextWeeklyOccurrence, formatPreviewInTz } from '../timezone'
+import {
+  nextWeeklyOccurrence,
+  formatPreviewInTz,
+  serializeOneShotInTz,
+} from '../timezone'
 
 const WEEKDAYS = [
   { value: 'Mon', label: 'Monday' },
@@ -129,9 +133,9 @@ export function EditDialog({
       return { date: new Date(iso), tz }
     }
     if (fireAtDate && fireAtTime) {
-      const d = new Date(`${fireAtDate}T${fireAtTime}:00`)
-      if (Number.isNaN(d.getTime())) return null
-      return { date: d, tz }
+      const iso = serializeOneShotInTz(fireAtDate, fireAtTime, tz)
+      if (!iso) return null
+      return { date: new Date(iso), tz }
     }
     return null
   }, [isWeekly, weekday, weeklyTime, fireAtDate, fireAtTime, timezone])
@@ -149,7 +153,10 @@ export function EditDialog({
       }
     } else {
       if (fireAtDate && fireAtTime) {
-        fields.fire_at = `${fireAtDate}T${fireAtTime}:00`
+        const iso = serializeOneShotInTz(fireAtDate, fireAtTime, timezone || 'UTC')
+        if (iso) {
+          fields.fire_at = iso
+        }
       }
       if (timezone) fields.timezone = timezone
     }
@@ -163,9 +170,8 @@ export function EditDialog({
           <DialogHeader>
             <DialogTitle>This Todo was modified</DialogTitle>
             <DialogDescription>
-              This Todo changed while you were editing it — most likely it fired.
-              The page will reload the current record so you can see the actual
-              state.
+              This Todo changed while you were editing it. The page will reload
+              the current record so you can see the actual state.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -217,9 +223,9 @@ export function EditDialog({
           {isWeekly ? (
             <>
               <div className="space-y-1">
-                <Label>Weekday</Label>
+                <Label htmlFor="edit-weekday">Weekday</Label>
                 <Select value={weekday} onValueChange={setWeekday}>
-                  <SelectTrigger>
+                  <SelectTrigger id="edit-weekday">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -243,16 +249,18 @@ export function EditDialog({
           ) : (
             <>
               <div className="space-y-1">
-                <Label>Date</Label>
+                <Label htmlFor="edit-fire-date">Date</Label>
                 <Input
+                  id="edit-fire-date"
                   type="date"
                   value={fireAtDate}
                   onChange={(e) => setFireAtDate(e.target.value)}
                 />
               </div>
               <div className="space-y-1">
-                <Label>Time</Label>
+                <Label htmlFor="edit-fire-time">Time</Label>
                 <Input
+                  id="edit-fire-time"
                   type="time"
                   value={fireAtTime}
                   onChange={(e) => setFireAtTime(e.target.value)}
@@ -262,9 +270,9 @@ export function EditDialog({
           )}
 
           <div className="space-y-1">
-            <Label>Timezone</Label>
+            <Label htmlFor="edit-timezone">Timezone</Label>
             <Select value={timezone} onValueChange={setTimezone}>
-              <SelectTrigger>
+              <SelectTrigger id="edit-timezone">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
