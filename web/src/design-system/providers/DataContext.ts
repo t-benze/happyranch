@@ -494,6 +494,25 @@ export interface SkillsApi {
     severity?: string;
     limit?: number;
   }) => QueryLike<{ events: ValidationEvent[]; label: string }>;
+
+  /** Founder-only proposal queue (THR-055 Slice 3A). Server-authoritative
+   *  read-only listing. Supported filter/query params: status,
+   *  validation_outcome, search, proposer, submitted_after, submitted_before,
+   *  page, page_size. Never re-sorts or re-counts client-side. */
+  useProposalsQueue: (
+    params?: {
+      status?: string;
+      page?: number;
+      page_size?: number;
+      validation_outcome?: 'validated' | 'validation_failed' | 'unvalidated';
+      search?: string;
+      proposer?: string;
+      submitted_after?: string;
+      submitted_before?: string;
+    },
+  ) => QueryLike<
+    import('@/lib/api/skillLifecycle').ProposalQueueResponse
+  >;
 }
 
 // ---------------------------------------------------------------------------

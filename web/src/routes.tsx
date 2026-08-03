@@ -25,6 +25,7 @@ import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
 import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
 import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
+import { ProposalsQueuePage } from '@/features/skills/ProposalsQueuePage';
 import { ProposalDetailPage } from '@/features/skills/ProposalDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
@@ -109,13 +110,15 @@ export function AppRoutes(): JSX.Element {
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
+          {/* THR-055 Slice 3A — Proposal Queue / Detail (before :skillId
+              so React Router doesn't treat "proposals" as a skillId). */}
+          <Route path="skills/proposals" element={<ProposalsQueuePage />} />
+          <Route path="skills/proposals/:versionId" element={<ProposalDetailPage />} />
           {/* Static `new`/`validation` rank above the dynamic `:skillId` in
               react-router v6, but keep them declared first for readability. */}
           <Route path="skills/new" element={<SkillCreatePage />} />
           <Route path="skills/validation" element={<SkillValidationPage />} />
           <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
-          {/* Static proposals/:versionId MUST rank before dynamic :skillId */}
-          <Route path="skills/proposals/:versionId" element={<ProposalDetailPage />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
