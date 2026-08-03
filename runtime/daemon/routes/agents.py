@@ -75,8 +75,8 @@ def _executor_switch_materialize(
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
 
     with _workspace_skills_transaction(workspace):
-        # Bootstrap wholesale copy (runs adapter _copy_skills which
-        # re-enters the RLock — safe).
+        # Bootstrap persistent files (memory, task_history, bootstrap doc, settings).
+        # Note: _copy_skills is a no-op in the canonical architecture.
         ctx.ensure_workspace_ready(
             workspace,
             agent_name,
@@ -84,19 +84,12 @@ def _executor_switch_materialize(
             provider=provider,
         )
 
-        # Materialize system contracts for ALL 4 session contexts so
-        # skills are present the INSTANT the switch completes (not one
-        # session later).  Complements #378's spawn precondition.
+        # Materialize ALL system contracts for ALL 4 session contexts
+        # so skills are present the instant the switch completes.
+        # Uses canonical store + symlinks, NOT content copying.
         #
-        # Decision (1): No single context is a strict superset — 'task'
-        # misses 'dream'; 'dream' misses 'start-task' and 'thread'.
-        # Loop over all 4 to guarantee every contract any future session
-        # could need is on disk.
-        #
-        # Decision (2): Failure is NON-FATAL — steps 1-3 have already
-        # mutated org .md irreversibly; #378 guarantees
-        # correctness at next spawn regardless.  Surface errors in the
-        # response body + warning log.
+        # Failure is now FATAL — the canonical architecture's fail-closed
+        # guarantee means materialization errors prevent the switch.
         errors: list[str] = []
         for ctx_name in ("task", "thread", "wake", "dream"):
             try:
@@ -109,11 +102,18 @@ def _executor_switch_materialize(
                 )
             except SystemContractMaterializationError as e:
                 errors.append(str(e))
-                _logger.warning(
+                _logger.error(
                     "Executor switch: system contract materialization "
                     "failed for context=%s provider=%s agent=%s: %s",
                     ctx_name, provider, agent_name, e,
                 )
+
+        if errors:
+            raise SystemContractMaterializationError(
+                missing_contracts=errors,
+                workspace=workspace,
+                provider=provider,
+            )
 
     return errors
 
