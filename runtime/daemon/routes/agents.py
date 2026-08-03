@@ -44,9 +44,8 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
-    SystemContractMaterializationError,
     _workspace_skills_transaction,
-    ensure_system_contracts_materialized,
+    materialize_workspace_skills,
 )
 
 router = APIRouter(dependencies=[require_token()])
@@ -55,65 +54,64 @@ router = APIRouter(dependencies=[require_token()])
 def _executor_switch_materialize(
     workspace: Path,
     org: OrgState,
-    paths: OrgPaths,
     agent_name: str,
-    system_prompt: str,
     provider: str,
 ) -> list[str]:
-    """Materialize skills during executor switch under the workspace lock.
+    """Materialize the six-context canonical skill union during executor switch.
 
-    Serializes the complete bootstrap materialization (ensure_workspace_ready
-    which includes adapter _copy_skills + system-contract injection for all
-    4 session contexts) under the process-local workspace lock so a concurrent
-    session-time task/thread spawn cannot interleave inside _copy_skills_tree.
+    Runs under the process-local workspace RLock so a concurrent
+    session-time task/thread spawn cannot interleave inside the
+    materialization tree. Returns a list of materialization error
+    messages (empty on success).
 
-    Returns a list of materialization error messages (empty on success).
-    The lock is an RLock — adapter _copy_skills called inside
-    ensure_workspace_ready safely re-enters the lock.
+    This function does ONLY the union materialization. Bootstrap files
+    (CLAUDE.md/AGENTS.md, .claude/settings.json, memory, task_history)
+    are NOT written here — they are handled by the caller AFTER this
+    function succeeds and before the new executor frontmatter is
+    persisted. This ordering guarantees:
+
+    1. Union failure → no bootstrap files, no config change, no audit.
+    2. Union success + bootstrap failure → safe compensation cleans up
+       any partial bootstrap files BEFORE any config/audit mutation.
+    3. Union success + bootstrap success → config + audit proceed.
     """
     _logger = logging.getLogger(__name__)
-    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+
+    # Resolve agent team for the unified call
+    try:
+        agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), agent_name)
+        agent_team = agent_def.team if agent_def else "engineering"
+    except Exception:
+        agent_team = "engineering"
+
+    skills_root = org.settings.project_root / "runtime" / "skills"
 
     with _workspace_skills_transaction(workspace):
-        # Bootstrap wholesale copy (runs adapter _copy_skills which
-        # re-enters the RLock — safe).
-        ctx.ensure_workspace_ready(
-            workspace,
-            agent_name,
-            system_prompt,
-            provider=provider,
-        )
-
-        # Materialize system contracts for ALL 4 session contexts so
-        # skills are present the INSTANT the switch completes (not one
-        # session later).  Complements #378's spawn precondition.
-        #
-        # Decision (1): No single context is a strict superset — 'task'
-        # misses 'dream'; 'dream' misses 'start-task' and 'thread'.
-        # Loop over all 4 to guarantee every contract any future session
-        # could need is on disk.
-        #
-        # Decision (2): Failure is NON-FATAL — steps 1-3 have already
-        # mutated org .md irreversibly; #378 guarantees
-        # correctness at next spawn regardless.  Surface errors in the
-        # response body + warning log.
         errors: list[str] = []
-        for ctx_name in ("task", "thread", "wake", "dream"):
-            try:
-                ensure_system_contracts_materialized(
-                    workspace,
-                    org.settings,
-                    slug=org.slug,
-                    context=ctx_name,
-                    provider=provider,
-                )
-            except SystemContractMaterializationError as e:
-                errors.append(str(e))
-                _logger.warning(
-                    "Executor switch: system contract materialization "
-                    "failed for context=%s provider=%s agent=%s: %s",
-                    ctx_name, provider, agent_name, e,
-                )
+        try:
+            from runtime.orchestrator.workspace_adapters import (
+                materialize_workspace_skills_union,
+            )
+            materialize_workspace_skills_union(
+                workspace, org.settings,
+                slug=org.slug,
+                contexts=["task", "thread", "wake", "dream",
+                          "schedule", "bootstrap"],
+                provider=provider,
+                agent_name=agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org.root,
+                db=org.db,
+            )
+        except Exception as e:
+            errors.append(str(e))
+            _logger.error(
+                "Executor switch: materialization failed for "
+                "context-union provider=%s agent=%s: %s",
+                provider, agent_name, e,
+            )
+            return errors
 
     return errors
 
@@ -822,6 +820,12 @@ async def set_agent_executor(
 ) -> dict:
     """Founder action: switch an existing agent's executor end-to-end.
 
+    **Atomicity contract:** The six-context canonical union materialization
+    MUST complete successfully BEFORE any new executor frontmatter is
+    persisted and BEFORE audit logging. On union/materialization failure,
+    this route returns a named HTTP error, preserves the previous executor
+    configuration and audit state, and prohibits subsequent launch.
+
     Reconciles all three surfaces the orchestrator reads:
       1. org agent .md frontmatter (``executor:``) — atomic rebuild via
          render_agent_text + tempfile + os.replace (same pattern as the
@@ -853,7 +857,143 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
-    # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+    # ── Step 1: Materialize the six-context canonical union FIRST ──
+    # This MUST complete successfully before any frontmatter is persisted.
+    # On failure, the previous executor is preserved and a named HTTP
+    # error is returned — no partial state mutation.
+    materialization_errors: list[str] = []
+    if has_workspace:
+        materialization_errors = await asyncio.to_thread(
+            _executor_switch_materialize,
+            workspace, org, agent_name, body.executor,
+        )
+        if materialization_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_materialization_failed",
+                    "errors": materialization_errors,
+                    "message": (
+                        "Canonical skill materialization for the new executor "
+                        "failed. The previous executor has been preserved. "
+                        "Resolve the materialization errors before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 2: Bootstrap persistent workspace files ──
+    # Run AFTER successful union but BEFORE frontmatter/audit persistence.
+    # A bootstrap failure must clean up any partial files and refuse the
+    # switch — no config change, no audit row. Only if this succeeds does
+    # the switch become durable.
+    if has_workspace:
+        # ── Snapshot pre-bootstrap workspace state ──
+        # Every file, directory, link, and their contents that existed
+        # before bootstrap must survive a subsequent bootstrap failure
+        # exactly. Only artifacts newly created by the failed attempt
+        # will be removed.
+        pre_bootstrap_snapshot: set[str] = set()
+        pre_bootstrap_contents: dict[str, bytes] = {}
+        for root_dir, dirnames, filenames in os.walk(str(workspace)):
+            root_path = Path(root_dir)
+            rel_root = root_path.relative_to(workspace)
+            pre_bootstrap_snapshot.add(str(rel_root))
+            for name in filenames:
+                rel = str(rel_root / name) if str(rel_root) != "." else name
+                pre_bootstrap_snapshot.add(rel)
+                # Snapshot contents for restoration if modified
+                fp = root_path / name
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        pre_bootstrap_contents[rel] = fp.read_bytes()
+                    except OSError:
+                        pass  # unreadable file — skip content snapshot
+            for name in dirnames:
+                pre_bootstrap_snapshot.add(
+                    str(rel_root / name) if str(rel_root) != "." else name
+                )
+
+        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+        try:
+            ctx.ensure_workspace_ready(
+                workspace,
+                agent_name,
+                existing.system_prompt,
+                provider=body.executor,
+            )
+        except Exception as e:
+            _logger = logging.getLogger(__name__)
+            _logger.error(
+                "Executor switch: bootstrap failed after successful "
+                "union for provider=%s agent=%s: %s",
+                body.executor, agent_name, e,
+            )
+            # ── Snapshot-and-restore compensation ──
+            # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
+            # 2. Restore any pre-existing files whose contents were modified.
+            # Every pre-existing workspace file/directory/link is preserved
+            # exactly. Errors during cleanup are surfaced, not suppressed.
+            errors: list[str] = []
+            # Restore modified pre-existing files to original contents
+            for rel, original_bytes in pre_bootstrap_contents.items():
+                fp = workspace / rel
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        current = fp.read_bytes()
+                        if current != original_bytes:
+                            fp.write_bytes(original_bytes)
+                    except OSError as exc:
+                        errors.append(
+                            f"Failed to restore file {rel}: {exc}"
+                        )
+            for root_dir, _dirnames, filenames in os.walk(
+                str(workspace), topdown=False,
+            ):
+                root_path = Path(root_dir)
+                for name in filenames:
+                    fp = root_path / name
+                    rel = fp.relative_to(workspace)
+                    if str(rel) not in pre_bootstrap_snapshot:
+                        try:
+                            fp.unlink()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new file {fp}: {exc}"
+                            )
+                # Remove empty directories that were newly created
+                if str(root_path) != str(workspace):
+                    rel_dir = root_path.relative_to(workspace)
+                    if str(rel_dir) not in pre_bootstrap_snapshot:
+                        try:
+                            if not any(root_path.iterdir()):
+                                root_path.rmdir()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new directory {root_path}: {exc}"
+                            )
+            if errors:
+                _logger.error(
+                    "Executor switch bootstrap cleanup errors: %s",
+                    "; ".join(errors),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": str(e),
+                    "message": (
+                        "Executor workspace bootstrap failed after "
+                        "successful skill materialization. The previous "
+                        "executor has been preserved. Any partial "
+                        "bootstrap files have been cleaned up. "
+                        "Resolve the bootstrap error before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 3: Persist the new executor frontmatter ──
+    # Only reached if union materialization AND bootstrap both succeeded
+    # (or no workspace exists).
     updated = AgentDef(
         name=existing.name,
         team=existing.team,
@@ -888,25 +1028,12 @@ async def set_agent_executor(
     stale_files: list[str] = []
     removed: list[str] = []
     cleaned = False
-    materialization_errors: list[str] = []
 
     if has_workspace:
         # THR-095: agent.yaml is no longer the source — skip the
         # agent.yaml reconcile.  The .md frontmatter is the single
         # source of truth.
         after_ws = before_ws
-        # Issue #536: wrap the complete executor-switch materialization
-        # (bootstrap wholesale copy + system-contract injection for all
-        # 4 contexts) under the same process-local workspace lock used
-        # by session-time materialization.  This prevents a concurrent
-        # task/thread spawn from racing bootstrap inside _copy_skills_tree.
-        # The lock is an RLock so the adapter _copy_skills (called inside
-        # ensure_workspace_ready) can safely re-enter.
-        materialization_errors = await asyncio.to_thread(
-            _executor_switch_materialize,
-            workspace, org, paths, agent_name,
-            existing.system_prompt, body.executor,
-        )
 
         # 4. stale Claude-only files when switching AWAY from a Claude
         #    adapter. Check the profile's canonical workspace_adapter_id (D6),
@@ -944,7 +1071,6 @@ async def set_agent_executor(
         "stale_files": stale_files,
         "cleaned": cleaned,
         "removed": removed,
-        "materialization_errors": materialization_errors,
     }
 
 

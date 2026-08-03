@@ -539,14 +539,15 @@ def test_run_agent_launches_child_with_own_workspace_not_parent(
         "    workers: [wrk]\n"
     )
 
-    # Workspace dirs WITH readiness markers for _run_agent.
-    # Claude's readiness marker is .claude/skills/start-task/SKILL.md
+    # Workspace dirs WITHOUT ordinary skill directories.
+    # Under the canonical store model, the SymlinkMaterializer creates
+    # skill symlinks during materialization — pre-creating ordinary
+    # directories at link paths causes ordinary_dir_at_link_path.
     for agent_name in ("mgr", "wrk"):
         ws = paths.workspaces_dir / agent_name
         ws.mkdir(parents=True, exist_ok=True)
-        skill = ws / ".claude" / "skills" / "start-task"
-        skill.mkdir(parents=True, exist_ok=True)
-        (skill / "SKILL.md").write_text(f"# start-task: {agent_name}\n")
+        (ws / "agent.yaml").write_text("executor: claude\n")
+        (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
     # ---- spawn fan-out children ----
     db = Database(paths.db_path)

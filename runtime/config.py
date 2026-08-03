@@ -117,5 +117,9 @@ class Settings(BaseSettings):
     def get_protocol_dir(self) -> Path:
         return self.project_root / self.protocol_dir
 
+    @property
+    def daemon_home(self) -> Path:
+        return _daemon_home()
+
 
 settings = Settings()

@@ -1,5 +1,17 @@
 # Orchestrator: Routing, Permissions & State
 
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** The skill materialization model
+> described in §4.6–§4.10 has been superseded by the **immutable canonical skill
+> store + workspace symlink architecture**. The legacy wholesale-copy model
+> (``_WHOLESALE_DUMP_ENABLED``, ``_copy_skills_tree``, ``refresh_session_skills``,
+> direct copy/injection helpers) is REMOVED as an executable path. See
+> ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
+> for the current canonical model. All skill delivery now routes through
+> ``materialize_workspace_skills``, which creates validated relative symlinks to
+> daemon-owned immutable hash-addressed canonical packages. **macOS (darwin) only**;
+> Linux and Windows fail closed. The legacy sections below are preserved for
+> historical reference.
+
 The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 
 ---
@@ -982,23 +994,17 @@ set-executor). Before THR-070, live agents' on-disk skill bodies froze until
 the next lifecycle event — an edit to a skill in the bundle would not reach a
 running agent.
 
-**Phase-4 cutover (THR-055).** The session-time wholesale refresh and the
-bootstrap ``_copy_skills`` wholesale copy are BOTH gated behind the reversible
-``_WHOLESALE_DUMP_ENABLED`` flag (default ``False`` in
-``workspace_adapters.py``). The flag gates two code paths:
-- **Session-time:** ``refresh_session_skills`` — called on every session
-  creation to re-copy the bundled ``protocol/skills/`` tree into
-  ``.claude/skills/`` and ``.agents/skills/``.
-- **Bootstrap:** ``_copy_skills`` in the three executor adapters
-  (``ClaudeWorkspaceAdapter``, ``CodexWorkspaceAdapter``,
-  ``OpencodeWorkspaceAdapter``) — called from ``ensure_workspace_ready`` at
-  lifecycle events (init-agent, set-executor).
-
-When the flag is ``False`` (the cutover default), neither code path copies
-skills. The explicit injection paths — ``inject_system_contracts`` (§4.7) and
-``inject_managed_skills`` (§4.10) — are the SOLE skill-delivery mechanism.
-The flag can be set to ``True`` for rollback to the legacy wholesale-dump
-model without a code revert.
+**Phase-4 cutover (THR-055, COMPLETED).** The session-time wholesale refresh
+(``refresh_session_skills``) and the bootstrap ``_copy_skills`` wholesale copy
+in the three executor adapters (``ClaudeWorkspaceAdapter``,
+``CodexWorkspaceAdapter``, ``OpencodeWorkspaceAdapter``) are PERMANENTLY REMOVED
+as executable paths. The former ``_WHOLESALE_DUMP_ENABLED`` toggle flag is
+also removed from source — it cannot be set, re-enabled, or used for
+rollback. The canonical skill store + workspace symlink architecture
+is the sole delivery path. The explicit injection paths —
+``inject_system_contracts`` (§4.7) and ``inject_managed_skills`` (§4.10) —
+deliver skills exclusively through the canonical store, never through a
+copy path.
 
 **Protocol doc manifest.** Protocol ``.md`` docs (the files in
 ``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
@@ -1012,35 +1018,32 @@ This replaces the legacy model where agents read protocol docs from the
 ``repos/happyranch/protocol/`` clone (which was fresh only at
 once-per-session git-pull).
 
-**Session-path coverage.** The five materialization callers that inject the
+**Session-path coverage.** The six materialization callers that inject the
 manifest and refresh skills are:
 1. ``Orchestrator._run_agent`` (task/subtask) — ``TASK`` context
 2. ``wake_runner.run_wake`` (working-hours wake) — ``WAKE`` context
 3. ``thread_runner.run_invocation`` (thread reply/bootstrap) — ``THREAD`` context
 4. ``dream_runner.run_dream`` (private dream) — ``DREAM`` context
-5. ``schedule_runner.run_schedule_fire`` (schedule fire) — ``TASK`` context
+5. ``schedule_runner.run_schedule_fire`` (schedule fire) — ``SCHEDULE`` context
 
 Additionally, the **executor-switch/bootstrap** path (set-executor route in
-``runtime/daemon/routes/agents.py`` + adapter ``_copy_skills`` in
-``workspace_adapters.py``) is a sixth writer: when ``_WHOLESALE_DUMP_ENABLED``
-is ``True``, the three adapter wholesale copies (Claude ``.claude/skills/``,
-Codex/Opencode ``.agents/skills/``) run under the same process-local workspace
-lock (§4.6.1).
+``runtime/daemon/routes/agents.py``) materializes a single full-expected-spec
+union from all six session contexts (task, thread, wake, dream, schedule,
+bootstrap) before switch/launch. The legacy ``_copy_skills`` copy is permanently
+removed; no ``_WHOLESALE_DUMP_ENABLED`` flag remains.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
-materialization for a given agent workspace — wholesale refresh (when
-``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
-on-disk verification, and managed-skill injection — runs inside a single
-unified transaction (``materialize_workspace_skills``) protected by a
-process-local ``threading.RLock`` keyed by the canonical (resolved) workspace
-path. The adapter ``_copy_skills`` bootstrap writers and the executor-switch
-route also participate in this lock. Concurrent task, thread, wake, dream,
-schedule, and bootstrap callers targeting the same workspace serialize their
-complete pre-spawn materialization so they never overlap inside
-``_copy_skills_tree``'s predictable ``.tmp.<name>`` cleanup/write/replace
-window. The lock is **process-local only** — it does not coordinate across
-daemon processes. Cross-process protection for the same agent workspace relies
-on the daemon's per-agent concurrency ceiling.
+materialization for a given agent workspace — system-contract injection +
+on-disk verification, managed-skill injection, and lifecycle-ledger injection
+— runs inside a single unified transaction (``materialize_workspace_skills``)
+protected by a process-local ``threading.RLock`` keyed by the canonical
+(resolved) workspace path. The legacy wholesale copy and its former
+``_WHOLESALE_DUMP_ENABLED`` flag are permanently removed. Concurrent task,
+thread, wake, dream, schedule, and bootstrap callers targeting the same
+workspace serialize their complete pre-spawn materialization. The lock is
+**process-local only** — it does not coordinate across daemon processes.
+Cross-process protection for the same agent workspace relies on the daemon's
+per-agent concurrency ceiling.
 
 Per-file ``os.replace`` reader safety is preserved: a concurrent reader always
 sees either the complete old or complete new skill file, never a half-written
@@ -1066,44 +1069,36 @@ on session/context type. They are defined in the single-source-of-truth module
 catalog (they are NOT displayed by ``skills catalog list`` and are never
 manager-toggleable).
 
-**Injection model (Phase 4 — CUT OVER).** On EVERY session creation,
-``inject_system_contracts`` and ``inject_managed_skills`` (see §4.10) are the
-SOLE skill-injection paths. The wholesale ``protocol/skills/`` dump is DISABLED
-through TWO code paths, both gated behind the reversible
-``_WHOLESALE_DUMP_ENABLED = False`` flag in ``workspace_adapters.py``:
-
-1. **Session-time** — ``refresh_session_skills`` (called on every session
-   creation) is a no-op when the flag is ``False``.
-2. **Bootstrap** — ``_copy_skills`` in the three executor adapters
-   (Claude, Codex, Opencode), called from ``ensure_workspace_ready`` at
-   lifecycle events, is a no-op when the flag is ``False``.
-
-Both gates prevent the wholesale copy of ALL 8 ``protocol/skills/``
-directories (including the 3 managed-catalog skills) into the workspace.
-A freshly-bootstrapped workspace receives NO skills from the wholesale path;
-skills are delivered exclusively through the explicit injection paths. The
-completeness of this delivery model is proven by the contract-completeness
-guard test in ``test_skill_cutover_completeness.py``.
+**Injection model (Phase 4 — CUT OVER / REMOVED).** The wholesale
+``protocol/skills/`` dump and its former ``_WHOLESALE_DUMP_ENABLED`` gate
+are permanently removed from source. The explicit injection paths —
+``inject_system_contracts`` (§4.7) and ``inject_managed_skills`` (§4.10) —
+route through the canonical skill store + workspace symlink architecture.
+All skill delivery now goes through ``materialize_workspace_skills``, which
+creates validated relative symlinks to daemon-owned immutable hash-addressed
+canonical packages.
 
 **Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
 ADDITIVELY alongside the wholesale dump. This was the safety net proved correct
 in the guard test, then removed in Phase 4.
 
-**Context-exposure predicates** (``SessionContext`` enum):
+**Context-exposure predicates** (``SessionContext`` enum — 6 contexts):
 
-| Contract | TASK | THREAD | WAKE | DREAM | Requires repos? |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| ``start-task`` | ✓ | | ✓ | | no |
-| ``jobs`` | ✓ | ✓ | ✓ | ✓ | no |
-| ``make-worktree`` | ✓ | ✓ | ✓ | ✓ | yes |
-| ``thread`` | ✓ | ✓ | ✓ | | no |
-| ``dream`` | | | | ✓ | no |
+| Contract | TASK | THREAD | WAKE | DREAM | SCHEDULE | BOOTSTRAP | Requires repos? |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| ``start-task`` | ✓ | | ✓ | | ✓ | | no |
+| ``jobs`` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| ``make-worktree`` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | yes |
+| ``thread`` | ✓ | ✓ | ✓ | | ✓ | ✓ | no |
+| ``dream`` | | | | ✓ | | | no |
 
 **Session-context mapping:**
 - ``TASK`` — ``Orchestrator._run_agent`` (ordinary task/subtask session)
 - ``THREAD`` — ``thread_runner.run_invocation`` (thread reply/bootstrap)
 - ``WAKE`` — ``wake_runner.run_wake`` (working-hours wake / task-followup)
 - ``DREAM`` — ``dream_runner.run_dream`` (scheduled dream)
+- ``SCHEDULE`` — ``schedule_runner.run_schedule_fire`` (schedule fire)
+- ``BOOTSTRAP`` — executor-switch / set-executor lifecycle event
 
 **Repo-capability check.** ``make-worktree`` is gated on the agent workspace
 having at least one cloned git repository under ``repos/``. Agents with no
@@ -1204,10 +1199,9 @@ unrelated config survives byte-for-byte. It is gated by a durable
 
 **Delivery model.** ``reflection`` is delivered exclusively through the managed-skill
 policy injection path (``inject_managed_skills``, see §4.10) — the legacy wholesale
-``protocol/skills/`` dump is disabled by default (``_WHOLESALE_DUMP_ENABLED = False``
-in ``workspace_adapters.py``). The ``SKILL.md`` body lives in
-``runtime/skills/reflection/`` (the managed catalog), with a backup copy in
-``protocol/skills/reflection/`` as a reversible safety net. Universal delivery is
+``protocol/skills/`` dump is permanently removed (the former
+``_WHOLESALE_DUMP_ENABLED`` flag is absent from source). The ``SKILL.md`` body
+lives in ``runtime/skills/reflection/`` (the managed catalog). Universal delivery is
 proven by the contract-completeness guard test (``test_skill_cutover_completeness.py``).
 
 **Fences.** ``reflection`` does not:
@@ -1263,22 +1257,17 @@ execution. ``manage-agent`` and ``manage-repo`` command access remains
 separately governed by allow_rules / daemon auth per the existing permission
 model (§3). The policy model is additive and permission-inert.
 
-**Phase-3 additive constraint.** The ``manage-agent`` and ``manage-repo``
-SKILL.md bodies also remain in ``protocol/skills/manage-agent/`` and
-``protocol/skills/manage-repo/`` so that the existing wholesale-dump path
-(``refresh_session_skills``) continues to deliver them to all agents as a
-safety net. Physical removal from the always-injected set is a Phase-4
-change gated on a completeness test proving catalog resolution delivers the
-full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
-registered and eligibility is scoped; the wholesale dump is untouched.
+**Phase-3 (HISTORICAL — superseded by completed Phase-4 cutover).** During
+Phase 3 the managed-catalog entries were registered and eligibility was
+scoped while the ``protocol/skills/`` directory still existed as a
+wholesale-dump safety net. This transitional state is now obsolete.
 
-**Phase-4 cutover (COMPLETED).** The wholesale ``protocol/skills/`` dump is
-disabled through both paths — session-time ``refresh_session_skills`` and
-bootstrap ``_copy_skills`` in the three executor adapters — gated behind
-``_WHOLESALE_DUMP_ENABLED = False``. The 8 ``protocol/skills/`` directories
-remain on disk as a packaged safety net (re-enable with the flag) but are
-no longer copied into workspaces. The ``SKILL.md`` source of truth for the
-3 managed-catalog skills lives in ``runtime/skills/<id>/``. See §4.6 and
+**Phase-4 cutover (COMPLETED / REMOVED).** The wholesale ``protocol/skills/``
+dump and its former ``_WHOLESALE_DUMP_ENABLED`` flag are permanently removed
+from source. The 8 ``protocol/skills/`` directories remain on disk only as
+packaged source material for the system-contract injection path — they are
+never copied into workspaces. The ``SKILL.md`` source of truth for the 3
+managed-catalog skills lives in ``runtime/skills/<id>/``. See §4.6 and
 §4.10 for the full delivery model.
 
 **Fences.** Phase 3 does not:
@@ -1320,16 +1309,11 @@ context-aware ($4.7).
 injected. The catalog gate (presence + enabled) is independent of the
 eligibility gate — both must pass.
 
-**Reversible gate.** The wholesale dump is disabled by default
-(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). This
-gates TWO code paths — the session-time ``refresh_session_skills`` and the
-bootstrap-time ``_copy_skills`` in the three executor adapters
-(Claude, Codex, Opencode). Setting the flag to ``True`` re-enables the
-legacy wholesale dump through both paths without a code revert.
-
-The ``protocol/skills/`` directories remain on disk as packaged source
-material for the system-contract injection path and as a reversion safety
-net. They are NOT deleted — only the copy-into-workspace step is gated.
+**No config rollback gate.** The former ``_WHOLESALE_DUMP_ENABLED`` flag in
+``workspace_adapters.py`` is permanently removed — there is no re-enable
+path. The wholesale copy is unreachable. The ``protocol/skills/`` directories
+remain on disk as packaged source material for the system-contract injection
+path and are never deleted.
 
 **Coverage.** The contract-completeness guard test
 (``test_skill_cutover_completeness.py``) proves that every agent (7) × every
@@ -1342,7 +1326,7 @@ complete required set without the wholesale dump. The test asserts:
 - ``dream`` is excluded from non-dream contexts.
 - ``make-worktree`` is repo-gated.
 
-**Session-path coverage.** ``inject_managed_skills`` is wired into all 5
+**Session-path coverage.** ``inject_managed_skills`` is wired into all 6
 session-creation callers via ``materialize_workspace_skills``:
 1. ``Orchestrator._run_agent`` (task/subtask) — resolves team via
    ``load_agent``.
@@ -1354,11 +1338,15 @@ session-creation callers via ``materialize_workspace_skills``:
    ``load_agent``.
 5. ``schedule_runner.run_schedule_fire`` (schedule fire) — resolves team
    via ``load_agent``.
+6. **Executor-switch / set-executor** — resolves team from ``agent_def``
+   and builds a SINGLE full-expected-spec union from all six contexts
+   before materialization (§4.6).
 
-When ``_WHOLESALE_DUMP_ENABLED`` is ``True``, the three executor adapter
-``_copy_skills`` bootstrap writers (Claude, Codex, Opencode) and the
-set-executor route's all-context materialization also participate in the
-same process-local workspace lock (§4.6.1).
+**No config rollback gate.** The former ``_WHOLESALE_DUMP_ENABLED`` flag is
+absent from source — there is no "set to True" escape hatch. The executor
+adapter ``_copy_skills`` bootstrap writers and the set-executor route both
+participate in the same process-local workspace lock (§4.6.1) through the
+canonical skill store + symlink materialization path.
 
 **Fences.** Phase 4 does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)
