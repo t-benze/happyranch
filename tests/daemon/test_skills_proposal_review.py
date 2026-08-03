@@ -2022,9 +2022,18 @@ class TestMandatoryValidatorVersion:
         assert val_events[-1].metadata.get("content_hash") == pkg.content_hash
 
 
-class TestValidatorKeyNormalizationRoutes:
-    """Both legacy validate route and v2 validate_proposal route normalize
-    blank/whitespace validator_key to the mandatory nonblank validator_version."""
+class TestValidatorKeyNormalization:
+    """Coverage of validator_key normalization across the legacy HTTP validate
+    route and the direct-service validate_proposal method.
+
+    The legacy POST /validate route supplies ``LEGACY/1.0.0`` as both
+    ``validator_version`` and ``validator_key`` (hardcoded in the route).
+    The v2 HTTP route (POST /proposals/{version_id}/validate) does NOT
+    accept a caller-supplied ``validator_key`` — it always derives it from
+    the ``validator_version`` request field.  The two service-level tests
+    below exercise the direct ``SkillLifecycleService.validate_proposal``
+    method, which normalizes a blank, whitespace-only, or ``None``
+    ``validator_key`` arg to the supplied ``validator_version``."""
 
     def test_legacy_validate_whitespace_key_normalized(self, app, org_state):
         """Legacy POST /validate normalizes whitespace-only validator_key."""
@@ -2059,9 +2068,9 @@ class TestValidatorKeyNormalizationRoutes:
         assert meta.get("validator_version") == "LEGACY/1.0.0"
         assert meta.get("validator_key") == "LEGACY/1.0.0"
 
-    def test_v2_validate_blank_key_normalized(self, app, org_state):
-        """V2 POST /proposals/{id}/validate normalizes blank validator_key
-        to validator_version via validate_proposal service method."""
+    def test_service_validate_blank_key_normalized_to_version(self, app, org_state):
+        """Direct-service validate_proposal normalizes a blank/whitespace
+        validator_key to the supplied validator_version (no HTTP route involved)."""
         from runtime.skills.lifecycle import stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
@@ -2075,8 +2084,8 @@ class TestValidatorKeyNormalizationRoutes:
         )
         pkg = service.claim_proposal(db, "human", pkg.id, "founder")
 
-        # The v2 validate_proposal method now normalizes
-        # blank/whitespace validator_key to validator_version.
+        # Direct-service validate_proposal normalizes blank/whitespace
+        # validator_key to the supplied validator_version.
         pkg = service.validate_proposal(
             db=db, actor_kind="human", version_id=pkg.id,
             validator_version="THR-055/1.0.0",
@@ -2091,8 +2100,9 @@ class TestValidatorKeyNormalizationRoutes:
         assert meta.get("validator_version") == "THR-055/1.0.0"
         assert meta.get("validator_key") == "THR-055/1.0.0"  # Normalized
 
-    def test_v2_validate_none_key_normalized(self, app, org_state):
-        """V2 validate_proposal with None key falls back to version."""
+    def test_service_validate_none_key_normalized_to_version(self, app, org_state):
+        """Direct-service validate_proposal with None validator_key arg falls
+        back to the supplied validator_version (no HTTP route involved)."""
         from runtime.skills.lifecycle import stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
