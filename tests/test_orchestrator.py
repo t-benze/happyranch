@@ -2620,15 +2620,17 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
     ALL required system-contract sources BEFORE any canonical package build.
     A later missing source must not leave earlier package builds behind.
 
-    Proves:
-    - Preflight validates every mandatory source before any store.build_from_source
-    - production _compute_dir_hash and CanonicalSkillStore root used
-    - Known unrelated trusted package hashes preserved after failure
-    - Both workspace roots/files/link targets unchanged
-    - No executor.run call (zero launch)
-    - No task success/audit/config mutation
+    Strengthened TASK-4176 proof-gap repair:
+    - Real _build_executor spy proves executor.run is never invoked.
+    - Known unrelated trusted package seeded in same runner CanonicalSkillStore.
+    - Full canonical store snapshot (manifest/member/on-disk hashes).
+    - Both workspace roots (.claude/skills + .agents/skills) link targets.
+    - Workspace files, task status, audit-success state all verified.
+    - production _compute_dir_hash identity used throughout.
     """
     import shutil
+    import hashlib
+    from pathlib import Path
     from runtime.orchestrator.workspace_adapters import (
         SystemContractMaterializationError, _compute_dir_hash,
     )
@@ -2636,36 +2638,117 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     _setup_workspaces(test_runtime)
 
-    # Remove the LAST contract's source to prove preflight catches it.
-    # For TASK context, contracts are: start-task, jobs, make-worktree, thread.
-    # Remove 'thread' which comes alphabetically last.
     proto_skills = test_settings.get_protocol_dir() / "skills"
-    thread_dir = proto_skills / "thread"
-    assert thread_dir.exists(), "thread must exist before removal"
+    _setup_protocol_skills(test_settings)
 
-    # Compute trusted hashes for earlier contracts that must NOT be built.
+    # ── Seed a known unrelated trusted package in the runner's canonical ──
+    # store so we can prove it is fully untouched after the preflight failure.
+    store = CanonicalSkillStore(settings=test_settings)
+    trusted_pkg_dir = proto_skills / "jobs"  # known existing source
+    trusted_content_hash = _compute_dir_hash(trusted_pkg_dir)
+    store.build_from_source("jobs", "system", trusted_content_hash, trusted_pkg_dir)
+
+    # Snapshot the seeded package's manifest + member + on-disk hashes.
+    def _snapshot_package(pkg_root: Path) -> dict[str, str]:
+        """Snapshot manifest, members, and on-disk content hashes for a package."""
+        snap: dict[str, str] = {}
+        if not pkg_root.is_dir():
+            return snap
+        for fpath in sorted(pkg_root.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(pkg_root))
+                snap[rel] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        return snap
+
+    trusted_pkg_path = store.canonical_path("jobs", "system", trusted_content_hash)
+    trusted_snapshot_before = _snapshot_package(trusted_pkg_path)
+    assert len(trusted_snapshot_before) > 0, (
+        f"Trusted package must have content; path={trusted_pkg_path}"
+    )
+
+    # Full canonical store snapshot before failure.
+    def _snapshot_canonical_store(root: Path) -> dict[str, str]:
+        """Snapshot every entry path → on-disk hash."""
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_store(store.root)
+
+    # Compute trusted hashes for ALL contracts before failure.
     trusted_hashes_before: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes_before[cid] = _compute_dir_hash(d)
 
-    shutil.rmtree(thread_dir)
-    assert not thread_dir.exists(), "thread directory must be removed"
-
-    # Snapshot canonical store before failure
-    store = CanonicalSkillStore(settings=test_settings)
-    store_root_before = list(store.root.rglob("*")) if store.root.exists() else []
-
+    # ── Workshop workspace state ──────────────────────────────────────────
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
-    # Snapshot workspace state before failure
-    pre_claude_skills = eh_workspace / ".claude" / "skills"
-    pre_agents_skills = eh_workspace / ".agents" / "skills"
-    pre_claude_exists = pre_claude_skills.exists()
-    pre_agents_exists = pre_agents_skills.exists()
+    # Set up repos so make-worktree contract can be resolved.
+    (eh_workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
+    def _snapshot_workspace_root(ws: Path) -> dict[str, str | None]:
+        """Snapshot workspace: file hashes + symlink targets."""
+        snap: dict[str, str | None] = {}
+        if not ws.is_dir():
+            return snap
+        for p in sorted(ws.rglob("*")):
+            rel = str(p.relative_to(ws))
+            if p.is_symlink():
+                snap[rel] = f"link->{p.readlink()}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = None  # marker for directory
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace_root(eh_workspace)
+
+    # ── Snapshot task + audit state ───────────────────────────────────────
     task_id = orchestrator.create_task("ping")
+    task_before = orchestrator._db.get_task(task_id)
+    assert task_before is not None
+    assert task_before.status == TaskStatus.PENDING, (
+        f"Task must start as PENDING; got {task_before.status}"
+    )
+    audit_before = len(orchestrator._db.get_audit_logs(task_id))
 
+    # ── Concrete _build_executor spy with reachable executor.run ───────────
+    spy_control: dict[str, bool] = {"run_called": False}
+    from runtime.orchestrator.executors import ClaudeExecutor
+    _real_build = orchestrator._build_executor
+
+    def _spy_build_executor(provider: str):
+        real_exec = _real_build(provider)
+        # Wrap .run to trap any invocation as proof of no-early-fail.
+        original_run = real_exec.run
+        def _trap_run(*args, **kwargs):
+            spy_control["run_called"] = True
+            raise AssertionError(
+                "executor.run must not be invoked when preflight fails"
+            )
+        real_exec.run = _trap_run  # type: ignore[method-assign]
+        return real_exec
+
+    monkeypatch.setattr(
+        orchestrator, "_build_executor", _spy_build_executor,
+    )
+
+    # ── Remove 'thread' (last alphabetically in TASK context contracts) ───
+    thread_dir = proto_skills / "thread"
+    assert thread_dir.exists(), "thread must exist before removal"
+    shutil.rmtree(thread_dir)
+    assert not thread_dir.exists()
+
+    # ── Trigger the real missing-source failure ──
     with pytest.raises(SystemContractMaterializationError) as exc_info:
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
@@ -2674,29 +2757,47 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
         f"Error must name 'thread' as missing: {msg!r}"
     )
 
-    # ── Assert no canonical package was built for EARLIER contracts ──
-    # If preflight failed, NONE of the contracts should have been built.
-    for cid in ["start-task", "jobs", "make-worktree"]:
-        version = "system"
-        # Try all possible content hash prefix dirs
-        pkg_base = store.root / cid / version
-        if pkg_base.exists():
-            built_entries = list(pkg_base.iterdir())
-            assert len(built_entries) == 0, (
-                f"Canonical package {cid} was built despite preflight failure. "
-                f"Contents: {built_entries}"
-            )
-
-    # ── Assert workspace state unchanged ──
-    assert (eh_workspace / ".claude" / "skills").exists() == pre_claude_exists, (
-        ".claude/skills state must be unchanged after failed materialization"
-    )
-    assert (eh_workspace / ".agents" / "skills").exists() == pre_agents_exists, (
-        ".agents/skills state must be unchanged after failed materialization"
+    # ── executor.run never invoked ───────────────────────────────────────
+    assert spy_control["run_called"] is False, (
+        "executor.run must never be invoked when preflight fails; "
+        f"spy_control={spy_control}"
     )
 
-    # ── Trusted source hashes unchanged ──
-    # Re-create thread source to restore fixture state
+    # ── No canonical package was built for non-seeded contracts ──────────
+    # "jobs" was seeded by us — it should have exactly the seeded entry.
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+        pkg_base = store.root / cid / "system"
+        if cid == "jobs":
+            # Only the seeded package should exist
+            if pkg_base.exists():
+                built_entries = list(pkg_base.iterdir())
+                assert len(built_entries) == 1, (
+                    f"Seeded 'jobs' package must have exactly 1 entry; "
+                    f"got {built_entries}"
+                )
+        else:
+            if pkg_base.exists():
+                built_entries = list(pkg_base.iterdir())
+                assert len(built_entries) == 0, (
+                    f"Canonical package {cid} was built despite preflight failure. "
+                    f"Contents: {built_entries}"
+                )
+
+    # ── Canonical store fully unchanged (including trusted package) ───────
+    store_snapshot_after = _snapshot_canonical_store(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed preflight.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
+    )
+
+    trusted_snapshot_after = _snapshot_package(trusted_pkg_path)
+    assert trusted_snapshot_after == trusted_snapshot_before, (
+        f"Trusted package was mutated: "
+        f"before={set(trusted_snapshot_before)}, after={set(trusted_snapshot_after)}"
+    )
+
+    # ── Trusted source hashes unchanged ───────────────────────────────────
     for cid in ["start-task", "jobs", "make-worktree"]:
         if cid in trusted_hashes_before:
             current_hash = _compute_dir_hash(proto_skills / cid)
@@ -2704,6 +2805,36 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
                 f"Trusted hash for {cid} changed: "
                 f"{trusted_hashes_before[cid]} -> {current_hash}"
             )
+
+    # ── Workspace state fully unchanged ───────────────────────────────────
+    ws_snapshot_after = _snapshot_workspace_root(eh_workspace)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+    # ── Both workspace roots unchanged ────────────────────────────────────
+    for subdir in (".claude/skills", ".agents/skills"):
+        p = eh_workspace / subdir
+        assert p.exists() == (subdir in ws_snapshot_before or (
+            subdir + "/" in ws_snapshot_before
+        )), (
+            f"{subdir} existence changed after failure"
+        )
+
+    # ── Task status + audit unchanged (no session_start reached) ──────────
+    task_after = orchestrator._db.get_task(task_id)
+    assert task_after is not None
+    assert task_after.status == TaskStatus.PENDING, (
+        f"Task must stay PENDING after direct _run_agent failure; "
+        f"got {task_after.status}"
+    )
+    audit_after = len(orchestrator._db.get_audit_logs(task_id))
+    assert audit_after == audit_before, (
+        f"No audit rows must be added for task_id={task_id}; "
+        f"before={audit_before}, after={audit_after}"
+    )
 
 
 def test_preflight_context_union_raises_on_missing_source_executor_switch(
@@ -2715,14 +2846,16 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
     This exercises the executor-switch path through the real orchestrator
     materialize_workspace_skills_union entry point with six contexts.
 
-    Proves:
-    - Named SystemContractMaterializationError before any build
-    - No canonical packages built for ANY contract
-    - production _compute_dir_hash identity used
-    - Canonical store unchanged
-    - Workspace roots/files unchanged after failure
+    Strengthened TASK-4176 proof-gap repair:
+    - Full canonical store snapshot comparison (not just root existence).
+    - Both workspace roots (.claude/skills + .agents/skills) link + file state.
+    - Known trusted package manifests/members/on-disk hashes preserved.
+    - No mutation of canonical/package/link state whatsoever.
+    - production _compute_dir_hash identity used throughout.
     """
     import shutil
+    import hashlib
+    from pathlib import Path
     from runtime.orchestrator.workspace_adapters import (
         materialize_workspace_skills_union,
         SystemContractMaterializationError,
@@ -2731,20 +2864,48 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
     from runtime.skills.canonical_store import CanonicalSkillStore
 
     _setup_workspaces(test_runtime, ["dev_agent"])
-    # repos needed for make-worktree context check
     (test_runtime.workspaces_dir / "dev_agent" / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    # Ensure ALL six-context contract sources exist, then remove one
     proto_skills = test_settings.get_protocol_dir() / "skills"
     _setup_protocol_skills(test_settings, [
         "start-task", "jobs", "make-worktree", "thread", "dream",
     ])
 
-    # Remove dream — this is only required by DREAM context in the union.
-    dream_dir = proto_skills / "dream"
-    assert dream_dir.exists()
-    shutil.rmtree(dream_dir)
-    assert not dream_dir.exists()
+    # ── Seed a known unrelated trusted package in the canonical store ─────
+    store = CanonicalSkillStore(settings=test_settings)
+    trusted_pkg_dir = proto_skills / "jobs"
+    trusted_content_hash = _compute_dir_hash(trusted_pkg_dir)
+    store.build_from_source("jobs", "system", trusted_content_hash, trusted_pkg_dir)
+
+    def _snapshot_canonical_store(root: Path) -> dict[str, str]:
+        """Snapshot every entry path → on-disk hash."""
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_store(store.root)
+
+    def _snapshot_package(pkg_root: Path) -> dict[str, str]:
+        """Snapshot manifest, members, and on-disk content hashes."""
+        snap: dict[str, str] = {}
+        if not pkg_root.is_dir():
+            return snap
+        for fpath in sorted(pkg_root.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(pkg_root))
+                snap[rel] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        return snap
+
+    trusted_pkg_path = store.canonical_path("jobs", "system", trusted_content_hash)
+    trusted_snapshot_before = _snapshot_package(trusted_pkg_path)
 
     # Compute trusted hashes of surviving contracts
     trusted_hashes: dict[str, str] = {}
@@ -2753,11 +2914,31 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
         if d.exists():
             trusted_hashes[cid] = _compute_dir_hash(d)
 
-    # Snapshot canonical store
-    store = CanonicalSkillStore(settings=test_settings)
-    store_root_before = list(store.root.rglob("*")) if store.root.exists() else []
-
+    # ── Snapshot workspace state ──────────────────────────────────────────
     ws = test_runtime.workspaces_dir / "dev_agent"
+    def _snapshot_workspace_root(root: Path) -> dict[str, str | None]:
+        """Snapshot workspace: file hashes + symlink targets."""
+        snap: dict[str, str | None] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = f"link->{p.readlink()}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = None
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace_root(ws)
+
+    # ── Remove dream — only required by DREAM context in the union ────────
+    dream_dir = proto_skills / "dream"
+    assert dream_dir.exists()
+    shutil.rmtree(dream_dir)
+    assert not dream_dir.exists()
+
     skills_root = test_settings.project_root / "runtime" / "skills"
 
     with pytest.raises(SystemContractMaterializationError) as exc_info:
@@ -2776,19 +2957,51 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
         f"Error must name 'dream' as missing: {msg!r}"
     )
 
-    # ── No canonical packages were built ──
+    # ── No canonical packages were built for non-seeded contracts ──────────
     for cid in trusted_hashes:
         pkg_base = store.root / cid / "system"
-        if pkg_base.exists():
-            built = list(pkg_base.iterdir())
-            assert len(built) == 0, (
-                f"Canonical package {cid} was built despite preflight failure. "
-                f"Contents: {built}"
-            )
+        if cid == "jobs":
+            # Only the seeded package should exist
+            if pkg_base.exists():
+                built = list(pkg_base.iterdir())
+                assert len(built) == 1, (
+                    f"Seeded 'jobs' package must have exactly 1 entry; "
+                    f"got {built}"
+                )
+        else:
+            if pkg_base.exists():
+                built = list(pkg_base.iterdir())
+                assert len(built) == 0, (
+                    f"Canonical package {cid} was built despite preflight failure. "
+                    f"Contents: {built}"
+                )
 
-    # ── Trusted source hashes unchanged ──
+    # ── Full canonical store unchanged ────────────────────────────────────
+    store_snapshot_after = _snapshot_canonical_store(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed union preflight.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
+    )
+
+    # ── Trusted package completely untouched ──────────────────────────────
+    trusted_snapshot_after = _snapshot_package(trusted_pkg_path)
+    assert trusted_snapshot_after == trusted_snapshot_before, (
+        f"Trusted package was mutated: "
+        f"before={set(trusted_snapshot_before)}, after={set(trusted_snapshot_after)}"
+    )
+
+    # ── Trusted source hashes unchanged ───────────────────────────────────
     for cid, expected_hash in trusted_hashes.items():
         current = _compute_dir_hash(proto_skills / cid)
         assert current == expected_hash, (
             f"Trusted hash for {cid} changed: {expected_hash} -> {current}"
         )
+
+    # ── Workspace state fully unchanged (no link creation/deletion) ────────
+    ws_snapshot_after = _snapshot_workspace_root(ws)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed union materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )

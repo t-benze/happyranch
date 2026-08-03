@@ -2393,15 +2393,19 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     Exercises the REAL union (not mocked) with a missing dream contract
     (required by DREAM context in the six-context union).
 
-    Proves:
-    - HTTP 400 with named error code
-    - Canonical store unchanged (no packages built)
-    - agent.yaml unchanged
-    - agent .md frontmatter unchanged
-    - No bootstrap files written
-    - No audit row produced
+    Strengthened TASK-4176 proof-gap repair:
+    - Known trusted canonical packages + validated links in BOTH
+      .claude/skills + .agents/skills provider roots seeded before request.
+    - Full canonical store snapshot (manifest/member/on-disk hashes).
+    - Both provider-root link targets + non-link content compared.
+    - Workspace file assertions beyond bootstrap files.
+    - Audit-success state verified (no new rows).
+    - Executor config/frontmatter unchanged.
     """
     import shutil
+    import hashlib
+    import os as _os
+    from pathlib import Path
 
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
@@ -2409,6 +2413,68 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
     (workspace / "repos" / "test" / ".git").mkdir(parents=True)
     (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Seed validated links in BOTH provider roots BEFORE the request ────
+    # This lets us prove that neither root's links or non-link files change.
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    store = CanonicalSkillStore(settings=org_state.settings)
+
+    # Use the real protocol skills to build a canonical package for a
+    # trusted system contract (start-task) and create symlinks into
+    # BOTH .claude/skills and .agents/skills.
+    proto_skills_real = org_state.settings.get_protocol_dir() / "skills"
+    if (proto_skills_real / "start-task").is_dir():
+        from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+        trusted_hash = _compute_dir_hash(proto_skills_real / "start-task")
+        store.build_from_source(
+            "start-task", "system", trusted_hash,
+            proto_skills_real / "start-task",
+        )
+        # Create real symlink targets in both provider roots.
+        canonical_target = store.canonical_path(
+            "start-task", "system", trusted_hash,
+        )
+        for subdir in (".claude/skills", ".agents/skills"):
+            link_path = workspace / subdir / "start-task"
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            if not link_path.exists():
+                _os.symlink(
+                    _os.path.relpath(canonical_target, link_path.parent),
+                    link_path,
+                )
+
+    # ── Full canonical store snapshot (files + hashes, not just dirs) ─────
+    def _snapshot_canonical_full(root: Path) -> dict[str, str]:
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_full(store.root)
+
+    # ── Workspace snapshot: file bytes + symlink targets ──────────────────
+    def _snapshot_workspace(root: Path) -> dict[str, str]:
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = f"link->{_os.readlink(p)}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = "<dir>"
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace(workspace)
 
     # Remove a required system-contract source: dream (DREAM context).
     # Use a temp copy of protocol skills to avoid mutating the worktree.
@@ -2432,19 +2498,14 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
         lambda settings: _tmp_proto,
     )
 
-    # ── Snapshot canonical store before request ──
-    from runtime.skills.canonical_store import CanonicalSkillStore
-    store = CanonicalSkillStore(settings=org_state.settings)
-    store_entries_before: set[str] = set()
-    if store.root.exists():
-        for p in store.root.rglob("*"):
-            if p.is_dir():
-                store_entries_before.add(str(p.relative_to(store.root)))
-
     # Record pristine state
     agent_yaml_before = (workspace / "agent.yaml").read_text()
     agent_md_path = org_state.root / "agents" / "dev_agent.md"
     frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # ── Audit state before request ──
+    audit_before = org_state.db.get_audit_logs("dev_agent")
+    audit_count_before = len(audit_before)
 
     # ── Execute failing switch (NO mock — real union) ──
     from fastapi.testclient import TestClient
@@ -2472,15 +2533,12 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     if frontmatter_before is not None:
         assert agent_md_path.read_text() == frontmatter_before
 
-    # ── Canonical store unchanged ──
-    store_entries_after: set[str] = set()
-    if store.root.exists():
-        for p in store.root.rglob("*"):
-            if p.is_dir():
-                store_entries_after.add(str(p.relative_to(store.root)))
-    new_store_entries = store_entries_after - store_entries_before
-    assert len(new_store_entries) == 0, (
-        f"Canonical store was mutated by failed materialization: {new_store_entries}"
+    # ── Full canonical store unchanged ────────────────────────────────────
+    store_snapshot_after = _snapshot_canonical_full(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed materialization.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
     )
 
     # ── No bootstrap files from new executor ──
@@ -2489,3 +2547,37 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
         assert not (workspace / candidate).exists(), (
             f"Bootstrap file {candidate} should not exist after failed switch"
         )
+
+    # ── Workspace file + link state fully unchanged ───────────────────────
+    ws_snapshot_after = _snapshot_workspace(workspace)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+    # ── Both provider-root links preserved ────────────────────────────────
+    for subdir in (".claude/skills", ".agents/skills"):
+        sd = workspace / subdir
+        assert sd.exists() == (subdir + "/" in ws_snapshot_before), (
+            f"{subdir} existence changed after failure"
+        )
+        if sd.exists():
+            for entry in sorted(sd.iterdir()):
+                rel = str(entry.relative_to(workspace))
+                if entry.is_symlink():
+                    assert rel in ws_snapshot_before, (
+                        f"New symlink {rel} appeared after failure"
+                    )
+                    expected_target = ws_snapshot_before.get(rel, "")
+                    actual = f"link->{_os.readlink(entry)}"
+                    assert actual == expected_target, (
+                        f"Symlink {rel} target changed: "
+                        f"expected {expected_target}, got {actual}"
+                    )
+
+    # ── No new audit rows (no success claim) ──────────────────────────────
+    audit_after = org_state.db.get_audit_logs("dev_agent")
+    assert len(audit_after) == audit_count_before, (
+        f"Audit rows changed: before={audit_count_before}, after={len(audit_after)}"
+    )
