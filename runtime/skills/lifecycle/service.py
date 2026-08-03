@@ -485,8 +485,13 @@ class SkillLifecycleService:
 
         meta: dict = {"findings": findings or []}
         meta["validator_version"] = validator_version
-        if validator_key:
-            meta["validator_key"] = validator_key
+        # validator_key must be deterministically nonblank.
+        # An explicit nonblank key is used as-is. A whitespace-only
+        # key (or None/empty) is normalized to validator_version so
+        # the persisted metadata always carries a nonblank
+        # deterministic identifier.
+        if validator_key and validator_key.strip():
+            meta["validator_key"] = validator_key.strip()
         else:
             meta["validator_key"] = validator_version
         # Include immutable content_hash for reproducibility
