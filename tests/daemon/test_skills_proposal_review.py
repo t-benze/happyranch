@@ -1035,6 +1035,211 @@ class TestProposalDetailArtifactSafety:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Artifact integrity — adversarial regression
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProposalDetailArtifactIntegrity:
+    """Adversarial: overwritten artifacts must fail closed — never return
+    attacker-controlled bytes or fabricated member listings."""
+
+    def test_overwritten_skill_md_returns_null(self, app, org_state):
+        """Submit proposal → overwrite SKILL.md artifact via ArtifactStore →
+        detail endpoint returns null skill_md (hash mismatch).
+
+        Regresses: HIGH provenance flaw where get_proposal_detail returned
+        mutable ArtifactStore-selected SKILL.md bytes after authenticated
+        overwrite, while ledger content_hash still identified the
+        original immutable version.
+        """
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        original_md = "# Test Skill\n\nVerified immutable SKILL.md content."
+        data = _submit_agent_proposal(app, org_state, skill_md=original_md)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        # Before overwrite: detail returns canonical content
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+        assert before["skill_md"] == original_md
+        assert before["content_hash"] == data["content_hash"]
+        assert before["package_members"] is not None
+
+        # Access the ArtifactStore and locate the SKILL.md artifact key
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(before["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        skill_member = next(
+            m for m in manifest["members"] if m["path"] == "SKILL.md"
+        )
+        skill_key = skill_member["artifact_key"]
+
+        # Authenticated overwrite of the SKILL.md artifact
+        evil_content = b"# EVIL\n\nAttacker-controlled content overwritten via ArtifactStore.put()."
+        store.put(skill_key, evil_content)
+
+        # After overwrite: detail must fail closed — return null skill_md
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        assert after["skill_md"] is None, (
+            "Founder detail must NOT return overwritten SKILL.md bytes; "
+            "got attacker-controlled content instead of null"
+        )
+        # Remainder of the response must be truthful — ledger hash unchanged
+        assert after["content_hash"] == data["content_hash"]
+        assert after["content_artifact_key"] is not None
+        assert after["proposer_agent"] == "frontend_engineer"
+        assert after["proposal_task_id"] == "TASK-RV-001"
+        assert after["status"] == "proposed"
+        # package_members should still load from the valid manifest
+        assert after["package_members"] is not None
+
+    def test_overwritten_manifest_returns_null_skill_md(self, app, org_state):
+        """Overwrite the manifest artifact → skill_md AND package_members
+        are null because the manifest hash no longer matches the ledger."""
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+        assert before["skill_md"] is not None
+        assert before["package_members"] is not None
+
+        # Overwrite manifest with a forged version
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = before["content_artifact_key"]
+        forged = {
+            "schema_version": 1,
+            "skill_id": "hr:frontend-development",
+            "slug": "frontend-development",
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(b"evil").hexdigest(),
+                    "artifact_key": "attacker/controlled/path",
+                    "size_bytes": 4,
+                }
+            ],
+        }
+        store.put(manifest_key, json.dumps(forged).encode("utf-8"))
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        # Both must be null because the manifest hash is now wrong
+        assert after["skill_md"] is None, (
+            "skill_md must be null when manifest hash mismatches ledger content_hash"
+        )
+        assert after["package_members"] is None, (
+            "package_members must be null when manifest hash mismatches ledger content_hash"
+        )
+        # Provenance preserved
+        assert after["content_hash"] == data["content_hash"]
+        assert after["status"] == "proposed"
+
+    def test_overwritten_manifest_member_hash_mismatch(self, app, org_state):
+        """Alter the member's declared SHA-256 in the manifest (but keep the
+        artifact bytes correct) → the manifest hash changes, failing the
+        ledger content_hash check."""
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(before["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Tamper with the SKILL.md member hash
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = "sha256:" + hashlib.sha256(b"tampered").hexdigest()
+                break
+
+        # Write the tampered manifest back (its SHA-256 changes)
+        new_manifest_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(before["content_artifact_key"], new_manifest_bytes)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        assert after["skill_md"] is None
+        assert after["package_members"] is None
+
+    def test_detail_read_appends_no_events_on_overwrite(self, app, org_state):
+        """Overwriting an artifact and then reading the detail must NOT
+        produce any lifecycle events — it's a read-only operation."""
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Count events before
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        before_count = len(r.json()["events"])
+
+        # Overwrite the SKILL.md artifact
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(r.json()["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        skill_member = next(m for m in manifest["members"] if m["path"] == "SKILL.md")
+        store.put(skill_member["artifact_key"], b"overwritten")
+
+        # Read detail again — must still have same number of events
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert len(r.json()["events"]) == before_count, (
+            "Reading proposal detail must never append lifecycle events"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Concurrency marker protection
 # ═══════════════════════════════════════════════════════════════════════════
 

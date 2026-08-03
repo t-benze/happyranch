@@ -6,6 +6,7 @@ Provides a thin SQLite-backed persistence layer for the lifecycle service.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,18 +31,27 @@ def _load_skill_md_from_artifact(
 
     The content_artifact_key points to the manifest artifact (manifest.json).
     The manifest lists all package members (SKILL.md, references/, assets/)
-    with their own artifact keys. We locate the SKILL.md member and load
-    its content-addressed artifact.
+    with their own artifact keys and declared SHA-256 hashes.
+
+    Provenance chain (fail-closed at every step):
+    1. Load the manifest artifact bytes.
+    2. Verify SHA-256(manifest bytes) == ledger content_hash — proves the
+       manifest is the immutable proposal version, not an overwrite.
+    3. Locate the SKILL.md member, load its bytes, verify
+       SHA-256(member bytes) == member's declared hash — proves the
+       artifact bytes are the original content-addressed version.
 
     Returns the UTF-8 decoded SKILL.md content, or None for:
     - No artifact key (pre-artifact-store proposals)
     - Missing artifact (cleaned up / expired)
     - Malformed / unreadable artifact
     - No org_root (can't resolve artifact store)
+    - Manifest hash mismatch with ledger content_hash (overwritten/forged)
+    - Member hash mismatch with declared member hash (overwritten/forged)
     - Any exception during load
 
     Never fabricates bytes or exposes arbitrary paths — only loads from
-    the content-addressed artifact store key.
+    the content-addressed artifact store key after hash proof.
     """
     if not content_artifact_key or not org_root:
         return None
@@ -54,12 +64,21 @@ def _load_skill_md_from_artifact(
         org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
         store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
 
-        # Load manifest to find the SKILL.md artifact key
+        # Step 1: Load the manifest artifact bytes.
         manifest_raw = store.read(content_artifact_key)
+
+        # Step 2: Prove manifest content is the immutable proposal version.
+        # The ledger content_hash is SHA-256 of the canonical manifest.json.
+        # If the artifact has been overwritten, the hash won't match.
+        if content_hash:
+            computed_manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
+            if computed_manifest_hash != content_hash:
+                return None
+
         manifest = json.loads(manifest_raw.decode("utf-8"))
         members = manifest.get("members", [])
 
-        # Find the SKILL.md member
+        # Locate the SKILL.md member
         skill_md_member = None
         for m in members:
             if m.get("path") == "SKILL.md":
@@ -73,7 +92,16 @@ def _load_skill_md_from_artifact(
         if not skill_key:
             return None
 
+        # Step 3: Load SKILL.md bytes & prove they match the member's declared hash.
         raw = store.read(skill_key)
+
+        member_hash = skill_md_member.get("hash", "")
+        if member_hash.startswith("sha256:"):
+            expected_hex = member_hash[len("sha256:"):]
+            actual_hex = hashlib.sha256(raw).hexdigest()
+            if actual_hex != expected_hex:
+                return None
+
         return raw.decode("utf-8")
     except Exception:
         return None
@@ -81,6 +109,7 @@ def _load_skill_md_from_artifact(
 
 def _load_package_members_from_artifact(
     content_artifact_key: str | None,
+    content_hash: str | None,
     org_root: str | None,
 ) -> list[dict] | None:
     """Safely load package member listing from the manifest artifact.
@@ -89,7 +118,9 @@ def _load_package_members_from_artifact(
     package members (SKILL.md, references/, assets/) with paths, hashes,
     artifact keys, and sizes.
 
-    Returns the members list or None if unavailable.
+    Verifies the manifest's SHA-256 matches the ledger content_hash before
+    returning members. Returns None on any hash mismatch (overwritten/forged
+    artifact), missing key, malformed JSON, or load failure.
     """
     if not content_artifact_key or not org_root:
         return None
@@ -102,6 +133,13 @@ def _load_package_members_from_artifact(
         org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
         store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
         raw = store.read(content_artifact_key)
+
+        # Prove manifest content is the immutable proposal version.
+        if content_hash:
+            computed = hashlib.sha256(raw).hexdigest()
+            if computed != content_hash:
+                return None
+
         manifest = json.loads(raw.decode("utf-8"))
         return manifest.get("members", [])
     except Exception:
@@ -882,9 +920,10 @@ def get_proposal_detail(db, version_id: int, org_root: str | None = None) -> dic
         org_root,
     )
 
-    # Safely load package member listing from manifest
+    # Safely load package member listing from manifest (hash-verified)
     package_members = _load_package_members_from_artifact(
         d.get("content_artifact_key"),
+        d.get("content_hash"),
         org_root,
     )
 
