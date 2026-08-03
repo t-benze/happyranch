@@ -1909,6 +1909,12 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
     materialize_workspace_skills path.  The executor is built and its
     run() method is spied on so zero calls is proof that materialization
     failure genuinely prevents launch.
+
+    Both the test-created CanonicalSkillStore and the runner's store are
+    bound to the SAME explicit canonical root via HAPPYRANCH_CANONICAL_STORE_ROOT,
+    so unsafe-reuse/materialization assertions genuinely exercise
+    is_built, verify_package, and SymlinkMaterializer rejection against
+    the failed runner packages (not a separate empty store).
     """
 
     def test_source_runner_dual_failure_no_executor_launch(
@@ -1921,12 +1927,18 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         and compensation failure so the runner's materialize_workspace_skills
         (called from _run_agent) fails with compensation_failed.
 
+        The test store and the runner's store are bound to the SAME explicit
+        canonical root, so unsafe-reuse assertions exercise the runner's
+        actual failed packages through is_built, verify_package, and
+        SymlinkMaterializer for BOTH .claude/skills and .agents/skills.
+
         Proves:
         - Task is terminal FAILED with named failure in note
         - Mock executor run() is NEVER called (0 calls)
         - No workspace skill link under .claude/skills or .agents/skills
         - Trusted package hashes unchanged
-        - Unsafe package rejected by reuse and materialization gates
+        - Unsafe package rejected by is_built, verify_package, and
+          SymlinkMaterializer on the SAME runner store
         - Fault stubs genuinely invoked
         """
         import hashlib
@@ -1940,8 +1952,18 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         from runtime.runtime import RuntimeDir
         from runtime.models import TaskStatus
 
+        # ── 0. Bind test store and runner store to SAME root ──────────
+        # The runner constructs CanonicalSkillStore(settings=settings)
+        # which resolves via _get_canonical_store_root → env var first.
+        # By setting HAPPYRANCH_CANONICAL_STORE_ROOT, both the test's
+        # explicit-root store and the runner's settings-derived store
+        # share the exact same canonical root.
+        canonical_root = tmp_path / "canonical-store"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
         # ── 1. Build a TRUSTED canonical package via build_from_source ──
-        store = CanonicalSkillStore(root=tmp_path / "canonical-store")
+        store = CanonicalSkillStore(root=canonical_root)
 
         trusted_src = tmp_path / "trusted-src"
         trusted_src.mkdir()
@@ -2121,9 +2143,12 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                 f"expected {expected_hash[:16]}..., got {actual[:16]}..."
             )
 
-        # ── 11. Unsafe package rejected by reuse and materialization ──
-        # After the runner's build_from_source fails with dual failure,
-        # the unsafe package must not be reusable.
+        # ── 11. Unsafe packages rejected on the SAME runner store ────
+        # The runner called build_from_source for system contracts inside
+        # the SAME canonical store root (bound via env var).  Every
+        # assertion below exercises the runner's actual failed packages,
+        # not a separate empty store.
+        materializer = SymlinkMaterializer(store)
         for sid in ["start-task", "jobs"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
@@ -2132,10 +2157,55 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     if (src_dir / "SKILL.md").exists()
                     else b"empty"
                 ).hexdigest()
-                # is_built must reject after dual failure
+
+                # (a) is_built must reject the unsafe runner package
                 assert not store.is_built(sid, "system", content_h), (
-                    f"{sid} must NOT be is_built() after dual failure"
+                    f"{sid} must NOT be is_built() on runner store "
+                    "after dual failure"
                 )
+
+                # (b) verify_package must reject the unsafe runner package
+                with pytest.raises(CanonicalStoreError) as ve:
+                    store.verify_package(sid, "system", content_h)
+                # After dual-failure (hardening + compensation cleanup),
+                # the package may be partially cleaned up. Accept any
+                # rejection code — all mean the unsafe package is not
+                # available for reuse.
+                assert ve.value.code in (
+                    "insufficient_hardening", "ownership_violation",
+                    "not_found", "package_missing",
+                ), (
+                    f"verify_package must reject {sid} on runner store, "
+                    f"got {ve.value.code}"
+                )
+
+                # (c) SymlinkMaterializer rejects for BOTH roots
+                for subdir in [".claude/skills", ".agents/skills"]:
+                    with pytest.raises(
+                        SymlinkMaterializationError, match="canonical_missing"
+                    ):
+                        materializer.materialize_skill(
+                            sid, "system", content_h, workspace, subdir,
+                        )
+
+                    # No link created in either root.
+                    # The start-task readiness marker is a regular
+                    # directory pre-created by the test harness, not
+                    # a symlink materialized by the runner — tolerate
+                    # its existence in .claude/skills.
+                    link_path = workspace / subdir / sid
+                    if sid == "start-task" and subdir == ".claude/skills":
+                        # Readiness marker: assert it's NOT a symlink
+                        assert not link_path.is_symlink(), (
+                            f"start-task must NOT be a symlink at "
+                            f"{link_path}"
+                        )
+                    else:
+                        assert not link_path.exists(
+                            follow_symlinks=False), (
+                            f"Link must NOT exist at {link_path} "
+                            "after materialization failure"
+                        )
 
     def test_manifest_runner_dual_failure_no_executor_launch(
         self, tmp_path, monkeypatch,
@@ -2148,12 +2218,18 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         runner's materialize_workspace_skills (called from _run_agent) fails
         with compensation_failed.
 
+        The test store and the runner's store are bound to the SAME explicit
+        canonical root, so unsafe-reuse assertions exercise the runner's
+        actual failed packages through is_built, verify_package, and
+        SymlinkMaterializer for BOTH .claude/skills and .agents/skills.
+
         Proves:
         - Task is terminal FAILED with named failure in note
         - Mock executor run() is NEVER called (0 calls)
         - No workspace skill link under .claude/skills or .agents/skills
         - Trusted manifest member hashes and file hashes unchanged
-        - Unsafe package rejected by reuse and materialization gates
+        - Unsafe package rejected by is_built, verify_package, and
+          SymlinkMaterializer on the SAME runner store
         - Fault stubs genuinely invoked
         """
         import hashlib
@@ -2168,8 +2244,18 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         from runtime.runtime import RuntimeDir
         from runtime.models import TaskStatus
 
+        # ── 0. Bind test store and runner store to SAME root ──────────
+        # The runner constructs CanonicalSkillStore(settings=settings)
+        # which resolves via _get_canonical_store_root → env var first.
+        # By setting HAPPYRANCH_CANONICAL_STORE_ROOT, both the test's
+        # explicit-root store and the runner's settings-derived store
+        # share the exact same canonical root.
+        canonical_root = tmp_path / "canonical-store"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
         # ── 1. Build a TRUSTED manifest-based canonical package ────────
-        store = CanonicalSkillStore(root=tmp_path / "canonical-store")
+        store = CanonicalSkillStore(root=canonical_root)
 
         trusted_artifact_store = MagicMock()
         trusted_skill_bytes = b"# Trusted Manifest Skill\n"
@@ -2373,7 +2459,12 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                 f"expected {expected_hash[:16]}..., got {actual[:16]}..."
             )
 
-        # ── 12. Unsafe package rejected by reuse and materialization ──
+        # ── 12. Unsafe packages rejected on the SAME runner store ────
+        # The runner called build_from_source for system contracts inside
+        # the SAME canonical store root (bound via env var).  Every
+        # assertion below exercises the runner's actual failed packages,
+        # not a separate empty store.
+        materializer = SymlinkMaterializer(store)
         for sid in ["start-task", "jobs"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
@@ -2382,6 +2473,47 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     if (src_dir / "SKILL.md").exists()
                     else b"empty"
                 ).hexdigest()
+
+                # (a) is_built must reject the unsafe runner package
                 assert not store.is_built(sid, "system", content_h), (
-                    f"{sid} must NOT be is_built() after dual failure"
+                    f"{sid} must NOT be is_built() on runner store "
+                    "after dual failure"
                 )
+
+                # (b) verify_package must reject the unsafe runner package
+                with pytest.raises(CanonicalStoreError) as ve:
+                    store.verify_package(sid, "system", content_h)
+                assert ve.value.code in (
+                    "insufficient_hardening", "ownership_violation",
+                    "not_found", "package_missing",
+                ), (
+                    f"verify_package must reject {sid} on runner store, "
+                    f"got {ve.value.code}"
+                )
+
+                # (c) SymlinkMaterializer rejects for BOTH roots
+                for subdir in [".claude/skills", ".agents/skills"]:
+                    with pytest.raises(
+                        SymlinkMaterializationError, match="canonical_missing"
+                    ):
+                        materializer.materialize_skill(
+                            sid, "system", content_h, workspace, subdir,
+                        )
+
+                    # No link created in either root.
+                    # The start-task readiness marker is a regular
+                    # directory pre-created by the test harness, not
+                    # a symlink materialized by the runner.
+                    link_path = workspace / subdir / sid
+                    if sid == "start-task" and subdir == ".claude/skills":
+                        # Readiness marker: assert it's NOT a symlink
+                        assert not link_path.is_symlink(), (
+                            f"start-task must NOT be a symlink at "
+                            f"{link_path}"
+                        )
+                    else:
+                        assert not link_path.exists(
+                            follow_symlinks=False), (
+                            f"Link must NOT exist at {link_path} "
+                            "after materialization failure"
+                        )
