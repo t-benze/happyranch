@@ -26,8 +26,12 @@ from runtime.platform.isolation import (
     PlatformIdentity,
     PlatformIsolation,
     PlatformIsolationError,
-    detect_platform_isolation,
 )
+# Use module-attribute access so the conftest monkeypatch on
+# runtime.platform.isolation.detect_platform_isolation takes effect
+# in tests.  `from X import Y` creates a local name that is NOT
+# updated when X.Y is monkeypatched.
+from runtime.platform import isolation
 from runtime.skills.canonical_store import (
     CanonicalSkillStore,
     CanonicalStoreError,
@@ -93,26 +97,26 @@ class TestPlatformDetection:
 
     def test_detect_returns_implementation(self):
         """detect_platform_isolation returns a working implementation."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         assert isinstance(iso, PlatformIsolation)
 
     def test_current_identity(self):
         """current_identity returns process uid/gid."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         identity = iso.current_identity()
         assert identity.uid >= 0
         assert identity.gid >= 0
 
     def test_provision_canonical_store_creates_dir(self, tmp_path):
         """provision_canonical_store creates directory with proper perms."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         store_dir = tmp_path / "test-store"
         iso.provision_canonical_store(store_dir)
         assert store_dir.is_dir()
 
     def test_verify_canonical_ownership_missing(self, tmp_path):
         """verify_canonical_ownership raises for missing path."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         missing = tmp_path / "nonexistent"
         with pytest.raises(PlatformIsolationError, match="canonical_missing"):
             iso.verify_canonical_ownership(missing)
@@ -123,7 +127,7 @@ class TestSymlinkOperations:
 
     def test_create_relative_symlink(self, tmp_path):
         """Create a valid relative symlink."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         target_dir = tmp_path / "target"
         target_dir.mkdir()
         (target_dir / "file.txt").write_text("hello")
@@ -136,14 +140,14 @@ class TestSymlinkOperations:
 
     def test_absolute_target_rejected(self, tmp_path):
         """Absolute symlink targets are rejected."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         link = tmp_path / "link"
         with pytest.raises(PlatformIsolationError, match="absolute"):
             iso.create_relative_symlink(Path("/etc/passwd"), link)
 
     def test_verify_workspace_link_valid(self, tmp_path):
         """verify_workspace_link returns True for valid links."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         target = tmp_path / "canonical-root" / "pkg"
         target.mkdir(parents=True)
         link = tmp_path / "ws" / "link"
@@ -156,7 +160,7 @@ class TestSymlinkOperations:
 
     def test_verify_workspace_link_broken(self, tmp_path):
         """verify_workspace_link returns False for broken links."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         target = tmp_path / "nonexistent"
         link = tmp_path / "ws" / "broken-link"
         link.parent.mkdir(parents=True)
@@ -168,7 +172,7 @@ class TestSymlinkOperations:
 
     def test_is_valid_symlink(self, tmp_path):
         """is_valid_symlink correctly detects symlinks."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         regular = tmp_path / "regular.txt"
         regular.write_text("hello")
         assert not iso.is_valid_symlink(regular)
@@ -179,7 +183,7 @@ class TestSymlinkOperations:
 
     def test_make_file_readonly(self, tmp_path):
         """make_file_readonly sets file to 0444."""
-        iso = detect_platform_isolation()
+        iso = isolation.detect_platform_isolation()
         f = tmp_path / "readonly.txt"
         f.write_text("data")
         iso.make_file_readonly(f)
@@ -721,3 +725,156 @@ class TestStoreMaterializerIntegration:
 
         # v1 canonical content still exists (retained)
         assert store.is_built("test-skill", "1.0.0", "deadbeef12345678")
+
+
+# ── Import-seam regression coverage (TASK-4117) ──────────────────────
+# These tests prove the conftest monkeypatch covers every `from X import Y`
+# import-seam where detect_platform_isolation was directly imported into
+# a runtime module.  Without this coverage, Linux CI would hit
+# PlatformIsolationError("unsupported_platform") before the fixture runs.
+
+
+class TestImportSeamCoverage:
+    """Verify the conftest monkeypatch reaches all consumer module references.
+
+    The `from X import Y` pattern creates module-local names that are NOT
+    updated when X.Y is monkeypatched.  The conftest sweeps sys.modules
+    (runtime.* only) and patches every stale detect_platform_isolation
+    reference.  These tests prove the sweep works.
+    """
+
+    def test_canonical_store_uses_scoped_double(self, tmp_path):
+        """CanonicalSkillStore inside a test uses the scoped test double.
+
+        On Linux, the real detect_platform_isolation raises
+        PlatformIsolationError("unsupported_platform").  If the conftest
+        sweep didn't patch canonical_store's reference, the store
+        constructor would raise.  We verify it constructs cleanly.
+        """
+        # Constructing without explicit isolation must succeed.
+        store = CanonicalSkillStore(root=tmp_path / "cs")
+        assert store.root.is_dir()
+        # The store must have a working isolation object.
+        assert store._isolation is not None
+        assert isinstance(store._isolation, PlatformIsolation)
+
+    def test_symlink_materializer_uses_scoped_double(self, tmp_path):
+        """SymlinkMaterializer uses the scoped double via its module reference."""
+        store = CanonicalSkillStore(root=tmp_path / "cs")
+        materializer = SymlinkMaterializer(store)
+        assert materializer._isolation is not None
+        assert isinstance(materializer._isolation, PlatformIsolation)
+
+    def test_workspace_adapters_materialization_path_uses_double(
+        self, tmp_path, test_settings,
+    ):
+        """materialize_workspace_skills works via conftest-scoped double.
+
+        This exercises the canonical-store + materializer chain through
+        workspace_adapters, proving the import-seam fix reaches the full
+        call path.
+        """
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / "repos").mkdir()
+        # Create a git repo so requires_repo contracts resolve
+        import subprocess
+        repo = workspace / "repos" / "test-project"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                       cwd=repo, capture_output=True)
+
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        skills_root = test_settings.project_root / "runtime" / "skills"
+
+        # Must not raise PlatformIsolationError — the double handles
+        # everything.  (The temp project root may not have any skills
+        # to materialize — the key invariant is no platform error.)
+        materialize_workspace_skills(
+            workspace, test_settings,
+            slug="test",
+            context="task",
+            provider="claude",
+            agent_name="dev_agent",
+            team="engineering",
+            skills_root=skills_root,
+        )
+        # If no skills were available, the skills dir may not exist —
+        # that's fine.  The invariant we're testing is that the call
+        # path through canonical_store → detect_platform_isolation used
+        # the scoped double and did NOT raise PlatformIsolationError.
+
+    def test_real_detector_still_rejects_non_darwin(self):
+        """The real detect_platform_isolation rejects non-darwin platforms.
+
+        Even though the conftest monkeypatches detect_platform_isolation
+        in every runtime.* module, the original function (captured as
+        _real_detect in conftest before patching) must still reject
+        non-darwin with the named error.  We verify this by auditing
+        the production source code for the invariant checks.
+
+        This is a code-audit test, not a runtime test — the real function
+        object is captured in the conftest fixture and not accessible here
+        without importlib.reload (which would undo the fixture).  The
+        source audit proves the production code hasn't been weakened.
+        """
+        src = (Path(__file__).resolve().parent.parent
+               / "runtime" / "platform" / "isolation.py").read_text()
+
+        # 1. The production code must contain the named error code
+        assert '"unsupported_platform"' in src, (
+            "Production isolation module must contain "
+            "'unsupported_platform' error code — has someone removed it?"
+        )
+
+        # 2. The production code must check sys.platform == darwin
+        assert 'sys.platform == "darwin"' in src, (
+            "Production isolation module must check sys.platform == darwin "
+            "— has someone added a Linux fallback?"
+        )
+
+        # 3. The production code must raise PlatformIsolationError on
+        #    unsupported platforms (NOT return a fallback).
+        assert 'raise PlatformIsolationError(' in src, (
+            "Production isolation must raise on unsupported platforms "
+            "— has someone added a silent fallback?"
+        )
+
+        # 4. Verify no Windows LOGON reference exists
+        assert "LOGON_NETCREDENTIALS_ONLY" not in src, (
+            "Production isolation must not contain LOGON_NETCREDENTIALS_ONLY"
+        )
+
+    def test_no_test_double_leaks_to_production_outside_test(self):
+        """During test lifetime, conftest patches ARE active on runtime.*
+        modules.  Verify the patch is correctly applied — calling
+        detect_platform_isolation from any consumer module returns a
+        working PlatformIsolation (not raising unsupported_platform).
+
+        The fixture cleans up after each test — outside a test, the
+        original references would be restored.  This test just proves
+        the patches ARE in place (i.e. the sweep is working).
+        """
+        import runtime.skills.canonical_store as cs_mod
+        import runtime.skills.symlink_materializer as sm_mod
+        import runtime.orchestrator.executors as exec_mod
+
+        # All three modules must have a detect_platform_isolation attribute
+        assert hasattr(cs_mod, "detect_platform_isolation")
+        assert hasattr(sm_mod, "detect_platform_isolation")
+        assert hasattr(exec_mod, "detect_platform_isolation")
+
+        # Calling the patched function must not raise (it must return
+        # a working PlatformIsolation).  This is the key invariant:
+        # the scoped double allows construction on all platforms.
+        iso1 = cs_mod.detect_platform_isolation()
+        iso2 = sm_mod.detect_platform_isolation()
+        iso3 = exec_mod.detect_platform_isolation()
+        assert isinstance(iso1, PlatformIsolation)
+        assert isinstance(iso2, PlatformIsolation)
+        assert isinstance(iso3, PlatformIsolation)

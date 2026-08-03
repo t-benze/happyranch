@@ -34,6 +34,10 @@ from runtime.platform.isolation import (
     _resolve_executor_username,
     detect_platform_isolation,
 )
+# Module-attribute access so the conftest monkeypatch on
+# runtime.platform.isolation.detect_platform_isolation takes effect
+# for non-macOS-skipped tests that need the test double on Linux.
+from runtime.platform import isolation as _plat_iso  # noqa: E402
 from runtime.skills.canonical_store import CanonicalSkillStore
 from runtime.skills.symlink_materializer import SymlinkMaterializer
 
@@ -97,7 +101,7 @@ class TestUnifiedMaterializationPreservesSystemContracts:
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
         skills_root = test_settings.project_root / "runtime" / "skills"
 
-        isolation = detect_platform_isolation()
+        isolation = _plat_iso.detect_platform_isolation()
 
         materialize_workspace_skills(
             workspace, test_settings,
@@ -547,7 +551,7 @@ class TestSafeRepair:
         self, tmp_path: Path, test_settings: Settings,
     ):
         """create_relative_symlink raises if link_path is an ordinary directory."""
-        isolation = detect_platform_isolation()
+        isolation = _plat_iso.detect_platform_isolation()
         link_dir = tmp_path / "links"
         link_dir.mkdir()
         target = link_dir / "target"

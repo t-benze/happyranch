@@ -196,7 +196,24 @@ def _test_mode_platform_isolation(monkeypatch):
         "runtime.platform.isolation.detect_platform_isolation",
         _test_detect,
     )
-    # Also patch where it's imported in executors
+    # `from X import Y` creates module-local names that are NOT updated
+    # when X.Y is monkeypatched.  Sweep runtime.* modules for every
+    # detect_platform_isolation reference that still points at the
+    # original (_real_detect) and patch each one.  We deliberately
+    # exclude tests.* — test_canonical_production_bound needs the real
+    # detector for OS-provisioned-isolation tests (those are macOS-only
+    # and already skip on non-darwin).
+    for _mod_name, _mod in list(sys.modules.items()):
+        if not _mod_name.startswith("runtime."):
+            continue
+        try:
+            if getattr(_mod, "detect_platform_isolation", None) is _real_detect:
+                monkeypatch.setattr(
+                    f"{_mod_name}.detect_platform_isolation", _test_detect,
+                )
+        except Exception:
+            pass
+    # Explicit anchors for grep discoverability
     monkeypatch.setattr(
         "runtime.orchestrator.executors.detect_platform_isolation",
         _test_detect,
