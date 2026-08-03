@@ -1100,6 +1100,66 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(screen.getByText('Agents page')).toHaveAttribute('href', '../agents');
   });
 
+  test('ordinary Settings › Executors surface shows Custom CLIs and pending approvals with no visible adapter terminology', async () => {
+    server.use(
+      http.get('/api/v1/runtime/adapters', () =>
+        HttpResponse.json([
+          {
+            id: 'pending-cli-1',
+            name: 'pending-cli-1',
+            executable: '/usr/local/bin/pending-cli',
+            executable_hash:
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            version: '1.0.0',
+            capabilities: ['token_metering'],
+            contract_version: 1,
+            workspace_adapter: 'pi',
+            status: 'pending',
+            registered_at: '2024-01-01T00:00:00Z',
+            registered_by: 'test',
+            approved_at: null,
+            approved_by: null,
+            intended_profile_name: 'my-custom-cli',
+            eligibility: null,
+          },
+        ]),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            {
+              name: 'my-custom-cli',
+              command: 'my-custom-cli',
+              adapter: null,
+              workspace_adapter_id: null,
+              command_adapter_id: null,
+              adapter_id: null,
+              command_adapter: null,
+              present: true,
+              path: '/usr/local/bin/my-custom-cli',
+              envelope_policy: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Wait for both the Custom CLIs list and the pending approvals section.
+    await screen.findByTestId('profile-row-my-custom-cli');
+    await screen.findByTestId('pending-adapter-row-pending-cli-1');
+
+    const bodyText = document.body.textContent ?? '';
+
+    // The page surfaces the Custom CLIs management list and pending approvals.
+    expect(bodyText).toMatch(/Custom CLIs/i);
+    expect(bodyText).toMatch(/Pending CLI approvals/i);
+
+    // No ordinary founder-visible /adapter/i wording remains.
+    expect(bodyText).not.toMatch(/adapter/i);
+  });
+
   test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip)', async () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);

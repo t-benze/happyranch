@@ -76,10 +76,10 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     mockListAdapters();
     renderWithProviders(<PendingAdaptersSection />);
     await waitFor(() => {
-      expect(screen.getByText('Pending Adapter Approvals')).toBeInTheDocument();
+      expect(screen.getByText('Pending CLI approvals')).toBeInTheDocument();
     });
     expect(
-      screen.getByText(/Adapters awaiting founder approval/),
+      screen.getByText(/Custom CLIs awaiting founder approval/),
     ).toBeInTheDocument();
   });
 
@@ -138,7 +138,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     // Simulate infinite loading by omitting the mock — the query hangs
     server.use(http.get(API_BASE, () => new Promise(() => {})));
     renderWithProviders(<PendingAdaptersSection />);
-    expect(screen.getByText('Loading adapters…')).toBeInTheDocument();
+    expect(screen.getByText('Loading pending approvals…')).toBeInTheDocument();
   });
 
   test('error: shows error when list fails', async () => {
@@ -147,7 +147,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     );
     renderWithProviders(<PendingAdaptersSection />);
     await waitFor(() => {
-      expect(screen.getByText(/Could not load custom adapters/)).toBeInTheDocument();
+      expect(screen.getByText(/Could not load pending approvals/)).toBeInTheDocument();
     });
   });
 

@@ -101,7 +101,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
       if (err instanceof ApiError && err.status === 404) {
         refetchLists();
       } else {
-        setError(errMessage(err, 'Could not approve this adapter.'));
+        setError(errMessage(err, 'Could not approve this CLI.'));
       }
     }
   };
@@ -121,7 +121,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
       if (err instanceof ApiError && err.status === 404) {
         void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
       } else {
-        setError(errMessage(err, 'Could not reject this adapter.'));
+        setError(errMessage(err, 'Could not reject this CLI.'));
       }
     }
   };
@@ -177,7 +177,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
           <span className="font-mono">{adapter.version}</span>
         </p>
         <p className="text-text-muted text-xs">
-          Workspace adapter:{' '}
+          Workspace CLI:{' '}
           <span className="font-mono">{adapter.workspace_adapter}</span>
         </p>
         {adapter.capabilities.length > 0 && (
@@ -305,20 +305,20 @@ export function PendingAdaptersSection(): JSX.Element {
   return (
     <section className="space-y-3" data-testid="pending-adapters-section">
       <div>
-        <h3 className="text-text-primary text-sm font-semibold">Pending Adapter Approvals</h3>
+        <h3 className="text-text-primary text-sm font-semibold">Pending CLI approvals</h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Adapters awaiting founder approval. Approving a named adapter atomically
+          Custom CLIs awaiting founder approval. Approving a named custom CLI atomically
           approves and connects its profile in one action.
         </p>
       </div>
 
       {query.isLoading && (
-        <p className="text-text-secondary text-sm">Loading adapters…</p>
+        <p className="text-text-secondary text-sm">Loading pending approvals…</p>
       )}
 
       {query.isError && (
         <p className="text-feedback-danger text-sm" role="alert">
-          Could not load custom adapters.
+          Could not load pending approvals.
           {query.error?.message ? ` ${query.error.message}` : ''}
         </p>
       )}
