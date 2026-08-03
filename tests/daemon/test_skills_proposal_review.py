@@ -942,7 +942,7 @@ class TestProposalDetailArtifactSafety:
 
     def test_detail_no_artifact_store_returns_null_skill_md(self, app, org_state):
         """When org_root is not passed or artifact is missing, skill_md safely returns null."""
-        # This tests the code path where _load_skill_md_from_artifact gracefully
+        # This tests the code path where the provenance loader gracefully
         # returns None. We test by verifying that a valid proposal's detail works
         # even with null org_root passed to the stores layer.
         from runtime.skills.lifecycle import stores as lifecycle_stores
@@ -1102,8 +1102,10 @@ class TestProposalDetailArtifactIntegrity:
         assert after["proposer_agent"] == "frontend_engineer"
         assert after["proposal_task_id"] == "TASK-RV-001"
         assert after["status"] == "proposed"
-        # package_members should still load from the valid manifest
-        assert after["package_members"] is not None
+        # package_members must also be null — when SKILL.md bytes don't match
+        # the member's declared hash, both fields are absent from the
+        # same verified provenance snapshot
+        assert after["package_members"] is None
 
     def test_overwritten_manifest_returns_null_skill_md(self, app, org_state):
         """Overwrite the manifest artifact → skill_md AND package_members
@@ -1333,8 +1335,10 @@ class TestProposalDetailArtifactIntegrity:
         assert detail2["skill_md"] is None, (
             "skill_md must be null when member hash is blank"
         )
-        # package_members loads from the manifest (which now passes content_hash)
-        assert detail2["package_members"] is not None
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when member hash is blank — "
+            "both fields derive from the same verified provenance snapshot"
+        )
         # Provenance preserved
         assert detail2["version_id"] == version_id
         assert detail2["status"] == "proposed"
@@ -1388,7 +1392,10 @@ class TestProposalDetailArtifactIntegrity:
         assert detail2["skill_md"] is None, (
             "skill_md must be null for unsupported member hash algorithm"
         )
-        assert detail2["package_members"] is not None
+        assert detail2["package_members"] is None, (
+            "package_members must also be null for unsupported member hash algorithm — "
+            "both fields derive from the same verified provenance snapshot"
+        )
         assert detail2["version_id"] == version_id
         assert detail2["status"] == "proposed"
 
@@ -1437,8 +1444,10 @@ class TestProposalDetailArtifactIntegrity:
         assert detail2["skill_md"] is None, (
             "skill_md must be null when manifest has no SKILL.md member"
         )
-        # package_members still loads from the valid manifest
-        assert detail2["package_members"] is not None
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when manifest has no SKILL.md member — "
+            "both fields derive from the same verified provenance snapshot"
+        )
         assert detail2["version_id"] == version_id
         assert detail2["status"] == "proposed"
 
@@ -1490,7 +1499,10 @@ class TestProposalDetailArtifactIntegrity:
         assert detail2["skill_md"] is None, (
             "skill_md must be null when sha256 member digest does not match actual bytes"
         )
-        assert detail2["package_members"] is not None
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when sha256 member digest does not match — "
+            "both fields derive from the same verified provenance snapshot"
+        )
         assert detail2["version_id"] == version_id
         assert detail2["status"] == "proposed"
 
@@ -1540,7 +1552,10 @@ class TestProposalDetailArtifactIntegrity:
         assert detail2["skill_md"] is None, (
             "skill_md must be null when member has no hash key"
         )
-        assert detail2["package_members"] is not None
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when member has no hash key — "
+            "both fields derive from the same verified provenance snapshot"
+        )
         assert detail2["version_id"] == version_id
         assert detail2["status"] == "proposed"
 

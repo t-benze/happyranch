@@ -92,6 +92,10 @@ Founder-only. Returns full detail by immutable version/proposal ID:
   arbitrary paths.
 - **Slice 2A: Package hash/manifest reference** (`package_members`) — listing
   all members with paths, hashes, artifact keys, and sizes from the manifest.
+  Returns `null` whenever `skill_md` is null — both fields derive from the
+  same verified immutable provenance snapshot; if any check in the chain
+  (content_hash, manifest integrity, member digest) fails, neither field is
+  returned.
 - **Slice 2A: Creation-event purpose/target-agent data** (`purpose`,
   `target_agent_suggestion`) — extracted from the proposed event metadata.
 - Read-only package content/artifact reference (`content_artifact_key`)

@@ -22,41 +22,40 @@ from .models import (
 # ── Safe artifact loading helpers ────────────────────────────────────────
 
 
-def _load_skill_md_from_artifact(
+def _load_provenance_snapshot(
     content_artifact_key: str | None,
     content_hash: str | None,
     org_root: str | None,
-) -> str | None:
-    """Safely load the canonical SKILL.md bytes from the ArtifactStore.
+) -> tuple[str | None, list[dict] | None]:
+    """Load SKILL.md bytes and member listing from a single verified
+    immutable provenance snapshot.
 
-    The content_artifact_key points to the manifest artifact (manifest.json).
-    The manifest lists all package members (SKILL.md, references/, assets/)
-    with their own artifact keys and declared SHA-256 hashes.
+    The detail contract requires that skill_md and package_members be
+    derived from the same verified manifest bytes — not independently
+    reloading potentially mutable ArtifactStore state.  Both fields must
+    be present (valid canonical package) or both must be absent/null
+    (any provenance failure).
 
     Provenance chain (fail-closed at every step):
     1. Load the manifest artifact bytes.
     2. Verify SHA-256(manifest bytes) == ledger content_hash — proves the
        manifest is the immutable proposal version, not an overwrite.
-    3. Locate the SKILL.md member, load its bytes, verify
-       SHA-256(member bytes) == member's declared hash — proves the
-       artifact bytes are the original content-addressed version.
+       Absent/blank/malformed ledger content_hash fails closed.
+    3. Parse the manifest JSON.  Malformed/unparseable manifest fails closed.
+    4. Locate the SKILL.md member entry.  Missing entry fails closed.
+    5. Validate the member's declared hash format: must be sha256:<hex>
+       per the canonical manifest contract.  Missing/blank/malformed/
+       unsupported-algorithm digest fails closed.
+    6. Load the SKILL.md artifact bytes and prove
+       SHA-256(bytes) == member's declared hash.  Mismatch fails closed.
+    7. If all checks pass, return (skill_md_str, members_list).
+       If any check fails, return (None, None).
 
-    Returns the UTF-8 decoded SKILL.md content, or None for:
-    - No artifact key (pre-artifact-store proposals)
-    - Missing artifact (cleaned up / expired)
-    - Malformed / unreadable artifact
-    - No org_root (can't resolve artifact store)
-    - Absent/blank ledger content_hash (cannot prove package intact)
-    - Manifest hash mismatch with ledger content_hash (overwritten/forged)
-    - Absent/blank/malformed/non-sha256 member digest (cannot prove member intact)
-    - Member hash mismatch with declared member hash (overwritten/forged)
-    - Any exception during load
-
-    Never fabricates bytes or exposes arbitrary paths — only loads from
-    the content-addressed artifact store key after hash proof.
+    Returns (skill_md, package_members) — a tuple where both are present
+    or both are None.  Never fabricates bytes or exposes arbitrary paths.
     """
     if not content_artifact_key or not org_root:
-        return None
+        return None, None
     try:
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
@@ -74,15 +73,16 @@ def _load_skill_md_from_artifact(
         # An absent, blank, or mismatched digest is a fail-closed signal —
         # the package cannot be proven intact.
         if not content_hash:
-            return None
+            return None, None
         computed_manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
         if computed_manifest_hash != content_hash:
-            return None
+            return None, None
 
+        # Step 3: Parse the manifest.  Malformed/unparseable fails closed.
         manifest = json.loads(manifest_raw.decode("utf-8"))
         members = manifest.get("members", [])
 
-        # Locate the SKILL.md member
+        # Step 4: Locate the SKILL.md member.
         skill_md_member = None
         for m in members:
             if m.get("path") == "SKILL.md":
@@ -90,73 +90,32 @@ def _load_skill_md_from_artifact(
                 break
 
         if skill_md_member is None:
-            return None
+            return None, None
 
         skill_key = skill_md_member.get("artifact_key")
         if not skill_key:
-            return None
+            return None, None
 
-        # Step 3: Load SKILL.md bytes & prove they match the member's declared hash.
-        raw = store.read(skill_key)
+        # Step 5 + 6: Load SKILL.md bytes and prove they match the member's
+        # declared hash.  The canonical member hash format is sha256:<hex>
+        # per the manifest contract.  An absent, blank, malformed, or
+        # unsupported-algorithm digest is a fail-closed signal — the member
+        # cannot be proven intact.
+        skill_raw = store.read(skill_key)
 
-        # Step 3: Load SKILL.md bytes & prove they match the member's declared hash.
-        # The canonical member hash format is sha256:<hex> per the manifest
-        # contract.  An absent, blank, malformed, or unsupported-algorithm
-        # digest is a fail-closed signal — the member cannot be proven intact.
         member_hash = skill_md_member.get("hash", "")
         if not member_hash.startswith("sha256:"):
-            return None
+            return None, None
         expected_hex = member_hash[len("sha256:"):]
-        actual_hex = hashlib.sha256(raw).hexdigest()
+        actual_hex = hashlib.sha256(skill_raw).hexdigest()
         if actual_hex != expected_hex:
-            return None
+            return None, None
 
-        return raw.decode("utf-8")
+        # Step 7: All checks passed — return both values from the same
+        # verified manifest snapshot.
+        return skill_raw.decode("utf-8"), members
     except Exception:
-        return None
-
-
-def _load_package_members_from_artifact(
-    content_artifact_key: str | None,
-    content_hash: str | None,
-    org_root: str | None,
-) -> list[dict] | None:
-    """Safely load package member listing from the manifest artifact.
-
-    The manifest (at content_artifact_key) is a JSON document listing all
-    package members (SKILL.md, references/, assets/) with paths, hashes,
-    artifact keys, and sizes.
-
-    Requires a present, well-formed ledger content_hash.  Verifies the
-    manifest's SHA-256 matches the ledger content_hash before returning
-    members.  Returns None on absent/blank/mismatched content_hash, hash
-    mismatch (overwritten/forged artifact), missing key, malformed JSON,
-    or load failure.
-    """
-    if not content_artifact_key or not org_root:
-        return None
-    try:
-        from runtime.infrastructure.artifact_store import ArtifactStore
-        from runtime.orchestrator._paths import OrgPaths
-        from pathlib import Path
-        import json
-
-        org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
-        store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
-        raw = store.read(content_artifact_key)
-
-        # Prove manifest content is the immutable proposal version.
-        # An absent, blank, or mismatched digest is a fail-closed signal.
-        if not content_hash:
-            return None
-        computed = hashlib.sha256(raw).hexdigest()
-        if computed != content_hash:
-            return None
-
-        manifest = json.loads(raw.decode("utf-8"))
-        return manifest.get("members", [])
-    except Exception:
-        return None
+        return None, None
 
 
 def _get_conn(db) -> "sqlite3.Connection":
@@ -926,15 +885,11 @@ def get_proposal_detail(db, version_id: int, org_root: str | None = None) -> dic
             if e["event_type"] == "proposed":
                 break
 
-    # Safely load SKILL.md bytes from the immutable ArtifactStore
-    skill_md = _load_skill_md_from_artifact(
-        d.get("content_artifact_key"),
-        d.get("content_hash"),
-        org_root,
-    )
-
-    # Safely load package member listing from manifest (hash-verified)
-    package_members = _load_package_members_from_artifact(
+    # Safely load SKILL.md bytes and package member listing from a
+    # single verified immutable provenance snapshot.  Both fields are
+    # derived from the same manifest bytes — never independently reload
+    # potentially mutable ArtifactStore state.
+    skill_md, package_members = _load_provenance_snapshot(
         d.get("content_artifact_key"),
         d.get("content_hash"),
         org_root,
