@@ -286,6 +286,8 @@ describe('ProposalDetailPage — published proposal', () => {
     // No catalog-membership claim in the readiness strip
     expect(screen.queryByText('In custom catalog')).not.toBeInTheDocument();
     expect(screen.queryByText('Not in catalog')).not.toBeInTheDocument();
+    // No catalog-membership/visibility claim anywhere on the page (banner + footer)
+    expect(screen.queryByText(/custom catalog/i)).not.toBeInTheDocument();
   });
 
   test('shows publisher in provenance', async () => {

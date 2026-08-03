@@ -883,9 +883,9 @@ export function ProposalDetailPage(): JSX.Element {
           <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
           <span>
             <b className="text-fg font-semibold">Guidance visibility only.</b>{' '}
-            Publication adds a skill to the custom catalog. Assignment and
-            materialization are separate version-pinned projections — they never
-            change what tools or commands an agent can use.
+            Assignment and materialization are separate version-pinned
+            projections — they never change what tools or commands an agent can
+            use.
           </span>
         </div>
       </div>
