@@ -402,8 +402,9 @@ def test_read_cross_org_session_uncorrelated(client_with_runtime):
         "provenance: experiential\nscope: agent\nlifecycle: valid\n"
         "salience: 50\n---\n\nbody\n"
     )
-    # Set active on beta org, same agent+task as alpha would use
-    beta.sessions.set_active(
+    # Register session context in alpha org's tracker with a different
+    # org_slug so the route's ctx_org == slug check rejects correlation.
+    org.sessions.set_active(
         "TASK-X", "dev_agent", "sess-cross-org", org_slug="beta",
     )
     r = client.get(
@@ -434,8 +435,9 @@ def test_search_cross_org_session_uncorrelated(client_with_runtime):
         "provenance: experiential\nscope: agent\nlifecycle: valid\n"
         "salience: 50\n---\n\nbody\n"
     )
-    # Set active on beta org
-    beta.sessions.set_active(
+    # Register session context in alpha org's tracker with a different
+    # org_slug so the route's ctx_org == slug check rejects correlation.
+    org.sessions.set_active(
         "TASK-Y", "dev_agent", "sess-cross-search", org_slug="beta",
     )
     r = client.post(

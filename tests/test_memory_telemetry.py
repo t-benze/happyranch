@@ -1326,3 +1326,129 @@ def test_compute_report_partial_role_map_warning(db):
     assert "unknown_agent" not in by_role
     # Decision is safe given the data
     assert "decision" in report
+
+
+# ---------------------------------------------------------------------------
+# 21. Production CLI fixture: matching impressions/reads not falsely excluded
+# ---------------------------------------------------------------------------
+
+
+def test_cli_compute_report_matching_impressions_not_excluded(db):
+    """CLI _compute_report with >=500 qualifying matching impressions
+    and reads must correctly correlate them using task_id from the row
+    column (NOT from payload, where AuditLogger does not write it).
+    Proves that verified tuples are built and reads are NOT falsely
+    excluded, and no false activation_loss/push recommendation results."""
+    logger = AuditLogger(db)
+    # Create >=500 impressions + matching reads with correct task_id tuples
+    for i in range(520):
+        logger.log_memory_digest_impression(
+            agent="dev_agent",
+            task_id=f"TASK-PC{i:04d}",
+            session_id=f"sess-pc{i:04d}",
+            digest_ids=[f"MEM-PC{i:04d}"],
+            budget=1500,
+        )
+        # Each session has a matching read — 100% pull-through
+        logger.log_memory_read(
+            agent="dev_agent", id=f"MEM-PC{i:04d}", slug="x",
+            session_id=f"sess-pc{i:04d}",
+            task_id=f"TASK-PC{i:04d}",
+        )
+    # Also create some reads with mismatched task_id — should be excluded
+    for i in range(20):
+        logger.log_memory_read(
+            agent="dev_agent", id=f"MEM-PC{i:04d}", slug="x",
+            session_id=f"sess-pc{i:04d}",
+            task_id="TASK-WRONG",  # mismatched task_id
+        )
+    # Fetch rows exactly as the CLI query would (task_id is a column in
+    # the row, NOT in payload — matching real audit API output)
+    impression_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT timestamp, agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_digest_impression'",
+    )]
+    read_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_read'",
+    )]
+    search_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_search'",
+    )]
+    report = _compute_report(
+        impression_rows=impression_rows,
+        read_rows=read_rows,
+        search_rows=search_rows,
+        agent_role_map={"dev_agent": "developer"},
+        current_time=_future_now(),
+    )
+    obs = report["observation_period"]
+    assert obs["thresholds_met"] is True
+    assert obs["total_correlated_sessions"] >= 520
+    # Aggregate pull-through: 520 matched reads / 520 shown IDs = 100%
+    agg = report["aggregate"]
+    assert agg["digest_pull_through"] >= 0.99, (
+        f"Expected >=99% pull-through, got {agg['digest_pull_through']:.4f}"
+    )
+    assert agg["unique_digest_ids_read_same_session"] >= 520
+    # Mismatched task_id rows must be in untrusted count, not counted as
+    # same-session reads
+    assert agg["untrusted_uncorrelated_reads"] >= 20
+    # No false activation_loss
+    assert report["decision"] != "activation_loss"
+    # Decision should be no_demonstrated_problem (not insufficient_sample)
+    assert report["decision"] == "no_demonstrated_problem"
+
+
+def test_cli_compute_report_mismatched_task_id_excluded(db):
+    """Reads with agent matching but task_id NOT matching the
+    impression tuple must be excluded from pull-through."""
+    logger = AuditLogger(db)
+    # 500 impressions for dev_agent
+    for i in range(500):
+        logger.log_memory_digest_impression(
+            agent="dev_agent",
+            task_id=f"TASK-MI{i:04d}",
+            session_id=f"sess-mi{i:04d}",
+            digest_ids=[f"MEM-MI{i:04d}"],
+            budget=1500,
+        )
+    # Reads with WRONG task_id — agent matches but task_id doesn't
+    for i in range(500):
+        logger.log_memory_read(
+            agent="dev_agent", id=f"MEM-MI{i:04d}", slug="x",
+            session_id=f"sess-mi{i:04d}",
+            task_id=f"TASK-DIFFERENT{i:04d}",  # does not match impression
+        )
+    impression_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT timestamp, agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_digest_impression'",
+    )]
+    read_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_read'",
+    )]
+    search_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_search'",
+    )]
+    report = _compute_report(
+        impression_rows=impression_rows,
+        read_rows=read_rows,
+        search_rows=search_rows,
+        agent_role_map={"dev_agent": "developer"},
+        current_time=_future_now(),
+    )
+    obs = report["observation_period"]
+    assert obs["thresholds_met"] is True
+    # With all reads excluded by task_id mismatch, pull-through should
+    # be 0% and all reads should be untrusted
+    agg = report["aggregate"]
+    assert agg["digest_pull_through"] == 0.0
+    assert agg["untrusted_uncorrelated_reads"] >= 500
+    # With all reads excluded, pull-through is 0% — the role with
+    # >=30 sessions and 0% pull-through legitimately triggers the
+    # activation_loss condition.  The key invariant is that mismatched
+    # task_ids are excluded from pull-through computation.
+    assert agg["digest_pull_through"] == 0.0

@@ -393,7 +393,7 @@ def _compute_report(
         session_id = payload.get("session_id")
         digest_ids = payload.get("digest_ids", [])
         agent = payload.get("agent", row.get("agent", ""))
-        task_id = payload.get("task_id", "")
+        task_id = row.get("task_id", "")
         if session_id and digest_ids:
             impressions.append({
                 "session_id": session_id,
