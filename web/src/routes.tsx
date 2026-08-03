@@ -25,6 +25,7 @@ import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
 import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
 import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
+import { ProposalDetailPage } from '@/features/skills/ProposalDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -113,6 +114,8 @@ export function AppRoutes(): JSX.Element {
           <Route path="skills/new" element={<SkillCreatePage />} />
           <Route path="skills/validation" element={<SkillValidationPage />} />
           <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
+          {/* Static proposals/:versionId MUST rank before dynamic :skillId */}
+          <Route path="skills/proposals/:versionId" element={<ProposalDetailPage />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
