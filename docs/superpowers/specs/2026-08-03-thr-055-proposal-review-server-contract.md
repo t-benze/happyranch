@@ -1,13 +1,13 @@
-# THR-055 Skill Proposal Review — Server Contract (Slice 1 + Slice 2A)
+# THR-055 Skill Proposal Review — Server Contract & UI Slices
 
 **Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
 
-**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), protocol/05c-orchestrator.md §4.5.
+**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), protocol/05c-orchestrator.md §4.5.
 
-**Scope:** API-read completion only. Server contract + TypeScript API mirror.
-Slice 1: founder-only proposal review routes + concurrency + state machine.
-Slice 2A: immutable SKILL.md bytes in detail, typed server filters in queue.
-React UI is a later, serial slice.
+**Scope:** Server contract + TypeScript API mirror + read-only founder UI detail.
+Slice 1 (PR #546): founder-only proposal review routes + concurrency + state machine.
+Slice 2A (PR #549): immutable SKILL.md bytes in detail, typed server filters in queue.
+Slice 2B (PR #550): read-only Founder Proposal Detail page. **Queue UI and all action/confirmation/stale-refresh mutation UI are deferred to later slices.**
 
 ---
 
@@ -147,7 +147,26 @@ All Founder-only review endpoints have corresponding functions in
 - `assignProposal(slug, versionId, body)`
 - `rollbackProposal(slug, versionId, body)`
 
-This is an API mirror only — no feature UI in this slice.
+### 3.1 Hooks Layer (Slice 2B)
+
+Query ownership is in the established skills hooks layer:
+- `useProposalDetail(slug, versionId)` in `web/src/hooks/skills.ts` — returns
+  a TanStack Query `UseQueryResult<ProposalDetailResponse>`. The page consumes
+  this hook; it does NOT directly import `getProposalDetail`, `ApiError`, or
+  `useQuery`.
+- `ProposalDetailResponse` type is re-exported from `@/hooks/skills` so
+  feature compositions never deep-import `@/lib/api/skillLifecycle`.
+
+### 3.2 Pure Mapping Helpers (Slice 2B)
+
+`web/src/features/skills/proposal-detail.ts` provides provider-agnostic
+mapping functions: `statusLabel`, `statusTone`, `isPublished`, `isRejected`,
+`isTerminal`, `hashDisplay`, `readinessFacts` (backed by response facts —
+never status-enum synthesized), `timelineEvents` (with content hash and
+metadata facts), `validatorFacts`, `assignmentProjection`,
+`materializationProjection` (narrow types; uses `success`/`error_message`/
+`created_at`, never `materialized_at` or `pending`), `metadataFacts`,
+`hasAssignmentProjection`.
 
 ---
 
@@ -193,3 +212,66 @@ See `tests/daemon/test_skills_proposal_review.py` (comprehensive suite) covering
   ordering, invalid validation_outcome rejection
 - `TestProposalDetailArtifactSafety`: null skill_md with no org_root,
   safe handling of malformed artifact keys, read calls never append events
+
+---
+
+## 6. UI Slices
+
+### 6.1 Slice 2B — Read-Only Founder Proposal Detail Page (Delivered)
+
+PR #550 delivers a **read-only, static presentation page** at
+`/orgs/:slug/skills/proposals/:versionId` with NO state-changing controls.
+
+**Delivered sections:**
+- Shell breadcrumb + mono identity/version/full copyable hash
+- Readiness strip (backed by response facts: events, assignments,
+  materializations, supplied status/decision fields — never status-enum
+  synthesized)
+- SKILL.md primary pane (read-only, wrapped, copy control with keyboard
+  accessibility and aria-live feedback, null warning)
+- Evidence rail (purpose, policy class, advisory target, validation facts
+  from events)
+- Provenance (immutable proposer vs optional Founder claimant, task/session
+  provenance, reviewer/publisher facts)
+- Append-only audit timeline with event content hash, actor/role/time, and
+  safely rendered metadata facts (validator version/key, run identifier,
+  failure, rationale)
+- Assignment & materialization projection (separate from package decision
+  status; uses actual server fields `success`/`error_message`/`created_at`;
+  never `materialized_at` or `pending`)
+- Guidance-only footer
+
+**State handling:** loading skeleton, 403 Founder-access (no data leak),
+404, generic error with Retry, skill_md:null warning, rejected terminal
+(view-only), published distinct banner.
+
+**No server/API/schema/auth/permission/token/notification/dependency**
+change in Slice 2B.
+
+### 6.2 Deferred UI Slices (explicitly out of scope)
+
+The following surfaces are **explicitly deferred** to later slices and are
+NOT implemented in Slice 2B:
+
+- **Proposals Queue UI** — list/queue page with status, validation, proposer
+  filters, search, pagination, navigation
+- **All action/confirmation/stale-refresh mutation UI** — no claim, validate,
+  submit-review, review decision, publish, assign, rollback, retire, or
+  reopen controls of any kind
+- **Queue navigation, mutation controls, editor surface, agent approval UI,
+  comments/notes, bulk actions, ranking/sorting UI, recovery/reopen
+  affordances**
+- **Stale-refresh handling** for concurrent mutations (expected_event_id
+  concurrency protection is server-only; UI surface deferred)
+- **Navigation links** from Skills page to Proposals section
+
+### 6.3 Fidelity Targets
+
+- Proposal detail v3: `THR-055-20260802T015112Z-Skill-Proposal-Review-standalone-3-.html`
+- Queue v2: `THR-055-20260802T141333Z-Skill-Proposals-Queue-standalone-2-.html`
+
+### 6.4 Server Lifecycle Contract (Unchanged)
+
+The server lifecycle contract defined in §2 is **not modified** by any UI
+slice. All routes, response shapes, auth rules, and agent-submission policies
+remain as delivered in Slice 1.
