@@ -127,8 +127,10 @@ runtime. The server-derived schema is canonical. Key invariants:
 - **THR-107 seq244 dependency manifest:** new adapter registrations require
   ``dependency_manifest_version: 1`` with a non-empty list of declared child
   executable dependencies (absolute path + SHA-256). Dependencies are validated
-  at registration and re-verified before every launch. Manifest-adapters cannot
-  rely on ambient PATH — the runtime scrubs PATH to ``/usr/bin:/bin``.
+  at registration and re-verified before every launch. Manifest-adapters are
+  explicitly absolute and hash-pinned/revalidated with no executor fallback to
+  ambient PATH; the adapter process inherits normalized PATH for normal
+  callback/utility availability.
   ``token_metering`` capability enforces truthful non-null token_usage at
   conformance. Legacy entries without the manifest are preserved unchanged.
 

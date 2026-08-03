@@ -257,8 +257,9 @@ require ``dependency_manifest_version: 1`` with a non-empty ``dependencies``
 list (each: ``{executable: absolute-path, sha256: hex}``). Every declared
 child executable must exist, be a regular executable file, and match its
 declared SHA-256 at registration and again before each launch.
-Manifest-adapters cannot rely on ambient PATH — the runtime scrubs PATH to
-``/usr/bin:/bin``. ``token_metering`` capability requires truthful non-null
+Manifest-adapters are explicitly absolute and hash-pinned/revalidated with
+no executor fallback to ambient PATH; the adapter process inherits
+normalized PATH for normal callback/utility availability. ``token_metering`` capability requires truthful non-null
 ``token_usage`` at conformance. Legacy entries without the manifest are
 never auto-mutated. A dependency or wrapper change requires re-submission
 and founder re-approval.
