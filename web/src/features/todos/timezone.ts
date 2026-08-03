@@ -20,21 +20,6 @@ const WEEKDAY_NAMES_LONG = [
   'Saturday',
 ] as const
 
-/** Return the timezone offset in minutes (positive = ahead of UTC) for a
- *  given Date at a given IANA timezone. */
-function tzOffsetMinutes(date: Date, tz: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    timeZoneName: 'longOffset',
-    hour12: false,
-  } as Intl.DateTimeFormatOptions).formatToParts(date)
-  const name = parts.find((p) => p.type === 'timeZoneName')?.value ?? 'GMT'
-  const m = name.match(/GMT([+-]\d{2}):(\d{2})/)
-  if (!m) return 0
-  const sign = m[1].startsWith('-') ? -1 : 1
-  return parseInt(m[1], 10) * 60 + sign * parseInt(m[2], 10)
-}
-
 /** Decompose a Date into local calendar parts as seen in `tz`. */
 function tzParts(date: Date, tz: string) {
   const fmt = new Intl.DateTimeFormat('en-US', {
@@ -62,52 +47,53 @@ function tzParts(date: Date, tz: string) {
   }
 }
 
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date())
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
- * Serialize a one-shot local date/time (YYYY-MM-DD + HH:MM) in IANA
- * timezone `tz` to a UTC ISO-8601 instant string (e.g.
- * "2026-08-01T01:00:00Z") or null.
- *
- * The local date/time is interpreted in the named timezone, including DST.
- * If the supplied wall time does not exist in that timezone (a DST gap),
- * the function returns null so the caller can surface a validation error
- * instead of emitting an unchecked UTC candidate.
+ * Find the UTC instant that corresponds to the supplied local wall time
+ * (year/month/day hour:minute) in the IANA timezone `tz`, or null if the
+ * wall time does not exist in that timezone (a DST gap).
  *
  * Ambiguous local times (DST fold) resolve to the first matching instant;
  * the returned instant is verified to render back to the supplied wall time.
  */
-export function serializeOneShotInTz(
-  dateStr: string,
-  timeStr: string,
+function findInstantForLocalWallTime(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
   tz: string,
 ): string | null {
-  const [year, month, day] = dateStr.split('-').map(Number)
-  const [hour, minute] = timeStr.split(':').map(Number)
-  if (
-    Number.isNaN(year) ||
-    Number.isNaN(month) ||
-    Number.isNaN(day) ||
-    Number.isNaN(hour) ||
-    Number.isNaN(minute)
-  ) {
-    return null
-  }
-
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date())
-  } catch {
-    return null
-  }
+  if (!isValidTimezone(tz)) return null
 
   // Search the +/- 25 hour window around the naive UTC interpretation.
   // This window comfortably covers every current IANA offset (max ~±14 h)
   // and all DST shifts, so a real instant is always found if it exists.
-  const naive = Date.UTC(year, month - 1, day, hour, minute, 0)
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute)
+  ) {
+    return null
+  }
+
+  const naive = Date.UTC(year, month, day, hour, minute, 0)
   for (let deltaMinutes = -25 * 60; deltaMinutes <= 25 * 60; deltaMinutes++) {
     const candidate = naive + deltaMinutes * 60_000
     const parts = tzParts(new Date(candidate), tz)
     if (
       parts.year === year &&
-      parts.month === month - 1 &&
+      parts.month === month &&
       parts.day === day &&
       parts.hour === hour &&
       parts.minute === minute
@@ -122,9 +108,44 @@ export function serializeOneShotInTz(
 }
 
 /**
+ * Serialize a one-shot local date/time (YYYY-MM-DD + HH:MM) in IANA
+ * timezone `tz` to a UTC ISO-8601 instant string (e.g.
+ * "2026-08-01T01:00:00Z") or null.
+ *
+ * The local date/time is interpreted in the named timezone, including DST.
+ * If the supplied wall time does not exist in that timezone (a DST gap),
+ * the function returns null so the caller can surface a validation error
+ * instead of emitting an unchecked UTC candidate.
+ */
+export function serializeOneShotInTz(
+  dateStr: string,
+  timeStr: string,
+  tz: string,
+): string | null {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const [hour, minute] = timeStr.split(':').map(Number)
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute)
+  ) {
+    return null
+  }
+
+  return findInstantForLocalWallTime(year, month - 1, day, hour, minute, tz)
+}
+
+/**
  * Compute the next occurrence of `day` at `timeStr` (HH:MM) in IANA
  * timezone `tz`, strictly AFTER `after` (default: now). Walks at most 366
  * days. Returns a UTC ISO-8601 string (e.g. "2026-08-01T01:00:00Z") or null.
+ *
+ * If the requested local wall time does not exist in `tz` on the next
+ * candidate day (a DST gap), the function returns null immediately so the
+ * caller can surface a validation error instead of silently resolving to a
+ * different instant or skipping to a later week.
  */
 export function nextWeeklyOccurrence(
   day: string,
@@ -139,13 +160,9 @@ export function nextWeeklyOccurrence(
   if (targetDay < 0) return null
 
   const [hour, minute] = timeStr.split(':').map(Number)
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return null
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
 
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date())
-  } catch {
-    return null
-  }
+  if (!isValidTimezone(tz)) return null
 
   const afterParts = tzParts(after, tz)
 
@@ -158,18 +175,27 @@ export function nextWeeklyOccurrence(
     const afterKey = afterParts.year * 10_000 + (afterParts.month + 1) * 100 + afterParts.day
     const probeKey = probeParts.year * 10_000 + (probeParts.month + 1) * 100 + probeParts.day
 
+    if (probeKey < afterKey) continue
     if (probeKey === afterKey) {
       if (hour < afterParts.hour) continue
       if (hour === afterParts.hour && minute <= afterParts.minute) continue
     }
-    if (probeKey < afterKey) continue
 
-    const naive = Date.UTC(probeParts.year, probeParts.month, probeParts.day, hour, minute, 0)
-    const offset = tzOffsetMinutes(new Date(naive), tz)
-    const real = naive - offset * 60_000
+    const iso = findInstantForLocalWallTime(
+      probeParts.year,
+      probeParts.month,
+      probeParts.day,
+      hour,
+      minute,
+      tz,
+    )
+    // The next candidate day exists but the requested wall time does not
+    // (DST gap). Reject rather than silently skipping to a later week.
+    if (!iso) return null
 
+    const real = new Date(iso).getTime()
     if (real > after.getTime()) {
-      return new Date(real).toISOString().replace(/\.\d{3}Z$/, 'Z')
+      return iso
     }
   }
 

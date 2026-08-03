@@ -151,9 +151,13 @@ export function EditDialog({
       fields.recurrence = { day: weekday, time: weeklyTime, tz }
       fields.timezone = tz
       const fireAtIso = nextWeeklyOccurrence(weekday, weeklyTime, tz)
-      if (fireAtIso) {
-        fields.fire_at = fireAtIso
+      if (!fireAtIso) {
+        setLocalError(
+          `This date and time does not exist in ${tz} (for example, during a daylight-saving transition).`,
+        )
+        return
       }
+      fields.fire_at = fireAtIso
     } else {
       if (fireAtDate && fireAtTime) {
         const iso = serializeOneShotInTz(fireAtDate, fireAtTime, timezone || 'UTC')
@@ -239,8 +243,9 @@ export function EditDialog({
                 </Select>
               </div>
               <div className="space-y-1">
-                <Label>Time</Label>
+                <Label htmlFor="edit-weekly-time">Time</Label>
                 <Input
+                  id="edit-weekly-time"
                   type="time"
                   value={weeklyTime}
                   onChange={(e) => setWeeklyTime(e.target.value)}

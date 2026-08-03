@@ -226,6 +226,27 @@ const ARMED_WEEKLY_TOKYO: ScheduleRecord = {
   updated_at: '2026-07-20T00:00:00Z',
 }
 
+const ARMED_WEEKLY_NY_DST: ScheduleRecord = {
+  schedule_id: 'SCHEDULE-113',
+  agent_name: 'support_agent',
+  team: 'engineering',
+  kind: 'weekly',
+  fire_at: '2026-03-01T05:00:00Z',
+  recurrence: { day: 'Sun', time: '09:00' },
+  timezone: 'America/New_York',
+  normalized_brief: 'Prepare the Sunday status brief',
+  source_instruction: 'Every Sunday, prepare the status brief.',
+  status: 'armed',
+  active: 1,
+  expires_at: '2026-12-31T00:00:00Z',
+  indefinite: 0,
+  spawned_task_ids: [],
+  last_fired_at: null,
+  fire_count: 0,
+  created_at: '2026-02-01T00:00:00Z',
+  updated_at: '2026-02-15T00:00:00Z',
+}
+
 const ALL_SCHEDULES = [
   ARMED_WEEKLY_TZ,
   ARMED_ONESHOT,
@@ -860,6 +881,41 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     await screen.findByText(/does not exist in/)
     expect(patchCalled).toBe(false)
+  })
+
+  it('shows a validation error and does not PATCH when a weekly recurrence falls in a DST gap', async () => {
+    // Fix "now" to 2026-03-02 (Mon) so the next Sunday is the 2026-03-08 DST gap.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-03-02T00:00:00Z'))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    let patchCalled = false
+    mockDetailWithEdit(ARMED_WEEKLY_NY_DST, () => {
+      patchCalled = true
+      return HttpResponse.json(ARMED_WEEKLY_NY_DST)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-113` })
+    await waitForDetailHeading('Prepare the Sunday status brief')
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    // America/New_York springs forward 02:00 -> 03:00 on 2026-03-08.
+    // A weekly Sunday 02:30 occurrence does not exist that day.
+    const timeInput = screen.getByLabelText('Time')
+    await user.clear(timeInput)
+    await user.type(timeInput, '02:30')
+
+    await user.click(screen.getByText('Save changes'))
+
+    await screen.findByText(/does not exist in/)
+    expect(patchCalled).toBe(false)
+
+    // The entered values must be preserved so the user can correct them.
+    expect((timeInput as HTMLInputElement).value).toBe('02:30')
+
+    vi.useRealTimers()
   })
 
   it('serializeOneShotInTz converts local date/time in non-browser IANA zone to UTC', async () => {
