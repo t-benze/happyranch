@@ -202,25 +202,29 @@ first and follow the returned schemas exactly.
    an intended profile (master-bearer registration) are approved without auto-binding
    and retain explicit advanced Bind recovery via Settings.
 4. **Advanced Bind recovery** — for approved adapters without an intended profile
-   (``recovery_ready`` eligibility), the founder provides an explicit profile name
-   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. Only APPROVED
-   adapters with hash-verified artifacts can bind. The registration route rejects
-   binding to PENDING, unknown, removed, tampered, non-regular, or non-executable
-   adapters before any durable mutation, registry mutation, audit write, or token
-   consumption. **This path is secondary to atomic approve-and-bind (seq237).**
-5. **Remove (THR-107)** — founder removes an APPROVED adapter via the
-   management ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route
-   (bearer-authenticated, Settings → Executors → Custom Adapters).
-   The caller MUST supply an exact durable snapshot (all material identity
-   and binding facts) — the server rejects stale, re-registered, and
-   wrong-target snapshots. Removal is rejected when any custom runtime
-   profile references ``command_adapter_id: custom-adapter:<id>`` — the
-   profile must be removed first from Settings → Executors → Custom CLIs.
-   Under the reentrant adapter-store lock the adapter is durably removed
-   and an audit entry (scope ``adapter:<id>``, action ``adapter_removed``)
-   is written. If auditing fails after durable removal, the adapter is
-   restored before the lock is released — a successful removal is always
-   auditable. The adapter's on-disk executable is never touched.
+   (``recovery_ready`` eligibility) or where atomic binding did not succeed
+   (``ready_to_bind`` eligibility), the founder provides an explicit profile name
+   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. In the ordinary
+   Settings UI this recovery affordance lives inside **Settings → Executors →
+   Custom CLIs**, not in a separate adapter list or the pending queue. Only
+   APPROVED adapters with hash-verified artifacts can bind. The registration
+   route rejects binding to PENDING, unknown, removed, tampered, non-regular, or
+   non-executable adapters before any durable mutation, registry mutation, audit
+   write, or token consumption. **This path is secondary to atomic
+   approve-and-bind (seq237).**
+5. **Remove (THR-107)** — the authenticated ``DELETE /api/v1/runtime/adapters/{adapter_id}``
+   route still exists, but the ordinary Settings UI no longer exposes a standalone
+   Custom Adapters list. Adapter-backed custom CLIs are managed inside
+   **Settings → Executors → Custom CLIs**; removing a profile that references
+   ``command_adapter_id: custom-adapter:<id>`` removes the binding from the
+   runtime store. The underlying adapter registration cleanup is not surfaced as
+   a separate founder-facing UI in ordinary Settings. When removal is performed
+   via the API, the caller MUST supply an exact durable snapshot (all material
+   identity and binding facts) — the server rejects stale, re-registered, and
+   wrong-target snapshots. Under the reentrant adapter-store lock the adapter is
+   durably removed and an audit entry (scope ``adapter:<id>``, action
+   ``adapter_removed``) is written. The adapter's on-disk executable is never
+   touched.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before

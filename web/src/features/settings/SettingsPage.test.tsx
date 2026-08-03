@@ -669,6 +669,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({ profiles: [] }),
       ),
+      // Adapter list is consumed by PendingAdaptersSection + CustomProfilesSection.
+      http.get('/api/v1/runtime/adapters', () => HttpResponse.json([])),
     );
   });
 
@@ -699,6 +701,159 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       screen.queryByTestId('executor-registration-form'),
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Adapter')).not.toBeInTheDocument();
+  });
+
+  test('seq334: ordinary Executors settings shows one Custom CLIs surface and no standalone Custom Adapters list or adapter terminology', async () => {
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await screen.findByTestId('executor-binaries-section');
+
+    // Only the unified Custom CLIs area — no separate Custom Adapters section.
+    expect(screen.queryByText('Custom Adapters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-management-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-rows')).not.toBeInTheDocument();
+
+    // Adapter implementation details (id, eligibility, command/workspace adapter)
+    // must not surface in ordinary founder-facing Settings.
+    expect(screen.queryByText(/Eligibility:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Command adapter:/i)).not.toBeInTheDocument();
+    // The Custom CLIs heading is present.
+    expect(screen.getByText('Custom CLIs')).toBeInTheDocument();
+  });
+
+  test('seq334 integration: approving a named pending adapter atomically connects it as one Custom CLI row with truthful executable', async () => {
+    const adapterId = 'seq334-pending-adapter';
+    const profileName = 'seq334-custom-cli';
+    const executable = '/usr/local/bin/seq334-cli';
+    const hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+    const pendingAdapter = {
+      id: adapterId,
+      name: adapterId,
+      executable,
+      executable_hash: hash,
+      version: '1.0.0',
+      capabilities: ['token_metering'],
+      contract_version: 1,
+      workspace_adapter: 'pi',
+      status: 'pending',
+      registered_at: '2024-01-01T00:00:00Z',
+      registered_by: 'test',
+      approved_at: null,
+      approved_by: null,
+      intended_profile_name: profileName,
+      eligibility: null,
+      dependency_manifest_version: null,
+      dependencies: null,
+    };
+
+    const approvedAdapter = {
+      ...pendingAdapter,
+      status: 'approved',
+      approved_at: '2024-01-01T00:00:01Z',
+      approved_by: 'founder',
+      eligibility: 'already_bound',
+    };
+
+    const boundProfile = {
+      name: profileName,
+      command: null,
+      command_adapter_id: `custom-adapter:${adapterId}`,
+      workspace_adapter_id: 'pi',
+      adapter: null,
+      adapter_id: null,
+      command_adapter: null,
+      present: true,
+      path: executable,
+      envelope_policy: 'strict',
+    };
+
+    let adapterGets = 0;
+    let profileGets = 0;
+    let approved = false;
+
+    server.use(
+      http.get('/api/v1/runtime/adapters', () => {
+        adapterGets += 1;
+        return HttpResponse.json(approved ? [approvedAdapter] : [pendingAdapter]);
+      }),
+      http.get('/api/v1/executors/runtime/profiles', () => {
+        profileGets += 1;
+        return HttpResponse.json({ profiles: approved ? [boundProfile] : [] });
+      }),
+      http.post(`/api/v1/runtime/adapters/${adapterId}/approve`, async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        expect(body).toMatchObject({
+          executable,
+          executable_hash: hash,
+          version: '1.0.0',
+          capabilities: pendingAdapter.capabilities,
+          contract_version: 1,
+          workspace_adapter: 'pi',
+        });
+        approved = true;
+        return HttpResponse.json({
+          ...approvedAdapter,
+          profile_bound: {
+            profile_name: profileName,
+            command_adapter_id: `custom-adapter:${adapterId}`,
+            workspace_adapter_id: 'pi',
+            kind: 'custom',
+            status: 'connected',
+            adapter_id: adapterId,
+          },
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Initial load: pending queue shows the adapter, Custom CLIs is empty.
+    await screen.findByTestId(`pending-adapter-row-${adapterId}`);
+    expect(
+      screen.getByTestId(`adapter-intended-profile-${adapterId}`),
+    ).toHaveTextContent(profileName);
+    expect(screen.getByTestId('custom-profiles-empty')).toBeInTheDocument();
+
+    const getsBeforeApprove = { adapters: adapterGets, profiles: profileGets };
+
+    // Approve & connect.
+    await user.click(screen.getByTestId(`adapter-approve-${adapterId}`));
+    await user.click(screen.getByTestId(`adapter-confirm-approve-${adapterId}`));
+
+    // After both refetches: pending queue is empty.
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId(`pending-adapter-row-${adapterId}`),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('pending-adapter-rows')).not.toBeInTheDocument();
+
+    // Custom CLIs shows the connected profile exactly once.
+    await waitFor(() => {
+      expect(screen.getByTestId(`profile-row-${profileName}`)).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId(/^profile-row-/).length).toBe(1);
+
+    // No recovery affordances or duplicate pending surfaces.
+    expect(screen.queryByTestId('cli-recovery-rows')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`cli-recovery-row-${adapterId}`),
+    ).not.toBeInTheDocument();
+
+    // Adapter-backed executable is displayed truthfully (from adapter, since command is null).
+    const row = screen.getByTestId(`profile-row-${profileName}`);
+    const executablePara = within(row).getByText(/Executable:/i).closest('p');
+    expect(executablePara).not.toBeNull();
+    expect(within(executablePara!).getByText(executable)).toBeInTheDocument();
+
+    // No standalone Custom Adapters section or adapter implementation terminology.
+    expect(screen.queryByText('Custom Adapters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('adapter-management-section')).not.toBeInTheDocument();
+
+    // Both management queries were refetched after the approve mutation.
+    expect(adapterGets).toBeGreaterThan(getsBeforeApprove.adapters);
+    expect(profileGets).toBeGreaterThan(getsBeforeApprove.profiles);
   });
 
   test('manual absolute-path entry is DEMOTED behind an "Advanced" disclosure on each row', async () => {
@@ -943,6 +1098,104 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       await screen.findByText(/Per-agent executor assignment/i),
     ).toBeInTheDocument();
     expect(screen.getByText('Agents page')).toHaveAttribute('href', '../agents');
+  });
+
+  test('ordinary Settings › Executors surface shows Custom CLIs and pending approvals with no visible adapter terminology', async () => {
+    server.use(
+      http.get('/api/v1/runtime/adapters', () =>
+        HttpResponse.json([
+          {
+            id: 'pending-cli-1',
+            name: 'pending-cli-1',
+            executable: '/usr/local/bin/pending-cli',
+            executable_hash:
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            version: '1.0.0',
+            capabilities: ['token_metering'],
+            contract_version: 1,
+            workspace_adapter: 'pi',
+            status: 'pending',
+            registered_at: '2024-01-01T00:00:00Z',
+            registered_by: 'test',
+            approved_at: null,
+            approved_by: null,
+            intended_profile_name: 'my-custom-cli',
+            eligibility: null,
+          },
+        ]),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            {
+              name: 'my-custom-cli',
+              command: 'my-custom-cli',
+              adapter: null,
+              workspace_adapter_id: null,
+              command_adapter_id: null,
+              adapter_id: null,
+              command_adapter: null,
+              present: true,
+              path: '/usr/local/bin/my-custom-cli',
+              envelope_policy: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Wait for both the Custom CLIs list and the pending approvals section.
+    await screen.findByTestId('profile-row-my-custom-cli');
+    await screen.findByTestId('pending-adapter-row-pending-cli-1');
+
+    const bodyText = document.body.textContent ?? '';
+
+    // The page surfaces the Custom CLIs management list and pending approvals.
+    expect(bodyText).toMatch(/Custom CLIs/i);
+    expect(bodyText).toMatch(/Pending CLI approvals/i);
+
+    // No ordinary founder-visible /adapter/i wording remains.
+    expect(bodyText).not.toMatch(/adapter/i);
+  });
+
+  test('TASK-4038 regression: adapter-list failure with adapter-term payload renders CLI-neutral error and no page-wide adapter text', async () => {
+    let adapterGets = 0;
+    server.use(
+      http.get('/api/v1/runtime/adapters', () => {
+        adapterGets += 1;
+        return HttpResponse.json(
+          { detail: 'Adapter hash mismatch on retrieval' },
+          { status: 500 },
+        );
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Wait for the CLI-neutral failure surface.
+    await waitFor(() => {
+      expect(screen.getByText(/Could not load pending approvals/)).toBeInTheDocument();
+    });
+
+    // Retry affordance is present.
+    const retryBtn = screen.getByTestId('pending-adapters-retry');
+    expect(retryBtn).toHaveTextContent('Retry');
+
+    // Clicking Retry re-fetches the adapter list.
+    const user = userEvent.setup();
+    const getsBeforeRetry = adapterGets;
+    await user.click(retryBtn);
+    await waitFor(() => {
+      expect(adapterGets).toBeGreaterThan(getsBeforeRetry);
+    });
+
+    // The raw server error text (which deliberately contains an implementation
+    // term) must not appear anywhere on the ordinary founder-facing page.
+    const bodyText = document.body.textContent ?? '';
+    expect(bodyText).not.toMatch(/adapter hash mismatch on retrieval/i);
+    expect(bodyText).not.toMatch(/adapter/i);
   });
 
   test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip)', async () => {
