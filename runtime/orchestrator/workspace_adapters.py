@@ -670,7 +670,9 @@ def _materialize_lifecycle_skills(
     import logging
     import shutil
 
-    from runtime.skills.lifecycle.service import SkillLifecycleService
+    from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
+    from runtime.skills.lifecycle.models import LifecycleStatus
+    from runtime.skills.lifecycle import stores
 
     logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
     service = SkillLifecycleService()
@@ -689,6 +691,37 @@ def _materialize_lifecycle_skills(
         skill_slug = pkg.slug
         dest_claude = workspace / ".claude" / "skills" / skill_slug
         dest_agents = workspace / ".agents" / "skills" / skill_slug
+
+        # ── Preflight: reject materialization of terminally REJECTED
+        #    packages BEFORE any filesystem bytes are written.
+        #    This guard must fire before creating directories or
+        #    writing content — rejected attempts fail closed with
+        #    no workspace residue.
+        fresh_pkg = stores.get_package_version(db, pkg.id)
+        if fresh_pkg is not None and fresh_pkg.status == LifecycleStatus.REJECTED:
+            error_msg = (
+                f"Package version {pkg.id} is terminally REJECTED. "
+                f"Materialization is blocked."
+            )
+            try:
+                service.record_materialization(
+                    db=db,
+                    skill_id=pkg.skill_id,
+                    agent_name=agent_name,
+                    version_id=pkg.id,
+                    version=pkg.version,
+                    content_hash=pkg.content_hash,
+                    success=False,
+                    error_message=error_msg,
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            )
 
         # ArtifactStore-backed content is the ONLY valid source.
         if not pkg.content_artifact_key:
@@ -871,7 +904,13 @@ def _materialize_lifecycle_skills(
                     reason=error_msg,
                 ) from exc
 
-        # Record successful materialization
+        # Record successful materialization.
+        # CRITICAL: if a concurrent founder action changed status to
+        # REJECTED between the preflight read and this write,
+        # record_materialization raises LifecycleError(rejected_terminal).
+        # We must NOT swallow it — the success bytes are on disk but the
+        # version is now terminal. Clean up workspace residue and raise
+        # (fail closed with no materialized-success event appended).
         try:
             service.record_materialization(
                 db=db,
@@ -882,6 +921,32 @@ def _materialize_lifecycle_skills(
                 content_hash=pkg.content_hash,
                 success=True,
                 session_context="session_spawn",
+            )
+        except LifecycleError as e:
+            if e.code == "rejected_terminal":
+                # Fail closed: clean workspace residue, do NOT append
+                # a materialized-success event (record_materialization
+                # already refused to), and raise to the caller.
+                for d in (dest_claude, dest_agents):
+                    if d.exists():
+                        shutil.rmtree(d, ignore_errors=True)
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=(
+                        f"Materialization of version {pkg.id} was aborted: "
+                        f"the version became terminally REJECTED after "
+                        f"bytes were written. Workspace residue has been "
+                        f"cleaned."
+                    ),
+                ) from e
+            # Non-rejection errors (unexpected DB hiccup, etc.) — log
+            # but do NOT block the session spawn. The bytes are correct
+            # and on disk; the materialization record is best-effort
+            # telemetry, not a correctness gate.
+            logger.warning(
+                "record_materialization(success=True) for %s/%s raised %s",
+                skill_slug, agent_name, e,
             )
         except Exception:
             pass

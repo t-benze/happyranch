@@ -1108,6 +1108,19 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        # THR-055 proposal review: separate claimant identity (never overwrites created_by)
+        try:
+            self._conn.execute(
+                "ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_by TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_at TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # NOTE: the for-loop below contains DDL (RENAME COLUMN) that has no
         # explicit commit; the commit() following the UPDATE team='engineering'
         # block durably persists those DDLs. Don't insert returning code between.
