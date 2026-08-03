@@ -2023,20 +2023,32 @@ class TestMandatoryValidatorVersion:
 
 
 class TestValidatorKeyNormalization:
-    """Coverage of validator_key normalization across the legacy HTTP validate
+    """Coverage of validator_key behavior across the legacy HTTP validate
     route and the direct-service validate_proposal method.
 
-    The legacy POST /validate route supplies ``LEGACY/1.0.0`` as both
-    ``validator_version`` and ``validator_key`` (hardcoded in the route).
-    The v2 HTTP route (POST /proposals/{version_id}/validate) does NOT
-    accept a caller-supplied ``validator_key`` — it always derives it from
-    the ``validator_version`` request field.  The two service-level tests
-    below exercise the direct ``SkillLifecycleService.validate_proposal``
-    method, which normalizes a blank, whitespace-only, or ``None``
-    ``validator_key`` arg to the supplied ``validator_version``."""
+    The legacy POST /validate route writes the fixed ``LEGACY/1.0.0``
+    version/key pair — it takes no caller-supplied ``validator_key``
+    and hardcodes both fields.  The single legacy-route test below is
+    **fixed legacy HTTP validation evidence** — it proves that the
+    endpoint always records ``LEGACY/1.0.0`` regardless of any
+    caller-supplied input.
 
-    def test_legacy_validate_whitespace_key_normalized(self, app, org_state):
-        """Legacy POST /validate normalizes whitespace-only validator_key."""
+    The v2 HTTP route (POST /proposals/{version_id}/validate) does NOT
+    accept a caller-supplied ``validator_key`` — it always derives it
+    from the ``validator_version`` request field.
+
+    The two direct-service tests below exercise the
+    ``SkillLifecycleService.validate_proposal`` method and are the
+    **sole coverage of caller blank/None validator_key normalization**
+    — they prove that a blank, whitespace-only, or ``None``
+    ``validator_key`` arg is normalized to the supplied
+    ``validator_version``."""
+
+    def test_legacy_validate_records_fixed_version_key_pair(self, app, org_state):
+        """Legacy POST /validate writes the fixed LEGACY/1.0.0 version/key
+        pair — the endpoint takes no caller-supplied validator_key and
+        hardcodes both fields.  This is fixed legacy HTTP validation
+        evidence, not a normalization test."""
         from runtime.skills.lifecycle import stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
@@ -2070,7 +2082,9 @@ class TestValidatorKeyNormalization:
 
     def test_service_validate_blank_key_normalized_to_version(self, app, org_state):
         """Direct-service validate_proposal normalizes a blank/whitespace
-        validator_key to the supplied validator_version (no HTTP route involved)."""
+        validator_key to the supplied validator_version — this is the
+        sole coverage of caller blank-key normalization.
+        No HTTP route is involved; this tests the service method directly."""
         from runtime.skills.lifecycle import stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
@@ -2101,8 +2115,10 @@ class TestValidatorKeyNormalization:
         assert meta.get("validator_key") == "THR-055/1.0.0"  # Normalized
 
     def test_service_validate_none_key_normalized_to_version(self, app, org_state):
-        """Direct-service validate_proposal with None validator_key arg falls
-        back to the supplied validator_version (no HTTP route involved)."""
+        """Direct-service validate_proposal with None validator_key arg
+        falls back to the supplied validator_version — this is the
+        sole coverage of caller None-key normalization.
+        No HTTP route is involved; this tests the service method directly."""
         from runtime.skills.lifecycle import stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
