@@ -528,6 +528,7 @@ def _build_lifecycle_canonical_specs(
 
         # Parse manifest
         import json
+        manifest = None
         try:
             manifest = json.loads(manifest_bytes.decode("utf-8"))
         except Exception:
@@ -633,7 +634,17 @@ def inject_managed_skills(
     Managed-catalog and lifecycle skills are now resolved via
     materialize_workspace_skills / _materialize_unified_canonical.
     """
-    pass  # No-op: canonical store replaces managed-skill injection.
+    materialize_workspace_skills(
+        workspace, settings,
+        slug=slug,
+        context="task",
+        provider="claude",
+        agent_name=agent_name,
+        team=team,
+        skills_root=skills_root,
+        org_root=org_root,
+        db=db,
+    )
 
 
 def _materialize_lifecycle_skills(

@@ -59,3 +59,119 @@ jobs:
       # Run after build so the build:registry output exists.
       - name: Test (non-watch)
         run: npx vitest run
+
+  # ── macOS canonical skill store isolation (TASK-4009/TASK-4012) ──
+  # Provisions distinct daemon/materializer and restricted executor OS
+  # identities and verifies the immutable canonical store isolation contract.
+  # This job is mandatory and non-skipped — provisioning failure is a
+  # job failure. Linux/Windows are not supported in this release.
+  macos-canonical-isolation:
+    name: macOS Canonical Store Isolation (macOS 15)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Provision restricted executor account
+        id: provision
+        run: |
+          set -eux
+          # Create a dedicated restricted executor account.
+          # macOS system accounts have uid < 500; use a high uid for CI.
+          EXEC_UID=599
+          EXEC_GID=599
+          EXEC_USER="_hrexec"
+
+          # Check if account already exists (CI runner may persist state)
+          if id "$EXEC_USER" &>/dev/null; then
+            echo "Executor account $EXEC_USER already exists"
+            EXEC_UID=$(id -u "$EXEC_USER")
+            EXEC_GID=$(id -g "$EXEC_USER")
+          else
+            # Create group first
+            sudo dscl . -create /Groups/"$EXEC_USER" || true
+            sudo dscl . -create /Groups/"$EXEC_USER" PrimaryGroupID $EXEC_GID || true
+            # Create user
+            sudo dscl . -create /Users/"$EXEC_USER" || true
+            sudo dscl . -create /Users/"$EXEC_USER" UniqueID $EXEC_UID || true
+            sudo dscl . -create /Users/"$EXEC_USER" PrimaryGroupID $EXEC_GID || true
+            sudo dscl . -create /Users/"$EXEC_USER" NFSHomeDirectory /var/empty || true
+            sudo dscl . -create /Users/"$EXEC_USER" UserShell /usr/bin/false || true
+            sudo dscl . -create /Users/"$EXEC_USER" RealName "HappyRanch Executor" || true
+          fi
+
+          # Verify the account
+          id "$EXEC_USER"
+          echo "executor_uid=$EXEC_UID" >> "$GITHUB_OUTPUT"
+          echo "executor_gid=$EXEC_GID" >> "$GITHUB_OUTPUT"
+          echo "executor_user=$EXEC_USER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify OS identity separation
+        run: |
+          set -eux
+          EXEC_USER="${{ steps.provision.outputs.executor_user }}"
+          DAEMON_USER=$(whoami)
+          DAEMON_UID=$(id -u)
+          EXEC_UID=$(id -u "$EXEC_USER")
+
+          echo "Daemon identity: $DAEMON_USER (uid=$DAEMON_UID)"
+          echo "Executor identity: $EXEC_USER (uid=$EXEC_UID)"
+
+          # Identities MUST be distinct
+          if [ "$DAEMON_UID" -eq "$EXEC_UID" ]; then
+            echo "ERROR: Daemon and executor share the same uid=$DAEMON_UID"
+            exit 1
+          fi
+
+          # Daemon uid must not be 0 (root) for isolation to work
+          if [ "$DAEMON_UID" -eq 0 ]; then
+            echo "ERROR: Daemon running as root — cannot isolate executor"
+            exit 1
+          fi
+
+          echo "Identity separation verified: daemon=$DAEMON_UID, executor=$EXEC_UID"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run canonical store + isolation tests
+        env:
+          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+        run: |
+          set -eux
+          # Run the canonical store and isolation test suites.
+          # These tests verify:
+          # - Canonical store build, hash-addressing, path-traversal rejection
+          # - Symlink materializer create/repair/withdrawal
+          # - Platform isolation identity checks
+          # - macOS executor launch contract
+          # - Cutover completeness (no legacy copy remains)
+          # - Skill freshness (31 tests)
+          uv run pytest \
+            tests/test_canonical_skill_store.py \
+            tests/test_canonical_production_bound.py \
+            tests/test_skill_cutover_completeness.py \
+            tests/test_thr070_skill_freshness.py \
+            tests/test_system_contract_materialization.py \
+            tests/test_workspace_adapters.py \
+            -v --tb=short
+
+      - name: Verify canonical store isolation (write/ACL attacks)
+        env:
+          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+        run: |
+          set -eux
+          # Run the production-bound isolation verification.
+          # On CI with provisioned accounts, the executor identity tests
+          # will run without being skipped.
+          uv run pytest \
+            tests/test_canonical_production_bound.py \
+            -v --tb=long \
+            -k "executor_identity or canonical_ownership or safe_repair or write_via_link"

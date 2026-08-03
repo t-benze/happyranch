@@ -1,5 +1,15 @@
 # Agent Executors And Permissions
 
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
+> the **immutable canonical skill store + workspace symlink architecture**
+> (macOS-only). The legacy per-session copy model is REMOVED. See
+> ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
+> for ownership, provenance, link validation, repair/refusal/withdrawal/retention
+> semantics, macOS provisioning, and the compatibility-fallback boundary.
+> Linux and Windows are NOT supported — explicitly fail closed.
+
+# Agent Executors And Permissions
+
 **THR-095 (founder ruling option B):** The executor is declared in the
 **org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
 authoritative store. The workspace ``agent.yaml`` is no longer read or
