@@ -190,6 +190,64 @@ class PlatformIsolation(ABC):
 # ── macOS implementation ────────────────────────────────────────────
 
 
+def _resolve_executor_username(identity: PlatformIdentity) -> str:
+    """Resolve the executor username from the provisioned account.
+
+    Looks up the username for the given uid. The provisioned account
+    must exist and have a distinct uid from the daemon.
+
+    Raises PlatformIsolationError if the account cannot be resolved.
+    """
+    try:
+        pw = pwd.getpwuid(identity.uid)
+        return pw.pw_name
+    except KeyError:
+        raise PlatformIsolationError(
+            "executor_username_unresolvable",
+            f"Cannot resolve username for executor uid={identity.uid}. "
+            "Ensure the provisioned executor account exists.",
+        )
+
+
+def _verify_sudo_capability(username: str) -> None:
+    """Verify non-interactive sudo access to the executor account.
+
+    Runs ``sudo -n -u <username> true`` to check that:
+    - sudo is available
+    - The daemon process has passwordless sudo authority for this user
+    - The executor account exists and can execute commands
+
+    Raises PlatformIsolationError on any failure.
+    """
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "-u", username, "true"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise PlatformIsolationError(
+                "sudo_capability_failed",
+                f"sudo -n -u {username} exited {result.returncode}: "
+                f"{result.stderr.strip()}. "
+                "The daemon must have passwordless sudo authority for "
+                f"the executor account '{username}'. Provision via sudoers: "
+                f"<daemon_user> ALL=({username}) NOPASSWD: ALL",
+            )
+    except FileNotFoundError:
+        raise PlatformIsolationError(
+            "sudo_unavailable",
+            "sudo command not found. The macOS executor launch contract "
+            "requires sudo for non-root identity handoff.",
+        )
+    except subprocess.TimeoutExpired:
+        raise PlatformIsolationError(
+            "sudo_timeout",
+            "sudo -n -u command timed out. Check sudoers configuration.",
+        )
+
+
 def _drop_privileges_macos(uid: int, gid: int) -> None:
     """preexec_fn helper: drop privileges to executor uid/gid before exec.
 
@@ -197,6 +255,10 @@ def _drop_privileges_macos(uid: int, gid: int) -> None:
     FAIL-CLOSED: any failure to drop privileges raises PlatformIsolationError
     BEFORE exec — the child MUST run as the distinct restricted executor
     identity, never as the daemon owner.
+
+    **Note:** This path requires the daemon to run with sufficient
+    privileges (root or CAP_SETUID/CAP_SETGID). For the non-root deployment
+    model, ``launch_executor`` uses ``sudo -n -u <executor>`` instead.
     """
     try:
         os.setgid(gid)
@@ -260,6 +322,20 @@ class _MacOSPlatformIsolation(PlatformIsolation):
                 f"is same as daemon (uid={self._daemon_uid}). "
                 "Executor must run as a DISTINCT restricted macOS identity.",
             )
+
+    def _resolve_executor_username_for_launch(self) -> str:
+        """Resolve the executor username and verify sudo capability.
+
+        Called before every launch_executor call. Returns the username
+        of the provisioned restricted executor account.
+
+        Raises PlatformIsolationError if the account cannot be resolved
+        or passwordless sudo is not configured.
+        """
+        assert self._executor_identity is not None
+        username = _resolve_executor_username(self._executor_identity)
+        _verify_sudo_capability(username)
+        return username
 
     def provision_canonical_store(self, path: Path) -> None:
         """Set canonical store ownership to daemon uid:gid.
@@ -420,9 +496,20 @@ class _MacOSPlatformIsolation(PlatformIsolation):
     ) -> subprocess.Popen:
         """Launch a subprocess as the restricted executor identity on macOS.
 
-        Uses preexec_fn to setgid+setuid to the executor identity before exec.
-        The preexec_fn RAISES on failure — the Popen constructor will catch
-        the exception before any subprocess is created.
+        **Non-root deployment model (production/serving).**
+        Uses ``sudo -n -u <provisioned executor>`` to hand off the OS
+        identity. This is the ONLY supported launch path — the daemon
+        is NOT expected to run as root, and direct setgid/setuid from
+        preexec_fn is NOT available to non-root daemon processes.
+
+        Before construction:
+        1. Verifies executor identity is provisioned and distinct.
+        2. Resolves the executor username.
+        3. Verifies passwordless sudo capability (``sudo -n -u <user> true``).
+        4. Constructs a ``sudo -n -u <user> -- <cmd>`` invocation.
+
+        If provisioning, identity resolution, sudo authorization, command
+        construction, or ACL capability is unavailable → fail closed.
 
         Same-owner launch is REJECTED — executor identity MUST differ from
         daemon.
@@ -430,19 +517,21 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         self._assert_executor_distinct()
         assert self._executor_identity is not None  # narrow type for mypy
 
+        # Resolve executor username and verify sudo access
+        executor_user = self._resolve_executor_username_for_launch()
+
+        # Build sudo invocation: sudo -n -u <executor_user> -- <cmd>
+        sudo_cmd = ["sudo", "-n", "-u", executor_user, "--"] + list(cmd)
+
         try:
             return subprocess.Popen(
-                cmd,
+                sudo_cmd,
                 cwd=str(cwd),
                 stdin=stdin,
                 stdout=stdout,
                 stderr=stderr,
                 text=text,
                 env=env,
-                preexec_fn=lambda: _drop_privileges_macos(
-                    self._executor_identity.uid,
-                    self._executor_identity.gid,
-                ),
             )
         except PlatformIsolationError:
             raise

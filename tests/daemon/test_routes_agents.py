@@ -2100,7 +2100,11 @@ def test_set_executor_claude_to_codex_materializes_skills(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["materialization_errors"] == []
+    # materialization_errors no longer in response — success means
+    # the HTTP 200 itself is the proof of clean materialization
+    assert "materialization_errors" not in body, (
+        "materialization_errors field must not be present on success"
+    )
 
     # Union of all 6 contexts: task, thread, wake, dream, schedule, bootstrap
     all_contracts: set[str] = set()
@@ -2137,7 +2141,9 @@ def test_set_executor_codex_to_claude_materializes_skills(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["materialization_errors"] == []
+    assert "materialization_errors" not in body, (
+        "materialization_errors field must not be present on success"
+    )
 
     all_contracts: set[str] = set()
     for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
@@ -2151,12 +2157,12 @@ def test_set_executor_codex_to_claude_materializes_skills(
         )
 
 
-def test_set_executor_materialization_failure_non_fatal(
+def test_set_executor_materialization_failure_fail_closed(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """When workspace_skills materialization raises during executor switch,
-    the switch still succeeds (steps 1-3 have already mutated state).
-    The error is surfaced in the response body, not as a 500."""
+    """When canonical union materialization fails during executor switch,
+    the route must fail closed: HTTP 400, previous executor preserved,
+    no partial state mutation."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2183,13 +2189,14 @@ def test_set_executor_materialization_failure_non_fatal(
             headers=auth_headers,
         )
 
-    # Switch still succeeds — step 1-3 mutations are already applied
-    assert r.status_code == 200, r.text
+    # FAIL-CLOSED: materialization failure prevents switch
+    assert r.status_code == 400, (
+        f"Expected 400 on materialization failure, got {r.status_code}: {r.text}"
+    )
     body = r.json()
-    assert body["before"]["org_executor"] == "claude"
-    assert body["after"]["org_executor"] == "codex"
-    # Materialization failure is surfaced non-fatally (single union call)
-    assert len(body["materialization_errors"]) == 1, (
-        f"Expected 1 materialization error (single union call), "
-        f"got {body['materialization_errors']}"
+    assert body["detail"]["code"] == "executor_materialization_failed", (
+        f"Expected executor_materialization_failed, got {body}"
+    )
+    assert len(body["detail"]["errors"]) >= 1, (
+        f"Expected at least 1 materialization error, got {body}"
     )
