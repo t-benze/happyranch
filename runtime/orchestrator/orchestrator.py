@@ -794,8 +794,7 @@ class Orchestrator:
         # task_id, and session_id.  No digest text, titles, or bodies.
         # Empty/None digest => no impression event.
         if memory_digest:
-            from runtime.infrastructure.learnings_store import MemoryStore
-            digest_ids = MemoryStore._extract_digest_ids(memory_digest)
+            digest_ids = AuditLogger._extract_digest_ids(memory_digest)
             if digest_ids:
                 self._audit.log_memory_digest_impression(
                     agent=agent_name,
