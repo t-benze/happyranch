@@ -29,7 +29,7 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 from runtime.platform.isolation import (
     PlatformIsolationError,
-    _probe_unix_executor_account,
+    _probe_macos_executor_account,
     detect_platform_isolation,
 )
 from runtime.skills.canonical_store import CanonicalSkillStore
@@ -194,10 +194,10 @@ class TestPlatformIsolationIdentities:
     """
 
     @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows-specific; tested on Windows CI runner",
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
     )
-    def test_unix_executor_identity_is_distinct(self):
+    def test_macos_executor_identity_is_distinct(self):
         """On Unix, executor identity must differ from daemon identity.
 
         This test validates the isolation contract: daemon uid != executor uid.
@@ -222,10 +222,10 @@ class TestPlatformIsolationIdentities:
         assert executor.is_restricted, "Executor identity must be marked restricted"
 
     @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows-specific; tested on Windows CI runner",
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
     )
-    def test_unix_launch_executor_requires_distinct_identity(self):
+    def test_macos_launch_executor_requires_distinct_identity(self):
         """launch_executor raises PlatformIsolationError if same-owner."""
         # We can't actually launch a process in a unit test context,
         # but we can verify the constructor detects the missing executor.
@@ -274,33 +274,28 @@ class TestPlatformIsolationIdentities:
         """verify_canonical_ownership raises if path owned by different user.
 
         Creates a test directory, makes it owned by a different uid (if possible),
-        and verifies the check fails.
+        and verifies the check fails. macOS-only.
         """
+        if sys.platform != "darwin":
+            pytest.skip("macOS-only test")
         isolation = detect_platform_isolation()
         test_dir = tmp_path / "test-owner"
         test_dir.mkdir()
 
-        # On Unix, try to chown to a different user (nobody)
-        if sys.platform != "win32":
-            try:
-                import pwd
-                nobody = pwd.getpwnam("nobody")
-                os.chown(test_dir, nobody.pw_uid, nobody.pw_gid)
-                # Now verify_canonical_ownership should fail
-                with pytest.raises(PlatformIsolationError) as exc_info:
-                    isolation.verify_canonical_ownership(test_dir)
-                assert "canonical_wrong_owner" in str(exc_info.value)
-            except (PermissionError, KeyError, OSError):
-                pytest.skip(
-                    "Cannot chown test directory. Run on CI runner with "
-                    "proper service account provisioning."
-                )
-        else:
-            # Windows: verify_canonical_ownership checks existence + icacls
-            # This test validates the path exists check at minimum
-            nonexistent = tmp_path / "nonexistent"
-            with pytest.raises(PlatformIsolationError, match="canonical_missing"):
-                isolation.verify_canonical_ownership(nonexistent)
+        # On macOS, try to chown to a different user (nobody)
+        try:
+            import pwd
+            nobody = pwd.getpwnam("nobody")
+            os.chown(test_dir, nobody.pw_uid, nobody.pw_gid)
+            # Now verify_canonical_ownership should fail
+            with pytest.raises(PlatformIsolationError) as exc_info:
+                isolation.verify_canonical_ownership(test_dir)
+            assert "canonical_wrong_owner" in str(exc_info.value)
+        except (PermissionError, KeyError, OSError):
+            pytest.skip(
+                "Cannot chown test directory. Run on CI runner with "
+                "proper service account provisioning."
+            )
 
 
 # ── Finding 5: Cutover completeness ───────────────────────────────────

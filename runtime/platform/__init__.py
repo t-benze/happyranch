@@ -1,10 +1,12 @@
-"""Platform isolation primitives for cross-platform canonical store ownership.
+"""Platform isolation primitives for macOS canonical store ownership.
 
-Provides Unix (Linux/macOS) and Windows implementations for:
+Provides macOS-only implementation for:
 - Service/daemon identity checks
 - Restricted executor identity provisioning
-- Filesystem ownership, ACL, and permission enforcement
-- Symlink/junction creation and validation
+- Filesystem ownership and permission enforcement
+- Symlink creation and validation
+
+Linux and Windows are NOT supported in this release — explicitly fail closed.
 """
 
 from __future__ import annotations

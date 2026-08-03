@@ -168,8 +168,55 @@ Claude workspaces have a `.claude/settings.json` that configures Claude Code's a
 
 Skills — structured guidance packages that tell an agent how to perform specific
 operations — are materialized into the agent's workspace on every session spawn
-by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
-contexts (task, thread, wake, dream).
+by `materialize_workspace_skills` (`workspace_adapters.py`). This runs on all
+spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch).
+
+#### Canonical skill store + workspace symlinks (macOS-only)
+
+As of TASK-4009/TASK-4012, skill materialization uses a **daemon-owned immutable
+canonical skill store** outside executor workspaces. Skills are built once into
+hash-addressed read-only packages and workspace entries are **validated relative
+symlinks** to exact approved package versions under both `.claude/skills` and
+`.agents/skills` roots (including Codex, Opencode, Pi, and mapped custom profiles).
+
+**Supported platform:** macOS (darwin) only. Linux and Windows explicitly fail
+closed before launch/materialization with a named `PlatformIsolationError`.
+
+**Ownership and provenance:**
+- Canonical packages are daemon/materializer-owned, immutable, content-addressed
+trees from exact verified provenance/members for system, release-managed, and
+lifecycle version-pinned packages.
+- Owner/permission/ACL checks reject identity confusion and mutation.
+- Canonical targets are read-only (0444) after build; the executor cannot write,
+chmod, chown, or mutate canonical content through workspace symlinks.
+
+**Isolation contract (macOS):**
+- The daemon/materializer and executor MUST be distinct OS identities with
+different uid/gid.
+- Executor processes are launched via setgid/setuid to the restricted executor
+account. Same-owner launch is REJECTED.
+- Canonical store ownership and permissions are verified before every launch.
+- Ordinary directories, malicious/broken/external/wrong-version links, unsafe
+targets, failed permission check, missing account, or repair errors fail closed
+and prevent launch. Never recursively delete or follow attacker nodes.
+
+**Link validation and repair:**
+- Materialized links are validated relative symlinks resolving inside the
+canonical store. Stale, broken, wrong-version, non-symlink, external, or
+mismatched-hash entries are atomically repaired.
+- Withdrawal removes only owned validated links, retains canonical packages.
+- The full expected union is derived once per provider root so system contracts
+are never withdrawn by managed/lifecycle-only reconciliation.
+
+**Legacy compatibility fallback:** The legacy per-session copy model
+(`_copy_skills_tree`, `_WHOLESALE_DUMP_ENABLED`, `refresh_session_skills`)
+is removed as an executable path. No catch-and-copy or silent fallback survives.
+The canonical store + symlink model is the sole production materialization path.
+
+**Org context:** `{ORG_SLUG}` placeholders in canonical skill bodies are NOT
+substituted. The org slug is passed to the child process via
+`HAPPYRANCH_ORG_SLUG` environment variable from the authorized session/task
+metadata. Existing multi-org commands receive a real existing-org slug.
 
 **Release-shipped managed-catalog skills.** Bundled skills ship inside the
 repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
