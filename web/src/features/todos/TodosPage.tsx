@@ -69,10 +69,10 @@ export function TodosPage(): JSX.Element {
   return (
     <ContentWrap>
       <div className="mb-5">
-        <p className="text-fg-subtle mb-1 text-xs font-medium tracking-wider uppercase">
+        <p className="text-fg-subtle mb-1 font-mono text-xs font-medium tracking-wider uppercase">
           {TODO_STRINGS.eyebrow}
         </p>
-        <h1 className="text-h1 text-fg">{TODO_STRINGS.pageTitle}</h1>
+        <h1 className="text-display text-fg">{TODO_STRINGS.pageTitle}</h1>
         <p className="text-fg-muted mt-2 text-base">{TODO_STRINGS.subtitle}</p>
         <p className="text-fg-subtle mt-1.5 text-sm">{TODO_STRINGS.trustLine}</p>
       </div>

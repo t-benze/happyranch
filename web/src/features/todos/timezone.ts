@@ -67,8 +67,13 @@ function tzParts(date: Date, tz: string) {
  * timezone `tz` to a UTC ISO-8601 instant string (e.g.
  * "2026-08-01T01:00:00Z") or null.
  *
- * The local date/time is interpreted in the named timezone, including DST,
- * and converted to the corresponding UTC instant.
+ * The local date/time is interpreted in the named timezone, including DST.
+ * If the supplied wall time does not exist in that timezone (a DST gap),
+ * the function returns null so the caller can surface a validation error
+ * instead of emitting an unchecked UTC candidate.
+ *
+ * Ambiguous local times (DST fold) resolve to the first matching instant;
+ * the returned instant is verified to render back to the supplied wall time.
  */
 export function serializeOneShotInTz(
   dateStr: string,
@@ -93,10 +98,12 @@ export function serializeOneShotInTz(
     return null
   }
 
-  // Iterate to find the UTC instant whose local representation in `tz`
-  // equals the supplied date/time. This handles DST transitions correctly.
-  let candidate = Date.UTC(year, month - 1, day, hour, minute, 0)
-  for (let i = 0; i < 5; i++) {
+  // Search the +/- 25 hour window around the naive UTC interpretation.
+  // This window comfortably covers every current IANA offset (max ~±14 h)
+  // and all DST shifts, so a real instant is always found if it exists.
+  const naive = Date.UTC(year, month - 1, day, hour, minute, 0)
+  for (let deltaMinutes = -25 * 60; deltaMinutes <= 25 * 60; deltaMinutes++) {
+    const candidate = naive + deltaMinutes * 60_000
     const parts = tzParts(new Date(candidate), tz)
     if (
       parts.year === year &&
@@ -107,11 +114,11 @@ export function serializeOneShotInTz(
     ) {
       return new Date(candidate).toISOString().replace(/\.\d{3}Z$/, 'Z')
     }
-    const offset = tzOffsetMinutes(new Date(candidate), tz)
-    candidate = candidate - offset * 60_000
   }
 
-  return new Date(candidate).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  // No instant renders back to the requested local time (nonexistent wall
+  // time, e.g. a DST gap). Return null so the caller blocks the mutation.
+  return null
 }
 
 /**

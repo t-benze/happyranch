@@ -836,6 +836,32 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     expect(result).toBeNull()
   })
 
+  it('shows a validation error and does not PATCH when a one-shot falls in a DST gap', async () => {
+    let patchCalled = false
+    mockDetailWithEdit(ARMED_ONESHOT, () => {
+      patchCalled = true
+      return HttpResponse.json(ARMED_ONESHOT)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-058` })
+    await waitForDetailHeading('Follow up on the Acme trial issue')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    const dateInput = screen.getByLabelText('Date')
+    const timeInput = screen.getByLabelText('Time')
+    await userEvent.clear(dateInput)
+    await userEvent.type(dateInput, '2026-03-08')
+    await userEvent.clear(timeInput)
+    await userEvent.type(timeInput, '02:30')
+
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await screen.findByText(/does not exist in/)
+    expect(patchCalled).toBe(false)
+  })
+
   it('serializeOneShotInTz converts local date/time in non-browser IANA zone to UTC', async () => {
     const { serializeOneShotInTz } = await import('./timezone')
     expect(serializeOneShotInTz('2026-08-05', '09:00', 'Asia/Shanghai')).toBe(
@@ -845,6 +871,37 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
       '2026-08-05T13:00:00Z',
     )
     expect(serializeOneShotInTz('2026-08-05', '09:00', 'UTC')).toBe('2026-08-05T09:00:00Z')
+  })
+
+  it('serializeOneShotInTz rejects nonexistent DST-gap local times', async () => {
+    const { serializeOneShotInTz } = await import('./timezone')
+    // America/New_York springs forward at 02:00 → 03:00 on 2026-03-08.
+    expect(serializeOneShotInTz('2026-03-08', '02:30', 'America/New_York')).toBeNull()
+    expect(serializeOneShotInTz('2026-03-08', '02:01', 'America/New_York')).toBeNull()
+    expect(serializeOneShotInTz('2026-03-08', '02:59', 'America/New_York')).toBeNull()
+    // Europe/Berlin springs forward at 02:00 → 03:00 on 2026-03-29.
+    expect(serializeOneShotInTz('2026-03-29', '02:30', 'Europe/Berlin')).toBeNull()
+  })
+
+  it('serializeOneShotInTz accepts valid times immediately adjacent to a DST gap', async () => {
+    const { serializeOneShotInTz } = await import('./timezone')
+    // 01:59 EST exists; 03:00 EDT exists.
+    expect(serializeOneShotInTz('2026-03-08', '01:59', 'America/New_York')).toBe(
+      '2026-03-08T06:59:00Z',
+    )
+    expect(serializeOneShotInTz('2026-03-08', '03:00', 'America/New_York')).toBe(
+      '2026-03-08T07:00:00Z',
+    )
+  })
+
+  it('serializeOneShotInTz accepts ambiguous DST-fold local times and returns a verified instant', async () => {
+    const { serializeOneShotInTz, formatFireAtInTz } = await import('./timezone')
+    // America/New_York falls back at 02:00 → 01:00 on 2026-11-01, so 01:30 occurs twice.
+    const iso = serializeOneShotInTz('2026-11-01', '01:30', 'America/New_York')
+    expect(iso).not.toBeNull()
+    // The returned instant must render back to the requested wall time.
+    expect(formatFireAtInTz(iso!, 'America/New_York')).toContain('01:30')
+    expect(formatFireAtInTz(iso!, 'America/New_York')).toContain('Nov 1')
   })
 })
 
@@ -886,7 +943,8 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     await userEvent.click(screen.getByText('Save changes'))
 
     await screen.findByText('This Todo was modified')
-    expect(screen.getByText('Reload record')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
   it('409 conflict prompt uses neutral wording and does not claim the Todo fired', async () => {
@@ -923,6 +981,8 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     expect(dialogText).not.toContain('most likely it fired')
     expect(dialogText).not.toContain('fired')
     expect(dialogText).not.toContain('saved')
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy()
   })
 
   it('shows validation error inline on non-409 error', async () => {

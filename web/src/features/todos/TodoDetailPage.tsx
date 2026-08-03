@@ -441,10 +441,6 @@ export function TodoDetailPage({
             onSave={handleEditSave}
             validationError={validationError}
             conflict={conflict}
-            onDismissConflict={() => {
-              refetch()
-              setConflict(false)
-            }}
             loading={editMutation.isPending}
           />
         </>

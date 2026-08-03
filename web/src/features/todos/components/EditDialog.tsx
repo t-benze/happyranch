@@ -65,7 +65,6 @@ interface EditDialogProps {
   onSave: (fields: ScheduleEditFields) => Promise<void>
   validationError?: string | null
   conflict?: boolean
-  onDismissConflict?: () => void
   loading?: boolean
 }
 
@@ -76,7 +75,6 @@ export function EditDialog({
   onSave,
   validationError,
   conflict = false,
-  onDismissConflict,
   loading = false,
 }: EditDialogProps): JSX.Element {
   const isWeekly = schedule.kind === 'weekly'
@@ -87,8 +85,12 @@ export function EditDialog({
   const [weekday, setWeekday] = useState(initialRecurrence.day ?? 'Mon')
   const [weeklyTime, setWeeklyTime] = useState(initialRecurrence.time ?? '09:00')
   const [timezone, setTimezone] = useState(schedule.timezone || 'UTC')
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  const displayedError = localError ?? validationError
 
   useEffect(() => {
+    setLocalError(null)
     if (!open) return
     const tz = schedule.timezone || 'UTC'
 
@@ -141,6 +143,7 @@ export function EditDialog({
   }, [isWeekly, weekday, weeklyTime, fireAtDate, fireAtTime, timezone])
 
   const handleSave = async () => {
+    setLocalError(null)
     const fields: ScheduleEditFields = {}
 
     if (isWeekly) {
@@ -154,9 +157,13 @@ export function EditDialog({
     } else {
       if (fireAtDate && fireAtTime) {
         const iso = serializeOneShotInTz(fireAtDate, fireAtTime, timezone || 'UTC')
-        if (iso) {
-          fields.fire_at = iso
+        if (!iso) {
+          setLocalError(
+            `This date and time does not exist in ${timezone || 'UTC'} (for example, during a daylight-saving transition).`,
+          )
+          return
         }
+        fields.fire_at = iso
       }
       if (timezone) fields.timezone = timezone
     }
@@ -170,24 +177,18 @@ export function EditDialog({
           <DialogHeader>
             <DialogTitle>This Todo was modified</DialogTitle>
             <DialogDescription>
-              This Todo changed while you were editing it. The page will reload
-              the current record so you can see the actual state.
+              This Todo changed while you were editing it. Reload the page to
+              see the current state before editing again.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              variant="secondary"
-              onClick={onDismissConflict ?? (() => onOpenChange(false))}
-            >
-              Dismiss
-            </Button>
             <Button
               onClick={() => {
                 onOpenChange(false)
                 window.location.reload()
               }}
             >
-              Reload record
+              Reload
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -296,9 +297,9 @@ export function EditDialog({
             </div>
           )}
 
-          {validationError && (
+          {displayedError && (
             <div className="border-tier-red bg-tier-red-tint text-tier-red rounded border px-3 py-2 text-sm">
-              {validationError}
+              {displayedError}
             </div>
           )}
         </div>
