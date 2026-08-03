@@ -924,11 +924,11 @@ def test_no_demonstrated_problem_decision(db):
 
 def test_contradictory_roles_preserved_full_decision(db):
     """Two roles with divergent pull-through: one <10%, one >=10%.
-    Aggregate <10% but majority NOT below → no activation loss.
-    Contradictory role visibility preserved."""
+    Aggregate <10% but majority of eligible roles NOT below →
+    no activation loss, no global remedy, per-role metrics visible."""
     logger = AuditLogger(db)
-    # role_a: 500 sessions, only 5 with reads → pull-through ~1%
-    for i in range(500):
+    # role_a (agent_a): 970 sessions, only 5 with reads → pull-through ~0.5%
+    for i in range(970):
         logger.log_memory_digest_impression(
             agent="agent_a",
             task_id=f"TASK-A{i:04d}",
@@ -942,8 +942,9 @@ def test_contradictory_roles_preserved_full_decision(db):
             session_id=f"sess-ca{i:04d}",
             task_id=f"TASK-A{i:04d}",
         )
-    # role_b: 200 sessions, all with reads → pull-through 100%
-    for i in range(200):
+    # role_b (agent_b): 30 sessions, all with reads → pull-through 100%
+    # task_id must match impression tuple exactly
+    for i in range(30):
         logger.log_memory_digest_impression(
             agent="agent_b",
             task_id=f"TASK-B{i:04d}",
@@ -954,7 +955,7 @@ def test_contradictory_roles_preserved_full_decision(db):
         logger.log_memory_read(
             agent="agent_b", id=f"MEM-CB{i:04d}", slug="x",
             session_id=f"sess-cb{i:04d}",
-            task_id=f"TASK-CB{i:04d}",
+            task_id=f"TASK-B{i:04d}",
         )
     report = logger.compute_memory_telemetry_report(
         agent_role_map={"agent_a": "role_a", "agent_b": "role_b"},
@@ -962,36 +963,22 @@ def test_contradictory_roles_preserved_full_decision(db):
     )
     obs = report["observation_period"]
     assert obs["thresholds_met"] is True
-    assert obs["total_correlated_sessions"] == 700
 
     agg = report["aggregate"]
-    # aggregate pull-through: 205/700 ≈ 29% — wait, that's >10%
-    # Need to make it <10% but majority of roles NOT <10%
-    # Let me check: role_a has ~1% (5/500), role_b has 100% (200/200)
-    # aggregate: (5+200)/(500+200) = 205/700 ≈ 29.3% — that's >10%!
-    # So activation loss won't trigger. I need to adjust:
-    # Make role_a low, role_b high enough that aggregate <10% but role_b >=10%
-    # Actually: 5 + 200 = 205 reads, 500 + 200 = 700 shown = 29% > 10%
-    # The test docstring says aggregate <10% but majority NOT below.
-    # For that: need ~5 reads from 500 + 200 more sessions with 0 reads from 200
-    # total 700 sessions, ~5 reads = 0.7% < 10%
-    # role_a: 5/500 < 10% (1 role below)
-    # role_b: 0/200 = 0% < 10% (2 roles below) → majority below!
-    # Hmm. Let me just skip the contradictory role assertion here and focus on
-    # verifying the by_role structure. The key thing is that the by_role is
-    # populated correctly.
+    # 35 reads / 1000 shown ≈ 3.5% < 10%
+    assert agg["digest_pull_through"] < 0.10
 
     by_role = report["by_role"]
     assert by_role["role_a"]["eligible"] is True
-    assert by_role["role_a"]["correlated_sessions"] == 500
+    assert by_role["role_a"]["correlated_sessions"] == 970
+    assert by_role["role_a"]["digest_pull_through"] < 0.10
     assert by_role["role_b"]["eligible"] is True
-    assert by_role["role_b"]["correlated_sessions"] == 200
+    assert by_role["role_b"]["correlated_sessions"] == 30
+    assert by_role["role_b"]["digest_pull_through"] >= 0.10
 
-    # Both roles appear in by_role with correct session counts
-    # Decision may be activation_loss (both <10%) or no_demonstrated_problem
-    # depending on exact pull-through, but the key is that contradictory
-    # roles are preserved — no global remedy applied silently
-    assert report["decision"] in ("activation_loss", "no_demonstrated_problem")
+    # Majority (1 of 2) NOT below 10% → no global remedy
+    assert report["decision"] == "no_demonstrated_problem"
+    assert "majority" in report["decision_detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1228,3 +1215,114 @@ def test_report_without_role_map_marks_unavailable(db):
     assert obs["sessions_met"] is False
     # roles_warning appears only when thresholds_met, which they aren't here.
     # The role mapping is None, so roles are effectively unavailable.
+
+
+# ---------------------------------------------------------------------------
+# 20. CLI _compute_report production path — unavailable/partial role maps
+# ---------------------------------------------------------------------------
+
+from cli.commands.learning import _compute_report
+
+
+def test_compute_report_roles_unavailable_warning(db):
+    """CLI _compute_report: when agent_role_map is None and thresholds
+    are met, roles_warning is emitted and decision is safe (no remedy
+    when zero eligible roles)."""
+    logger = AuditLogger(db)
+    for i in range(600):
+        logger.log_memory_digest_impression(
+            agent="dev_agent",
+            task_id=f"TASK-CR{i:04d}",
+            session_id=f"sess-cr{i:04d}",
+            digest_ids=[f"MEM-CR{i:04d}"],
+            budget=1500,
+        )
+    # Gather rows to feed _compute_report directly (convert Row → dict)
+    impression_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT timestamp, agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_digest_impression'",
+    )]
+    read_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_read'",
+    )]
+    search_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_search'",
+    )]
+    report = _compute_report(
+        impression_rows=impression_rows,
+        read_rows=read_rows,
+        search_rows=search_rows,
+        agent_role_map=None,
+        current_time=_future_now(),
+    )
+    # Thresholds met
+    assert report["observation_period"]["thresholds_met"] is True
+    # roles_warning emitted for unavailable map
+    assert "roles_warning" in report
+    assert "unavailable" in report["roles_warning"]
+    assert report["by_role"] == {}
+    # With zero eligible roles, must NOT claim activation_loss
+    assert report["decision"] != "activation_loss"
+
+
+def test_compute_report_partial_role_map_warning(db):
+    """CLI _compute_report: partial role map emits warning for
+    unknown agents, excludes them from role decisions, and keeps
+    known roles intact."""
+    logger = AuditLogger(db)
+    # known agent: developer role
+    for i in range(500):
+        logger.log_memory_digest_impression(
+            agent="dev_agent",
+            task_id=f"TASK-DK{i:04d}",
+            session_id=f"sess-dk{i:04d}",
+            digest_ids=[f"MEM-DK{i:04d}"],
+            budget=1500,
+        )
+        logger.log_memory_read(
+            agent="dev_agent", id=f"MEM-DK{i:04d}", slug="x",
+            session_id=f"sess-dk{i:04d}",
+            task_id=f"TASK-DK{i:04d}",
+        )
+    # unknown agent: not in role map
+    for i in range(200):
+        logger.log_memory_digest_impression(
+            agent="unknown_agent",
+            task_id=f"TASK-UK{i:04d}",
+            session_id=f"sess-uk{i:04d}",
+            digest_ids=[f"MEM-UK{i:04d}"],
+            budget=1500,
+        )
+    impression_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT timestamp, agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_digest_impression'",
+    )]
+    read_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_read'",
+    )]
+    search_rows = [dict(r) for r in db.fetch_all_readonly(
+        "SELECT agent, task_id, payload FROM audit_log"
+        " WHERE action = 'memory_search'",
+    )]
+    report = _compute_report(
+        impression_rows=impression_rows,
+        read_rows=read_rows,
+        search_rows=search_rows,
+        agent_role_map={"dev_agent": "developer"},
+        current_time=_future_now(),
+    )
+    # roles_warning emitted for unknown agent
+    assert "roles_warning" in report
+    assert "unknown_agent" in report["roles_warning"]
+    assert "unknown roles" in report["roles_warning"].lower()
+    # Known role present
+    by_role = report["by_role"]
+    assert "developer" in by_role
+    assert by_role["developer"]["eligible"] is True
+    # Unknown agent excluded from by_role
+    assert "unknown_agent" not in by_role
+    # Decision is safe given the data
+    assert "decision" in report

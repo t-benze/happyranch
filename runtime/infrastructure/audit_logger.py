@@ -1385,11 +1385,11 @@ class AuditLogger:
                     " Next step: provenance/push tuning only, no aliases/embeddings."
                 )
             elif not eligible_roles:
-                decision = "activation_loss"
+                decision = "no_demonstrated_problem"
                 decision_detail = (
                     f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
-                    " but no eligible roles to confirm. Proceeding with"
-                    " activation_loss recommendation (push tuning only)."
+                    " but no eligible roles to confirm (role analysis"
+                    " unavailable). Do not tune ranking/push."
                 )
             else:
                 # Aggregate <10% but majority of roles are NOT <10% => no global

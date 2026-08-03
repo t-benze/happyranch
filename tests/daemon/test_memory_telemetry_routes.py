@@ -353,3 +353,101 @@ def test_audit_route_supports_cursor_pagination(client_with_runtime):
     # All rows distinct
     all_ids = [e["id"] for e in page1["entries"] + page2["entries"] + page3["entries"]]
     assert len(all_ids) == 10 == len(set(all_ids))
+
+
+# ---------------------------------------------------------------------------
+# Cross-org session validation — ctx_org must match route org_slug
+# ---------------------------------------------------------------------------
+
+
+def _setup_beta_org_sessions(org_state, daemon_state):
+    """Create and register a beta org with its own SessionTracker.
+
+    Returns the beta OrgState so tests can insert cross-org session
+    contexts and verify that alpha routes reject them.
+    """
+    from runtime.daemon.org_state import OrgState
+    from runtime.config import Settings
+
+    if "beta" in daemon_state.orgs:
+        return daemon_state.orgs["beta"]
+
+    runtime_root = org_state.root.parent
+    beta_root = runtime_root / "beta"
+    beta_root.mkdir(parents=True, exist_ok=True)
+    (beta_root / "org").mkdir(exist_ok=True)
+    (beta_root / "org" / "teams.yaml").write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+    )
+    settings = Settings()
+    beta = OrgState.load(slug="beta", root=beta_root, settings=settings)
+    daemon_state.orgs["beta"] = beta
+    return beta
+
+
+def test_read_cross_org_session_uncorrelated(client_with_runtime):
+    """A session registered under org 'beta' must NOT correlate for
+    an 'alpha' route — ctx_org != slug, so source=explicit_or_other."""
+    client, org = client_with_runtime
+    daemon_state = client.app.state.daemon
+    beta = _setup_beta_org_sessions(org, daemon_state)
+
+    ws = org.root / "workspaces" / "dev_agent"
+    (ws / "memory").mkdir(parents=True, exist_ok=True)
+    (ws / "memory" / "MEM-001-test.md").write_text(
+        "---\nid: MEM-001\nslug: test\ntitle: Test\ntopic: w\n"
+        "provenance: experiential\nscope: agent\nlifecycle: valid\n"
+        "salience: 50\n---\n\nbody\n"
+    )
+    # Set active on beta org, same agent+task as alpha would use
+    beta.sessions.set_active(
+        "TASK-X", "dev_agent", "sess-cross-org", org_slug="beta",
+    )
+    r = client.get(
+        "/api/v1/orgs/alpha/agents/dev_agent/memory/entries/MEM-001",
+        params={"session_id": "sess-cross-org"},
+    )
+    assert r.status_code == 200
+    rows = org.db.fetch_all_readonly(
+        "SELECT payload FROM audit_log WHERE action = 'memory_read'"
+        " AND agent = 'dev_agent' ORDER BY id DESC LIMIT 1",
+    )
+    payload = json.loads(rows[0]["payload"])
+    assert "task_id" not in payload
+    assert payload.get("source", "explicit_or_other") == "explicit_or_other"
+
+
+def test_search_cross_org_session_uncorrelated(client_with_runtime):
+    """A session registered under org 'beta' must NOT correlate for
+    an 'alpha' search route — ctx_org != slug, so no correlation."""
+    client, org = client_with_runtime
+    daemon_state = client.app.state.daemon
+    beta = _setup_beta_org_sessions(org, daemon_state)
+
+    ws = org.root / "workspaces" / "dev_agent"
+    (ws / "memory").mkdir(parents=True, exist_ok=True)
+    (ws / "memory" / "MEM-001-test.md").write_text(
+        "---\nid: MEM-001\nslug: test\ntitle: Test\ntopic: w\n"
+        "provenance: experiential\nscope: agent\nlifecycle: valid\n"
+        "salience: 50\n---\n\nbody\n"
+    )
+    # Set active on beta org
+    beta.sessions.set_active(
+        "TASK-Y", "dev_agent", "sess-cross-search", org_slug="beta",
+    )
+    r = client.post(
+        "/api/v1/orgs/alpha/agents/dev_agent/memory/entries/search",
+        json={"query": "test"},
+        params={"session_id": "sess-cross-search"},
+    )
+    assert r.status_code == 200
+    rows = org.db.fetch_all_readonly(
+        "SELECT payload FROM audit_log WHERE action = 'memory_search'"
+        " AND agent = 'dev_agent' ORDER BY id DESC LIMIT 1",
+    )
+    payload = json.loads(rows[0]["payload"])
+    assert "task_id" not in payload
+    assert "session_id" not in payload

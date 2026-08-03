@@ -658,10 +658,11 @@ def _compute_report(
                 " Next step: provenance/push tuning only, no aliases/embeddings."
             )
         elif not eligible_roles:
-            decision = "activation_loss"
+            decision = "no_demonstrated_problem"
             decision_detail = (
                 f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
-                " but no eligible roles to confirm."
+                " but no eligible roles to confirm (role analysis"
+                " unavailable). Do not tune ranking/push."
             )
         else:
             decision = "no_demonstrated_problem"
@@ -699,7 +700,7 @@ def _compute_report(
             " fraction <=25%. No demonstrated problem."
         )
 
-    return {
+    result: dict = {
         "observation_period": {**observation, "status": "thresholds_met"},
         "aggregate": {
             "correlated_sessions": total_sessions,

@@ -1326,8 +1326,8 @@ async def get_learning(
     if session_id is not None:
         ctx = org.sessions.get_context_by_session(session_id)
         if ctx is not None:
-            _, task_id, ctx_agent = ctx
-            if ctx_agent == agent_name:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
                 validated_task_id = task_id
                 validated_session_id = session_id
     AuditLogger(org.db).log_memory_read(
@@ -1407,8 +1407,8 @@ async def search_learnings(
     if session_id is not None:
         ctx = org.sessions.get_context_by_session(session_id)
         if ctx is not None:
-            _, task_id, ctx_agent = ctx
-            if ctx_agent == agent_name:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
                 validated_task_id = task_id
                 validated_session_id = session_id
     AuditLogger(org.db).log_memory_search(

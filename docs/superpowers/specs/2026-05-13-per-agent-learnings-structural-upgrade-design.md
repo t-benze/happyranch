@@ -46,6 +46,10 @@
 > **Authoritative role mapping (TASK-4014 fix-forward):** Agent roles are fetched from the authoritative `/agents` read surface. When the surface is unavailable, roles are reported as `unavailable` (not silently fallen back to agent name). Agents absent from the role map are excluded from role-level decisions and reported via `roles_warning`.
 >
 > **Test seam (TASK-4014 fix-forward):** `compute_memory_telemetry_report` accepts an optional `current_time` parameter (UTC datetime). Tests can freeze time past the 14-day threshold to exercise full decision paths (activation_loss, retrieval_loss, no_demonstrated_problem, contradictory roles) rather than early `insufficient_sample` returns.
+>
+> **Cross-org session isolation (TASK-4021 fix-forward):** SessionTracker context lookup returns `(org_slug, task_id, agent_name)`. Routes require `ctx_org == slug` (in addition to exact agent name match) before attaching correlation metadata. Sessions registered under a different org are uncorrelated. Verified via route-level cross-org negative tests for both memory read and search.
+>
+> **Zero eligible roles safety (TASK-4021 fix-forward):** When aggregate pull-through <10% but there are zero eligible roles (roles unavailable or no role with >=30 correlated sessions), the report returns `no_demonstrated_problem` rather than `activation_loss`. The pre-registered rule requires both aggregate <10% AND a true majority of eligible roles <10%; with zero eligible roles the majority condition cannot be met. Do not recommend push tuning without role evidence.
 
 ## 1. Goal
 
