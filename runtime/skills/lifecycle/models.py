@@ -29,12 +29,22 @@ def utcnow() -> datetime:
 # ── Lifecycle state enum ──────────────────────────────────────────────────
 
 class LifecycleStatus(str, Enum):
-    """Canonical lifecycle states for a skill package version."""
+    """Canonical lifecycle states for a skill package version.
+
+    Decision lifecycle (package-level, terminal at published or rejected):
+        proposed → draft → validated → in_review → approved → published
+    Terminal reject: in_review → rejected (immutable, blocks all later mutations)
+
+    Assignment/materialization is a separate projection — never sets package status.
+    Historical ROLLED_BACK and RETIRED are assignment-level terminal states only;
+    new flows do NOT generate them for package status. Legacy rows retain them.
+    """
     PROPOSED = "proposed"
     DRAFT = "draft"
     VALIDATION_FAILED = "validation_failed"
     VALIDATED = "validated"
     IN_REVIEW = "in_review"
+    REJECTED = "rejected"  # Terminal — blocks all subsequent mutations
     APPROVED = "approved"
     PUBLISHED = "published"
     RETIRED = "retired"
@@ -69,7 +79,9 @@ class PackageVersion(BaseModel):
     content_artifact_key: str | None = None  # Relative path in org artifact store
     status: LifecycleStatus = LifecycleStatus.PROPOSED
     created_at: datetime = Field(default_factory=utcnow)
-    created_by: str = ""  # agent name or "founder"
+    created_by: str = ""  # agent name or "founder" (immutable proposer identity)
+    claimed_by: str | None = None  # Optional separate founder claimant
+    claimed_at: datetime | None = None  # When founder claimed this proposal
 
     # Proposal provenance (agent-authored proposals)
     proposal_task_id: str | None = None
@@ -245,3 +257,115 @@ class LifecycleStatusResponse(BaseModel):
     events: list[LifecycleEvent] = []
     proposal_task_id: str | None = None
     proposer_agent: str | None = None
+
+
+# ── THR-055 Founder-only proposal review API models ──────────────────────
+
+class ProposalQueueRequest(BaseModel):
+    """Pagination/filter params for the founder-only proposal queue."""
+    status: str | None = None  # Filter by status
+    page: int = 1
+    page_size: int = 20
+
+
+class ProposalQueueItem(BaseModel):
+    """A single row in the founder-only proposal queue."""
+    version_id: int
+    skill_id: str
+    slug: str
+    name: str
+    version: str
+    content_hash: str
+    proposer_agent: str
+    claimed_by: str | None = None
+    proposal_task_id: str | None = None
+    proposal_session_id: str | None = None
+    status: LifecycleStatus
+    latest_validator_version: str | None = None
+    latest_validator_key: str | None = None
+    permitted_next_action: str | None = None  # e.g. "claim", "validate", "review", "publish", "assign"
+    assigned_agent_count: int = 0
+    assigned_agents: list[str] = []
+    created_at: str = ""
+
+
+class ProposalQueueResponse(BaseModel):
+    """Paginated/filterable proposal queue."""
+    items: list[ProposalQueueItem]
+    page: int
+    page_size: int
+    total: int
+
+
+class ProposalDetailResponse(BaseModel):
+    """Founder-only full proposal detail by version id."""
+    version_id: int
+    skill_id: str
+    slug: str
+    name: str
+    version: str
+    description: str
+    content_hash: str
+    content_artifact_key: str | None = None
+    policy_class: str
+    status: LifecycleStatus
+    # Immutable author
+    proposer_agent: str | None = None
+    proposal_task_id: str | None = None
+    proposal_session_id: str | None = None
+    # Optional separate claimant
+    claimed_by: str | None = None
+    claimed_at: str | None = None
+    # Review provenance
+    reviewer: str | None = None
+    review_decision: str | None = None
+    review_rationale: str | None = None
+    reviewed_at: str | None = None
+    # Publication provenance
+    publisher: str | None = None
+    published_at: str | None = None
+    # Full append-only events
+    events: list[dict] = []
+    # Assignment projection
+    assignments: list[dict] = []
+    # Materialization attempts
+    materializations: list[dict] = []
+    # Concurrency marker for state-changing operations
+    last_event_id: int | None = None
+    created_at: str = ""
+
+
+class ClaimProposalV2Request(BaseModel):
+    """Founder claims a proposal (v2 — preserves immutable author)."""
+    expected_event_id: int  # Concurrency marker from detail
+
+
+class ValidateProposalRequest(BaseModel):
+    """Founder validates a proposal with reproducible validation."""
+    validator_version: str  # e.g. "THR-055/1.0.0"
+    expected_event_id: int  # Concurrency marker from detail
+
+
+class ReviewProposalRequest(BaseModel):
+    """Founder review decision on a proposal."""
+    decision: str  # "approved" | "rejected"
+    rationale: str = ""
+    expected_event_id: int  # Concurrency marker from detail
+
+
+class PublishProposalRequest(BaseModel):
+    """Founder publishes an approved proposal."""
+    approval_event_id: int
+    expected_event_id: int  # Concurrency marker from detail
+
+
+class AssignProposalRequest(BaseModel):
+    """Founder assigns a published proposal to an agent."""
+    agent_name: str
+    expected_event_id: int  # Concurrency marker from detail
+
+
+class RollbackProposalRequest(BaseModel):
+    """Founder rollback (assignment-level only, never mutates package status)."""
+    reason: str = ""
+    expected_event_id: int  # Concurrency marker from detail

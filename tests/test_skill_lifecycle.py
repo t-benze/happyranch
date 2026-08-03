@@ -593,10 +593,13 @@ class TestCatalogVisibility:
         pkg = _full_lifecycle_to_published(db, service)
         service.rollback(db=db, actor_kind="human", skill_id=pkg.skill_id, reason="Bad")
         catalog = service.list_catalog(db)
-        # Rolled back packages may still show if status check doesn't explicitly
-        # filter ROLLED_BACK; the catalog only shows PUBLISHED status
-        assert all(c.status != LifecycleStatus.PUBLISHED
-                   for c in catalog if c.skill_id == pkg.skill_id)
+        # Rollback is assignment-level only — does NOT mutate package status.
+        # The package remains PUBLISHED and visible in catalog.
+        # However, all assignments are deactivated (verified below).
+        assert any(c.skill_id == pkg.skill_id for c in catalog)
+        # Verify assignments are deactivated
+        active = lifecycle_stores.get_all_active_assignments_for_skill(db, pkg.skill_id)
+        assert len(active) == 0
 
 
 # ── Test: Retire ──────────────────────────────────────────────────────────
@@ -909,7 +912,9 @@ class TestRollbackAtomicityAndResidue:
     remove prior materialized workspace residue."""
 
     def test_rollback_cleans_workspace_residue(self, db):
-        """Rollback service deactivates assignments atomically.
+        """Rollback service deactivates assignments without mutating package status.
+
+        Package decision lifecycle is separate from assignment projection.
         Workspace residue cleanup is a route-level operation (tested via daemon route tests)."""
         service = SkillLifecycleService()
         pkg = service.submit_proposal(
@@ -951,9 +956,9 @@ class TestRollbackAtomicityAndResidue:
         )
         assert len(post_assignments) == 0
 
-        # Verify package status is ROLLED_BACK
+        # Verify package status is STILL PUBLISHED — assignment is a separate projection
         rolled_pkg = lifecycle_stores.get_latest_package_version(db, pkg.skill_id)
-        assert rolled_pkg.status == LifecycleStatus.ROLLED_BACK
+        assert rolled_pkg.status == LifecycleStatus.PUBLISHED
 
         # Verify rollback event was recorded
         events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
@@ -961,7 +966,10 @@ class TestRollbackAtomicityAndResidue:
         assert len(rollback_events) >= 1
 
     def test_rollback_partial_failure_no_ledger_state(self, db):
-        """If rollback fails mid-operation, no partial ledgers/assignment state remains."""
+        """If rollback fails mid-operation, no partial assignment state remains.
+
+        Package status is never mutated by rollback (separate projection).
+        """
         service = SkillLifecycleService()
         pkg = service.submit_proposal(
             db=db, actor_kind="agent",
@@ -989,10 +997,10 @@ class TestRollbackAtomicityAndResidue:
         )
         assert len(pre_assignments) > 0
 
-        # Force a failure by patching update_package_status BEFORE the service
-        # even starts writing — this simulates a DB-level failure.
+        # Force a failure by patching deactivate_assignments_for_skill
+        # (rollback no longer calls update_package_status — assignment is separate projection).
         with patch.object(
-            lifecycle_stores, "update_package_status",
+            lifecycle_stores, "deactivate_assignments_for_skill",
             side_effect=RuntimeError("Simulated DB failure"),
         ):
             with pytest.raises(RuntimeError, match="Simulated"):
@@ -1006,7 +1014,7 @@ class TestRollbackAtomicityAndResidue:
             db, pkg.skill_id,
         )
         assert len(post_assignments) == len(pre_assignments)
-        # Package status should still be PUBLISHED
+        # Package status should still be PUBLISHED (rollback never changes it)
         rolled_pkg = lifecycle_stores.get_latest_package_version(db, pkg.skill_id)
         assert rolled_pkg.status == LifecycleStatus.PUBLISHED
 

@@ -395,9 +395,15 @@ class SkillLifecycleService:
     def claim_proposal(
         self, db, actor_kind: str, version_id: int, sponsor: str = "founder",
     ) -> PackageVersion:
-        """A human sponsor claims an agent proposal, making it a draft."""
+        """A human sponsor claims an agent proposal, making it a draft.
+
+        Preserves immutable agent proposer (created_by/proposer_agent).
+        The founder claim is a SEPARATE claimed_by + claimed_at timestamp —
+        never a rewrite of the original author identity.
+        """
         self._ensure_human(actor_kind, "claim proposal")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status not in (LifecycleStatus.PROPOSED,):
             raise LifecycleError(
@@ -405,9 +411,13 @@ class SkillLifecycleService:
                 detail=f"Cannot claim a package in status '{pkg.status.value}'. Only PROPOSED packages can be claimed.",
             )
 
+        now = utcnow()
+        # Record claimant separately — never overwrite created_by/proposer_agent
+        stores.update_package_claimed(db, version_id, sponsor, now)
         stores.update_package_status(db, version_id, LifecycleStatus.DRAFT)
         pkg.status = LifecycleStatus.DRAFT
-        pkg.created_by = sponsor
+        pkg.claimed_by = sponsor
+        pkg.claimed_at = now
 
         stores.insert_lifecycle_event(db, LifecycleEvent(
             skill_id=pkg.skill_id,
@@ -425,21 +435,43 @@ class SkillLifecycleService:
     # ── Validate ──────────────────────────────────────────────────────────
 
     def record_validation(
-        self, db, actor_kind: str, version_id: int, ok: bool, findings: list[str] | None = None,
+        self, db, actor_kind: str, version_id: int, ok: bool,
+        findings: list[str] | None = None,
+        validator_version: str | None = None,
+        validator_key: str | None = None,
     ) -> PackageVersion:
-        """Record validation result for a draft version."""
+        """Record validation result for a draft version.
+
+        Validation is reproducible for an immutable package:
+        - content_hash is already part of the immutable PackageVersion record
+        - validator_version identifies the validator implementation
+          (e.g. "THR-055/1.0.0")
+        - validator_key is a stable deterministic identifier for this
+          specific validator run (distinct from the event id — the event
+          id is a distinct run/event identifier)
+        - Re-runs append new events rather than overwriting history
+        """
         self._ensure_human(actor_kind, "record validation")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status not in (LifecycleStatus.DRAFT, LifecycleStatus.VALIDATION_FAILED, LifecycleStatus.VALIDATED):
             raise LifecycleError(
                 code="invalid_transition",
-                detail=f"Cannot validate a package in status '{pkg.status.value}'. Only DRAFT packages can be validated.",
+                detail=f"Cannot validate a package in status '{pkg.status.value}'. Only DRAFT/VALIDATION_FAILED/VALIDATED packages can be validated.",
             )
 
         new_status = LifecycleStatus.VALIDATED if ok else LifecycleStatus.VALIDATION_FAILED
         stores.update_package_status(db, version_id, new_status)
         pkg.status = new_status
+
+        meta: dict = {"findings": findings or []}
+        if validator_version:
+            meta["validator_version"] = validator_version
+        if validator_key:
+            meta["validator_key"] = validator_key
+        # Include immutable content_hash for reproducibility
+        meta["content_hash"] = pkg.content_hash
 
         stores.insert_lifecycle_event(db, LifecycleEvent(
             skill_id=pkg.skill_id,
@@ -450,7 +482,7 @@ class SkillLifecycleService:
             previous_status=pkg.status.value,
             new_status=new_status.value,
             content_hash=pkg.content_hash,
-            metadata={"findings": findings or []},
+            metadata=meta,
         ))
 
         return pkg
@@ -464,6 +496,7 @@ class SkillLifecycleService:
         """Submit a validated version for human review."""
         self._ensure_human(actor_kind, "submit for review")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status != LifecycleStatus.VALIDATED:
             raise LifecycleError(
@@ -500,9 +533,16 @@ class SkillLifecycleService:
         """Reviewer approves or rejects a submitted version.
 
         Reviewer must be distinct from author (maker-checker).
+
+        REJECTED is a TERMINAL status — after rejection, every later claim,
+        validation, review/approval, publish, assign, materialization,
+        rollback/reopen/recovery attempt on that proposal/version is blocked.
+        Rejection retains immutable package, all evidence, actor/time/rationale,
+        and append-only history. A future change is a new proposal/version only.
         """
         self._ensure_human(actor_kind, "review")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status != LifecycleStatus.IN_REVIEW:
             raise LifecycleError(
@@ -517,14 +557,15 @@ class SkillLifecycleService:
                 status_code=400,
             )
 
-        # Reviewer-author separation
-        if reviewer == pkg.created_by and pkg.created_by:
+        # Maker-checker: reviewer must be distinct from proposer_agent (the immutable author)
+        author = pkg.proposer_agent or pkg.created_by
+        if reviewer == author and author:
             raise LifecycleError(
                 code="reviewer_author_separation",
-                detail=f"Reviewer '{reviewer}' must be distinct from author '{pkg.created_by}'.",
+                detail=f"Reviewer '{reviewer}' must be distinct from author '{author}'.",
             )
 
-        new_status = LifecycleStatus.APPROVED if decision == "approved" else LifecycleStatus.DRAFT
+        new_status = LifecycleStatus.APPROVED if decision == "approved" else LifecycleStatus.REJECTED
         stores.update_package_status(
             db, version_id, new_status,
             reviewer=reviewer,
@@ -572,6 +613,7 @@ class SkillLifecycleService:
         """
         self._ensure_human(actor_kind, "publish")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status != LifecycleStatus.APPROVED:
             raise LifecycleError(
@@ -629,6 +671,7 @@ class SkillLifecycleService:
         """Assign a published version to a named agent."""
         self._ensure_human(actor_kind, "assign")
         pkg = self._get_package(db, version_id)
+        self._ensure_not_rejected(pkg)
 
         if pkg.status != LifecycleStatus.PUBLISHED:
             raise LifecycleError(
@@ -683,18 +726,19 @@ class SkillLifecycleService:
     ) -> int:
         """Emergency rollback: deactivate all assignments for a skill.
 
-        The caller (HTTP handler) must wrap this in BEGIN IMMEDIATE/COMMIT
-        so package status change, assignment deactivation, and event insertion
-        roll back together atomically.
+        Assignment-level operation only — does NOT mutate package decision
+        status. Package lifecycle ends at published (or rejected terminal);
+        assignment/unassignment is a separate append-only projection.
+
+        The caller (HTTP handler) must wrap this in BEGIN IMMEDIATE/COMMIT.
 
         Returns count of deactivated assignments.
         """
         self._ensure_human(actor_kind, "rollback")
 
-        # Set the package status to ROLLED_BACK
+        # Get the latest package for event metadata only — do NOT mutate
+        # package status. Assignment is a separate projection.
         pkg = stores.get_latest_package_version(db, skill_id)
-        if pkg is not None:
-            stores.update_package_status(db, pkg.id, LifecycleStatus.ROLLED_BACK)
 
         count = stores.deactivate_assignments_for_skill(
             db, skill_id,
@@ -709,8 +753,8 @@ class SkillLifecycleService:
             event_type="rolled_back",
             actor=rolled_back_by,
             actor_role="human",
-            previous_status=pkg.status.value if pkg else None,
-            new_status=LifecycleStatus.ROLLED_BACK.value,
+            previous_status=None,  # Assignment projection — does not touch package status
+            new_status=None,
             content_hash=None,
             metadata={
                 "reason": reason,
@@ -833,6 +877,107 @@ class SkillLifecycleService:
         """List all published custom skills for the union catalog."""
         return stores.list_package_versions(db, status=LifecycleStatus.PUBLISHED)
 
+    # ── THR-055 Founder-only proposal review ────────────────────────────
+
+    def get_proposals_queue(
+        self, db, status: str | None = None, page: int = 1, page_size: int = 20,
+    ) -> dict:
+        """Founder-only paginated/filterable proposal queue."""
+        items, total = stores.list_proposals_queue(db, status=status, page=page, page_size=page_size)
+        return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    def get_proposal_detail(self, db, version_id: int) -> dict:
+        """Founder-only full proposal detail by version id."""
+        detail = stores.get_proposal_detail(db, version_id)
+        if detail is None:
+            raise LifecycleError(
+                code="not_found",
+                detail=f"No proposal found with version_id {version_id}.",
+                status_code=404,
+            )
+        return detail
+
+    def check_concurrency(
+        self, db, version_id: int, expected_event_id: int,
+    ) -> None:
+        """Verify the concurrency marker matches the latest event id.
+
+        Raises LifecycleError(409) with conflict code and current state
+        if the marker is stale.
+        """
+        current = stores.get_latest_event_id_for_version(db, version_id)
+        if current is None:
+            raise LifecycleError(
+                code="unknown_version",
+                detail=f"Version {version_id} has no events.",
+                status_code=409,
+            )
+        if current != expected_event_id:
+            # Fetch current detail for the conflict response
+            detail = stores.get_proposal_detail(db, version_id)
+            raise LifecycleError(
+                code="stale_concurrency",
+                detail={
+                    "message": f"Concurrency conflict: expected event {expected_event_id} but latest is {current}.",
+                    "expected_event_id": expected_event_id,
+                    "current_event_id": current,
+                    "current_status": detail["status"].value if detail else None,
+                },
+                status_code=409,
+            )
+
+    # ── V2 proposal actions (Founder-only, concurrency-protected) ───────
+
+    def claim_proposal_v2(
+        self, db, actor_kind: str, version_id: int,
+        sponsor: str = "founder",
+    ) -> PackageVersion:
+        """V2 claim (used by founder-only review route) — same semantics
+        as claim_proposal but called with the pre-checked concurrency marker."""
+        return self.claim_proposal(db, actor_kind, version_id, sponsor)
+
+    def validate_proposal(
+        self, db, actor_kind: str, version_id: int,
+        validator_version: str, validator_key: str | None = None,
+    ) -> PackageVersion:
+        """Founder-triggered validation with reproducible metadata."""
+        self._ensure_human(actor_kind, "validate")
+        return self.record_validation(
+            db, actor_kind, version_id, ok=True,
+            validator_version=validator_version,
+            validator_key=validator_key or validator_version,
+        )
+
+    def review_proposal(
+        self, db, actor_kind: str, version_id: int,
+        decision: str, rationale: str, reviewer: str = "founder",
+    ) -> PackageVersion:
+        """Founder review decision (v2 — concurrency-protected)."""
+        return self.review_decision(
+            db, actor_kind, version_id, decision, rationale, reviewer,
+        )
+
+    def publish_proposal(
+        self, db, actor_kind: str, version_id: int,
+        approval_event_id: int, publisher: str = "founder",
+    ) -> PackageVersion:
+        """Founder publish (v2 — concurrency-protected)."""
+        return self.publish(db, actor_kind, version_id, approval_event_id, publisher)
+
+    def assign_proposal(
+        self, db, actor_kind: str, skill_id: str, agent_name: str,
+        version_id: int, assigner: str = "founder",
+    ) -> AssignmentRecord:
+        """Founder assign (v2 — concurrency-protected)."""
+        return self.assign(db, actor_kind, skill_id, agent_name, version_id, assigner)
+
+    def rollback_proposal(
+        self, db, actor_kind: str, skill_id: str,
+        reason: str, rolled_back_by: str = "founder",
+    ) -> int:
+        """Founder rollback (v2 — assignment-level only, concurrency-protected)."""
+        return self.rollback(db, actor_kind, skill_id, reason, rolled_back_by)
+
     # ── Guards ────────────────────────────────────────────────────────────
 
     def _ensure_agent(self, actor_kind: str, action: str) -> None:
@@ -868,6 +1013,22 @@ class SkillLifecycleService:
                 code="policy_class_not_allowed",
                 detail=f"Policy class '{policy_class}' is not allowed in the pilot. Only 'standard_operational' is supported.",
                 status_code=400,
+            )
+
+    def _ensure_not_rejected(self, pkg: PackageVersion) -> None:
+        """Reject any mutation attempt on a terminally REJECTED proposal.
+
+        After rejection, every later claim, validation, review/approval,
+        publish, assign, materialization, rollback/reopen/recovery attempt
+        on that proposal/version is blocked. A future change is a new
+        proposal/version only.
+        """
+        if pkg.status == LifecycleStatus.REJECTED:
+            raise LifecycleError(
+                code="rejected_terminal",
+                detail=f"Proposal version {pkg.id} is terminally REJECTED. "
+                       f"No further mutations are permitted. Submit a new proposal for changes.",
+                status_code=409,
             )
 
     def _get_package(self, db, version_id: int) -> PackageVersion:

@@ -42,6 +42,8 @@ def _row_to_package_version(row: dict) -> PackageVersion:
         status=LifecycleStatus(row["status"]),
         created_at=_parse_datetime(row.get("created_at")),
         created_by=row.get("created_by", ""),
+        claimed_by=row.get("claimed_by"),
+        claimed_at=_parse_datetime(row.get("claimed_at")),
         proposal_task_id=row.get("proposal_task_id"),
         proposal_session_id=row.get("proposal_session_id"),
         proposer_agent=row.get("proposer_agent"),
@@ -82,6 +84,9 @@ CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
     status      TEXT NOT NULL DEFAULT 'proposed',
     created_at  TEXT NOT NULL,
     created_by  TEXT NOT NULL DEFAULT '',
+    -- Optional separate founder claimant (never overwrites created_by/proposer_agent)
+    claimed_by  TEXT,
+    claimed_at  TEXT,
     -- Proposal provenance (agent-authored proposals)
     proposal_task_id    TEXT,
     proposal_session_id TEXT,
@@ -187,6 +192,24 @@ def migrate(db) -> None:
     db.execute(CREATE_LIFECYCLE_EVENTS)
     db.execute(CREATE_ASSIGNMENTS)
     db.execute(CREATE_MATERIALIZATIONS)
+    # Additive migration: claimed_by/claimed_at columns (THR-055 proposal review)
+    _migrate_add_claimed_columns(db)
+
+
+def _migrate_add_claimed_columns(db) -> None:
+    """Additive migration: add claimed_by and claimed_at columns.
+
+    Uses ALTER TABLE ADD COLUMN (nullable) — never drops or alters existing
+    columns. Existing rows remain readable with NULL for these new columns.
+    """
+    try:
+        db.execute("ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_by TEXT")
+    except Exception:
+        pass  # Column already exists
+    try:
+        db.execute("ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_at TEXT")
+    except Exception:
+        pass  # Column already exists
 
 
 # ── Package version CRUD ──────────────────────────────────────────────────
@@ -268,6 +291,19 @@ def update_package_status(
     db.execute(
         f"UPDATE skill_lifecycle_packages SET {', '.join(sets)} WHERE id = ?",
         tuple(params),
+    )
+
+
+def update_package_claimed(db, version_id: int, claimed_by: str, claimed_at) -> None:
+    """Set the optional separate claimant identity and timestamp.
+
+    Does NOT touch created_by or proposer_agent — the founder claim is a
+    separate optional identity, never a rewrite of the immutable author.
+    """
+    at_str = claimed_at.isoformat() if isinstance(claimed_at, datetime) else str(claimed_at)
+    db.execute(
+        "UPDATE skill_lifecycle_packages SET claimed_by = ?, claimed_at = ? WHERE id = ?",
+        (claimed_by, at_str, version_id),
     )
 
 
@@ -436,6 +472,243 @@ def deactivate_assignment(db, skill_id: str, agent_name: str, unassigned_by: str
         (unassigned_by, now, skill_id, agent_name),
     )
     return row.rowcount
+
+
+def _row_to_proposal_queue_item(row: dict) -> dict:
+    """Convert a DB row + joins into a ProposalQueueItem dict."""
+    return {
+        "version_id": row["id"],
+        "skill_id": row["skill_id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "version": row["version"],
+        "content_hash": row["content_hash"],
+        "proposer_agent": row.get("proposer_agent", "") or "",
+        "claimed_by": row.get("claimed_by"),
+        "proposal_task_id": row.get("proposal_task_id"),
+        "proposal_session_id": row.get("proposal_session_id"),
+        "status": LifecycleStatus(row["status"]),
+        "latest_validator_version": row.get("latest_validator_version"),
+        "latest_validator_key": row.get("latest_validator_key"),
+        "permitted_next_action": row.get("permitted_next_action"),
+        "assigned_agent_count": int(row.get("assigned_agent_count", 0)),
+        "assigned_agents": row.get("assigned_agents", "").split(",") if row.get("assigned_agents") else [],
+        "created_at": row.get("created_at", ""),
+    }
+
+
+def list_proposals_queue(
+    db, status: str | None = None, page: int = 1, page_size: int = 20,
+) -> tuple[list[dict], int]:
+    """List proposals for the founder-only queue.
+
+    Default ordering: actionable first (not terminal), then oldest submission.
+    Rejected/history items are not actionable and sort after.
+
+    Returns (items, total_count).
+    """
+    conn = _get_conn(db)
+
+    # Build filter
+    where_clauses = []
+    params: list = []
+    if status is not None:
+        where_clauses.append("p.status = ?")
+        params.append(status)
+    where_sql = " AND " + " AND ".join(where_clauses) if where_clauses else ""
+
+    # Count total
+    count_row = conn.execute(
+        f"SELECT COUNT(*) FROM skill_lifecycle_packages p WHERE 1=1{where_sql}",
+        tuple(params),
+    ).fetchone()
+    total = count_row[0] if count_row else 0
+
+    # Pre-load assignments per package
+    assign_map: dict[int, list[str]] = {}
+    assign_rows = conn.execute(
+        """SELECT package_version_id, agent_name FROM skill_lifecycle_assignments
+           WHERE active = 1 ORDER BY agent_name""",
+    ).fetchall()
+    for ar in assign_rows:
+        vid = ar["package_version_id"]
+        if vid not in assign_map:
+            assign_map[vid] = []
+        assign_map[vid].append(ar["agent_name"])
+
+    # Pre-load latest validation info per package (validator_version, validator_key from events)
+    validation_map: dict[int, tuple[str | None, str | None]] = {}
+    val_rows = conn.execute(
+        """SELECT package_version_id, metadata_json FROM skill_lifecycle_events
+           WHERE event_type = 'validated'
+           ORDER BY id DESC""",
+    ).fetchall()
+    seen_val: set[int] = set()
+    for vr in val_rows:
+        vid = vr["package_version_id"]
+        if vid in seen_val:
+            continue
+        seen_val.add(vid)
+        meta = json.loads(vr["metadata_json"]) if vr["metadata_json"] else {}
+        validation_map[vid] = (meta.get("validator_version"), meta.get("validator_key"))
+
+    # Fetch packages with ordering: actionable first, then oldest submission
+    # Actionable = not terminal (not rejected, not published, not retired, not rolled_back)
+    terminal_statuses = ("rejected", "published", "retired", "rolled_back", "legacy_quarantined")
+    order_sql = f"""
+        CASE WHEN p.status NOT IN ({','.join('?' for _ in terminal_statuses)}) THEN 0 ELSE 1 END,
+        p.created_at ASC
+    """
+    order_params = list(terminal_statuses)
+
+    offset = (page - 1) * page_size
+    query = f"""SELECT p.* FROM skill_lifecycle_packages p
+        WHERE 1=1{where_sql}
+        ORDER BY {order_sql}
+        LIMIT ? OFFSET ?"""
+
+    rows = conn.execute(query, tuple(params + order_params + [page_size, offset])).fetchall()
+
+    items = []
+    for row in rows:
+        d = dict(row)
+        vid = d["id"]
+        d["assigned_agent_count"] = len(assign_map.get(vid, []))
+        d["assigned_agents"] = ",".join(assign_map.get(vid, []))
+        vv, vk = validation_map.get(vid, (None, None))
+        d["latest_validator_version"] = vv
+        d["latest_validator_key"] = vk
+        # Compute permitted_next_action
+        d["permitted_next_action"] = _compute_permitted_action(LifecycleStatus(d["status"]))
+        items.append(_row_to_proposal_queue_item(d))
+
+    return items, total
+
+
+def _compute_permitted_action(status: LifecycleStatus) -> str | None:
+    """Return the single permitted next action for a given status, or None."""
+    action_map = {
+        LifecycleStatus.PROPOSED: "claim",
+        LifecycleStatus.DRAFT: "validate",
+        LifecycleStatus.VALIDATION_FAILED: "validate",
+        LifecycleStatus.VALIDATED: "submit_review",
+        LifecycleStatus.IN_REVIEW: "review",
+        LifecycleStatus.APPROVED: "publish",
+        LifecycleStatus.PUBLISHED: "assign",
+    }
+    return action_map.get(status)
+
+
+def get_proposal_detail(db, version_id: int) -> dict | None:
+    """Get full detail for a single proposal version."""
+    conn = _get_conn(db)
+    row = conn.execute(
+        "SELECT * FROM skill_lifecycle_packages WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+
+    # Events
+    event_rows = conn.execute(
+        "SELECT * FROM skill_lifecycle_events WHERE package_version_id = ? ORDER BY id ASC",
+        (version_id,),
+    ).fetchall()
+    events = []
+    last_event_id = None
+    for er in event_rows:
+        ed = dict(er)
+        events.append({
+            "id": ed["id"],
+            "event_type": ed["event_type"],
+            "actor": ed.get("actor", ""),
+            "actor_role": ed.get("actor_role", ""),
+            "previous_status": ed.get("previous_status"),
+            "new_status": ed.get("new_status"),
+            "content_hash": ed.get("content_hash"),
+            "created_at": ed.get("created_at", ""),
+            "metadata": json.loads(ed["metadata_json"]) if ed.get("metadata_json") else None,
+            "task_id": ed.get("task_id"),
+            "session_id": ed.get("session_id"),
+        })
+        last_event_id = ed["id"]
+
+    # Assignments
+    assign_rows = conn.execute(
+        """SELECT * FROM skill_lifecycle_assignments
+           WHERE package_version_id = ? ORDER BY id ASC""",
+        (version_id,),
+    ).fetchall()
+    assignments = []
+    for ar in assign_rows:
+        ad = dict(ar)
+        assignments.append({
+            "id": ad["id"],
+            "agent_name": ad["agent_name"],
+            "version": ad["version"],
+            "content_hash": ad["content_hash"],
+            "assigned_by": ad.get("assigned_by", ""),
+            "assigned_at": ad.get("assigned_at", ""),
+            "active": bool(ad.get("active", True)),
+        })
+
+    # Materializations
+    mat_rows = conn.execute(
+        """SELECT * FROM skill_lifecycle_materializations
+           WHERE package_version_id = ? ORDER BY id DESC""",
+        (version_id,),
+    ).fetchall()
+    materializations = []
+    for mr in mat_rows:
+        md = dict(mr)
+        materializations.append({
+            "id": md["id"],
+            "agent_name": md["agent_name"],
+            "success": bool(md["success"]),
+            "error_message": md.get("error_message"),
+            "session_context": md.get("session_context"),
+            "created_at": md.get("created_at", ""),
+        })
+
+    return {
+        "version_id": d["id"],
+        "skill_id": d["skill_id"],
+        "slug": d["slug"],
+        "name": d["name"],
+        "version": d["version"],
+        "description": d.get("description", ""),
+        "content_hash": d["content_hash"],
+        "content_artifact_key": d.get("content_artifact_key"),
+        "policy_class": d.get("policy_class", "standard_operational"),
+        "status": LifecycleStatus(d["status"]),
+        "proposer_agent": d.get("proposer_agent"),
+        "proposal_task_id": d.get("proposal_task_id"),
+        "proposal_session_id": d.get("proposal_session_id"),
+        "claimed_by": d.get("claimed_by"),
+        "claimed_at": d.get("claimed_at"),
+        "reviewer": d.get("reviewer"),
+        "review_decision": d.get("review_decision"),
+        "review_rationale": d.get("review_rationale"),
+        "reviewed_at": d.get("reviewed_at"),
+        "publisher": d.get("publisher"),
+        "published_at": d.get("published_at"),
+        "events": events,
+        "assignments": assignments,
+        "materializations": materializations,
+        "last_event_id": last_event_id,
+        "created_at": d.get("created_at", ""),
+    }
+
+
+def get_latest_event_id_for_version(db, version_id: int) -> int | None:
+    """Get the latest event id for a package version (concurrency marker)."""
+    conn = _get_conn(db)
+    row = conn.execute(
+        "SELECT MAX(id) FROM skill_lifecycle_events WHERE package_version_id = ?",
+        (version_id,),
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
 
 
 def _row_to_assignment(row: dict) -> AssignmentRecord:
