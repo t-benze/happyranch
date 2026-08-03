@@ -141,7 +141,11 @@ class TestRefreshSessionSkills:
     def test_refresh_substitutes_org_slug(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """{ORG_SLUG} placeholder is substituted in skill .md files."""
+        """{ORG_SLUG} substitution is REMOVED (TASK-3988).
+
+        TASK-3988: Per-session content copying is superseded by the immutable
+        canonical store. {ORG_SLUG} placeholders are retained as literal text;
+        org context is provided via session/task metadata instead."""
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text(
@@ -153,8 +157,9 @@ class TestRefreshSessionSkills:
 
         for d in [".claude", ".agents"]:
             content = (workspace / d / "skills" / "start-task" / "SKILL.md").read_text()
-            assert "{ORG_SLUG}" not in content
-            assert "--org my-org" in content
+            # TASK-3988: {ORG_SLUG} is now retained as literal text
+            assert "{ORG_SLUG}" in content
+            assert "--org my-org" not in content
 
     def test_refresh_idempotent_on_missing_source(
         self, test_settings: Settings, tmp_path: Path,

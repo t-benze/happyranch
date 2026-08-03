@@ -98,10 +98,10 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
 
 
 def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
-    """`_copy_skills` must replace `{ORG_SLUG}` in every copied .md file with
-    the adapter's own slug. Skills source is shared across orgs, but each
-    workspace ends up with its own org's slug baked into the example `happyranch`
-    invocations so agent callbacks always carry `--org`.
+    """{ORG_SLUG} substitution is REMOVED (TASK-3988).
+
+    TASK-3988: {ORG_SLUG} placeholders are now retained as literal text in
+    canonical content. Org context is provided via session/task metadata.
     """
     from runtime.config import Settings
 
@@ -121,8 +121,6 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     workspace.mkdir()
 
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="hk-tourism")
-    # Re-enable wholesale dump for this direct _copy_skills test so the
-    # substitution logic can still be verified.
     import runtime.orchestrator.workspace_adapters as wa_mod
     old = wa_mod._WHOLESALE_DUMP_ENABLED
     wa_mod._WHOLESALE_DUMP_ENABLED = True
@@ -132,8 +130,9 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
         wa_mod._WHOLESALE_DUMP_ENABLED = old
 
     out = (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text()
-    assert "{ORG_SLUG}" not in out
-    assert "--org hk-tourism" in out
+    # TASK-3988: {ORG_SLUG} is retained as literal text
+    assert "{ORG_SLUG}" in out
+    assert "--org hk-tourism" not in out
 
 
 def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(

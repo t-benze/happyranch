@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from runtime.config import Settings
+from runtime.skills.canonical_store import CanonicalStore, CanonicalPackageKey
+from runtime.skills.symlink_materializer import (
+    SymlinkMaterializer,
+    SkillLinkSpec,
+    MaterializationError,
+)
 
 if TYPE_CHECKING:
     from runtime.orchestrator._paths import OrgPaths
@@ -19,10 +25,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ── Canonical store root ──────────────────────────────────────────
+#
+# The canonical skill store lives outside executor workspaces.
+# Default: <project_root>/.canonical-skills/
+
+
+def _get_canonical_store_root(settings: Settings) -> Path:
+    """Resolve the canonical store root directory."""
+    return settings.project_root / ".canonical-skills"
+
+
 # Test override: when set (via monkeypatch), takes precedence over the
 # settings-derived skills source. Production code leaves this ``None`` and
 # adapters resolve the source via ``self._settings.get_protocol_dir() / "skills"``.
 _SKILLS_SRC: Path | None = None
+# Test override for canonical store root
+_CANONICAL_STORE_ROOT: Path | None = None
 
 
 def _resolve_skills_src(settings: Settings) -> Path:
@@ -157,13 +176,11 @@ def _copy_skill_dir(src: Path, dst: Path, *, slug: str) -> None:
 
 
 def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
-    """Copy a single skill file. ``.md`` files get ``{ORG_SLUG}`` substituted."""
+    """Copy a single skill file. ``slug`` is retained for signature compatibility
+    with legacy callers but ``{ORG_SLUG}`` substitution is REMOVED (TASK-3988).
+    Org context is now provided via session/task metadata, not file substitution."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if src.suffix == ".md":
-        text = src.read_text()
-        dst.write_text(text.replace("{ORG_SLUG}", slug))
-    else:
-        shutil.copy2(src, dst)
+    shutil.copy2(src, dst)
 
 
 def _atomic_replace_dir(src: Path, dst: Path) -> None:
@@ -370,12 +387,13 @@ def materialize_workspace_skills(
 ) -> None:
     """Serialize the complete pre-spawn skill materialization transaction.
 
-    All three materialization steps — wholesale refresh (when
-    ``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
-    on-disk verification, and managed-skill injection — run under a
-    process-local lock keyed by the canonical workspace path so concurrent
-    task/thread/wake/dream/schedule/bootstrap callers targeting the same
-    workspace serialize their complete transaction.
+    TASK-3988: Uses the immutable canonical skill store with workspace
+    symlinks instead of per-session content copying. Skills are built once
+    into the canonical store and linked to workspaces via symlinks.
+
+    All materialization steps run under a process-local lock keyed by the
+    canonical workspace path so concurrent task/thread/wake/dream/schedule/
+    bootstrap callers targeting the same workspace serialize.
 
     Fail-closed: any error raises immediately. A failed materialization must
     not leave a partially-populated skills directory passing as complete.
@@ -385,70 +403,62 @@ def materialize_workspace_skills(
     ``ensure_system_contracts_materialized``, or ``inject_managed_skills``
     outside this transaction — doing so would bypass the workspace lock
     and re-introduce the multi-writer race described in issue #536.
-
-    Args:
-        workspace: agent workspace root
-        settings: project Settings
-        slug: org slug for ``{ORG_SLUG}`` substitution
-        context: session context ("task", "thread", "wake", "dream")
-        provider: executor provider name ("claude", "codex", "opencode", "pi")
-        agent_name: agent to resolve eligibility for
-        team: agent's team name
-        skills_root: directory containing managed-catalog skill packages
-        org_root: per-org root (optional; for lifecycle ledger resolution)
-        db: optional DB handle for recording materialization events
     """
+    store = CanonicalStore(
+        _CANONICAL_STORE_ROOT if _CANONICAL_STORE_ROOT is not None
+        else _get_canonical_store_root(settings)
+    )
+    materializer = SymlinkMaterializer()
+
     with _workspace_skills_transaction(workspace):
         # 1. Wholesale refresh (no-op when _WHOLESALE_DUMP_ENABLED is False).
-        #    This re-copies the bundled protocol/skills/ tree.
+        #    Retained for reversible safety net only.
         refresh_session_skills(workspace, settings, slug=slug)
 
-        # 2. System-contract injection + on-disk verification.
-        #    Raises SystemContractMaterializationError on failure.
-        ensure_system_contracts_materialized(
-            workspace, settings, slug=slug, context=context, provider=provider,
+        # 2. System-contract injection via canonical store + symlinks.
+        _materialize_system_contracts_canonical(
+            workspace, settings, store, materializer,
+            slug=slug, context=context, provider=provider,
         )
 
-        # 3. Managed-skill injection from the catalog + lifecycle ledger.
-        #    Fail-closed: any error raises immediately.
-        inject_managed_skills(
-            workspace, settings,
-            slug=slug,
-            agent_name=agent_name,
-            team=team,
-            skills_root=skills_root,
-            org_root=org_root,
-            db=db,
+        # 3. Managed-skill injection via canonical store + symlinks.
+        _materialize_managed_skills_canonical(
+            workspace, settings, store, materializer,
+            slug=slug, agent_name=agent_name, team=team,
+            skills_root=skills_root, org_root=org_root, db=db,
         )
 
 
-def inject_system_contracts(
+# ── TASK-3988: Canonical-store-backed materialization ─────────────
+
+
+def _hash_dir_for_store(path: Path) -> str:
+    """Compute deterministic SHA-256 of a directory tree for canonical store use."""
+    import hashlib
+    if not path.is_dir():
+        return ""
+    hasher = hashlib.sha256()
+    for f in sorted(path.rglob("*")):
+        if f.is_file():
+            rel = f.relative_to(path)
+            hasher.update(str(rel).encode())
+            hasher.update(f.read_bytes())
+    return hasher.hexdigest()
+
+
+def _materialize_system_contracts_canonical(
     workspace: Path,
     settings: Settings,
+    store: CanonicalStore,
+    materializer: SymlinkMaterializer,
     *,
     slug: str,
     context: str,
+    provider: str,
 ) -> None:
-    """Inject system-contract skills into the workspace based on session context.
+    """Materialize system-contract skills via canonical store + symlinks.
 
-    ADDITIVE alongside ``refresh_session_skills`` (the wholesale dump). In
-    Phase 1 the wholesale dump still copies all 8 skills; this function adds
-    an EXPLICIT, context-aware injection path that will become the sole
-    injection path in Phase 4 when the wholesale dump is removed.
-
-    Each system contract is re-copied from ``protocol/skills/<id>/`` into
-    both ``.claude/skills/`` and ``.agents/skills/``. The contracts injected
-    are determined by session context:
-
-    - start-task: TASK, WAKE sessions
-    - jobs: all sessions
-    - make-worktree: any session where the workspace has repos
-    - thread: TASK, THREAD, WAKE sessions
-    - dream: DREAM sessions only
-
-    ``context`` is a string matching ``SessionContext`` ("task", "thread",
-    "wake", "dream"). Unknown values fall through to no-op (graceful
-    degradation).
+    TASK-3988: Replaces inject_system_contracts/ensure_system_contracts_materialized.
     """
     from runtime.skills.system_contracts import (
         SessionContext,
@@ -458,7 +468,324 @@ def inject_system_contracts(
     try:
         ctx = SessionContext(context)
     except ValueError:
-        # Unknown context — no-op, graceful degradation
+        return
+
+    contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+    src_root = _resolve_skills_src(settings)
+
+    is_claude = (provider == "claude")
+    skills_root_workspace = (
+        workspace / ".claude" / "skills"
+        if is_claude
+        else workspace / ".agents" / "skills"
+    )
+
+    specs: list[SkillLinkSpec] = []
+    for contract in contracts:
+        src_dir = src_root / contract.id
+        if not src_dir.is_dir():
+            continue
+
+        content_hash = _hash_dir_for_store(src_dir)
+        key = CanonicalPackageKey(
+            slug=contract.id,
+            package_type="system_contract",
+            version="1.0.0",
+            content_hash=content_hash,
+        )
+        canonical_path = store.build(src_dir, key)
+
+        specs.append(SkillLinkSpec(
+            slug=contract.id,
+            canonical_target=canonical_path,
+            claude_skill_dir=workspace / ".claude" / "skills" / contract.id,
+            agents_skill_dir=workspace / ".agents" / "skills" / contract.id,
+            expected_content_hash=content_hash,
+        ))
+
+    if specs:
+        try:
+            materializer.materialize(specs)
+        except MaterializationError:
+            raise
+
+    expected = [sc.id for sc in contracts]
+    missing: list[str] = []
+    for sc_id in expected:
+        marker = skills_root_workspace / sc_id / "SKILL.md"
+        if not marker.is_file():
+            missing.append(sc_id)
+
+    if missing:
+        raise SystemContractMaterializationError(
+            missing_contracts=missing,
+            workspace=workspace,
+            provider=provider,
+        )
+
+
+def _build_lifecycle_canonical_specs(
+    *,
+    workspace: Path,
+    org_root: Path,
+    db,
+    agent_name: str,
+    store: CanonicalStore,
+) -> list[SkillLinkSpec]:
+    """Build SkillLinkSpecs for lifecycle-ledger custom skills.
+
+    TASK-3988: Replaces _materialize_lifecycle_skills' direct content writes
+    with canonical store + symlink specs. Only PUBLISHED skills with active
+    assignments are resolved. Fail-closed on missing/corrupt/hash-mismatched
+    artifacts.
+    """
+    import hashlib
+    import json
+
+    from runtime.skills.lifecycle.service import SkillLifecycleService
+
+    service = SkillLifecycleService()
+    pkgs = service.get_effective_skills(db, agent_name)
+    if not pkgs:
+        return []
+
+    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
+    from runtime.orchestrator._paths import OrgPaths
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+
+    specs: list[SkillLinkSpec] = []
+
+    for pkg in pkgs:
+        skill_slug = pkg.slug
+
+        if not pkg.content_artifact_key:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason="No content_artifact_key — legacy paths not supported",
+            )
+
+        # Load manifest artifact
+        manifest_bytes: bytes
+        try:
+            manifest_bytes = artifact_store.read(pkg.content_artifact_key)
+        except ArtifactNotFound:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Artifact not found: {pkg.content_artifact_key}",
+            )
+
+        actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_manifest_hash != pkg.content_hash:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Manifest hash mismatch: expected {pkg.content_hash[:16]}..., got {actual_manifest_hash[:16]}...",
+            )
+
+        # Parse manifest
+        manifest: dict | None = None
+        try:
+            parsed = json.loads(manifest_bytes.decode("utf-8"))
+            if isinstance(parsed, dict) and "members" in parsed:
+                manifest = parsed
+        except Exception:
+            pass
+
+        if manifest is not None:
+            # Manifest-based: build canonical tree from members
+            members = manifest["members"]
+            key = CanonicalPackageKey(
+                slug=skill_slug,
+                package_type="lifecycle",
+                version=pkg.version,
+                content_hash=pkg.content_hash,
+            )
+            canonical_path = store.build_from_manifest(
+                members, OrgPaths(org_root).artifacts_dir, key,
+            )
+        else:
+            # Legacy single-SKILL.md: treat as single-member
+            content_hash = hashlib.sha256(manifest_bytes).hexdigest()
+            key = CanonicalPackageKey(
+                slug=skill_slug,
+                package_type="lifecycle",
+                version=pkg.version,
+                content_hash=content_hash,
+            )
+            # Write into a temp dir, build canonical tree from it
+            import tempfile
+            import shutil
+            with tempfile.TemporaryDirectory() as tmpd:
+                tmp_path = Path(tmpd) / skill_slug
+                tmp_path.mkdir()
+                (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
+                canonical_path = store.build(tmp_path, key)
+
+        specs.append(SkillLinkSpec(
+            slug=skill_slug,
+            canonical_target=canonical_path,
+            claude_skill_dir=workspace / ".claude" / "skills" / skill_slug,
+            agents_skill_dir=workspace / ".agents" / "skills" / skill_slug,
+            expected_content_hash=key.content_hash,
+        ))
+
+        # Record successful materialization
+        try:
+            service.record_materialization(
+                db=db,
+                skill_id=pkg.skill_id,
+                agent_name=agent_name,
+                version_id=pkg.id,
+                version=pkg.version,
+                content_hash=pkg.content_hash,
+                success=True,
+                session_context="session_spawn",
+            )
+        except Exception:
+            pass
+
+    return specs
+
+
+def _materialize_managed_skills_canonical(
+    workspace: Path,
+    settings: Settings,
+    store: CanonicalStore,
+    materializer: SymlinkMaterializer,
+    *,
+    slug: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db: "Database | None" = None,  # noqa: F821
+) -> None:
+    """Materialize managed-catalog skills via canonical store + symlinks.
+
+    TASK-3988: Replaces inject_managed_skills and _materialize_lifecycle_skills.
+    """
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+
+    specs: list[SkillLinkSpec] = []
+
+    # ── Release-shipped managed-catalog skills ──
+    release_entries: dict[str, "SkillEntry"] = {}  # noqa: F821
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+    if release_entries:
+        union_registry = SkillRegistry(skills_root=skills_root)
+        for entry in release_entries.values():
+            union_registry._entries[entry.id] = entry
+
+        policy: dict = {}
+        if org_root is not None:
+            config_path = org_root / "org" / "config.yaml"
+        else:
+            config_path = settings.project_root / "org" / "config.yaml"
+        if config_path.is_file():
+            import yaml
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    policy = raw.get("skills", {})
+            except (yaml.YAMLError, OSError):
+                pass
+
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            union_registry, resolver, org=slug, team=team, agent=agent_name,
+        )
+
+        for es in exposed:
+            skill_id_slug = es.skill.slug
+
+            if es.skill.source == "user_authored" and org_root is not None:
+                src_dir = org_root / "skills" / skill_id_slug
+            else:
+                src_dir = skills_root / skill_id_slug
+
+            if not src_dir.is_dir():
+                continue
+
+            content_hash = _hash_dir_for_store(src_dir)
+            key = CanonicalPackageKey(
+                slug=skill_id_slug,
+                package_type="release_managed",
+                version=es.skill.version,
+                content_hash=content_hash,
+            )
+            canonical_path = store.build(src_dir, key)
+
+            specs.append(SkillLinkSpec(
+                slug=skill_id_slug,
+                canonical_target=canonical_path,
+                claude_skill_dir=workspace / ".claude" / "skills" / skill_id_slug,
+                agents_skill_dir=workspace / ".agents" / "skills" / skill_id_slug,
+                expected_content_hash=content_hash,
+            ))
+
+            if db is not None:
+                try:
+                    db.insert_skill_validation_event(
+                        skill_id=es.skill.id,
+                        slug=skill_id_slug,
+                        agent=agent_name,
+                        source="materialization",
+                        severity="info",
+                        ok=True,
+                        version=es.skill.version,
+                    )
+                except Exception:
+                    pass
+
+    # ── Lifecycle-ledger custom skills ──
+    if db is not None and org_root is not None:
+        lifecycle_specs = _build_lifecycle_canonical_specs(
+            workspace=workspace,
+            org_root=org_root,
+            db=db,
+            agent_name=agent_name,
+            store=store,
+        )
+        specs.extend(lifecycle_specs)
+
+    if specs:
+        try:
+            materializer.materialize(specs)
+        except MaterializationError:
+            raise
+
+
+# ── Legacy injection functions (kept for backward compatibility) ──
+
+
+def inject_system_contracts(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+) -> None:
+    """[LEGACY] Inject system-contract skills via content copy.
+
+    TASK-3988: superseded by _materialize_system_contracts_canonical.
+    Kept for backward compatibility with existing tests only.
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    try:
+        ctx = SessionContext(context)
+    except ValueError:
         return
 
     contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
@@ -468,8 +795,6 @@ def inject_system_contracts(
         src_dir = src_root / contract.id
         if not src_dir.is_dir():
             continue
-        # _copy_skills_tree copies the CONTENTS of src_dir into the
-        # destination, so we target a subdirectory named after the contract.
         _copy_skills_tree(
             src_dir,
             workspace / ".claude" / "skills" / contract.id,
