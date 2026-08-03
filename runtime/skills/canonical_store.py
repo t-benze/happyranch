@@ -46,7 +46,7 @@ class CanonicalStoreError(Exception):
 
 def _verify_recursive_readonly(pkg_path: Path) -> None:
     """Recursively verify the package root and every file and directory
-    under *pkg_path* is NOT group-writable or other-writable.
+    under *pkg_path* is NOT owner-writable, group-writable, or other-writable.
 
     An insufficiently hardened package (hardening failed after os.replace)
     will fail these checks.  This prevents is_built() from returning True
@@ -61,6 +61,11 @@ def _verify_recursive_readonly(pkg_path: Path) -> None:
         raise CanonicalStoreError(
             "insufficient_hardening",
             f"Cannot stat package root: {pkg_path}",
+        )
+    if root_mode & stat.S_IWUSR:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package root is owner-writable: {pkg_path}",
         )
     if root_mode & stat.S_IWGRP:
         raise CanonicalStoreError(
@@ -78,6 +83,11 @@ def _verify_recursive_readonly(pkg_path: Path) -> None:
             mode = stat.S_IMODE(entry.stat().st_mode)
         except OSError:
             continue
+        if mode & stat.S_IWUSR:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"Package member is owner-writable: {entry}",
+            )
         if mode & stat.S_IWGRP:
             raise CanonicalStoreError(
                 "insufficient_hardening",
@@ -123,9 +133,11 @@ def _safe_remove_published_package(
     The package must be removed so it cannot be reused by a later build.
 
     Only removes the package directory itself — never recursively follows
-    or deletes untrusted nodes.  If removal fails (e.g., permission error),
-    logs a warning but does NOT raise — the recursive readonly check in
-    is_built() provides the defense-in-depth against reuse.
+    or deletes untrusted nodes.
+
+    Raises:
+        CanonicalStoreError: if removal fails (compensation cannot establish
+            safe state). The error includes the underlying cause.
     """
     try:
         # Verify the path is still a directory and is within the canonical
@@ -140,12 +152,12 @@ def _safe_remove_published_package(
             slug, version, content_hash[:16], pkg_path,
         )
     except Exception as cleanup_exc:
-        logger.warning(
-            "Failed to remove insufficiently hardened canonical package "
-            "%s@%s (hash=%s) at %s: %s. Package will be rejected by "
-            "recursive readonly validation in is_built().",
-            slug, version, content_hash[:16], pkg_path, cleanup_exc,
-        )
+        raise CanonicalStoreError(
+            "compensation_failed",
+            f"Failed to remove insufficiently hardened canonical package "
+            f"{slug}@{version} (hash={content_hash[:16]}) at {pkg_path}: "
+            f"{cleanup_exc}. Unsafe package may remain on disk.",
+        ) from cleanup_exc
 
 
 def _get_canonical_store_root(settings=None) -> Path:
@@ -220,7 +232,7 @@ class CanonicalSkillStore:
 
         Validates ownership at the root, non-emptiness, AND recursively
         verifies that every file and directory has had readonly hardening
-        applied (no group/other write bits).  This prevents reuse of a
+        applied (no owner, group, or other write bits).  This prevents reuse of a
         package published by os.replace but whose hardening (make_file_readonly
         / make_dir_readonly_executor) failed after the atomic move.
         """
@@ -475,9 +487,12 @@ class CanonicalSkillStore:
             ) from exc
 
     def verify_package(self, slug: str, version: str, content_hash: str) -> None:
-        """Verify a canonical package exists and has correct ownership.
+        """Verify a canonical package exists, has correct ownership,
+        and every member is read-only (immutable invariant enforced at
+        the materialization gate).
 
-        Raises CanonicalStoreError if missing or tampered.
+        Raises CanonicalStoreError if missing, tampered, or insufficiently
+        hardened.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -497,6 +512,10 @@ class CanonicalSkillStore:
                 "ownership_violation",
                 f"Canonical package ownership invalid for {slug}@{version}: {exc}",
             ) from exc
+        # Enforce the full immutable invariant at the materialization gate.
+        # A package whose hardening failed after os.replace must never be
+        # materialized into a workspace link.
+        _verify_recursive_readonly(pkg_path)
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).

@@ -1199,10 +1199,11 @@ class TestHardeningFailureAfterPublication:
         assert (trusted / "SKILL.md").is_file()
 
     def test_cleanup_failure_surfaces_explicit_error(
-        self, temp_canonical_root, skill_source_dir,
+        self, temp_canonical_root, skill_source_dir, monkeypatch,
     ):
         """When hardening fails AND cleanup/quarantine also fails,
-        the error must surface explicitly — not swallowed."""
+        the error must surface explicitly as a named compensation failure
+        — not swallowed."""
         import hashlib
 
         store = CanonicalSkillStore(root=temp_canonical_root)
@@ -1210,12 +1211,15 @@ class TestHardeningFailureAfterPublication:
 
         original_make_dir = store._isolation.make_dir_readonly_executor
 
-        # We need to also mock rmtree to fail
+        # Inject rmtree failure so that _safe_remove_published_package
+        # cannot clean up the unsafe package.
         import shutil as _shutil_mod
         original_rmtree = _shutil_mod.rmtree
 
-        def fail_rmtree(path, **kw):
+        def fail_rmtree(path, ignore_errors=False, onerror=None):
             raise PermissionError("Injected rmtree failure")
+
+        monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
 
         store._isolation.make_dir_readonly_executor = lambda path: (
             (_ for _ in ()).throw(
@@ -1223,16 +1227,18 @@ class TestHardeningFailureAfterPublication:
         )
 
         try:
-            # Note: the error raised should include the hardening failure
-            # context, not silently succeed
-            with pytest.raises(Exception) as exc_info:
+            # Both hardening and compensation fail → must raise named error
+            with pytest.raises(CanonicalStoreError) as exc_info:
                 store.build_from_source(
                     "test-skill", "1.0.0", content_hash, skill_source_dir,
                 )
-            # The error must not be a "success" return
-            assert exc_info.value is not None
+            assert exc_info.value.code == "compensation_failed", (
+                f"Expected compensation_failed, got {exc_info.value.code}"
+            )
+            assert "Injected rmtree failure" in exc_info.value.detail
         finally:
             store._isolation.make_dir_readonly_executor = original_make_dir
+            monkeypatch.undo()
 
     def test_canonical_hashes_preserved_after_hardening_failure(
         self, temp_canonical_root, skill_source_dir,
@@ -1307,3 +1313,209 @@ class TestHardeningFailureAfterPublication:
         assert not store.is_built("test-skill", "1.0.0", content_hash), (
             "is_built() must reject package with group-writable root dir"
         )
+
+    # ── Adversarial: hardening + compensation failure, both gates ──────
+
+    def test_source_hardening_and_compensation_failure_rejected_by_both_gates(
+        self, temp_canonical_root, skill_source_dir, monkeypatch,
+    ):
+        """When file hardening AND compensation/quarantine both fail in
+        build_from_source, the produced package must be rejected by BOTH
+        is_built() and verify_package(), and a named compensation failure
+        must surface."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"src-both-fail").hexdigest()
+
+        # Inject: make_file_readonly fails for files after publication
+        original_make_file = store._isolation.make_file_readonly
+        store._isolation.make_file_readonly = lambda path: (
+            (_ for _ in ()).throw(
+                PermissionError("Injected file hardening failure"))
+        )
+
+        # Inject: rmtree fails so compensation cannot clean up
+        import shutil as _shutil_mod
+        def fail_rmtree(path, ignore_errors=False, onerror=None):
+            raise PermissionError("Injected compensation failure")
+        monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
+
+        try:
+            with pytest.raises(CanonicalStoreError) as exc_info:
+                store.build_from_source(
+                    "test-skill", "1.0.0", content_hash, skill_source_dir,
+                )
+            # Must be a compensation_failed error
+            assert exc_info.value.code == "compensation_failed", (
+                f"Expected compensation_failed, got {exc_info.value.code}"
+            )
+            assert "Injected compensation failure" in exc_info.value.detail
+        finally:
+            store._isolation.make_file_readonly = original_make_file
+            monkeypatch.undo()
+
+        # After both failures, the published package must be rejected
+        # by BOTH reuse and materialization gates.
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must return False when hardening + compensation fail"
+        )
+        with pytest.raises(CanonicalStoreError) as ve:
+            store.verify_package("test-skill", "1.0.0", content_hash)
+        # The verify_package rejection must be from the immutable invariant
+        # (insufficient_hardening or ownership_violation, not package_missing).
+        assert ve.value.code in ("insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, got {ve.value.code}"
+        )
+
+    def test_manifest_hardening_and_compensation_failure_rejected_by_both_gates(
+        self, temp_canonical_root, monkeypatch,
+    ):
+        """When file hardening AND compensation/quarantine both fail in
+        build_from_manifest, the produced package must be rejected by BOTH
+        is_built() and verify_package(), and a named compensation failure
+        must surface."""
+        import hashlib
+
+        artifact_store = MagicMock()
+        artifact_store.read.return_value = b"# Manifest skill content\n"
+
+        manifest = {
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(
+                        b"# Manifest skill content\n").hexdigest(),
+                    "artifact_key": "skills/mf-test/SKILL.md",
+                },
+            ],
+        }
+        manifest_json = json.dumps(manifest, sort_keys=True)
+        content_hash = hashlib.sha256(manifest_json.encode()).hexdigest()
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        # Inject: make_file_readonly fails after publication
+        original_make_file = store._isolation.make_file_readonly
+        store._isolation.make_file_readonly = lambda path: (
+            (_ for _ in ()).throw(
+                PermissionError("Injected file hardening failure"))
+        )
+
+        # Inject: rmtree fails so compensation cannot clean up
+        import shutil as _shutil_mod
+        def fail_rmtree(path, ignore_errors=False, onerror=None):
+            raise PermissionError("Injected compensation failure")
+        monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
+
+        try:
+            with pytest.raises(CanonicalStoreError) as exc_info:
+                store.build_from_manifest(
+                    "mf-skill", "1.0.0", content_hash, manifest, artifact_store,
+                )
+            assert exc_info.value.code == "compensation_failed", (
+                f"Expected compensation_failed, got {exc_info.value.code}"
+            )
+            assert "Injected compensation failure" in exc_info.value.detail
+        finally:
+            store._isolation.make_file_readonly = original_make_file
+            monkeypatch.undo()
+
+        # Both gates must reject the unsafe package.
+        assert not store.is_built("mf-skill", "1.0.0", content_hash), (
+            "is_built() must return False when manifest hardening + compensation fail"
+        )
+        with pytest.raises(CanonicalStoreError) as ve:
+            store.verify_package("mf-skill", "1.0.0", content_hash)
+        assert ve.value.code in ("insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, got {ve.value.code}"
+        )
+
+    def test_owner_writable_member_rejected_at_materialization_gate(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """Regression: an owner-writable 0644 member is rejected by
+        verify_package() — the materialization gate must enforce the
+        full immutable invariant including owner write bits."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"owner-writable").hexdigest()
+
+        # Build a valid package normally
+        pkg = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert store.is_built("test-skill", "1.0.0", content_hash)
+        store.verify_package("test-skill", "1.0.0", content_hash)
+
+        # Manually set SKILL.md to owner-writable (0644)
+        skill_md = pkg / "SKILL.md"
+        os.chmod(skill_md, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
+
+        # is_built must reject owner-writable member
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must reject package with owner-writable member"
+        )
+
+        # verify_package must also reject — materialization gate enforced
+        with pytest.raises(CanonicalStoreError) as ve:
+            store.verify_package("test-skill", "1.0.0", content_hash)
+        assert ve.value.code == "insufficient_hardening", (
+            f"verify_package must reject on insufficient_hardening, got {ve.value.code}"
+        )
+        assert "owner-writable" in ve.value.detail
+
+    # ── Normal hardening functional checks ──────
+
+    def test_normal_source_build_passes_verify_package(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """Normal build_from_source + verify_package still works
+        (hardening remains functional)."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"normal-src").hexdigest()
+
+        pkg = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert store.is_built("test-skill", "1.0.0", content_hash)
+        # verify_package must not raise
+        store.verify_package("test-skill", "1.0.0", content_hash)
+        assert pkg.is_dir()
+
+    def test_normal_manifest_build_passes_verify_package(
+        self, temp_canonical_root,
+    ):
+        """Normal build_from_manifest + verify_package still works
+        (hardening remains functional)."""
+        import hashlib
+
+        artifact_store = MagicMock()
+        artifact_store.read.return_value = b"# Normal manifest skill\n"
+
+        manifest = {
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(
+                        b"# Normal manifest skill\n").hexdigest(),
+                    "artifact_key": "skills/normal/SKILL.md",
+                },
+            ],
+        }
+        manifest_json = json.dumps(manifest, sort_keys=True)
+        content_hash = hashlib.sha256(manifest_json.encode()).hexdigest()
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        pkg = store.build_from_manifest(
+            "mf-skill", "1.0.0", content_hash, manifest, artifact_store,
+        )
+        assert store.is_built("mf-skill", "1.0.0", content_hash)
+        # verify_package must not raise
+        store.verify_package("mf-skill", "1.0.0", content_hash)
+        assert pkg.is_dir()
