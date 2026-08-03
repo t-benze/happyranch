@@ -1984,3 +1984,270 @@ class TestAgentPilotPolicy:
                 db=db, actor_kind="agent", skill_id=pkg.skill_id,
                 reason="test",
             )
+
+
+# ── Test: Adversarial REJECTED materialization interleaving ──────────────
+
+class TestAdversarialRejectedMaterialization:
+    """CRITICAL: An exact addressed version that becomes REJECTED during
+    materialization must NOT leave bytes or directories in either
+    .claude/skills/<slug> or .agents/skills/<slug>."""
+
+    def test_rejected_at_success_boundary_cleans_and_raises(self, db):
+        """Adversarial interleaving: package flips PUBLISHED→REJECTED at
+        the success-recording seam. Must clean residue and raise
+        LifecycleMaterializationError with zero materialized-success events."""
+        import tempfile
+        from pathlib import Path
+
+        service = SkillLifecycleService()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org_root = Path(tmpdir)
+            pkg = service.submit_proposal(
+                db=db, actor_kind="agent",
+                org_root=org_root,
+                **_proposal_kwargs(
+                    slug="rejected-race",
+                    skill_md="# Rejected Race Test\nContent.\n",
+                ),
+            )
+            pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.record_validation(
+                db=db, actor_kind="human", version_id=pkg.id, ok=True,
+                validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0",
+            )
+            pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.review_decision(
+                db=db, actor_kind="human", version_id=pkg.id,
+                decision="approved", rationale="ok", reviewer="founder",
+            )
+            pkg = service.publish(
+                db=db, actor_kind="human", version_id=pkg.id,
+                approval_event_id=pkg.publication_decision_id,
+            )
+            service.assign(
+                db=db, actor_kind="human", skill_id=pkg.skill_id,
+                agent_name="dev_agent", version_id=pkg.id,
+            )
+
+            workspace = org_root / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            from runtime.orchestrator.workspace_adapters import (
+                _materialize_lifecycle_skills,
+                LifecycleMaterializationError,
+            )
+
+            # Flush the package to REJECTED status AFTER get_effective_skills
+            # would have seen it as PUBLISHED, but BEFORE record_materialization
+            # records success — simulated by patching record_materialization
+            # on the CLASS (not an instance, since _materialize_lifecycle_skills
+            # creates its own SkillLifecycleService).
+            from runtime.skills.lifecycle.service import LifecycleError
+
+            original_rm = SkillLifecycleService.record_materialization
+
+            def _flip_then_raise_rejected(self, *args, **kwargs):
+                # Only interfere with the success recording.
+                if kwargs.get("success"):
+                    # Flip the package version to REJECTED in the database
+                    conn = db
+                    if hasattr(db, '_conn'):
+                        conn = db._conn
+                    conn.execute(
+                        "UPDATE skill_lifecycle_packages SET status = ? WHERE id = ?",
+                        ("rejected", pkg.id),
+                    )
+                    raise LifecycleError(
+                        code="rejected_terminal",
+                        detail=f"Package version {pkg.id} is terminally REJECTED.",
+                        status_code=409,
+                    )
+                return original_rm(self, *args, **kwargs)
+
+            SkillLifecycleService.record_materialization = _flip_then_raise_rejected
+
+            try:
+                with pytest.raises(LifecycleMaterializationError) as exc_info:
+                    _materialize_lifecycle_skills(
+                        workspace=workspace,
+                        org_root=org_root,
+                        db=db,
+                        agent_name="dev_agent",
+                        slug="test-org",
+                    )
+
+                # Verify the error message names the rejected version
+                assert "REJECTED" in str(exc_info.value)
+                assert str(pkg.id) in str(exc_info.value)
+
+                # Verify no residue in workspace
+                dest_claude = workspace / ".claude" / "skills" / pkg.slug
+                dest_agents = workspace / ".agents" / "skills" / pkg.slug
+                assert not dest_claude.exists(), (
+                    f".claude/skills/{pkg.slug} should not exist after rejected clean"
+                )
+                assert not dest_agents.exists(), (
+                    f".agents/skills/{pkg.slug} should not exist after rejected clean"
+                )
+
+                # Verify zero materialized-success events
+                events = lifecycle_stores.list_lifecycle_events(
+                    db, skill_id=pkg.skill_id,
+                )
+                mat_success = [e for e in events if e.event_type == "materialized"]
+                assert len(mat_success) == 0, (
+                    "No materialized events should be recorded for REJECTED packages"
+                )
+            finally:
+                SkillLifecycleService.record_materialization = original_rm
+
+    def test_normal_materialization_records_success(self, db):
+        """Normal (non-adversarial) materialization records a success event."""
+        import tempfile
+        from pathlib import Path
+
+        service = SkillLifecycleService()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org_root = Path(tmpdir)
+            pkg = service.submit_proposal(
+                db=db, actor_kind="agent",
+                org_root=org_root,
+                **_proposal_kwargs(
+                    slug="normal-success",
+                    skill_md="# Normal Success\nContent.\n",
+                ),
+            )
+            pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.record_validation(
+                db=db, actor_kind="human", version_id=pkg.id, ok=True,
+                validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0",
+            )
+            pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.review_decision(
+                db=db, actor_kind="human", version_id=pkg.id,
+                decision="approved", rationale="ok", reviewer="founder",
+            )
+            pkg = service.publish(
+                db=db, actor_kind="human", version_id=pkg.id,
+                approval_event_id=pkg.publication_decision_id,
+            )
+            service.assign(
+                db=db, actor_kind="human", skill_id=pkg.skill_id,
+                agent_name="dev_agent", version_id=pkg.id,
+            )
+
+            workspace = org_root / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            from runtime.orchestrator.workspace_adapters import _materialize_lifecycle_skills
+
+            _materialize_lifecycle_skills(
+                workspace=workspace,
+                org_root=org_root,
+                db=db,
+                agent_name="dev_agent",
+                slug="test-org",
+            )
+
+            # Verify success event was recorded
+            events = lifecycle_stores.list_lifecycle_events(
+                db, skill_id=pkg.skill_id,
+            )
+            mat_success = [e for e in events if e.event_type == "materialized"]
+            assert len(mat_success) >= 1
+
+            # Verify content landed on disk in both trees
+            dest_claude = workspace / ".claude" / "skills" / pkg.slug / "SKILL.md"
+            dest_agents = workspace / ".agents" / "skills" / pkg.slug / "SKILL.md"
+            assert dest_claude.is_file(), f"Expected {dest_claude} to exist"
+            assert dest_agents.is_file(), f"Expected {dest_agents} to exist"
+
+
+# ── Test: Validator key blank/whitespace normalization ───────────────────
+
+class TestValidatorKeyNormalization:
+    """Blank or whitespace-only validator_key is normalized to the
+    mandatory nonblank validator_version, consistent with None/empty behavior."""
+
+    def test_blank_validator_key_normalized_to_version(self, db):
+        """Empty string validator_key → falls back to validator_version."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-blank"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized
+
+    def test_whitespace_validator_key_normalized_to_version(self, db):
+        """Whitespace-only validator_key → falls back to validator_version."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-whitespace"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="   ",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized
+
+    def test_explicit_nonblank_validator_key_preserved(self, db):
+        """Explicit nonblank validator_key is preserved as-is."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-explicit"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="CUSTOM-KEY-v2",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "CUSTOM-KEY-v2"  # Preserved
+
+    def test_none_validator_key_normalized_to_version(self, db):
+        """None validator_key → falls back to validator_version (existing behavior)."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-none"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key=None,
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized

@@ -485,7 +485,11 @@ class SkillLifecycleService:
 
         meta: dict = {"findings": findings or []}
         meta["validator_version"] = validator_version
-        if validator_key:
+        # Normalize blank/whitespace-only validator_key to the mandatory
+        # nonblank validator_version (consistent with None/empty behavior).
+        # Explicit nonblank keys are preserved as-is for deterministic
+        # distinct-validator identification.
+        if validator_key and validator_key.strip():
             meta["validator_key"] = validator_key
         else:
             meta["validator_key"] = validator_version
@@ -1094,12 +1098,22 @@ class SkillLifecycleService:
         self, db, actor_kind: str, version_id: int,
         validator_version: str, validator_key: str | None = None,
     ) -> PackageVersion:
-        """Founder-triggered validation with reproducible metadata."""
+        """Founder-triggered validation with reproducible metadata.
+
+        validator_key is normalized: None, empty, or whitespace-only keys
+        fall back to validator_version; only explicit nonblank keys are
+        preserved.
+        """
         self._ensure_human(actor_kind, "validate")
+        # Normalize blank/whitespace validator_key to validator_version,
+        # consistent with record_validation's own guard.
+        effective_key = validator_key
+        if not effective_key or not effective_key.strip():
+            effective_key = validator_version
         return self.record_validation(
             db, actor_kind, version_id, ok=True,
             validator_version=validator_version,
-            validator_key=validator_key or validator_version,
+            validator_key=effective_key,
         )
 
     def review_proposal(

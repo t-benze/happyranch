@@ -143,7 +143,7 @@ rows remain readable with NULL for new columns.
 
 ## 5. Tests
 
-See `tests/daemon/test_skills_proposal_review.py` (30 tests) covering:
+See `tests/daemon/test_skills_proposal_review.py` (comprehensive suite) covering:
 - Agent 403 for all review routes
 - Claimant/proposer immutability
 - Terminal rejection blocks all mutations

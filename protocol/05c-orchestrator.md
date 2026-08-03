@@ -956,7 +956,13 @@ policy:
 - Skills **do not** grant tools, credentials, network access, filesystem
   access, sandbox policy, permission maps, allow-rule, or auth changes.
 - System/contract skills are **not toggleable** — they are outside the catalog.
-- **No SQLite migration** — v1 is file/YAML-backed only.
+- **No destructive SQLite migration** — two additive nullable columns
+  (``claimed_by`` / ``claimed_at``) were added via ``ALTER TABLE ADD COLUMN``.
+  No column drops, no semantic changes to existing columns, and no
+  overloaded-column semantic migration. All legacy rows remain readable
+  with NULL for new columns. This is the sole additive migration surface
+  and is distinct from the prohibited destructive/overloaded-column
+  class.
 - **No web Settings UI** or marketplace in v1.
 - **No executable/permission-bearing package surface** — v1 packages include
   `SKILL.md`, `skill.yaml`, and optional `references/` and `assets/`
