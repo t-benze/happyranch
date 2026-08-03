@@ -1084,20 +1084,43 @@ def get_proposals_queue(
     status_filter: str | None = Query(None, alias="status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    validation_outcome: str | None = Query(None),
+    search: str | None = Query(None),
+    proposer: str | None = Query(None),
+    submitted_after: str | None = Query(None),
+    submitted_before: str | None = Query(None),
 ) -> dict:
     """Founder-only: paginated/filterable proposal queue.
 
-    Returns proposal/version identity, immutable hash, immutable proposer
-    plus separate claimant, task/session provenance, decision status,
-    latest/recorded validation identifiers, permitted next action, and
-    separate assignment/materialization projection.
+    Server-authoritative filters based on immutable ledger/event facts:
+    - status: decision status (proposed, draft, validated, etc.)
+    - validation_outcome: 'validated', 'validation_failed', or 'unvalidated'
+    - search: case-insensitive match on skill_id, slug, or name
+    - proposer: exact proposer_agent match
+    - submitted_after / submitted_before: ISO-8601 date bounds on created_at
 
     Default ordering: actionable first, then oldest submission.
-    Rejected/history items are not actionable.
+    Returns display facts: validation result + deterministic identifiers,
+    provenance, projection summary, permitted action.
     """
+    # Validate validation_outcome enum
+    if validation_outcome not in (None, "validated", "validation_failed", "unvalidated"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invalid_validation_outcome",
+                "detail": "validation_outcome must be 'validated', 'validation_failed', or 'unvalidated'.",
+            },
+        )
+
     try:
         result = _service.get_proposals_queue(
             _get_db(org), status=status_filter, page=page, page_size=page_size,
+            validation_outcome=validation_outcome,
+            search=search,
+            proposer=proposer,
+            submitted_after=submitted_after,
+            submitted_before=submitted_before,
         )
     except LifecycleError as e:
         raise HTTPException(
@@ -1115,16 +1138,18 @@ def get_proposal_detail(
 ) -> dict:
     """Founder-only: full proposal detail by immutable version/proposal ID.
 
-    Renders all exact immutable package/provenance data: read-only package
-    content/artifact reference, immutable author, optional claimant with time,
-    full append-only events including actor/time/hash/validator/run/failure/
-    rationale, lifecycle decision projection, assignment projection, and
-    materialization attempts.
+    Renders all exact immutable package/provenance data: read-only canonical
+    SKILL.md bytes loaded from the ArtifactStore, package hash/manifest
+    reference, creation-event purpose/target-agent data, immutable proposer/
+    task/session vs claimant/time, append-only events, separate assignment/
+    materialization projections. Safely represents missing/malformed legacy
+    artifacts (skill_md: null), never fabricates bytes or exposes arbitrary paths.
 
     Returns a concurrency marker (last_event_id) for state-changing operations.
     """
     try:
-        detail = _service.get_proposal_detail(_get_db(org), version_id)
+        org_root_str = str(org.root) if org.root is not None else None
+        detail = _service.get_proposal_detail(_get_db(org), version_id, org_root=org_root_str)
     except LifecycleError as e:
         raise HTTPException(
             status_code=e.status_code,

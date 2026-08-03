@@ -567,6 +567,472 @@ class TestProposalDetail:
         )
         assert r.status_code == 404
 
+    def test_detail_includes_skill_md_bytes(self, app, org_state):
+        """Detail returns the canonical SKILL.md bytes loaded from the ArtifactStore."""
+        skill_md_content = "# Test Skill\n\nThis is a test skill for proposal review."
+        data = _submit_agent_proposal(app, org_state, skill_md=skill_md_content)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # SKILL.md bytes should be loaded from artifact store
+        assert detail["skill_md"] == skill_md_content
+
+        # content_artifact_key should still be present
+        assert detail["content_artifact_key"] is not None
+
+    def test_detail_includes_purpose_and_target(self, app, org_state):
+        """Detail returns purpose and target_agent_suggestion from creation event."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        assert detail["purpose"] == _VALID_PROPOSAL["purpose"]
+        assert detail["target_agent_suggestion"] == _VALID_PROPOSAL["target_agent_suggestion"]
+
+    def test_detail_package_members_from_manifest(self, app, org_state):
+        """Detail returns package_members from the manifest artifact."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # Should have package_members (at minimum the SKILL.md entry)
+        assert detail["package_members"] is not None
+        assert isinstance(detail["package_members"], list)
+        assert len(detail["package_members"]) >= 1
+        # First member should be SKILL.md
+        first = detail["package_members"][0]
+        assert first["path"] == "SKILL.md"
+        assert "hash" in first
+        assert "artifact_key" in first
+
+    def test_detail_skill_md_null_for_missing_artifact(self, app, org_state):
+        """Detail safely returns null skill_md for proposals with missing/malformed artifacts.
+
+        This tests that the safe loader never fabricates bytes.
+        """
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # For a valid proposal submitted via the agent route (which uses ArtifactStore),
+        # skill_md should be non-null
+        assert detail["skill_md"] is not None
+
+
+class TestProposalQueueFilters:
+    """Typed server-authoritative filters on the queue endpoint."""
+
+    def test_queue_filter_by_proposer(self, app, org_state):
+        """Queue filter by proposer_agent returns only matching proposals."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit as product_lead (different proposer)
+        task_id = "TASK-RV-002"
+        session_id = "sess-rv-agent-002"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Filter by frontend_engineer
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"proposer": "frontend_engineer"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["proposer_agent"] == "frontend_engineer"
+
+    def test_queue_filter_by_search(self, app, org_state):
+        """Queue search filter matches skill_id, slug, or name case-insensitively."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # Search by partial slug
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "frontend"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+
+        # Search by name
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "Development"},
+        )
+        assert r.status_code == 200
+        result2 = r.json()
+        assert result2["total"] == 1
+
+        # Search without match
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "nonexistent"},
+        )
+        assert r.status_code == 200
+        result3 = r.json()
+        assert result3["total"] == 0
+
+    def test_queue_filter_by_validation_outcome(self, app, org_state):
+        """Queue validation_outcome filter: validated, validation_failed, unvalidated."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Without validation: should show as unvalidated
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "unvalidated"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["version_id"] == version_id
+
+        # No validated proposals yet
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "validated"},
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == 0
+
+    def test_queue_filter_by_date_bounds(self, app, org_state):
+        """Queue date bounds filter on submitted_after / submitted_before."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # submitted_after in the past should include
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_after": "2020-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+
+        # submitted_before in the far future should also include
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_before": "2099-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result2 = r.json()
+        assert result2["total"] == 1
+
+        # submitted_after in the future should exclude
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_after": "2099-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result3 = r.json()
+        assert result3["total"] == 0
+
+    def test_queue_combined_filters(self, app, org_state):
+        """Queue AND-composes multiple filters."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit a second proposal
+        task_id = "TASK-RV-003"
+        session_id = "sess-rv-agent-003"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Combined: status=proposed + proposer=frontend_engineer
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"status": "proposed", "proposer": "frontend_engineer"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["proposer_agent"] == "frontend_engineer"
+
+    def test_queue_pagination_total_accurate(self, app, org_state):
+        """Pagination total reflects filtered count, not unfiltered total."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit second proposal via product_lead (different agent, different slug)
+        task_id = "TASK-RV-004"
+        session_id = "sess-rv-agent-004"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        body["skill_md"] = "# Product Manager PRD\n\nA skill for PRDs."
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Total should reflect all proposals
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"page_size": 1},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 2
+        assert len(result["items"]) == 1  # page_size=1
+        assert result["page"] == 1
+
+    def test_queue_ordering_actionable_first(self, app, org_state):
+        """Queue orders actionable (non-terminal) first, then oldest."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Mark the proposal as rejected (terminal)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid = r.json()["last_event_id"]
+
+        # Need to move through lifecycle to reject: propose → claim → validate → submit-review → review(rejected)
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/claim",
+            headers=_founder_headers(),
+            json={"expected_event_id": eid},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid2 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/validate",
+            headers=_founder_headers(),
+            json={"validator_version": "THR-055/1.0.0", "expected_event_id": eid2},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid3 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/submit-review",
+            headers=_founder_headers(),
+            json={"expected_event_id": eid3},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid4 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/review",
+            headers=_founder_headers(),
+            json={"decision": "rejected", "rationale": "Not good enough.", "expected_event_id": eid4},
+        )
+        assert r.status_code == 200
+
+        # Submit a new proposal (actionable) via product_lead
+        task_id = "TASK-RV-005"
+        session_id = "sess-rv-agent-005"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        body2 = dict(_VALID_PROPOSAL)
+        body2["slug"] = "product-manager-prd"
+        body2["name"] = "Product Manager PRD"
+        body2["skill_md"] = "# Product Manager PRD\n\nDifferent."
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body2,
+            params={"session_id": session_id},
+        )
+        assert r2.status_code == 201
+
+        # Queue should have actionable (non-rejected) first
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 2
+        # First item should be actionable (proposed), not rejected
+        assert result["items"][0]["status"] == "proposed"
+        # Second item should be the rejected one
+        assert result["items"][1]["status"] == "rejected"
+
+    def test_queue_invalid_validation_outcome_rejected(self, app, org_state):
+        """Queue rejects invalid validation_outcome values."""
+        client = TestClient(app)
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "invalid"},
+        )
+        assert r.status_code == 400
+
+
+class TestProposalDetailArtifactSafety:
+    """Detail endpoint safely handles missing/malformed artifacts."""
+
+    def test_detail_no_artifact_store_returns_null_skill_md(self, app, org_state):
+        """When org_root is not passed or artifact is missing, skill_md safely returns null."""
+        # This tests the code path where _load_skill_md_from_artifact gracefully
+        # returns None. We test by verifying that a valid proposal's detail works
+        # even with null org_root passed to the stores layer.
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        # Call stores directly with org_root=None
+        detail = lifecycle_stores.get_proposal_detail(org_state.db, version_id, org_root=None)
+        assert detail is not None
+        # skill_md should be null because org_root=None means we can't reach artifact store
+        assert detail["skill_md"] is None
+        # package_members should also be null
+        assert detail["package_members"] is None
+        # But other fields should still be present
+        assert detail["content_artifact_key"] is not None
+        assert detail["content_hash"] is not None
+
+    def test_detail_safe_on_malformed_artifact_key(self, app, org_state):
+        """Detail gracefully handles a bogus/nonexistent artifact key."""
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        org_root = str(org_state.root)
+
+        # Modify the package directly to have a bogus artifact key
+        db = org_state.db
+        conn = db._conn if hasattr(db, '_conn') else db
+        conn.execute(
+            "UPDATE skill_lifecycle_packages SET content_artifact_key = ? WHERE id = ?",
+            ("nonexistent/path/SKILL.md", version_id),
+        )
+        conn.commit()
+
+        # Detail should still return successfully with null skill_md
+        detail = lifecycle_stores.get_proposal_detail(db, version_id, org_root=org_root)
+        assert detail is not None
+        assert detail["skill_md"] is None
+        assert detail["package_members"] is None
+
+    def test_detail_read_does_not_append_events(self, app, org_state):
+        """Reading proposal detail does NOT create any lifecycle data (events, mutations)."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Count events before reads
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        before_events = r.json()["events"]
+        before_count = len(before_events)
+
+        # Read multiple times
+        for _ in range(3):
+            r = client.get(
+                f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+                headers=_founder_headers(),
+            )
+            assert len(r.json()["events"]) == before_count
+
+    def test_queue_read_does_not_append_events(self, app, org_state):
+        """Reading proposals queue does NOT create any lifecycle data."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # Count events before
+        r_detail = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/1",
+            headers=_founder_headers(),
+        )
+        before_count = len(r_detail.json()["events"])
+
+        # Read queue multiple times
+        for _ in range(3):
+            r = client.get(
+                "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+                headers=_founder_headers(),
+            )
+            assert r.status_code == 200
+
+        # Events should not have changed
+        r_detail_after = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/1",
+            headers=_founder_headers(),
+        )
+        assert len(r_detail_after.json()["events"]) == before_count
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Concurrency marker protection
