@@ -104,6 +104,23 @@ jobs:
 
           # Verify the account
           id "$EXEC_USER"
+
+          # Grant passwordless sudo from the CI runner user to the executor.
+          # This is the minimal required launch authority — the runner user
+          # must be able to sudo -n -u <executor> without a password.
+          RUNNER_USER=$(whoami)
+          SUDOERS_FILE="/etc/sudoers.d/99-happyranch-executor"
+          if [ ! -f "$SUDOERS_FILE" ]; then
+            echo "$RUNNER_USER ALL=($EXEC_USER) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
+            sudo chmod 0440 "$SUDOERS_FILE"
+          fi
+
+          # Verify passwordless sudo works
+          if ! sudo -n -u "$EXEC_USER" true 2>/dev/null; then
+            echo "FATAL: Cannot sudo -n -u $EXEC_USER after sudoers provisioning"
+            exit 1
+          fi
+
           echo "executor_uid=$EXEC_UID" >> "$GITHUB_OUTPUT"
           echo "executor_gid=$EXEC_GID" >> "$GITHUB_OUTPUT"
           echo "executor_user=$EXEC_USER" >> "$GITHUB_OUTPUT"
@@ -160,12 +177,14 @@ jobs:
             exit 1
           fi
 
-          # Verify the user can be switched to (setuid capability).
-          # HARD FAIL — if setuid switching is unavailable, the isolated
+          # Verify the user can be switched to via non-interactive sudo.
+          # The macOS deployment model uses `sudo -n -u <executor>` for
+          # OS identity handoff — no root daemon, no setgid/setuid.
+          # HARD FAIL — if sudo capability is unavailable, the isolated
           # executor launch contract is broken.
-          if ! sudo -u "$EXEC_USER" true 2>/dev/null; then
-            echo "FATAL: Cannot sudo to executor user '$EXEC_USER'"
-            echo "setuid capability is required for executor isolation"
+          if ! sudo -n -u "$EXEC_USER" true 2>/dev/null; then
+            echo "FATAL: Cannot sudo -n -u $EXEC_USER"
+            echo "Passwordless sudo via sudoers is required for executor isolation"
             exit 1
           fi
 
@@ -221,4 +240,4 @@ jobs:
           uv run pytest \
             tests/test_canonical_production_bound.py \
             -v --tb=long \
-            -k "write_attack or chmod_attack or acl_attack or executor_identity_contract_required"
+            -k "write_attack or chmod_attack or acl_attack or executor_identity_contract_required or child_process_runs_as_distinct"

@@ -97,8 +97,9 @@ def _executor_switch_materialize(
         # Sequential per-context calls would allow the LAST context
         # (bootstrap, which has no system contracts) to withdraw
         # system-contract links created by earlier contexts.
-        # Failure is surfaced in the response body, not as a 500 —
-        # the switch itself has already succeeded (steps 1-3 are applied).
+        # FAIL-CLOSED: materialization failure prevents executor switch.
+        # The caller MUST check errors and refuse to persist the new
+        # executor on any materialization failure.
         errors: list[str] = []
         try:
             from runtime.orchestrator.workspace_adapters import (
@@ -831,6 +832,12 @@ async def set_agent_executor(
 ) -> dict:
     """Founder action: switch an existing agent's executor end-to-end.
 
+    **Atomicity contract:** The six-context canonical union materialization
+    MUST complete successfully BEFORE any new executor frontmatter is
+    persisted and BEFORE audit logging. On union/materialization failure,
+    this route returns a named HTTP error, preserves the previous executor
+    configuration and audit state, and prohibits subsequent launch.
+
     Reconciles all three surfaces the orchestrator reads:
       1. org agent .md frontmatter (``executor:``) — atomic rebuild via
          render_agent_text + tempfile + os.replace (same pattern as the
@@ -862,7 +869,33 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
-    # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+    # ── Step 1: Materialize the six-context canonical union FIRST ──
+    # This MUST complete successfully before any frontmatter is persisted.
+    # On failure, the previous executor is preserved and a named HTTP
+    # error is returned — no partial state mutation.
+    materialization_errors: list[str] = []
+    if has_workspace:
+        materialization_errors = await asyncio.to_thread(
+            _executor_switch_materialize,
+            workspace, org, paths, agent_name,
+            existing.system_prompt, body.executor,
+        )
+        if materialization_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_materialization_failed",
+                    "errors": materialization_errors,
+                    "message": (
+                        "Canonical skill materialization for the new executor "
+                        "failed. The previous executor has been preserved. "
+                        "Resolve the materialization errors before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 2: Persist the new executor frontmatter ──
+    # Only reached if materialization succeeded (or no workspace exists).
     updated = AgentDef(
         name=existing.name,
         team=existing.team,
@@ -897,25 +930,12 @@ async def set_agent_executor(
     stale_files: list[str] = []
     removed: list[str] = []
     cleaned = False
-    materialization_errors: list[str] = []
 
     if has_workspace:
         # THR-095: agent.yaml is no longer the source — skip the
         # agent.yaml reconcile.  The .md frontmatter is the single
         # source of truth.
         after_ws = before_ws
-        # Issue #536: wrap the complete executor-switch materialization
-        # (bootstrap wholesale copy + system-contract injection for all
-        # 4 contexts) under the same process-local workspace lock used
-        # by session-time materialization.  This prevents a concurrent
-        # task/thread spawn from racing bootstrap inside _copy_skills_tree.
-        # The lock is an RLock so the adapter _copy_skills (called inside
-        # ensure_workspace_ready) can safely re-enter.
-        materialization_errors = await asyncio.to_thread(
-            _executor_switch_materialize,
-            workspace, org, paths, agent_name,
-            existing.system_prompt, body.executor,
-        )
 
         # 4. stale Claude-only files when switching AWAY from a Claude
         #    adapter. Check the profile's canonical workspace_adapter_id (D6),
@@ -953,7 +973,6 @@ async def set_agent_executor(
         "stale_files": stale_files,
         "cleaned": cleaned,
         "removed": removed,
-        "materialization_errors": materialization_errors,
     }
 
 

@@ -999,11 +999,12 @@ running agent.
 in the three executor adapters (``ClaudeWorkspaceAdapter``,
 ``CodexWorkspaceAdapter``, ``OpencodeWorkspaceAdapter``) are PERMANENTLY REMOVED
 as executable paths. The former ``_WHOLESALE_DUMP_ENABLED`` toggle flag is
-also removed from source — there is no config-rollback gate. The explicit
-injection paths — ``inject_system_contracts`` (§4.7) and
-``inject_managed_skills`` (§4.10) — are the SOLE skill-delivery mechanism.
-The flag can be set to ``True`` for rollback to the legacy wholesale-dump
-model without a code revert.
+also removed from source — it cannot be set, re-enabled, or used for
+rollback. The canonical skill store + workspace symlink architecture
+is the sole delivery path. The explicit injection paths —
+``inject_system_contracts`` (§4.7) and ``inject_managed_skills`` (§4.10) —
+deliver skills exclusively through the canonical store, never through a
+copy path.
 
 **Protocol doc manifest.** Protocol ``.md`` docs (the files in
 ``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
