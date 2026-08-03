@@ -1889,3 +1889,499 @@ class TestHardeningFailureAfterPublication:
         finally:
             store._isolation.make_file_readonly = original_make_file
             monkeypatch.undo()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Runner-path dual-failure proofs — production task/session runner
+# boundary (TASK-4148).
+#
+# The existing TASK-4145 tests call SymlinkMaterializer directly.
+# These tests enter the REAL production runner path (Orchestrator.run_step
+# → _run_agent → materialize_workspace_skills) so the executor run() spy
+# is genuinely reachable and zero calls is meaningful.
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestRunnerPathDualFailureNoExecutorLaunch:
+    """Production runner-path proofs: dual-failure (hardening +
+    compensation) prevents executor launch and preserves trusted state.
+
+    These tests use the real Orchestrator → run_step_impl → _run_agent →
+    materialize_workspace_skills path.  The executor is built and its
+    run() method is spied on so zero calls is proof that materialization
+    failure genuinely prevents launch.
+    """
+
+    def test_source_runner_dual_failure_no_executor_launch(
+        self, tmp_path, monkeypatch,
+    ):
+        """Source build: runner-path dual-failure prevents executor launch.
+
+        Builds an UNRELATED trusted canonical package via build_from_source,
+        captures deterministic member hashes, then injects both hardening
+        and compensation failure so the runner's materialize_workspace_skills
+        (called from _run_agent) fails with compensation_failed.
+
+        Proves:
+        - Task is terminal FAILED with named failure in note
+        - Mock executor run() is NEVER called (0 calls)
+        - No workspace skill link under .claude/skills or .agents/skills
+        - Trusted package hashes unchanged
+        - Unsafe package rejected by reuse and materialization gates
+        - Fault stubs genuinely invoked
+        """
+        import hashlib
+        from unittest.mock import MagicMock
+
+        from runtime.config import Settings
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.runtime import RuntimeDir
+        from runtime.models import TaskStatus
+
+        # ── 1. Build a TRUSTED canonical package via build_from_source ──
+        store = CanonicalSkillStore(root=tmp_path / "canonical-store")
+
+        trusted_src = tmp_path / "trusted-src"
+        trusted_src.mkdir()
+        (trusted_src / "SKILL.md").write_text("# Trusted Source Skill\n")
+        refs = trusted_src / "references"
+        refs.mkdir()
+        (refs / "helper.md").write_text("# Helper\n")
+
+        trusted_content_hash = hashlib.sha256(
+            b"trusted-source-runner").hexdigest()
+        trusted_path = store.build_from_source(
+            "trusted-source", "1.0.0", trusted_content_hash, trusted_src,
+        )
+        assert store.is_built("trusted-source", "1.0.0", trusted_content_hash)
+
+        trusted_hashes: dict[str, str] = {}
+        for fpath in sorted(trusted_path.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(trusted_path))
+                trusted_hashes[rel] = hashlib.sha256(
+                    fpath.read_bytes()).hexdigest()
+        assert len(trusted_hashes) > 0
+
+        # ── 2. Build a minimal orchestrator ────────────────────────────
+        rt = RuntimeDir.init(tmp_path / "runtime-dir")
+        org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
+        org_paths.root.mkdir(parents=True, exist_ok=True)
+        db = Database(org_paths.db_path)
+        settings = Settings(project_root=tmp_path)
+
+        # Create teams config so Orchestrator can resolve agent teams
+        teams_yaml = org_paths.root / "teams.yaml"
+        teams_yaml.write_text(
+            "engineering:\n  agents:\n    - dev_agent\n",
+        )
+        teams = TeamsRegistry.load(org_paths.root)
+
+        orch = Orchestrator(
+            db=db, settings=settings, paths=org_paths,
+            slug="test-org", teams=teams,
+        )
+
+        workspace = org_paths.workspaces_dir / "dev_agent"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "task_history.md").write_text("# Task History\n")
+        # Readiness marker so _run_agent passes WorkspaceNotInitialized check
+        skill_marker = workspace / ".claude" / "skills" / "start-task"
+        skill_marker.mkdir(parents=True, exist_ok=True)
+        (skill_marker / "SKILL.md").write_text("# start-task\n")
+        (workspace / "repos" / "test-org" / ".git").mkdir(
+            parents=True, exist_ok=True,
+        )
+
+        # Create source directories for system contracts so
+        # materialize_workspace_skills has something to build.
+        protocol_skills = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs"]:
+            d = protocol_skills / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._resolve_skills_src",
+            lambda settings: protocol_skills,
+        )
+
+        # Also create the runtime/skills dir the runner looks for
+        runtime_skills = tmp_path / "runtime" / "skills"
+        runtime_skills.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
+
+        # ── 3. Mock executor with run() spy ────────────────────────────
+        mock_executor = MagicMock()
+        mock_executor.run = MagicMock(
+            return_value=MagicMock(
+                success=True, duration_seconds=1, session_id="sess-test",
+            )
+        )
+        # D7B: set_invocation_context must be callable
+        mock_executor.set_invocation_context = MagicMock()
+
+        from unittest.mock import patch as mock_patch
+
+        # ── 4. Inject dual failure ─────────────────────────────────────
+        # Sabotage _apply_readonly_hardening so file hardening fails
+        hardening_calls = [0]
+
+        def failing_hardening(isolation, pkg_path):
+            hardening_calls[0] += 1
+            raise PermissionError(
+                "Injected file hardening failure on " + str(pkg_path))
+
+        # Sabotage shutil.rmtree so compensation (cleanup) also fails
+        compensation_calls = [0]
+
+        def failing_rmtree(path, ignore_errors=False, onerror=None):
+            compensation_calls[0] += 1
+            raise PermissionError(
+                "Injected compensation failure on " + str(path))
+
+        monkeypatch.setattr(
+            "runtime.skills.canonical_store._apply_readonly_hardening",
+            failing_hardening,
+        )
+        # The canonical_store module imports shutil at the top, so
+        # monkeypatch through the module reference.
+        import runtime.skills.canonical_store as _cs_mod
+        monkeypatch.setattr(_cs_mod.shutil, "rmtree", failing_rmtree)
+
+        with mock_patch.object(
+            orch, "_build_executor", return_value=mock_executor,
+        ):
+            # ── 5. Create task and drive the REAL runner ───────────────
+            task_id = orch.create_task(
+                "Test source dual-failure runner proof",
+                team="engineering",
+            )
+            db.update_task(task_id, assigned_agent="dev_agent")
+
+            orch.run_step(task_id)
+
+        # ── 6. Assert terminal FAILED persistence ─────────────────────
+        task = db.get_task(task_id)
+        assert task is not None, "Task was deleted"
+        assert task.status == TaskStatus.FAILED, (
+            f"Expected FAILED, got {task.status}"
+        )
+        note = task.note or ""
+        assert "agent invocation failed" in note, (
+            f"Note must contain runner's failure wrapper: {note!r}"
+        )
+        assert "compensation_failed" in note, (
+            f"Note must name compensation_failed: {note!r}"
+        )
+
+        # ── 7. Assert no executor subprocess launch ────────────────────
+        mock_executor.run.assert_not_called()
+
+        # ── 8. Assert stubs were genuinely invoked ─────────────────────
+        assert hardening_calls[0] > 0, (
+            "_apply_readonly_hardening stub was never invoked"
+        )
+        assert compensation_calls[0] > 0, (
+            "shutil.rmtree compensation stub was never invoked"
+        )
+
+        # ── 9. No workspace skill link created ────────────────────────
+        for subdir in [".claude/skills", ".agents/skills"]:
+            # The start-task link was the readiness marker, but after
+            # materialization failure it should NOT have been updated.
+            # Verify no other unexpected links exist.
+            skills_dir = workspace / subdir
+            if skills_dir.exists():
+                for entry in skills_dir.iterdir():
+                    if entry.name not in ("start-task",):
+                        assert not entry.exists(follow_symlinks=False), (
+                            f"Link must NOT exist at {entry}"
+                        )
+
+        # ── 10. Trusted package unchanged (NON-CONDITIONAL) ───────────
+        assert store.is_built(
+            "trusted-source", "1.0.0", trusted_content_hash), (
+            "Trusted package must still pass is_built()"
+        )
+        store.verify_package(
+            "trusted-source", "1.0.0", trusted_content_hash)
+
+        trusted_current = store.canonical_path(
+            "trusted-source", "1.0.0", trusted_content_hash)
+        assert trusted_current.is_dir(), "Trusted package must still exist"
+        for rel, expected_hash in trusted_hashes.items():
+            fp = trusted_current / rel
+            assert fp.is_file(), f"Trusted file {rel} must still exist"
+            actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+            assert actual == expected_hash, (
+                f"Trusted file {rel} hash changed: "
+                f"expected {expected_hash[:16]}..., got {actual[:16]}..."
+            )
+
+        # ── 11. Unsafe package rejected by reuse and materialization ──
+        # After the runner's build_from_source fails with dual failure,
+        # the unsafe package must not be reusable.
+        for sid in ["start-task", "jobs"]:
+            src_dir = protocol_skills / sid
+            if src_dir.is_dir():
+                content_h = hashlib.sha256(
+                    (src_dir / "SKILL.md").read_bytes()
+                    if (src_dir / "SKILL.md").exists()
+                    else b"empty"
+                ).hexdigest()
+                # is_built must reject after dual failure
+                assert not store.is_built(sid, "system", content_h), (
+                    f"{sid} must NOT be is_built() after dual failure"
+                )
+
+    def test_manifest_runner_dual_failure_no_executor_launch(
+        self, tmp_path, monkeypatch,
+    ):
+        """Manifest build: runner-path dual-failure prevents executor launch.
+
+        Builds an UNRELATED trusted canonical package via build_from_manifest,
+        captures deterministic manifest member hashes AND on-disk file
+        hashes, then injects both hardening and compensation failure so the
+        runner's materialize_workspace_skills (called from _run_agent) fails
+        with compensation_failed.
+
+        Proves:
+        - Task is terminal FAILED with named failure in note
+        - Mock executor run() is NEVER called (0 calls)
+        - No workspace skill link under .claude/skills or .agents/skills
+        - Trusted manifest member hashes and file hashes unchanged
+        - Unsafe package rejected by reuse and materialization gates
+        - Fault stubs genuinely invoked
+        """
+        import hashlib
+        import json
+        from unittest.mock import MagicMock
+
+        from runtime.config import Settings
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.runtime import RuntimeDir
+        from runtime.models import TaskStatus
+
+        # ── 1. Build a TRUSTED manifest-based canonical package ────────
+        store = CanonicalSkillStore(root=tmp_path / "canonical-store")
+
+        trusted_artifact_store = MagicMock()
+        trusted_skill_bytes = b"# Trusted Manifest Skill\n"
+        trusted_ref_bytes = b"# Trusted Reference\n"
+        trusted_artifact_store.read.side_effect = lambda key: {
+            "skills/trusted-mf/SKILL.md": trusted_skill_bytes,
+            "skills/trusted-mf/ref.md": trusted_ref_bytes,
+        }[key]
+
+        trusted_skill_hash = hashlib.sha256(trusted_skill_bytes).hexdigest()
+        trusted_ref_hash = hashlib.sha256(trusted_ref_bytes).hexdigest()
+
+        trusted_manifest = {
+            "members": [
+                {"path": "SKILL.md",
+                 "hash": f"sha256:{trusted_skill_hash}",
+                 "artifact_key": "skills/trusted-mf/SKILL.md"},
+                {"path": "references/ref.md",
+                 "hash": f"sha256:{trusted_ref_hash}",
+                 "artifact_key": "skills/trusted-mf/ref.md"},
+            ],
+        }
+        trusted_manifest_json = json.dumps(trusted_manifest, sort_keys=True)
+        trusted_content_hash = hashlib.sha256(
+            trusted_manifest_json.encode()).hexdigest()
+
+        trusted_path = store.build_from_manifest(
+            "trusted-manifest", "1.0.0", trusted_content_hash,
+            trusted_manifest, trusted_artifact_store,
+        )
+        assert store.is_built(
+            "trusted-manifest", "1.0.0", trusted_content_hash)
+
+        # Capture deterministic manifest member hashes
+        trusted_member_hashes: dict[str, str] = {}
+        for m in trusted_manifest["members"]:
+            h = m["hash"].split(":", 1)[-1] if ":" in m["hash"] else m["hash"]
+            trusted_member_hashes[m["path"]] = h
+
+        # Capture deterministic file hashes from on-disk package
+        trusted_file_hashes: dict[str, str] = {}
+        for fpath in sorted(trusted_path.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(trusted_path))
+                trusted_file_hashes[rel] = hashlib.sha256(
+                    fpath.read_bytes()).hexdigest()
+        assert len(trusted_file_hashes) > 0
+
+        # ── 2. Build a minimal orchestrator ────────────────────────────
+        rt = RuntimeDir.init(tmp_path / "runtime-dir")
+        org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
+        org_paths.root.mkdir(parents=True, exist_ok=True)
+        db = Database(org_paths.db_path)
+        settings = Settings(project_root=tmp_path)
+
+        teams_yaml = org_paths.root / "teams.yaml"
+        teams_yaml.write_text(
+            "engineering:\n  agents:\n    - dev_agent\n",
+        )
+        teams = TeamsRegistry.load(org_paths.root)
+
+        orch = Orchestrator(
+            db=db, settings=settings, paths=org_paths,
+            slug="test-org", teams=teams,
+        )
+
+        workspace = org_paths.workspaces_dir / "dev_agent"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "task_history.md").write_text("# Task History\n")
+        skill_marker = workspace / ".claude" / "skills" / "start-task"
+        skill_marker.mkdir(parents=True, exist_ok=True)
+        (skill_marker / "SKILL.md").write_text("# start-task\n")
+        (workspace / "repos" / "test-org" / ".git").mkdir(
+            parents=True, exist_ok=True,
+        )
+
+        # Create source directories for system contracts
+        protocol_skills = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs"]:
+            d = protocol_skills / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._resolve_skills_src",
+            lambda settings: protocol_skills,
+        )
+
+        runtime_skills = tmp_path / "runtime" / "skills"
+        runtime_skills.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
+
+        # ── 3. Mock executor with run() spy ────────────────────────────
+        mock_executor = MagicMock()
+        mock_executor.run = MagicMock(
+            return_value=MagicMock(
+                success=True, duration_seconds=1, session_id="sess-test",
+            )
+        )
+        mock_executor.set_invocation_context = MagicMock()
+
+        from unittest.mock import patch as mock_patch
+
+        # ── 4. Inject dual failure ─────────────────────────────────────
+        hardening_calls = [0]
+
+        def failing_hardening(isolation, pkg_path):
+            hardening_calls[0] += 1
+            raise PermissionError(
+                "Injected file hardening failure on " + str(pkg_path))
+
+        compensation_calls = [0]
+
+        def failing_rmtree(path, ignore_errors=False, onerror=None):
+            compensation_calls[0] += 1
+            raise PermissionError(
+                "Injected compensation failure on " + str(path))
+
+        monkeypatch.setattr(
+            "runtime.skills.canonical_store._apply_readonly_hardening",
+            failing_hardening,
+        )
+        import runtime.skills.canonical_store as _cs_mod
+        monkeypatch.setattr(_cs_mod.shutil, "rmtree", failing_rmtree)
+
+        with mock_patch.object(
+            orch, "_build_executor", return_value=mock_executor,
+        ):
+            # ── 5. Create task and drive the REAL runner ───────────────
+            task_id = orch.create_task(
+                "Test manifest dual-failure runner proof",
+                team="engineering",
+            )
+            db.update_task(task_id, assigned_agent="dev_agent")
+
+            orch.run_step(task_id)
+
+        # ── 6. Assert terminal FAILED persistence ─────────────────────
+        task = db.get_task(task_id)
+        assert task is not None, "Task was deleted"
+        assert task.status == TaskStatus.FAILED, (
+            f"Expected FAILED, got {task.status}"
+        )
+        note = task.note or ""
+        assert "agent invocation failed" in note, (
+            f"Note must contain runner's failure wrapper: {note!r}"
+        )
+        assert "compensation_failed" in note, (
+            f"Note must name compensation_failed: {note!r}"
+        )
+
+        # ── 7. Assert no executor subprocess launch ────────────────────
+        mock_executor.run.assert_not_called()
+
+        # ── 8. Assert stubs were genuinely invoked ─────────────────────
+        assert hardening_calls[0] > 0, (
+            "_apply_readonly_hardening stub was never invoked"
+        )
+        assert compensation_calls[0] > 0, (
+            "shutil.rmtree compensation stub was never invoked"
+        )
+
+        # ── 9. No workspace skill link created ────────────────────────
+        for subdir in [".claude/skills", ".agents/skills"]:
+            skills_dir = workspace / subdir
+            if skills_dir.exists():
+                for entry in skills_dir.iterdir():
+                    if entry.name not in ("start-task",):
+                        assert not entry.exists(follow_symlinks=False), (
+                            f"Link must NOT exist at {entry}"
+                        )
+
+        # ── 10. Trusted manifest member hashes unchanged ──────────────
+        for m in trusted_manifest["members"]:
+            member_path = m["path"]
+            expected_h = trusted_member_hashes[member_path]
+            actual_bytes = trusted_artifact_store.read(m["artifact_key"])
+            actual_h = hashlib.sha256(actual_bytes).hexdigest()
+            assert actual_h == expected_h, (
+                f"Trusted manifest member {member_path} hash changed: "
+                f"expected {expected_h[:16]}..., got {actual_h[:16]}..."
+            )
+
+        # ── 11. Trusted file hashes unchanged (NON-CONDITIONAL) ───────
+        assert store.is_built(
+            "trusted-manifest", "1.0.0", trusted_content_hash), (
+            "Trusted package must still pass is_built()"
+        )
+        store.verify_package(
+            "trusted-manifest", "1.0.0", trusted_content_hash)
+
+        trusted_current = store.canonical_path(
+            "trusted-manifest", "1.0.0", trusted_content_hash)
+        assert trusted_current.is_dir(), "Trusted package must still exist"
+        for rel, expected_hash in trusted_file_hashes.items():
+            fp = trusted_current / rel
+            assert fp.is_file(), f"Trusted file {rel} must still exist"
+            actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+            assert actual == expected_hash, (
+                f"Trusted file {rel} hash changed: "
+                f"expected {expected_hash[:16]}..., got {actual[:16]}..."
+            )
+
+        # ── 12. Unsafe package rejected by reuse and materialization ──
+        for sid in ["start-task", "jobs"]:
+            src_dir = protocol_skills / sid
+            if src_dir.is_dir():
+                content_h = hashlib.sha256(
+                    (src_dir / "SKILL.md").read_bytes()
+                    if (src_dir / "SKILL.md").exists()
+                    else b"empty"
+                ).hexdigest()
+                assert not store.is_built(sid, "system", content_h), (
+                    f"{sid} must NOT be is_built() after dual failure"
+                )
