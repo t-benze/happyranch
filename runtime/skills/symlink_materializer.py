@@ -133,12 +133,16 @@ class SymlinkMaterializer:
                 )
                 link_path.unlink()
             elif link_path.is_dir():
-                # Ordinary directory — must be removed (it's not a link)
-                logger.warning(
-                    "Removing ordinary directory at expected link path: %s", link_path,
+                # Ordinary directory at expected link path — hostile state.
+                # Must NEVER recursively delete attacker-controlled content.
+                # This is a named materialization failure — no executor
+                # launch proceeds.
+                raise SymlinkMaterializationError(
+                    "ordinary_dir_at_link_path",
+                    f"Expected symlink at {link_path} but found ordinary directory. "
+                    "Refusing to delete — remove manually or use withdraw_skill first "
+                    "after verifying the directory does not contain real work.",
                 )
-                import shutil
-                shutil.rmtree(link_path)
             else:
                 # File or other entry — remove
                 logger.warning(

@@ -816,6 +816,7 @@ class Orchestrator:
             on_started=_on_started,
             on_throttle_event=_on_throttle_event,
             model=model_name,
+            org_slug=self._slug,
         )
         self._audit.log_session_end(
             task_id=task_id,

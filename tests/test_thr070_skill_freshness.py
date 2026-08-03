@@ -89,59 +89,67 @@ class TestRefreshSessionSkills:
     def test_refresh_overwrites_existing_in_dst(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Skills in source are always copied; existing workspace files are replaced."""
+        """Skills in source are always materialized; system contracts only.
+
+        Note: non-system-contract skills (like 'other') are NOT materialized
+        by the canonical store unless registered as release skills.
+        """
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("skill v1\n")
-        (skills_root / "other").mkdir(parents=True)
-        (skills_root / "other" / "SKILL.md").write_text("other v1\n")
 
         workspace = tmp_path / "workspace"
         refresh_session_skills(workspace, test_settings, slug="test")
 
-        # Both skills copied
+        # System contract skill materialized
         assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
-        assert (workspace / ".claude" / "skills" / "other" / "SKILL.md").exists()
 
-        # Update other skill in source
-        (skills_root / "other" / "SKILL.md").write_text("other v2 - updated\n")
+        # Update skill in source
+        (skills_root / "start-task" / "SKILL.md").write_text("skill v2 - updated\n")
 
         refresh_session_skills(workspace, test_settings, slug="test")
 
-        # Updated skill reflects new content
+        # Updated skill reflects new content (via symlink to updated canonical)
         content = (
-            workspace / ".claude" / "skills" / "other" / "SKILL.md"
+            workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         ).read_text()
-        assert content == "other v2 - updated\n"
+        assert content == "skill v2 - updated\n"
 
     def test_refresh_replaces_existing_skill_content(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Existing skill files are fully replaced (not merged)."""
+        """Existing stale symlink is repaired (replaced with fresh target).
+
+        Ordinary directories at link paths raise (fail-closed); stale
+        symlinks are atomically replaced. This test uses a stale symlink."""
+        import os as _os
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("BUNDLED\n")
         (skills_root / "start-task" / "helper.md").write_text("helper\n")
 
         workspace = tmp_path / "workspace"
-        # Pre-seed with stale content
-        (workspace / ".claude" / "skills" / "start-task").mkdir(parents=True)
-        (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").write_text("STALE\n")
-        (workspace / ".claude" / "skills" / "start-task" / "extra.md").write_text("extra\n")
+        # Pre-seed with a stale symlink pointing to nowhere
+        link_dir = workspace / ".claude" / "skills"
+        link_dir.mkdir(parents=True)
+        _os.symlink(str(tmp_path / "nonexistent"), str(link_dir / "start-task"))
 
         refresh_session_skills(workspace, test_settings, slug="test")
 
+        # Verify symlink now points to canonical store
         skill_path = workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         assert skill_path.read_text() == "BUNDLED\n"
-        # extra.md from stale workspace is gone (dir is rmtree'd before copy)
-        assert not (workspace / ".claude" / "skills" / "start-task" / "extra.md").exists()
-        # helper.md from bundle is present
         assert (workspace / ".claude" / "skills" / "start-task" / "helper.md").exists()
 
     def test_refresh_substitutes_org_slug(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """{ORG_SLUG} placeholder is substituted in skill .md files."""
+        """{ORG_SLUG} placeholder is preserved in canonical content.
+
+        The canonical store retains source bytes unchanged. Org context is
+        passed via the HAPPYRANCH_ORG_SLUG environment variable to executor
+        subprocesses, not through literal substitution in skill bodies.
+        """
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text(
@@ -153,8 +161,8 @@ class TestRefreshSessionSkills:
 
         for d in [".claude", ".agents"]:
             content = (workspace / d / "skills" / "start-task" / "SKILL.md").read_text()
-            assert "{ORG_SLUG}" not in content
-            assert "--org my-org" in content
+            # Canonical bytes are unsubstituted; org context is via env var
+            assert "{ORG_SLUG}" in content
 
     def test_refresh_idempotent_on_missing_source(
         self, test_settings: Settings, tmp_path: Path,

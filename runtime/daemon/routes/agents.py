@@ -46,7 +46,7 @@ from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
     SystemContractMaterializationError,
     _workspace_skills_transaction,
-    ensure_system_contracts_materialized,
+    materialize_workspace_skills,
 )
 
 router = APIRouter(dependencies=[require_token()])
@@ -74,9 +74,18 @@ def _executor_switch_materialize(
     _logger = logging.getLogger(__name__)
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
 
+    # Resolve agent team for the unified call
+    try:
+        agent_def = prompt_loader.load_agent(paths, agent_name)
+        agent_team = agent_def.team if agent_def else "engineering"
+    except Exception:
+        agent_team = "engineering"
+
+    skills_root = org.settings.project_root / "runtime" / "skills"
+
     with _workspace_skills_transaction(workspace):
         # Bootstrap persistent files (memory, task_history, bootstrap doc, settings).
-        # Note: _copy_skills is a no-op in the canonical architecture.
+        # Note: adapter _copy_skills is a no-op in the canonical architecture.
         ctx.ensure_workspace_ready(
             workspace,
             agent_name,
@@ -84,27 +93,32 @@ def _executor_switch_materialize(
             provider=provider,
         )
 
-        # Materialize ALL system contracts for ALL 4 session contexts
-        # so skills are present the instant the switch completes.
-        # Uses canonical store + symlinks, NOT content copying.
-        #
-        # Failure is now FATAL — the canonical architecture's fail-closed
+        # Materialize system contracts + managed + lifecycle using the unified
+        # boundary. Failure is FATAL — the canonical architecture's fail-closed
         # guarantee means materialization errors prevent the switch.
+        #
+        # One call per context wraps the full reconciliation, so system
+        # contracts are never withdrawn by a later managed-only repair
+        # (TASK-4001 Finding 2 fix).
         errors: list[str] = []
         for ctx_name in ("task", "thread", "wake", "dream"):
             try:
-                ensure_system_contracts_materialized(
-                    workspace,
-                    org.settings,
+                materialize_workspace_skills(
+                    workspace, org.settings,
                     slug=org.slug,
                     context=ctx_name,
                     provider=provider,
+                    agent_name=agent_name,
+                    team=agent_team,
+                    skills_root=skills_root,
+                    org_root=org.root,
+                    db=org.db,
                 )
-            except SystemContractMaterializationError as e:
+            except Exception as e:
                 errors.append(str(e))
                 _logger.error(
-                    "Executor switch: system contract materialization "
-                    "failed for context=%s provider=%s agent=%s: %s",
+                    "Executor switch: materialization failed for "
+                    "context=%s provider=%s agent=%s: %s",
                     ctx_name, provider, agent_name, e,
                 )
 

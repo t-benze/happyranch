@@ -453,7 +453,13 @@ class TestSymlinkMaterializer:
         assert (link_path / "SKILL.md").read_text() == "# Test Skill\n\nA test skill for verification."
 
     def test_repair_ordinary_directory(self, store, materializer, skill_source_dir, workspace_dir):
-        """Repair replaces an ordinary directory at link path."""
+        """Ordinary directory at link path raises — no recursive rmtree (fail-closed).
+
+        Ordinary directories at managed link paths are hostile state. The
+        materializer must NOT recursively delete potentially attacker-controlled
+        content — it raises SymlinkMaterializationError instead.
+        """
+        from runtime.skills.symlink_materializer import SymlinkMaterializationError
         content_hash = "deadbeef12345678"
         store.build_from_source("test-skill", "1.0.0", content_hash, skill_source_dir)
 
@@ -463,13 +469,12 @@ class TestSymlinkMaterializer:
         dir_path.mkdir(parents=True)
         (dir_path / "SKILL.md").write_text("old copied content")
 
-        materializer.materialize_skill(
-            "test-skill", "1.0.0", content_hash,
-            workspace_dir, ".claude/skills",
-        )
-        link_path = workspace_dir / ".claude" / "skills" / "test-skill"
-        assert link_path.is_symlink()
-        assert (link_path / "SKILL.md").read_text() == "# Test Skill\n\nA test skill for verification."
+        # Materialization must raise — ordinary dirs are hostile, never deleted
+        with pytest.raises(SymlinkMaterializationError, match="ordinary_dir_at_link_path"):
+            materializer.materialize_skill(
+                "test-skill", "1.0.0", content_hash,
+                workspace_dir, ".claude/skills",
+            )
 
     def test_safe_withdrawal(self, store, materializer, skill_source_dir, workspace_dir):
         """Withdraw removes workspace link without touching canonical content."""
