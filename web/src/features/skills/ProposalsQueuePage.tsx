@@ -57,7 +57,8 @@ function useQueueParams() {
   const [searchParams] = useSearchParams();
   const page = Number(searchParams.get('page')) || 1;
   let pageSize = Number(searchParams.get('page_size'));
-  if (!Number.isFinite(pageSize) || pageSize < 1) pageSize = DEFAULT_PAGE_SIZE;
+  if (!Number.isFinite(pageSize) || !Number.isInteger(pageSize) || pageSize < 1)
+    pageSize = DEFAULT_PAGE_SIZE;
 
   const params: Record<string, string | number | undefined> = {
     page,
@@ -397,6 +398,7 @@ export function ProposalsQueuePage(): JSX.Element {
                     (prev) => {
                       const next = new URLSearchParams(prev);
                       next.set('page', String(page - 1));
+                      next.set('page_size', String(pageSize));
                       return next;
                     },
                     { replace: true },
@@ -418,6 +420,7 @@ export function ProposalsQueuePage(): JSX.Element {
                     (prev) => {
                       const next = new URLSearchParams(prev);
                       next.set('page', String(page + 1));
+                      next.set('page_size', String(pageSize));
                       return next;
                     },
                     { replace: true },

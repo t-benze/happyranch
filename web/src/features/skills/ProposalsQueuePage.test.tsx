@@ -463,6 +463,145 @@ describe('ProposalsQueuePage', () => {
     expect(screen.getByText(/10 per page/)).toBeInTheDocument();
   });
 
+  // ── Regression: page_size preserved in Next/Previous navigation ─────
+
+  test('Previous button preserves response page_size in request', async () => {
+    const capturedRequests: string[] = [];
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedRequests.push(request.url);
+        const url = new URL(request.url);
+        const reqPage = Number(url.searchParams.get('page')) || 1;
+        const reqPageSize = Number(url.searchParams.get('page_size')) || 20;
+        // Response page_size=7 contradicts the client default 20.
+        return HttpResponse.json({
+          items: [qi({ skill_id: 'hr:nav', version_id: reqPage })],
+          total: 14,
+          page: reqPage,
+          page_size: reqPageSize,
+        });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/skills/proposals?page=2&page_size=7`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/7 per page/)).toBeInTheDocument();
+
+    // Verify initial request carries page_size=7
+    expect(capturedRequests.length).toBeGreaterThanOrEqual(1);
+    expect(new URL(capturedRequests[0]).searchParams.get('page_size')).toBe('7');
+
+    // Click Previous — must preserve page_size=7
+    const prevBtn = screen.getByRole('button', { name: /Previous/ });
+    expect(prevBtn).toBeEnabled();
+    await userEvent.click(prevBtn);
+
+    await waitFor(() => {
+      const last = new URL(capturedRequests[capturedRequests.length - 1]);
+      expect(last.searchParams.get('page')).toBe('1');
+      expect(last.searchParams.get('page_size')).toBe('7');
+    });
+  });
+
+  test('Next button preserves response page_size from contradictory response', async () => {
+    const capturedRequests: string[] = [];
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedRequests.push(request.url);
+        const url = new URL(request.url);
+        const reqPage = Number(url.searchParams.get('page')) || 1;
+        const reqPageSize = Number(url.searchParams.get('page_size')) || 20;
+        // Response uses page_size=7 (not the default 20).
+        return HttpResponse.json({
+          items: [qi({ skill_id: 'hr:nav', version_id: reqPage })],
+          total: 14,
+          page: reqPage,
+          page_size: reqPageSize,
+        });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/skills/proposals?page=1&page_size=7`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/page 1 of 2/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/7 per page/)).toBeInTheDocument();
+
+    // Click Next — must preserve page_size=7
+    const nextBtn = screen.getByRole('button', { name: /Next/ });
+    expect(nextBtn).toBeEnabled();
+    await userEvent.click(nextBtn);
+
+    await waitFor(() => {
+      const last = new URL(capturedRequests[capturedRequests.length - 1]);
+      expect(last.searchParams.get('page')).toBe('2');
+      expect(last.searchParams.get('page_size')).toBe('7');
+    });
+  });
+
+  // ── Regression: page_size strict integer validation ─────────────────
+
+  test('page_size fraction 10.5 falls back to default', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/skills/proposals?page_size=10.5`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    // Fraction must fall back to the default 20
+    expect(capturedParams!.get('page_size')).toBe('20');
+  });
+
+  test('page_size zero falls back to default', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/skills/proposals?page_size=0`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('page_size')).toBe('20');
+  });
+
+  test('non-default integer page_size is forwarded', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 15 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/skills/proposals?page_size=15`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('page_size')).toBe('15');
+  });
+
 describe('ProposalsQueue route precedence', () => {
   test('/skills/proposals is not swallowed by skills/:skillId', async () => {
     mountQueue([ITEM_1]);
