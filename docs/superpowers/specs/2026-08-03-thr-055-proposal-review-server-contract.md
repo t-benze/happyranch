@@ -1,10 +1,13 @@
-# THR-055 Skill Proposal Review — Server Contract (Slice 1)
+# THR-055 Skill Proposal Review — Server Contract (Slice 1 + Slice 2A)
 
 **Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
 
-**Approved sources:** TASK-4045 design handoff, protocol/05c-orchestrator.md §4.5.
+**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), protocol/05c-orchestrator.md §4.5.
 
-**Scope:** Server contract + TypeScript API mirror only. React UI is a later, serial slice.
+**Scope:** API-read completion only. Server contract + TypeScript API mirror.
+Slice 1: founder-only proposal review routes + concurrency + state machine.
+Slice 2A: immutable SKILL.md bytes in detail, typed server filters in queue.
+React UI is a later, serial slice.
 
 ---
 
@@ -60,7 +63,15 @@ bearer authentication (`_require_human` dependency). Agent callers receive
 
 ### 2.1 Queue — `GET /skill-lifecycle/proposals/queue`
 
-Founder-only, paginated/filterable. Query params: `status`, `page`, `page_size`.
+Founder-only, paginated/filterable. Query params:
+
+**Basic:** `status`, `page`, `page_size`.
+
+**Slice 2A typed server filters** (based on immutable ledger/event facts):
+- `validation_outcome`: `"validated"`, `"validation_failed"`, `"unvalidated"`
+- `search`: case-insensitive match on skill_id, slug, or name
+- `proposer`: exact proposer_agent filter
+- `submitted_after` / `submitted_before`: ISO-8601 date bounds on created_at
 
 Returns per-proposal: `version_id`, `skill_id`, `slug`, `name`, `version`,
 `content_hash` (immutable), `proposer_agent` (immutable), `claimed_by`
@@ -75,7 +86,19 @@ then oldest submission (`created_at ASC`). Terminal statuses: `rejected`,
 ### 2.2 Detail — `GET /skill-lifecycle/proposals/{version_id}`
 
 Founder-only. Returns full detail by immutable version/proposal ID:
-- Read-only package content/artifact reference
+- **Slice 2A: Canonical immutable SKILL.md bytes** (`skill_md`) — loaded from
+  the ArtifactStore via manifest resolution. Returns `null` safely for
+  missing/malformed legacy artifacts; never fabricates bytes or exposes
+  arbitrary paths.
+- **Slice 2A: Package hash/manifest reference** (`package_members`) — listing
+  all members with paths, hashes, artifact keys, and sizes from the manifest.
+  Returns `null` whenever `skill_md` is null — both fields derive from the
+  same verified immutable provenance snapshot; if any check in the chain
+  (content_hash, manifest integrity, member digest) fails, neither field is
+  returned.
+- **Slice 2A: Creation-event purpose/target-agent data** (`purpose`,
+  `target_agent_suggestion`) — extracted from the proposed event metadata.
+- Read-only package content/artifact reference (`content_artifact_key`)
 - Immutable author (`proposer_agent`, `proposal_task_id`, `proposal_session_id`)
 - Optional separate claimant (`claimed_by`, `claimed_at`)
 - Full append-only events with actor, time, hash, validator, run, failure, rationale
@@ -114,8 +137,8 @@ conflict: HTTP 409, code `stale_concurrency`, with `current_event_id`,
 
 All Founder-only review endpoints have corresponding functions in
 `web/src/lib/api/skillLifecycle.ts`:
-- `getProposalsQueue(slug, params?)`
-- `getProposalDetail(slug, versionId)`
+- `getProposalsQueue(slug, params?)` — Slice 2A: params now include `validation_outcome`, `search`, `proposer`, `submitted_after`, `submitted_before`
+- `getProposalDetail(slug, versionId)` — Slice 2A: response now includes `skill_md`, `package_members`, `purpose`, `target_agent_suggestion`
 - `claimProposalV2(slug, versionId, body)`
 - `validateProposal(slug, versionId, body)`
 - `submitReviewProposal(slug, versionId, body)`
@@ -128,26 +151,32 @@ This is an API mirror only — no feature UI in this slice.
 
 ---
 
-## 4. Migration
+## 4. Migration (Slice 2A)
 
-Additive: two new nullable columns on `skill_lifecycle_packages`:
+No migration required. Slice 2A is additive read-only enrichment:
+- `skill_md`, `package_members`, `purpose`, `target_agent_suggestion` are
+  computed from existing ArtifactStore + event data at read time.
+- Queue filters are pure SQL WHERE clauses with no schema changes.
+- No new columns, no semantic changes to existing columns.
+
+Slice 1 migration (already applied): two additive nullable columns on
+`skill_lifecycle_packages`:
 ```sql
 ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_by TEXT;
 ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_at TEXT;
 ```
-
-No column drops, no semantic changes to existing columns, all existing
-rows remain readable with NULL for new columns.
 
 ---
 
 ## 5. Tests
 
 See `tests/daemon/test_skills_proposal_review.py` (comprehensive suite) covering:
+
+**Slice 1:**
 - Agent 403 for all review routes
 - Claimant/proposer immutability
 - Terminal rejection blocks all mutations
-- Queue ordering/filtering
+- Queue ordering/filtering (basic)
 - Proposal detail fields + concurrency marker
 - Stale concurrency 409 with current state
 - Validation reproducibility (version, key, hash, distinct event rows)
@@ -155,3 +184,12 @@ See `tests/daemon/test_skills_proposal_review.py` (comprehensive suite) covering
   status, assign doesn't change status)
 - Append-only audit fields
 - Legacy route compatibility for founder callers
+
+**Slice 2A:**
+- `TestProposalDetail`: SKILL.md bytes from artifact store, purpose/target
+  from creation event, package_members from manifest, null safety
+- `TestProposalQueueFilters`: proposer, search, validation_outcome,
+  date bounds, combined filters, pagination total accuracy, actionable-first
+  ordering, invalid validation_outcome rejection
+- `TestProposalDetailArtifactSafety`: null skill_md with no org_root,
+  safe handling of malformed artifact keys, read calls never append events

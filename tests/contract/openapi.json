@@ -2048,11 +2048,31 @@
             "query"
           ],
           [
+            "proposer",
+            "query"
+          ],
+          [
+            "search",
+            "query"
+          ],
+          [
             "slug",
             "path"
           ],
           [
             "status",
+            "query"
+          ],
+          [
+            "submitted_after",
+            "query"
+          ],
+          [
+            "submitted_before",
+            "query"
+          ],
+          [
+            "validation_outcome",
             "query"
           ]
         ],

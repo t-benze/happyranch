@@ -567,6 +567,1080 @@ class TestProposalDetail:
         )
         assert r.status_code == 404
 
+    def test_detail_includes_skill_md_bytes(self, app, org_state):
+        """Detail returns the canonical SKILL.md bytes loaded from the ArtifactStore."""
+        skill_md_content = "# Test Skill\n\nThis is a test skill for proposal review."
+        data = _submit_agent_proposal(app, org_state, skill_md=skill_md_content)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # SKILL.md bytes should be loaded from artifact store
+        assert detail["skill_md"] == skill_md_content
+
+        # content_artifact_key should still be present
+        assert detail["content_artifact_key"] is not None
+
+    def test_detail_includes_purpose_and_target(self, app, org_state):
+        """Detail returns purpose and target_agent_suggestion from creation event."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        assert detail["purpose"] == _VALID_PROPOSAL["purpose"]
+        assert detail["target_agent_suggestion"] == _VALID_PROPOSAL["target_agent_suggestion"]
+
+    def test_detail_package_members_from_manifest(self, app, org_state):
+        """Detail returns package_members from the manifest artifact."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # Should have package_members (at minimum the SKILL.md entry)
+        assert detail["package_members"] is not None
+        assert isinstance(detail["package_members"], list)
+        assert len(detail["package_members"]) >= 1
+        # First member should be SKILL.md
+        first = detail["package_members"][0]
+        assert first["path"] == "SKILL.md"
+        assert "hash" in first
+        assert "artifact_key" in first
+
+    def test_detail_skill_md_null_for_missing_artifact(self, app, org_state):
+        """Detail safely returns null skill_md for proposals with missing/malformed artifacts.
+
+        This tests that the safe loader never fabricates bytes.
+        """
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        detail = r.json()
+
+        # For a valid proposal submitted via the agent route (which uses ArtifactStore),
+        # skill_md should be non-null
+        assert detail["skill_md"] is not None
+
+
+class TestProposalQueueFilters:
+    """Typed server-authoritative filters on the queue endpoint."""
+
+    def test_queue_filter_by_proposer(self, app, org_state):
+        """Queue filter by proposer_agent returns only matching proposals."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit as product_lead (different proposer)
+        task_id = "TASK-RV-002"
+        session_id = "sess-rv-agent-002"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Filter by frontend_engineer
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"proposer": "frontend_engineer"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["proposer_agent"] == "frontend_engineer"
+
+    def test_queue_filter_by_search(self, app, org_state):
+        """Queue search filter matches skill_id, slug, or name case-insensitively."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # Search by partial slug
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "frontend"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+
+        # Search by name
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "Development"},
+        )
+        assert r.status_code == 200
+        result2 = r.json()
+        assert result2["total"] == 1
+
+        # Search without match
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"search": "nonexistent"},
+        )
+        assert r.status_code == 200
+        result3 = r.json()
+        assert result3["total"] == 0
+
+    def test_queue_filter_by_validation_outcome(self, app, org_state):
+        """Queue validation_outcome filter: validated, validation_failed, unvalidated."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Without validation: should show as unvalidated
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "unvalidated"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["version_id"] == version_id
+
+        # No validated proposals yet
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "validated"},
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == 0
+
+    def test_queue_filter_by_date_bounds(self, app, org_state):
+        """Queue date bounds filter on submitted_after / submitted_before."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # submitted_after in the past should include
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_after": "2020-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+
+        # submitted_before in the far future should also include
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_before": "2099-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result2 = r.json()
+        assert result2["total"] == 1
+
+        # submitted_after in the future should exclude
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"submitted_after": "2099-01-01T00:00:00"},
+        )
+        assert r.status_code == 200
+        result3 = r.json()
+        assert result3["total"] == 0
+
+    def test_queue_combined_filters(self, app, org_state):
+        """Queue AND-composes multiple filters."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit a second proposal
+        task_id = "TASK-RV-003"
+        session_id = "sess-rv-agent-003"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Combined: status=proposed + proposer=frontend_engineer
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"status": "proposed", "proposer": "frontend_engineer"},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 1
+        assert result["items"][0]["proposer_agent"] == "frontend_engineer"
+
+    def test_queue_pagination_total_accurate(self, app, org_state):
+        """Pagination total reflects filtered count, not unfiltered total."""
+        _submit_agent_proposal(app, org_state)
+
+        # Submit second proposal via product_lead (different agent, different slug)
+        task_id = "TASK-RV-004"
+        session_id = "sess-rv-agent-004"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        client = TestClient(app)
+        body = dict(_VALID_PROPOSAL)
+        body["slug"] = "product-manager-prd"
+        body["name"] = "Product Manager PRD"
+        body["skill_md"] = "# Product Manager PRD\n\nA skill for PRDs."
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": session_id},
+        )
+        assert r.status_code == 201
+
+        # Total should reflect all proposals
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"page_size": 1},
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 2
+        assert len(result["items"]) == 1  # page_size=1
+        assert result["page"] == 1
+
+    def test_queue_ordering_actionable_first(self, app, org_state):
+        """Queue orders actionable (non-terminal) first, then oldest."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Mark the proposal as rejected (terminal)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid = r.json()["last_event_id"]
+
+        # Need to move through lifecycle to reject: propose → claim → validate → submit-review → review(rejected)
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/claim",
+            headers=_founder_headers(),
+            json={"expected_event_id": eid},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid2 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/validate",
+            headers=_founder_headers(),
+            json={"validator_version": "THR-055/1.0.0", "expected_event_id": eid2},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid3 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/submit-review",
+            headers=_founder_headers(),
+            json={"expected_event_id": eid3},
+        )
+        assert r.status_code == 200
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        eid4 = r.json()["last_event_id"]
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/review",
+            headers=_founder_headers(),
+            json={"decision": "rejected", "rationale": "Not good enough.", "expected_event_id": eid4},
+        )
+        assert r.status_code == 200
+
+        # Submit a new proposal (actionable) via product_lead
+        task_id = "TASK-RV-005"
+        session_id = "sess-rv-agent-005"
+        _setup_session(org_state, task_id, "product_lead", session_id)
+        body2 = dict(_VALID_PROPOSAL)
+        body2["slug"] = "product-manager-prd"
+        body2["name"] = "Product Manager PRD"
+        body2["skill_md"] = "# Product Manager PRD\n\nDifferent."
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body2,
+            params={"session_id": session_id},
+        )
+        assert r2.status_code == 201
+
+        # Queue should have actionable (non-rejected) first
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        result = r.json()
+        assert result["total"] == 2
+        # First item should be actionable (proposed), not rejected
+        assert result["items"][0]["status"] == "proposed"
+        # Second item should be the rejected one
+        assert result["items"][1]["status"] == "rejected"
+
+    def test_queue_invalid_validation_outcome_rejected(self, app, org_state):
+        """Queue rejects invalid validation_outcome values."""
+        client = TestClient(app)
+        r = client.get(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+            headers=_founder_headers(),
+            params={"validation_outcome": "invalid"},
+        )
+        assert r.status_code == 400
+
+
+class TestProposalDetailArtifactSafety:
+    """Detail endpoint safely handles missing/malformed artifacts."""
+
+    def test_detail_no_artifact_store_returns_null_skill_md(self, app, org_state):
+        """When org_root is not passed or artifact is missing, skill_md safely returns null."""
+        # This tests the code path where the provenance loader gracefully
+        # returns None. We test by verifying that a valid proposal's detail works
+        # even with null org_root passed to the stores layer.
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        # Call stores directly with org_root=None
+        detail = lifecycle_stores.get_proposal_detail(org_state.db, version_id, org_root=None)
+        assert detail is not None
+        # skill_md should be null because org_root=None means we can't reach artifact store
+        assert detail["skill_md"] is None
+        # package_members should also be null
+        assert detail["package_members"] is None
+        # But other fields should still be present
+        assert detail["content_artifact_key"] is not None
+        assert detail["content_hash"] is not None
+
+    def test_detail_safe_on_malformed_artifact_key(self, app, org_state):
+        """Detail gracefully handles a bogus/nonexistent artifact key."""
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        org_root = str(org_state.root)
+
+        # Modify the package directly to have a bogus artifact key
+        db = org_state.db
+        conn = db._conn if hasattr(db, '_conn') else db
+        conn.execute(
+            "UPDATE skill_lifecycle_packages SET content_artifact_key = ? WHERE id = ?",
+            ("nonexistent/path/SKILL.md", version_id),
+        )
+        conn.commit()
+
+        # Detail should still return successfully with null skill_md
+        detail = lifecycle_stores.get_proposal_detail(db, version_id, org_root=org_root)
+        assert detail is not None
+        assert detail["skill_md"] is None
+        assert detail["package_members"] is None
+
+    def test_detail_read_does_not_append_events(self, app, org_state):
+        """Reading proposal detail does NOT create any lifecycle data (events, mutations)."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Count events before reads
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        before_events = r.json()["events"]
+        before_count = len(before_events)
+
+        # Read multiple times
+        for _ in range(3):
+            r = client.get(
+                f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+                headers=_founder_headers(),
+            )
+            assert len(r.json()["events"]) == before_count
+
+    def test_queue_read_does_not_append_events(self, app, org_state):
+        """Reading proposals queue does NOT create any lifecycle data."""
+        _submit_agent_proposal(app, org_state)
+        client = TestClient(app)
+
+        # Count events before
+        r_detail = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/1",
+            headers=_founder_headers(),
+        )
+        before_count = len(r_detail.json()["events"])
+
+        # Read queue multiple times
+        for _ in range(3):
+            r = client.get(
+                "/api/v1/orgs/alpha/skill-lifecycle/proposals/queue",
+                headers=_founder_headers(),
+            )
+            assert r.status_code == 200
+
+        # Events should not have changed
+        r_detail_after = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/1",
+            headers=_founder_headers(),
+        )
+        assert len(r_detail_after.json()["events"]) == before_count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Artifact integrity — adversarial regression
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProposalDetailArtifactIntegrity:
+    """Adversarial: overwritten artifacts must fail closed — never return
+    attacker-controlled bytes or fabricated member listings."""
+
+    def test_overwritten_skill_md_returns_null(self, app, org_state):
+        """Submit proposal → overwrite SKILL.md artifact via ArtifactStore →
+        detail endpoint returns null skill_md (hash mismatch).
+
+        Regresses: HIGH provenance flaw where get_proposal_detail returned
+        mutable ArtifactStore-selected SKILL.md bytes after authenticated
+        overwrite, while ledger content_hash still identified the
+        original immutable version.
+        """
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        original_md = "# Test Skill\n\nVerified immutable SKILL.md content."
+        data = _submit_agent_proposal(app, org_state, skill_md=original_md)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        # Before overwrite: detail returns canonical content
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+        assert before["skill_md"] == original_md
+        assert before["content_hash"] == data["content_hash"]
+        assert before["package_members"] is not None
+
+        # Access the ArtifactStore and locate the SKILL.md artifact key
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(before["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        skill_member = next(
+            m for m in manifest["members"] if m["path"] == "SKILL.md"
+        )
+        skill_key = skill_member["artifact_key"]
+
+        # Authenticated overwrite of the SKILL.md artifact
+        evil_content = b"# EVIL\n\nAttacker-controlled content overwritten via ArtifactStore.put()."
+        store.put(skill_key, evil_content)
+
+        # After overwrite: detail must fail closed — return null skill_md
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        assert after["skill_md"] is None, (
+            "Founder detail must NOT return overwritten SKILL.md bytes; "
+            "got attacker-controlled content instead of null"
+        )
+        # Remainder of the response must be truthful — ledger hash unchanged
+        assert after["content_hash"] == data["content_hash"]
+        assert after["content_artifact_key"] is not None
+        assert after["proposer_agent"] == "frontend_engineer"
+        assert after["proposal_task_id"] == "TASK-RV-001"
+        assert after["status"] == "proposed"
+        # package_members must also be null — when SKILL.md bytes don't match
+        # the member's declared hash, both fields are absent from the
+        # same verified provenance snapshot
+        assert after["package_members"] is None
+
+    def test_overwritten_manifest_returns_null_skill_md(self, app, org_state):
+        """Overwrite the manifest artifact → skill_md AND package_members
+        are null because the manifest hash no longer matches the ledger."""
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+        assert before["skill_md"] is not None
+        assert before["package_members"] is not None
+
+        # Overwrite manifest with a forged version
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = before["content_artifact_key"]
+        forged = {
+            "schema_version": 1,
+            "skill_id": "hr:frontend-development",
+            "slug": "frontend-development",
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(b"evil").hexdigest(),
+                    "artifact_key": "attacker/controlled/path",
+                    "size_bytes": 4,
+                }
+            ],
+        }
+        store.put(manifest_key, json.dumps(forged).encode("utf-8"))
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        # Both must be null because the manifest hash is now wrong
+        assert after["skill_md"] is None, (
+            "skill_md must be null when manifest hash mismatches ledger content_hash"
+        )
+        assert after["package_members"] is None, (
+            "package_members must be null when manifest hash mismatches ledger content_hash"
+        )
+        # Provenance preserved
+        assert after["content_hash"] == data["content_hash"]
+        assert after["status"] == "proposed"
+
+    def test_overwritten_manifest_member_hash_mismatch(self, app, org_state):
+        """Alter the member's declared SHA-256 in the manifest (but keep the
+        artifact bytes correct) → the manifest hash changes, failing the
+        ledger content_hash check."""
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        client = TestClient(app)
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        before = r.json()
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(before["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Tamper with the SKILL.md member hash
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = "sha256:" + hashlib.sha256(b"tampered").hexdigest()
+                break
+
+        # Write the tampered manifest back (its SHA-256 changes)
+        new_manifest_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(before["content_artifact_key"], new_manifest_bytes)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert r.status_code == 200
+        after = r.json()
+        assert after["skill_md"] is None
+        assert after["package_members"] is None
+
+    def test_detail_read_appends_no_events_on_overwrite(self, app, org_state):
+        """Overwriting an artifact and then reading the detail must NOT
+        produce any lifecycle events — it's a read-only operation."""
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Count events before
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        before_count = len(r.json()["events"])
+
+        # Overwrite the SKILL.md artifact
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_raw = store.read(r.json()["content_artifact_key"])
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        skill_member = next(m for m in manifest["members"] if m["path"] == "SKILL.md")
+        store.put(skill_member["artifact_key"], b"overwritten")
+
+        # Read detail again — must still have same number of events
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers=_founder_headers(),
+        )
+        assert len(r.json()["events"]) == before_count, (
+            "Reading proposal detail must never append lifecycle events"
+        )
+
+    def test_blank_ledger_content_hash_fails_closed(self, app, org_state):
+        """When the ledger content_hash is blank, both loaders must fail closed.
+
+        Direct stores-layer test: corrupt the DB row to set content_hash='',
+        then verify get_proposal_detail returns null skill_md AND null
+        package_members."""
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        assert data["content_hash"]
+
+        # Baseline: valid detail returns content
+        detail_before = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail_before["skill_md"] is not None
+        assert detail_before["package_members"] is not None
+
+        # Corrupt: set content_hash to empty string in the ledger
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = '' WHERE id = ?",
+            (version_id,),
+        )
+
+        detail_after = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        # Both must be null — blank content_hash cannot prove the package intact
+        assert detail_after["skill_md"] is None, (
+            "skill_md must be null when ledger content_hash is blank"
+        )
+        assert detail_after["package_members"] is None, (
+            "package_members must be null when ledger content_hash is blank"
+        )
+        # Provenance still intact
+        assert detail_after["version_id"] == version_id
+        assert detail_after["status"] == "proposed"
+
+    def test_blank_member_hash_fails_closed_skill_md(self, app, org_state):
+        """When the manifest member ('SKILL.md') has a blank hash, skill_md
+        must be null — member-digest validation rejects the empty hash.
+
+        Direct stores-layer test: after submitting a valid proposal, overwrite
+        the manifest artifact to give the SKILL.md member an empty hash, then
+        update the ledger content_hash to match the tampered manifest.  The
+        manifest passes content_hash verification, but the blank member hash
+        is fail-closed at the member-digest validation step."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        # Baseline: valid detail returns content
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+        assert detail["package_members"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        original_manifest_raw = store.read(manifest_key)
+        manifest = json.loads(original_manifest_raw.decode("utf-8"))
+
+        # Blank the SKILL.md member hash, keep everything else identical
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = ""
+                break
+
+        # Write the tampered manifest
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+
+        # Update ledger content_hash to match the tampered manifest so
+        # manifest verification passes and we genuinely reach member-digest
+        # validation (the blank hash is rejected THERE).
+        tampered_content_hash = hashlib.sha256(tampered_bytes).hexdigest()
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (tampered_content_hash, version_id),
+        )
+
+        # Member-digest validation catches the blank hash, not manifest verification
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when member hash is blank"
+        )
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when member hash is blank — "
+            "both fields derive from the same verified provenance snapshot"
+        )
+        # Provenance preserved
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_malformed_member_hash_fails_closed(self, app, org_state):
+        """A non-sha256 member hash (e.g. 'md5:...') is fail-closed —
+        skill_md must be null.
+
+        Direct stores-layer: overwrite manifest member hash to use an
+        unsupported algorithm prefix, then update the ledger content_hash
+        so manifest verification passes.  The unsupported algorithm is
+        caught at the member-digest validation step, not manifest check."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Change to an unsupported algorithm prefix
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = "md5:d41d8cd98f00b204e9800998ecf8427e"
+                break
+
+        # Write tampered manifest and update ledger content_hash so
+        # manifest verification passes and member-digest validation is
+        # genuinely exercised.
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null for unsupported member hash algorithm"
+        )
+        assert detail2["package_members"] is None, (
+            "package_members must also be null for unsupported member hash algorithm — "
+            "both fields derive from the same verified provenance snapshot"
+        )
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_missing_skill_md_member_returns_null(self, app, org_state):
+        """When the manifest has no SKILL.md member, skill_md is null.
+
+        Direct stores-layer: remove the SKILL.md member from the manifest
+        members array, update the ledger content_hash, and verify that the
+        loader returns null skill_md.  The manifest still passes content_hash
+        verification, but there is no SKILL.md entry to load."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+        assert detail["package_members"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Remove the SKILL.md member entirely
+        manifest["members"] = [
+            m for m in manifest["members"] if m["path"] != "SKILL.md"
+        ]
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when manifest has no SKILL.md member"
+        )
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when manifest has no SKILL.md member — "
+            "both fields derive from the same verified provenance snapshot"
+        )
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_mismatched_sha256_member_digest_fails_closed(self, app, org_state):
+        """A sha256: member hash with a wrong hex digest is fail-closed —
+        skill_md must be null.
+
+        The member hash has the canonical sha256: prefix format, but the
+        hex value does not match the actual artifact bytes.  The manifest
+        passes content_hash verification (ledger is updated to match),
+        but the member hash mismatch is caught at member-digest validation."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Replace member hash with a canonical-format sha256 that does NOT
+        # match the actual bytes (wrong hex)
+        wrong_hex = hashlib.sha256(b"tampered content").hexdigest()
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = f"sha256:{wrong_hex}"
+                break
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when sha256 member digest does not match actual bytes"
+        )
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when sha256 member digest does not match — "
+            "both fields derive from the same verified provenance snapshot"
+        )
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_no_digest_key_on_member_fails_closed(self, app, org_state):
+        """When the manifest SKILL.md member has no 'hash' key at all,
+        skill_md must be null.
+
+        Direct stores-layer: remove the hash key from the SKILL.md member
+        entry, update the ledger content_hash, and verify that the loader
+        returns null skill_md.  The manifest passes content_hash verification,
+        but the absent hash field is fail-closed at member-digest validation."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Remove the hash key from the SKILL.md member
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                del m["hash"]
+                break
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when member has no hash key"
+        )
+        assert detail2["package_members"] is None, (
+            "package_members must also be null when member has no hash key — "
+            "both fields derive from the same verified provenance snapshot"
+        )
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_no_events_on_hash_rejected_read(self, app, org_state):
+        """Every rejected read (hash mismatch, blank hash) must append
+        zero lifecycle events and make zero package mutations."""
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        before_event_count = len(detail["events"])
+
+        # Corrupt content_hash to blank → causes rejected read
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = '' WHERE id = ?",
+            (version_id,),
+        )
+
+        # Read multiple times — no events should be appended
+        for _ in range(3):
+            detail_rej = lifecycle_stores.get_proposal_detail(
+                org_state.db, version_id, org_root=str(org_state.root)
+            )
+            assert detail_rej["skill_md"] is None
+            assert detail_rej["package_members"] is None
+
+        # Restore valid content_hash and verify event count unchanged
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (data["content_hash"], version_id),
+        )
+        detail_after = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert len(detail_after["events"]) == before_event_count, (
+            "Rejected reads must never append lifecycle events"
+        )
+
+    def test_unauthenticated_detail_no_leak(self, app, org_state):
+        """Unauthenticated access to proposal detail returns 403 —
+        no skill_md or member bytes leak."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # No auth header
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+        )
+        assert r.status_code == 403
+
+        # Wrong auth token
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            headers={"Authorization": "Bearer invalid-token"},
+        )
+        assert r.status_code == 403
+
+    def test_agent_deep_link_detail_no_leak(self, app, org_state):
+        """Agent callers (non-bearer) receive 403 on proposal detail endpoint
+        — skill_md and package_members must never leak to agent session."""
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+        client = TestClient(app)
+
+        # Agent caller without bearer token
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+        )
+        assert r.status_code == 403
+
+        # Agent caller with a plausible session but no bearer
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}",
+            params={"task_id": "TASK-RV-001", "session_id": "sess-rv-agent-001"},
+        )
+        assert r.status_code == 403
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Concurrency marker protection

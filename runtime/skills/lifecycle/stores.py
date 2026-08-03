@@ -6,6 +6,7 @@ Provides a thin SQLite-backed persistence layer for the lifecycle service.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,6 +18,104 @@ from .models import (
     MaterializationRecord,
     PackageVersion,
 )
+
+# ── Safe artifact loading helpers ────────────────────────────────────────
+
+
+def _load_provenance_snapshot(
+    content_artifact_key: str | None,
+    content_hash: str | None,
+    org_root: str | None,
+) -> tuple[str | None, list[dict] | None]:
+    """Load SKILL.md bytes and member listing from a single verified
+    immutable provenance snapshot.
+
+    The detail contract requires that skill_md and package_members be
+    derived from the same verified manifest bytes — not independently
+    reloading potentially mutable ArtifactStore state.  Both fields must
+    be present (valid canonical package) or both must be absent/null
+    (any provenance failure).
+
+    Provenance chain (fail-closed at every step):
+    1. Load the manifest artifact bytes.
+    2. Verify SHA-256(manifest bytes) == ledger content_hash — proves the
+       manifest is the immutable proposal version, not an overwrite.
+       Absent/blank/malformed ledger content_hash fails closed.
+    3. Parse the manifest JSON.  Malformed/unparseable manifest fails closed.
+    4. Locate the SKILL.md member entry.  Missing entry fails closed.
+    5. Validate the member's declared hash format: must be sha256:<hex>
+       per the canonical manifest contract.  Missing/blank/malformed/
+       unsupported-algorithm digest fails closed.
+    6. Load the SKILL.md artifact bytes and prove
+       SHA-256(bytes) == member's declared hash.  Mismatch fails closed.
+    7. If all checks pass, return (skill_md_str, members_list).
+       If any check fails, return (None, None).
+
+    Returns (skill_md, package_members) — a tuple where both are present
+    or both are None.  Never fabricates bytes or exposes arbitrary paths.
+    """
+    if not content_artifact_key or not org_root:
+        return None, None
+    try:
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from pathlib import Path
+        import json
+
+        org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+        store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
+
+        # Step 1: Load the manifest artifact bytes.
+        manifest_raw = store.read(content_artifact_key)
+
+        # Step 2: Prove manifest content is the immutable proposal version.
+        # The ledger content_hash is SHA-256 of the canonical manifest.json.
+        # An absent, blank, or mismatched digest is a fail-closed signal —
+        # the package cannot be proven intact.
+        if not content_hash:
+            return None, None
+        computed_manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
+        if computed_manifest_hash != content_hash:
+            return None, None
+
+        # Step 3: Parse the manifest.  Malformed/unparseable fails closed.
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        members = manifest.get("members", [])
+
+        # Step 4: Locate the SKILL.md member.
+        skill_md_member = None
+        for m in members:
+            if m.get("path") == "SKILL.md":
+                skill_md_member = m
+                break
+
+        if skill_md_member is None:
+            return None, None
+
+        skill_key = skill_md_member.get("artifact_key")
+        if not skill_key:
+            return None, None
+
+        # Step 5 + 6: Load SKILL.md bytes and prove they match the member's
+        # declared hash.  The canonical member hash format is sha256:<hex>
+        # per the manifest contract.  An absent, blank, malformed, or
+        # unsupported-algorithm digest is a fail-closed signal — the member
+        # cannot be proven intact.
+        skill_raw = store.read(skill_key)
+
+        member_hash = skill_md_member.get("hash", "")
+        if not member_hash.startswith("sha256:"):
+            return None, None
+        expected_hex = member_hash[len("sha256:"):]
+        actual_hex = hashlib.sha256(skill_raw).hexdigest()
+        if actual_hex != expected_hex:
+            return None, None
+
+        # Step 7: All checks passed — return both values from the same
+        # verified manifest snapshot.
+        return skill_raw.decode("utf-8"), members
+    except Exception:
+        return None, None
 
 
 def _get_conn(db) -> "sqlite3.Connection":
@@ -550,12 +649,27 @@ def _row_to_proposal_queue_item(row: dict) -> dict:
 
 
 def list_proposals_queue(
-    db, status: str | None = None, page: int = 1, page_size: int = 20,
+    db,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    validation_outcome: str | None = None,
+    search: str | None = None,
+    proposer: str | None = None,
+    submitted_after: str | None = None,
+    submitted_before: str | None = None,
 ) -> tuple[list[dict], int]:
     """List proposals for the founder-only queue.
 
     Default ordering: actionable first (not terminal), then oldest submission.
     Rejected/history items are not actionable and sort after.
+
+    Server-authoritative filters based on immutable ledger/event facts:
+    - status: decision status (proposed, draft, validated, etc.)
+    - validation_outcome: 'validated', 'validation_failed', or 'unvalidated'
+    - search: case-insensitive match on skill_id, slug, or name
+    - proposer: exact proposer_agent match
+    - submitted_after / submitted_before: ISO-8601 date bounds on created_at
 
     Returns (items, total_count).
     """
@@ -567,6 +681,40 @@ def list_proposals_queue(
     if status is not None:
         where_clauses.append("p.status = ?")
         params.append(status)
+    if proposer is not None:
+        where_clauses.append("p.proposer_agent = ?")
+        params.append(proposer)
+    if search is not None:
+        where_clauses.append(
+            "(p.skill_id LIKE ? OR p.slug LIKE ? OR p.name LIKE ?)"
+        )
+        like_val = f"%{search}%"
+        params.extend([like_val, like_val, like_val])
+    if submitted_after is not None:
+        where_clauses.append("p.created_at >= ?")
+        params.append(submitted_after)
+    if submitted_before is not None:
+        where_clauses.append("p.created_at <= ?")
+        params.append(submitted_before)
+
+    # validation_outcome filter: needs subquery on lifecycle events
+    if validation_outcome is not None:
+        if validation_outcome == "validated":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM skill_lifecycle_events e "
+                "WHERE e.package_version_id = p.id AND e.event_type = 'validated')"
+            )
+        elif validation_outcome == "validation_failed":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM skill_lifecycle_events e "
+                "WHERE e.package_version_id = p.id AND e.event_type = 'validation_failed')"
+            )
+        elif validation_outcome == "unvalidated":
+            where_clauses.append(
+                "NOT EXISTS (SELECT 1 FROM skill_lifecycle_events e "
+                "WHERE e.package_version_id = p.id AND e.event_type IN ('validated', 'validation_failed'))"
+            )
+
     where_sql = " AND " + " AND ".join(where_clauses) if where_clauses else ""
 
     # Count total
@@ -651,7 +799,7 @@ def _compute_permitted_action(status: LifecycleStatus) -> str | None:
     return action_map.get(status)
 
 
-def get_proposal_detail(db, version_id: int) -> dict | None:
+def get_proposal_detail(db, version_id: int, org_root: str | None = None) -> dict | None:
     """Get full detail for a single proposal version."""
     conn = _get_conn(db)
     row = conn.execute(
@@ -723,6 +871,30 @@ def get_proposal_detail(db, version_id: int) -> dict | None:
             "created_at": md.get("created_at", ""),
         })
 
+    # Extract purpose and target_agent_suggestion from the creation event metadata
+    purpose = ""
+    target_agent_suggestion = ""
+    for e in events:
+        meta = e.get("metadata")
+        if isinstance(meta, dict):
+            if meta.get("purpose"):
+                purpose = meta["purpose"]
+            if meta.get("target_agent_suggestion"):
+                target_agent_suggestion = meta["target_agent_suggestion"]
+            # Only look at the creation event (first "proposed" event)
+            if e["event_type"] == "proposed":
+                break
+
+    # Safely load SKILL.md bytes and package member listing from a
+    # single verified immutable provenance snapshot.  Both fields are
+    # derived from the same manifest bytes — never independently reload
+    # potentially mutable ArtifactStore state.
+    skill_md, package_members = _load_provenance_snapshot(
+        d.get("content_artifact_key"),
+        d.get("content_hash"),
+        org_root,
+    )
+
     return {
         "version_id": d["id"],
         "skill_id": d["skill_id"],
@@ -745,6 +917,10 @@ def get_proposal_detail(db, version_id: int) -> dict | None:
         "reviewed_at": d.get("reviewed_at"),
         "publisher": d.get("publisher"),
         "published_at": d.get("published_at"),
+        "purpose": purpose,
+        "target_agent_suggestion": target_agent_suggestion,
+        "skill_md": skill_md,
+        "package_members": package_members,
         "events": events,
         "assignments": assignments,
         "materializations": materializations,
