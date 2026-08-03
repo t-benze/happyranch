@@ -54,9 +54,10 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-        skill = ws / ".claude" / "skills" / "start-task"
-        skill.mkdir(parents=True, exist_ok=True)
-        (skill / "SKILL.md").write_text("# start-task\n")
+        # Under the canonical store model, workspace skill symlinks are
+        # created by the SymlinkMaterializer during pre-spawn materialization,
+        # NOT by pre-creating ordinary directories. Creating an ordinary
+        # directory at the link path would cause ordinary_dir_at_link_path.
 
 
 def _setup_codex_workspace(runtime, agent: str) -> None:
@@ -279,31 +280,47 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     assert captured == [(task_id, "engineering_head", "sess-eh")]
 
 
-def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings):
-    """TASK-2511: Post-Phase-4 cutover, a workspace with missing source
-    protocol/skills/ raises SystemContractMaterializationError (explicit,
-    retry-eligible) instead of a bare WorkspaceNotInitialized or Errno 2."""
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
+def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-2511: When workspace skill materialization fails, the failure
+    propagates as a named error (SymlinkMaterializationError) before executor
+    launch — never a bare WorkspaceNotInitialized or Errno 2.
+
+    Under the canonical store model, the correct unit seam for inducing
+    a determinate missing-marker failure is to inject an explicit
+    materialization error so the readiness marker symlink is never created."""
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializer,
+        SymlinkMaterializationError,
     )
 
-    # Remove source skills to simulate post-redeploy state
-    import shutil
-    src_skills = test_settings.get_protocol_dir() / "skills"
-    if src_skills.exists():
-        shutil.rmtree(src_skills)
-    src_skills.mkdir(parents=True, exist_ok=True)  # empty dir
+    # Setup workspace with real source skill dirs so the canonical build path
+    # has content, then inject a materialization error to prevent symlink creation.
+    _setup_workspaces(test_runtime, ["engineering_head"])
+
+    # Create source skill dirs in protocol/skills/ for the project_root temp.
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    proto_skills.mkdir(parents=True, exist_ok=True)
+    for sid in ("start-task", "jobs", "make-worktree", "thread"):
+        (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+        (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
+    def _failing_materialize(self, skill_slug, version, content_hash,
+                             workspace, skills_subdir, **kwargs):
+        raise SymlinkMaterializationError(
+            "injected_failure",
+            f"Injected materialization failure for {skill_slug}",
+        )
+
+    monkeypatch.setattr(SymlinkMaterializer, "materialize_skill", _failing_materialize)
 
     task_id = orchestrator.create_task("ping")
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
-    assert not eh_workspace.exists()
 
-    with pytest.raises(SystemContractMaterializationError) as exc_info:
+    with pytest.raises(SymlinkMaterializationError) as exc_info:
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     msg = str(exc_info.value)
-    assert "start-task" in msg  # names the missing contract
-    assert "engineering_head" in str(eh_workspace) or str(eh_workspace) in msg
+    assert "Injected materialization failure" in msg
     assert "Errno 2" not in msg  # never bare Errno 2
 
 
@@ -387,9 +404,7 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "task_history.md").write_text("# Task History: engineering_head\n\n")
     (workspace / "agent.yaml").write_text("repos: {}\n")
-    skill = workspace / ".claude" / "skills" / "start-task"
-    skill.mkdir(parents=True, exist_ok=True)
-    (skill / "SKILL.md").write_text("# start-task\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
