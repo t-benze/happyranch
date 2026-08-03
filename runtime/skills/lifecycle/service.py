@@ -1039,14 +1039,26 @@ class SkillLifecycleService:
 
     def get_proposals_queue(
         self, db, status: str | None = None, page: int = 1, page_size: int = 20,
+        validation_outcome: str | None = None,
+        search: str | None = None,
+        proposer: str | None = None,
+        submitted_after: str | None = None,
+        submitted_before: str | None = None,
     ) -> dict:
         """Founder-only paginated/filterable proposal queue."""
-        items, total = stores.list_proposals_queue(db, status=status, page=page, page_size=page_size)
+        items, total = stores.list_proposals_queue(
+            db, status=status, page=page, page_size=page_size,
+            validation_outcome=validation_outcome,
+            search=search,
+            proposer=proposer,
+            submitted_after=submitted_after,
+            submitted_before=submitted_before,
+        )
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
-    def get_proposal_detail(self, db, version_id: int) -> dict:
+    def get_proposal_detail(self, db, version_id: int, org_root: str | None = None) -> dict:
         """Founder-only full proposal detail by version id."""
-        detail = stores.get_proposal_detail(db, version_id)
+        detail = stores.get_proposal_detail(db, version_id, org_root=org_root)
         if detail is None:
             raise LifecycleError(
                 code="not_found",

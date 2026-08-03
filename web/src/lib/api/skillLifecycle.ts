@@ -292,7 +292,16 @@ export interface ProposalQueueResponse {
 
 export const getProposalsQueue = (
   slug: string,
-  params?: { status?: string; page?: number; page_size?: number },
+  params?: {
+    status?: string;
+    page?: number;
+    page_size?: number;
+    validation_outcome?: 'validated' | 'validation_failed' | 'unvalidated';
+    search?: string;
+    proposer?: string;
+    submitted_after?: string;
+    submitted_before?: string;
+  },
 ): Promise<ProposalQueueResponse> =>
   request(`/orgs/${slug}/skill-lifecycle/proposals/queue`, { params });
 
@@ -320,6 +329,10 @@ export interface ProposalDetailResponse {
   reviewed_at: string | null;
   publisher: string | null;
   published_at: string | null;
+  purpose: string;
+  target_agent_suggestion: string;
+  skill_md: string | null;
+  package_members: Array<Record<string, unknown>> | null;
   events: Array<Record<string, unknown>>;
   assignments: Array<Record<string, unknown>>;
   materializations: Array<Record<string, unknown>>;
