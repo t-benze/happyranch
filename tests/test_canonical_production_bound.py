@@ -676,50 +676,85 @@ class TestWorkspaceSkillLinkIsolationAttacks:
 
     @staticmethod
     def _prove_acl_tool_operational(isolation, traversable_root: Path) -> None:
-        """Prove the macOS ACL tool (chmod +a) can apply an ACL to an
-        executor-owned file. A tool failure (command not found, syntax
-        error, etc.) must fail the gate, NOT masquerade as access denial.
+        """Prove the macOS ACL tool (chmod +a) can apply and remove an
+        ACL on an executor-owned file, using the restricted executor
+        identity for every operation.
 
-        Creates a probe file owned by the executor, applies and verifies
-        an ACL, then removes it."""
-        import tempfile
+        A tool failure (command not found, syntax error, launch failure,
+        ACL apply failure, ACL removal failure, or stale ACL after
+        cleanup) must fail the gate — NOT masquerade as access denial.
+
+        Creates the probe through the executor (so it is executor-owned),
+        applies + verifies an ACL through the executor, removes + verifies
+        ACL removal through the executor, and checks every return code.
+        No chown from the daemon side; no pytest.skip anywhere."""
+        executor_identity = isolation.executor_identity()
+        assert executor_identity is not None, (
+            "Executor identity must be provisioned for ACL control"
+        )
+        daemon_uid = os.getuid()
+        assert executor_identity.uid != daemon_uid, (
+            f"Executor uid {executor_identity.uid} must differ from daemon uid {daemon_uid}"
+        )
+
         probe = traversable_root / "acl_probe.txt"
-        probe.write_text("probe")
-        probe.chmod(0o644)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
-        # Chown the probe to the executor so we can verify ACL apply
-        try:
-            os.chown(probe, isolation.executor_identity().uid, -1)
-        except PermissionError:
-            pytest.skip("Cannot chown probe — non-root daemon; skip local ACL probe")
-
-        # Apply an ACL via the executor identity
-        executor_user = _resolve_executor_username(isolation.executor_identity())
-        proc = isolation.launch_executor(
+        # ── Step 1: Create the probe through the executor ──
+        # The executor creates the file, so it is executor-owned.
+        # Verify the file exists and is owned by the executor.
+        create = isolation.launch_executor(
             ["sh", "-c",
-             f"chmod +a 'everyone allow read' {probe} && "
-             f"ls -le {probe} | grep -q 'everyone allow read'"],
+             f"touch {probe} && stat -f '%Su' {probe}"],
             cwd=traversable_root,
-            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        stdout, stderr = proc.communicate(timeout=30)
-        if proc.returncode != 0:
-            pytest.fail(
-                f"ACL tool probe FAILED (rc={proc.returncode}): "
-                f"stdout={stdout.strip()}, stderr={stderr.strip()}. "
-                "The macOS ACL command/tool must be operational on an "
-                "executor-owned file — a tool failure must fail the gate, "
-                "not masquerade as access denial."
-            )
+        create_stdout, create_stderr = create.communicate(timeout=30)
+        assert create.returncode == 0, (
+            f"ACL control: executor failed to create probe (rc={create.returncode}): "
+            f"stdout={create_stdout.strip()}, stderr={create_stderr.strip()}"
+        )
+        assert probe.exists(), "ACL control: probe not created"
 
-        # Clean up: remove the ACL
-        subprocess.run(
-            ["chmod", "-a", "everyone allow read", str(probe)],
-            capture_output=True, timeout=10,
+        # ── Step 2: Apply ACL through executor + verify ──
+        apply = isolation.launch_executor(
+            ["sh", "-c",
+             f"chmod +a 'everyone allow read' {probe} && "
+             f"ls -le {probe} | grep -q 'everyone allow read'"],
+            cwd=traversable_root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        apply_stdout, apply_stderr = apply.communicate(timeout=30)
+        assert apply.returncode == 0, (
+            f"ACL control: executor failed to apply+verify ACL (rc={apply.returncode}): "
+            f"stdout={apply_stdout.strip()}, stderr={apply_stderr.strip()}"
+        )
+
+        # ── Step 3: Remove ACL through executor + verify removal ──
+        remove = isolation.launch_executor(
+            ["sh", "-c",
+             f"chmod -a 'everyone allow read' {probe} && "
+             f"! ls -le {probe} | grep -q 'everyone allow read'"],
+            cwd=traversable_root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        remove_stdout, remove_stderr = remove.communicate(timeout=30)
+        assert remove.returncode == 0, (
+            f"ACL control: executor failed to remove+verify ACL removal "
+            f"(rc={remove.returncode}): "
+            f"stdout={remove_stdout.strip()}, stderr={remove_stderr.strip()}"
         )
 
     @staticmethod

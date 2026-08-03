@@ -2238,51 +2238,88 @@ def test_set_executor_materialization_failure_fail_closed(
 def test_set_executor_bootstrap_failure_after_successful_union(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """When the six-context union materialization succeeds but the
-    subsequent bootstrap step (ensure_workspace_ready) raises, the route
-    must fail closed: no frontmatter change, no audit, no launch.
+    """Real-union adversarial regression: the six-context union must succeed
+    before any persistent mutation, and post-union bootstrap failure must
+    not change pre-existing workspace state, frontmatter, audit, or launch.
 
-    Safe compensation: any bootstrap files partially written by the
-    failing ensure_workspace_ready are cleaned up.
-
-    Specifically asserts:
-    - HTTP 400 with named error code executor_bootstrap_failed
+    Exercises the REAL union (not mocked), seeds pre-existing CLAUDE.md,
+    AGENTS.md, .claude/ .agents/ canonical links, and other bootstrap state,
+    forces ensure_workspace_ready to write then raise, and asserts:
+    - HTTP 400 with named error executor_bootstrap_failed
     - agent.yaml unchanged (still old executor)
     - agent .md frontmatter unchanged
-    - No new executor bootstrap files survive in workspace
+    - Pre-existing file byte contents unchanged (CLAUDE.md, AGENTS.md)
+    - Pre-existing .claude/ and .agents/ symlinks preserved
+    - No new executor bootstrap artifacts survive
     - No audit row produced"""
+    import os as _os
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    # repos for union to resolve make-worktree contract
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
-    # Write a marker file in the workspace so we can verify it survives
-    persistent_marker = workspace / "task_history.md"
-    persistent_marker.write_text("# Task History: dev_agent\n")
+    # ── Seed pre-existing bootstrap state ──
+    # Regular files with known content
+    (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
+    (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
+    # .claude/ directory with non-skills content (union only manages skills/)
+    (workspace / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude" / "settings.json").write_text('{"old": true}')
+    # .claude/ symlink outside skills/ (union won't touch)
+    link_a = workspace / ".claude" / "old-link-a"
+    link_a.symlink_to(workspace / ".claude" / "old-link-a-target")
+    # .agents/ directory with non-skills content
+    (workspace / ".agents" / "config.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".agents" / "config.json").write_text('{"old": true}')
+    # .agents/ symlink outside skills/ (union won't touch)
+    link_b = workspace / ".agents" / "old-link-b"
+    link_b.symlink_to(workspace / ".agents" / "old-link-b-target")
+    # Other bootstrap files
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
 
-    # Record pristine workspace state before the failing request
+    # ── Snapshot pre-request state ──
+    from pathlib import Path as _Path
     agent_yaml_before = (workspace / "agent.yaml").read_text()
     agent_md_path = org_state.root / "agents" / "dev_agent.md"
     frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
 
-    # Check if any bootstrap files exist before (pre-existing files)
-    bootstrap_candidates_before = set()
-    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
-        p = workspace / candidate
-        if p.exists():
-            bootstrap_candidates_before.add(candidate)
+    def _snapshot_files() -> dict[str, bytes]:
+        snap: dict[str, bytes] = {}
+        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
+            root_path = _Path(root_dir)
+            for name in filenames:
+                fp = root_path / name
+                rel = str(fp.relative_to(workspace))
+                if fp.is_file() and not fp.is_symlink():
+                    snap[rel] = fp.read_bytes()
+        return snap
 
+    def _snapshot_symlinks() -> dict[str, str]:
+        snap: dict[str, str] = {}
+        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
+            root_path = _Path(root_dir)
+            for name in filenames:
+                fp = root_path / name
+                if fp.is_symlink():
+                    rel = str(fp.relative_to(workspace))
+                    snap[rel] = str(fp.readlink())
+        return snap
+
+    byte_snapshot_before = _snapshot_files()
+    link_snapshot_before = _snapshot_symlinks()
+
+    # ── Execute failing switch ──
+    # Union must NOT be mocked — REAL union runs.
+    # Bootstrap is mocked to write then raise.
     with patch(
-        "runtime.daemon.routes.agents._executor_switch_materialize",
-        return_value=[],  # union succeeds
-    ), patch(
         "runtime.daemon.routes.agents.ContextBuilder"
     ) as MockCB:
-        # Bootstrap fails: ensure_workspace_ready raises AFTER it may
-        # have partially written bootstrap files
-        def _failing_bootstrap(workspace, agent_name, system_prompt, *, provider):
-            # Simulate partial write: create a new-executor bootstrap file
-            (workspace / "AGENTS.md").write_text("# Partial bootstrap")
+        def _failing_bootstrap(ws, agent_name, system_prompt, *, provider):
+            (ws / "AGENTS.md").write_text("# Partial bootstrap — new executor")
+            (ws / ".agents").mkdir(parents=True, exist_ok=True)
+            (ws / ".agents" / "settings.json").write_text('{"new": true}')
             raise RuntimeError("Bootstrap failed — simulated failure")
 
         MockCB.return_value.ensure_workspace_ready.side_effect = (
@@ -2294,7 +2331,7 @@ def test_set_executor_bootstrap_failure_after_successful_union(
             headers=auth_headers,
         )
 
-    # FAIL-CLOSED: bootstrap failure prevents switch
+    # ── FAIL-CLOSED assertions ──
     assert r.status_code == 400, (
         f"Expected 400 on bootstrap failure, got {r.status_code}: {r.text}"
     )
@@ -2306,34 +2343,41 @@ def test_set_executor_bootstrap_failure_after_successful_union(
         f"Expected bootstrap error message, got {body['detail']['error']}"
     )
 
-    # ── Assert unchanged config state ──
-    # agent.yaml must still say "claude", not "codex"
+    # ── agent.yaml unchanged ──
     agent_yaml_after = (workspace / "agent.yaml").read_text()
     assert agent_yaml_after == agent_yaml_before, (
-        f"agent.yaml was mutated on bootstrap failure: "
-        f"before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+        f"agent.yaml mutated: before={agent_yaml_before!r}, after={agent_yaml_after!r}"
     )
 
-    # Agent frontmatter must be unchanged — no persist happened
+    # ── Agent frontmatter unchanged ──
     if frontmatter_before is not None:
         frontmatter_after = agent_md_path.read_text()
         assert frontmatter_after == frontmatter_before, (
             "Agent frontmatter was mutated on bootstrap failure"
         )
 
-    # ── Assert safe compensation cleaned up partial bootstrap ──
-    # The AGENTS.md written by the failing bootstrap must have been removed.
-    # Only pre-existing bootstrap files survive.
-    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
-        p = workspace / candidate
-        if p.exists() and candidate not in bootstrap_candidates_before:
-            pytest.fail(
-                f"Bootstrap file {candidate} survived after bootstrap "
-                "failure — safe compensation failed to clean up"
-            )
+    # ── Byte contents of pre-existing files unchanged ──
+    byte_snapshot_after = _snapshot_files()
+    for rel, before_bytes in byte_snapshot_before.items():
+        assert rel in byte_snapshot_after, (
+            f"Pre-existing file {rel} was DELETED by bootstrap failure"
+        )
+        assert byte_snapshot_after[rel] == before_bytes, (
+            f"Pre-existing file {rel} byte contents CHANGED"
+        )
 
-    # Persistent files (task_history.md) must survive
-    assert persistent_marker.exists(), (
-        "Persistent file task_history.md was deleted during bootstrap "
-        "failure cleanup — safe compensation was too aggressive"
+    # ── Symlinks preserved ──
+    link_snapshot_after = _snapshot_symlinks()
+    for rel, before_target in link_snapshot_before.items():
+        assert rel in link_snapshot_after, (
+            f"Pre-existing symlink {rel} was REMOVED by bootstrap failure"
+        )
+        assert link_snapshot_after[rel] == before_target, (
+            f"Pre-existing symlink {rel} target CHANGED"
+        )
+
+    # ── New bootstrap artifacts cleaned up ──
+    new_file = workspace / ".agents" / "settings.json"
+    assert not new_file.exists(), (
+        "New bootstrap file .agents/settings.json survived after failure"
     )

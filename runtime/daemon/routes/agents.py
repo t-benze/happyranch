@@ -887,6 +887,32 @@ async def set_agent_executor(
     # switch — no config change, no audit row. Only if this succeeds does
     # the switch become durable.
     if has_workspace:
+        # ── Snapshot pre-bootstrap workspace state ──
+        # Every file, directory, link, and their contents that existed
+        # before bootstrap must survive a subsequent bootstrap failure
+        # exactly. Only artifacts newly created by the failed attempt
+        # will be removed.
+        pre_bootstrap_snapshot: set[str] = set()
+        pre_bootstrap_contents: dict[str, bytes] = {}
+        for root_dir, dirnames, filenames in os.walk(str(workspace)):
+            root_path = Path(root_dir)
+            rel_root = root_path.relative_to(workspace)
+            pre_bootstrap_snapshot.add(str(rel_root))
+            for name in filenames:
+                rel = str(rel_root / name) if str(rel_root) != "." else name
+                pre_bootstrap_snapshot.add(rel)
+                # Snapshot contents for restoration if modified
+                fp = root_path / name
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        pre_bootstrap_contents[rel] = fp.read_bytes()
+                    except OSError:
+                        pass  # unreadable file — skip content snapshot
+            for name in dirnames:
+                pre_bootstrap_snapshot.add(
+                    str(rel_root / name) if str(rel_root) != "." else name
+                )
+
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         try:
             ctx.ensure_workspace_ready(
@@ -902,29 +928,54 @@ async def set_agent_executor(
                 "union for provider=%s agent=%s: %s",
                 body.executor, agent_name, e,
             )
-            # Safe compensation: remove any new-executor bootstrap files
-            # that were partially written. The old executor's bootstrap
-            # files (if any) are preserved.
-            _BOOTSTRAP_FILES: list[str] = [
-                "CLAUDE.md", "AGENTS.md",
-            ]
-            _BOOTSTRAP_DIRS: list[str] = [
-                ".claude", ".agents",
-            ]
-            for fname in _BOOTSTRAP_FILES:
-                fp = workspace / fname
-                if fp.exists():
+            # ── Snapshot-and-restore compensation ──
+            # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
+            # 2. Restore any pre-existing files whose contents were modified.
+            # Every pre-existing workspace file/directory/link is preserved
+            # exactly. Errors during cleanup are surfaced, not suppressed.
+            errors: list[str] = []
+            # Restore modified pre-existing files to original contents
+            for rel, original_bytes in pre_bootstrap_contents.items():
+                fp = workspace / rel
+                if fp.is_file() and not fp.is_symlink():
                     try:
-                        fp.unlink()
-                    except OSError:
-                        pass
-            for dname in _BOOTSTRAP_DIRS:
-                dp = workspace / dname
-                if dp.exists() and dp.is_dir():
-                    try:
-                        shutil.rmtree(dp)
-                    except OSError:
-                        pass
+                        current = fp.read_bytes()
+                        if current != original_bytes:
+                            fp.write_bytes(original_bytes)
+                    except OSError as exc:
+                        errors.append(
+                            f"Failed to restore file {rel}: {exc}"
+                        )
+            for root_dir, _dirnames, filenames in os.walk(
+                str(workspace), topdown=False,
+            ):
+                root_path = Path(root_dir)
+                for name in filenames:
+                    fp = root_path / name
+                    rel = fp.relative_to(workspace)
+                    if str(rel) not in pre_bootstrap_snapshot:
+                        try:
+                            fp.unlink()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new file {fp}: {exc}"
+                            )
+                # Remove empty directories that were newly created
+                if str(root_path) != str(workspace):
+                    rel_dir = root_path.relative_to(workspace)
+                    if str(rel_dir) not in pre_bootstrap_snapshot:
+                        try:
+                            if not any(root_path.iterdir()):
+                                root_path.rmdir()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new directory {root_path}: {exc}"
+                            )
+            if errors:
+                _logger.error(
+                    "Executor switch bootstrap cleanup errors: %s",
+                    "; ".join(errors),
+                )
             raise HTTPException(
                 status_code=400,
                 detail={

@@ -1257,14 +1257,10 @@ execution. ``manage-agent`` and ``manage-repo`` command access remains
 separately governed by allow_rules / daemon auth per the existing permission
 model (§3). The policy model is additive and permission-inert.
 
-**Phase-3 additive constraint.** The ``manage-agent`` and ``manage-repo``
-SKILL.md bodies also remain in ``protocol/skills/manage-agent/`` and
-``protocol/skills/manage-repo/`` so that the existing wholesale-dump path
-(``refresh_session_skills``) continues to deliver them to all agents as a
-safety net. Physical removal from the always-injected set is a Phase-4
-change gated on a completeness test proving catalog resolution delivers the
-full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
-registered and eligibility is scoped; the wholesale dump is untouched.
+**Phase-3 (HISTORICAL — superseded by completed Phase-4 cutover).** During
+Phase 3 the managed-catalog entries were registered and eligibility was
+scoped while the ``protocol/skills/`` directory still existed as a
+wholesale-dump safety net. This transitional state is now obsolete.
 
 **Phase-4 cutover (COMPLETED / REMOVED).** The wholesale ``protocol/skills/``
 dump and its former ``_WHOLESALE_DUMP_ENABLED`` flag are permanently removed
