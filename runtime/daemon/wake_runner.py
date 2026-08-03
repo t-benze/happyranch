@@ -33,7 +33,6 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    inject_system_contracts,
     materialize_workspace_skills,
     SystemContractMaterializationError,
 )
@@ -233,6 +232,7 @@ async def run_wake(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        org_slug=org_state.slug,
     ))
 
     if getattr(result, "token_usage", None) is not None:

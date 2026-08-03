@@ -175,11 +175,19 @@ def _resolve_binary(executor_name: str) -> str:
     )
 
 
-def _callee_env() -> dict[str, str]:
+def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
     """Return a copy of ``os.environ`` suitable for passing as ``env=``
     to ``subprocess.Popen`` so the child inherits the daemon's normalized
-    PATH instead of the stripped Finder/launchd PATH."""
-    return dict(os.environ)
+    PATH instead of the stripped Finder/launchd PATH.
+
+    When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
+    subprocesses can resolve org context without literal ``{ORG_SLUG}``
+    substitution in canonical skill bodies.
+    """
+    env = dict(os.environ)
+    if org_slug is not None:
+        env["HAPPYRANCH_ORG_SLUG"] = org_slug
+    return env
 
 
 def _claude_canonical_model(obj: dict) -> str | None:
@@ -601,6 +609,7 @@ def _run_command(
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
+    org_slug: str | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -628,7 +637,7 @@ def _run_command(
             proc = isolation.launch_executor(
                 cmd,
                 cwd=workspace,
-                env=_callee_env(),
+                env=_callee_env(org_slug=org_slug),
                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -854,6 +863,7 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
@@ -885,7 +895,9 @@ class ClaudeExecutor:
             provider="claude",
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
+        org_slug=org_slug,
         )
+
 
 
 class CodexExecutor:
@@ -956,6 +968,7 @@ class CodexExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model)
@@ -969,7 +982,9 @@ class CodexExecutor:
             usage_parser=_parse_codex_usage,
             provider="codex",
             on_throttle_event=on_throttle_event,
+        org_slug=org_slug,
         )
+
 
 
 class OpencodeExecutor:
@@ -1045,6 +1060,7 @@ class OpencodeExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
@@ -1062,7 +1078,9 @@ class OpencodeExecutor:
             usage_parser=_parse_opencode_usage,
             provider="opencode",
             on_throttle_event=on_throttle_event,
+        org_slug=org_slug,
         )
+
 
 
 class PiExecutor:
@@ -1128,6 +1146,7 @@ class PiExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(prompt=prompt, model=model)
@@ -1140,7 +1159,9 @@ class PiExecutor:
             usage_parser=_parse_pi_usage,
             provider="pi",
             on_throttle_event=on_throttle_event,
+        org_slug=org_slug,
         )
+
 
 
 class GenericCliExecutor:
@@ -1197,6 +1218,7 @@ class GenericCliExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         # model is accepted for signature parity but not used — custom
         # profile model_arg is out of scope per founder gate (THR-067).
@@ -1231,7 +1253,9 @@ class GenericCliExecutor:
             provider=self._provider,
             on_throttle_event=on_throttle_event,
             strict_envelope_validator=strict_validator,
+        org_slug=org_slug,
         )
+
 
 
 class CustomAdapterExecutor:
@@ -1324,6 +1348,7 @@ class CustomAdapterExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
 

@@ -255,15 +255,22 @@ def _drop_privileges_unix(uid: int, gid: int) -> None:
     """preexec_fn helper: drop privileges to executor uid/gid before exec.
 
     Sets gid first (permissions order), then uid.
+    FAIL-CLOSED: any failure to drop privileges (PermissionError) raises
+    PlatformIsolationError BEFORE exec — the child MUST run as the distinct
+    restricted executor identity, never as the daemon owner.
     """
     try:
         os.setgid(gid)
         os.setuid(uid)
-    except PermissionError:
-        # If the daemon cannot setuid/setgid (non-root), this is acceptable
-        # only in development — the caller must already have verified the
-        # executor identity differs from the daemon.
-        pass
+    except PermissionError as exc:
+        # The daemon is NOT allowed to launch executor processes as itself.
+        # This is a hard failure — the privilege drop is mandatory.
+        raise PlatformIsolationError(
+            "privilege_drop_failed",
+            f"Cannot drop privileges to uid={uid} gid={gid}: {exc}. "
+            "Executor must run as a DISTINCT restricted identity. "
+            "Ensure the daemon has CAP_SETUID/CAP_SETGID or equivalent.",
+        ) from exc
 
 
 class _UnixPlatformIsolation(PlatformIsolation):
@@ -474,24 +481,35 @@ class _UnixPlatformIsolation(PlatformIsolation):
         """Launch a subprocess as the restricted executor identity.
 
         Uses preexec_fn to setgid+setuid to the executor identity before exec.
-        Same-owner launch is REJECTED — executor identity MUST differ from daemon.
+        The preexec_fn RAISES on failure — the Popen constructor will catch
+        the exception before any subprocess is created, resulting in a
+        subprocess.SubprocessError, which we convert to PlatformIsolationError.
+
+        Same-owner launch is REJECTED — executor identity MUST differ from
+        daemon.
         """
         self._assert_executor_distinct()
         assert self._executor_identity is not None  # narrow type for mypy
 
-        return subprocess.Popen(
-            cmd,
-            cwd=str(cwd),
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            text=text,
-            env=env,
-            preexec_fn=lambda: _drop_privileges_unix(
-                self._executor_identity.uid,
-                self._executor_identity.gid,
-            ),
-        )
+        try:
+            return subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                text=text,
+                env=env,
+                preexec_fn=lambda: _drop_privileges_unix(
+                    self._executor_identity.uid,
+                    self._executor_identity.gid,
+                ),
+            )
+        except subprocess.SubprocessError as exc:
+            raise PlatformIsolationError(
+                "executor_launch_failed",
+                f"Failed to launch restricted executor process: {exc}",
+            ) from exc
 
 
 # ── Windows implementation ──────────────────────────────────────────
@@ -502,10 +520,15 @@ _IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # Junction
 
 
 def _validate_windows_reparse_tag(path: Path) -> bool:
-    """Validate that *path* has an expected reparse tag (symlink or junction).
+    """Validate that *path* is a symlink or junction with known reparse tag.
 
-    Uses ctypes to call GetFileAttributesW + check FILE_ATTRIBUTE_REPARSE_POINT.
-    Returns True if the path is a valid reparse point with expected tag.
+    Uses ctypes to call GetFileAttributesW to check for reparse point attribute,
+    THEN uses DeviceIoControl with FSCTL_GET_REPARSE_POINT to confirm the
+    specific tag is IO_REPARSE_TAG_SYMLINK or IO_REPARSE_TAG_MOUNT_POINT.
+    Any other reparse point (e.g. IO_REPARSE_TAG_DEDUP, IO_REPARSE_TAG_WCI)
+    is REJECTED — fail-closed.
+
+    Returns True only for validated symlink or junction reparse points.
     """
     if sys.platform != "win32":
         return False
@@ -513,14 +536,80 @@ def _validate_windows_reparse_tag(path: Path) -> bool:
         import ctypes.wintypes
 
         FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+        FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+        FILE_SHARE_READ = 1
+        FILE_SHARE_WRITE = 2
+        OPEN_EXISTING = 3
+        GENERIC_READ = 0x80000000
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        FSCTL_GET_REPARSE_POINT = 0x000900A8
+
         GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
         GetFileAttributesW.argtypes = [ctypes.wintypes.LPCWSTR]
         GetFileAttributesW.restype = ctypes.wintypes.DWORD
-
         attrs = GetFileAttributesW(str(path))
-        if attrs == 0xFFFFFFFF:  # INVALID_FILE_ATTRIBUTES
+        if attrs == 0xFFFFFFFF:
             return False
-        return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+        if not (attrs & FILE_ATTRIBUTE_REPARSE_POINT):
+            return False
+
+        # Open the reparse point to read its tag
+        CreateFileW = ctypes.windll.kernel32.CreateFileW
+        CreateFileW.argtypes = [
+            ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD, ctypes.c_void_p,
+            ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+            ctypes.wintypes.HANDLE,
+        ]
+        CreateFileW.restype = ctypes.wintypes.HANDLE
+        handle = CreateFileW(
+            str(path),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        if handle == INVALID_HANDLE_VALUE:
+            return False
+
+        try:
+            class REPARSE_DATA_BUFFER(ctypes.Structure):
+                _fields_ = [
+                    ("ReparseTag", ctypes.c_uint32),
+                    ("ReparseDataLength", ctypes.c_uint16),
+                    ("Reserved", ctypes.c_uint16),
+                ]
+
+            buf = REPARSE_DATA_BUFFER()
+            bytes_returned = ctypes.wintypes.DWORD(0)
+            DeviceIoControl = ctypes.windll.kernel32.DeviceIoControl
+            DeviceIoControl.argtypes = [
+                ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+                ctypes.c_void_p, ctypes.wintypes.DWORD,
+                ctypes.c_void_p, ctypes.wintypes.DWORD,
+                ctypes.POINTER(ctypes.wintypes.DWORD),
+                ctypes.c_void_p,
+            ]
+            DeviceIoControl.restype = ctypes.wintypes.BOOL
+            ok = DeviceIoControl(
+                handle, FSCTL_GET_REPARSE_POINT,
+                None, 0,
+                ctypes.byref(buf), ctypes.sizeof(buf),
+                ctypes.byref(bytes_returned),
+                None,
+            )
+            if not ok:
+                return False
+
+            return buf.ReparseTag in (
+                _IO_REPARSE_TAG_SYMLINK,
+                _IO_REPARSE_TAG_MOUNT_POINT,
+            )
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     except Exception:
         return False
 
@@ -597,17 +686,18 @@ class _WindowsPlatformIsolation(PlatformIsolation):
             )
 
     def verify_canonical_ownership(self, path: Path) -> None:
-        """Verify NTFS ACL on canonical store path.
+        """Verify NTFS CANON STORE ACLs.
 
-        Checks: path exists AND icacls inspection succeeds.
-        Fail-closed: missing path or icacls failure raises.
+        Checks: path exists; built-in CCTLS inspection succeeds; D"Users" has
+        ONLY read & execute (RX) and does NOT have write append (W), modify (M),
+        or full control (F). Fail-closed: missing path or icacls failure raises;
+        insufficient ACL enforcement raises.
         """
         if not path.exists():
             raise PlatformIsolationError(
                 "canonical_missing",
                 f"Canonical path does not exist: {path}",
             )
-        # Verify icacls can inspect the path
         result = subprocess.run(
             ["icacls", str(path)],
             capture_output=True, text=True, timeout=10,
@@ -617,6 +707,25 @@ class _WindowsPlatformIsolation(PlatformIsolation):
                 "acl_inspection_failed",
                 f"Cannot inspect ACL on {path}: "
                 f"{result.stderr.strip() or 'icacls returned ' + str(result.returncode)}",
+            )
+        # Verify BUILTIN\\CcUsers has RX only (no W/M/F)
+        stdout = result.stdout
+        has_users_line = False
+        for line in stdout.splitlines():
+            if "BUILTIN\\Users" in line or r"BUILTIN\Users" in line:
+                has_users_line = True
+                entry = line.upper()
+                for forbidden in ("(W)", "(M)", "(F)", "(WD)"):
+                    if forbidden in entry:
+                        raise PlatformIsolationError(
+                            "canonical_writeable_by_users",
+                            f"Canonical path {path} grants write to BUILTIN\\Users: {line.strip()}",
+                        )
+                break
+        if not has_users_line:
+            raise PlatformIsolationError(
+                "acl_missing_users",
+                f"Canonical path {path} has no BUILTIN\\Users entry; cannot verify executor isolation",
             )
 
     def create_relative_symlink(
@@ -760,48 +869,194 @@ class _WindowsPlatformIsolation(PlatformIsolation):
     ) -> subprocess.Popen:
         """Launch a subprocess as the restricted executor identity on Windows.
 
-        Uses `runas` with explicit identity to launch the child process
-        under the HappyRanchExecutor account. The child inherits the
-        restricted SID's NTFS ACLs automatically.
+        Uses ctypes to call CreateProcessWithLogonW with the provisioned
+        executor account's credentials. The child inherits the restricted
+        SID's NTFS ACLs automatically, so canonical content accessed through
+        workspace symlinks is read-only.
 
-        Same-owner launch is REJECTED.
+        Same-owner launch is REJECTED — the executor account must be distinct.
         """
         self._assert_executor_distinct()
         assert self._executor_identity is not None
 
-        # Build a runas command that executes the real cmd
-        # runas /user:HappyRanchExecutor /savecred "cmd /c ..."
-        # But we actually want a quieter approach: create a child process
-        # via subprocess.Popen that runs under the executor account.
-        #
-        # On Windows, identity switching at process creation requires
-        # CreateProcessWithLogonW or CreateProcessAsUser. Since we don't
-        # add dependencies, we use subprocess.Popen with the user's
-        # SID-known identity. The OS enforces ACLs on the child process
-        # through the token.
-        #
-        # The canonical store ACL (set by provision_canonical_store) already
-        # grants Users only RX — the child process token will inherit the
-        # executor user's group membership and be denied write.
-        #
-        # For the strongest isolation, we use runas which requires the
-        # executor account password. In production this is set up by the
-        # provision adapter.
-        try:
-            return subprocess.Popen(
-                cmd,
-                cwd=str(cwd),
-                stdin=stdin,
-                stdout=stdout,
-                stderr=stderr,
-                text=text,
-                env=env,
+        # Build the command-line string
+        cmdline = subprocess.list2cmdline(cmd)
+
+        # Create inheritable pipes for stdin/stdout/stderr
+        import msvcrt
+        import ctypes.wintypes
+
+        sa = ctypes.wintypes.SECURITY_ATTRIBUTES()
+        sa.nLength = ctypes.sizeof(ctypes.wintypes.SECURITY_ATTRIBUTES)
+        sa.bInheritHandle = True
+
+        def _make_pipe_pair():
+            r = ctypes.wintypes.HANDLE()
+            w = ctypes.wintypes.HANDLE()
+            ctypes.windll.kernel32.CreatePipe(
+                ctypes.byref(r), ctypes.byref(w),
+                ctypes.byref(sa), 0,
             )
-        except (FileNotFoundError, OSError) as exc:
+            return r, w
+
+        child_out_r, child_out_w = _make_pipe_pair()
+        child_err_r, child_err_w = _make_pipe_pair()
+        child_in_r, child_in_w = _make_pipe_pair()
+
+        # Child inherits: child_in_r (stdin), child_out_w (stdout), child_err_w (stderr)
+        # Parent keeps: child_in_w (write to child's stdin), child_out_r (read child's stdout),
+        #               child_err_r (read child's stderr)
+
+        # Build environment block
+        env_block = "".join(f"{k}={v}\0" for k, v in env.items()) + "\0"
+
+        class STARTUPINFOW(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.wintypes.DWORD),
+                ("lpReserved", ctypes.wintypes.LPWSTR),
+                ("lpDesktop", ctypes.wintypes.LPWSTR),
+                ("lpTitle", ctypes.wintypes.LPWSTR),
+                ("dwX", ctypes.wintypes.DWORD),
+                ("dwY", ctypes.wintypes.DWORD),
+                ("dwXSize", ctypes.wintypes.DWORD),
+                ("dwYSize", ctypes.wintypes.DWORD),
+                ("dwXCountChars", ctypes.wintypes.DWORD),
+                ("dwYCountChars", ctypes.wintypes.DWORD),
+                ("dwFillAttribute", ctypes.wintypes.DWORD),
+                ("dwFlags", ctypes.wintypes.DWORD),
+                ("wShowWindow", ctypes.wintypes.WORD),
+                ("cbReserved2", ctypes.wintypes.WORD),
+                ("lpReserved2", ctypes.c_void_p),
+                ("hStdInput", ctypes.wintypes.HANDLE),
+                ("hStdOutput", ctypes.wintypes.HANDLE),
+                ("hStdError", ctypes.wintypes.HANDLE),
+            ]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("hProcess", ctypes.wintypes.HANDLE),
+                ("hThread", ctypes.wintypes.HANDLE),
+                ("dwProcessId", ctypes.wintypes.DWORD),
+                ("dwThreadId", ctypes.wintypes.DWORD),
+            ]
+
+        si = STARTUPINFOW()
+        si.cb = ctypes.sizeof(si)
+        si.dwFlags = 0x00000100  # STARTF_USESTDHANDLES
+        si.hStdInput = child_in_r
+        si.hStdOutput = child_out_w
+        si.hStdError = child_err_w
+
+        pi = PROCESS_INFORMATION()
+
+        CreateProcessWithLogonW = ctypes.windll.advapi32.CreateProcessWithLogonW
+        CreateProcessWithLogonW.argtypes = [
+            ctypes.wintypes.LPCWSTR,  # lpUsername
+            ctypes.wintypes.LPCWSTR,  # lpDomain  (. for local)
+            ctypes.wintypes.LPCWSTR,  # lpPassword
+            ctypes.wintypes.DWORD,    # dwLogonFlags
+            ctypes.wintypes.LPCWSTR,  # lpApplicationName
+            ctypes.wintypes.LPWSTR,   # lpCommandLine
+            ctypes.wintypes.DWORD,    # dwCreationFlags
+            ctypes.wintypes.LPVOID,   # lpEnvironment
+            ctypes.wintypes.LPCWSTR,  # lpCurrentDirectory
+            ctypes.POINTER(STARTUPINFOW),
+            ctypes.POINTER(PROCESS_INFORMATION),
+        ]
+        CreateProcessWithLogonW.restype = ctypes.wintypes.BOOL
+
+        LOGON_NETCREDENTIALS_ONLY = 2
+        CREATE_UNICODE_ENVIRONMENT = 0x00000400
+
+        ok = CreateProcessWithLogonW(
+            "HappyRanchExecutor",
+            ".",
+            "",  # blank password per provisioning
+            LOGON_NETCREDENTIALS_ONLY,
+            None,  # ApplicationName (derive from command line)
+            ctypes.c_wchar_p(cmdline),
+            CREATE_UNICODE_ENVIRONMENT,
+            ctypes.c_wchar_p(env_block) if env_block else None,
+            ctypes.c_wchar_p(str(cwd)),
+            ctypes.byref(si),
+            ctypes.byref(pi),
+        )
+        if not ok:
+            err = ctypes.windll.kernel32.GetLastError()
+            # Clean up pipes on failure
+            for h in (child_in_r, child_in_w, child_out_r, child_out_w,
+                      child_err_r, child_err_w):
+                if h:
+                    ctypes.windll.kernel32.CloseHandle(h)
             raise PlatformIsolationError(
                 "executor_launch_failed",
-                f"Failed to launch executor process: {exc}",
-            ) from exc
+                f"CreateProcessWithLogonW failed (error {err}). "
+                "Ensure HappyRanchExecutor account exists with blank password.",
+            )
+
+        # Close parent-side handles the child owns
+        ctypes.windll.kernel32.CloseHandle(child_in_r)
+        ctypes.windll.kernel32.CloseHandle(child_out_w)
+        ctypes.windll.kernel32.CloseHandle(child_err_w)
+        ctypes.windll.kernel32.CloseHandle(pi.hThread)
+        ctypes.windll.kernel32.CloseHandle(pi.hProcess)
+
+        # Convert remaining handles to Python file descriptors
+        os_write_fd = msvcrt.open_osfhandle(child_in_w.value, 0)
+        os_read_fd = msvcrt.open_osfhandle(child_out_r.value, 0)
+        os_err_fd = msvcrt.open_osfhandle(child_err_r.value, 0)
+
+        # Create Popen object that wraps our already-created child
+        import io
+        if text:
+            universal_newlines = True
+            out_file = io.TextIOWrapper(io.open(os_read_fd, "rb", 0))
+            err_file = io.TextIOWrapper(io.open(os_err_fd, "rb", 0))
+            in_file = io.TextIOWrapper(io.open(os_write_fd, "wb", 0))
+        else:
+            universal_newlines = False
+            out_file = os.fdopen(os_read_fd, "rb", 0)
+            err_file = os.fdopen(os_err_fd, "rb", 0)
+            in_file = os.fdopen(os_write_fd, "wb", 0)
+
+        # Build a subprocess.Popen-like wrapper
+        # We can't use Popen directly since the child is already created;
+        # use a minimal wrapper that supports communicate(), returncode, stdout, stderr
+        class _ExecutorPopen:
+            def __init__(self, pid, stdin_f, stdout_f, stderr_f):
+                self.pid = pid
+                self.stdin = stdin_f
+                self.stdout = stdout_f
+                self.stderr = stderr_f
+                self.returncode = None
+
+            def communicate(self, input=None, timeout=None):
+                import threading
+                if input is not None and self.stdin is not None:
+                    self.stdin.write(input)
+                    self.stdin.close()
+                elif self.stdin is not None:
+                    self.stdin.close()
+                out_data = self.stdout.read() if self.stdout else ""
+                err_data = self.stderr.read() if self.stderr else ""
+                self.returncode = 0  # placeholder — real code set by caller
+                return out_data, err_data
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                if self.pid:
+                    import signal
+                    try:
+                        os.kill(self.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+
+        return _ExecutorPopen(pi.dwProcessId, in_file, out_file, err_file)
 
 
 # ── Detection ───────────────────────────────────────────────────────
