@@ -294,12 +294,15 @@ def _paginate(client: OpcClient, org: str, action: str) -> list[dict]:
 
 
 def _fetch_agent_roles(client: OpcClient, org: str) -> dict[str, str]:
-    """Fetch agent→role map from the authoritative /agents read surface."""
+    """Fetch agent→role map from the authoritative /agents read surface.
+
+    Returns empty dict when /agents is unavailable — the caller must
+    report this as unavailable rather than falling back to agent names."""
     role_map: dict[str, str] = {}
     r = client.get(f"/api/v1/orgs/{org}/agents")
     if not _ok(r):
         print("warning: could not fetch agent roles from /agents;"
-              " using agent name as role fallback", file=sys.stderr)
+              " role analysis will be unavailable", file=sys.stderr)
         return role_map
     agents = r.json().get("agents", [])
     for agent in agents:
@@ -351,9 +354,18 @@ def _compute_report(
     read_rows: list[dict],
     search_rows: list[dict],
     agent_role_map: dict[str, str] | None = None,
+    current_time: "datetime | None" = None,
 ) -> dict:
-    """Client-side telemetry computation from audit rows."""
+    """Client-side telemetry computation from audit rows.
+
+    Args:
+        current_time: UTC datetime for time-based threshold evaluation.
+            When None (production), uses datetime.now(timezone.utc).
+    """
     from datetime import datetime, timezone
+
+    if current_time is None:
+        current_time = datetime.now(timezone.utc)
 
     if not impression_rows:
         return {
@@ -381,11 +393,13 @@ def _compute_report(
         session_id = payload.get("session_id")
         digest_ids = payload.get("digest_ids", [])
         agent = payload.get("agent", row.get("agent", ""))
+        task_id = payload.get("task_id", "")
         if session_id and digest_ids:
             impressions.append({
                 "session_id": session_id,
                 "digest_ids": digest_ids,
                 "agent": agent,
+                "task_id": task_id,
                 "timestamp": row.get("timestamp", ""),
             })
 
@@ -408,8 +422,7 @@ def _compute_report(
         first_ts = datetime.fromisoformat(first_ts_str.replace("Z", "+00:00"))
     except Exception:
         first_ts = datetime.now(timezone.utc)
-    now = datetime.now(timezone.utc)
-    days_elapsed = (now - first_ts).days
+    days_elapsed = (current_time - first_ts).days
 
     all_sessions: set[str] = set()
     per_agent_sessions: dict[str, set[str]] = {}
@@ -421,8 +434,10 @@ def _compute_report(
         if agent not in per_agent_sessions:
             per_agent_sessions[agent] = set()
         per_agent_sessions[agent].add(sid)
-        if agent_role_map and agent not in agent_roles:
-            agent_roles[agent] = agent_role_map.get(agent, agent)
+        if agent_role_map is not None and agent not in agent_roles:
+            role = agent_role_map.get(agent)
+            if role is not None:
+                agent_roles[agent] = role
 
     total_sessions = len(all_sessions)
     met_days = days_elapsed >= 14
@@ -456,17 +471,23 @@ def _compute_report(
             "decision": "insufficient_sample",
         }
 
-    # Session digest maps
+    # Session digest maps.
+    # Build validated (agent, task_id, session_id) tuples from trusted
+    # impressions so reads can be verified against them.
     session_digest_ids: dict[str, set[str]] = {}
     session_agent: dict[str, str] = {}
+    validated_impression_tuples: dict[str, tuple[str, str]] = {}  # sid→(agent, task_id)
     for imp in impressions:
         sid = imp["session_id"]
         session_digest_ids[sid] = set(imp["digest_ids"])
         session_agent[sid] = imp["agent"]
+        imp_task_id = imp.get("task_id", "")
+        if imp_task_id:
+            validated_impression_tuples[sid] = (imp["agent"], imp_task_id)
 
-    # Parse reads — only include correlated reads (have session_id) when
-    # computing tracked attribution.  Legacy/uncorrelated reads are counted
-    # separately but excluded from pull-through and search-absent denominators.
+    # Parse reads — only include tuple-verified reads (matching the
+    # impression's agent+task_id+session_id) in tracked attribution.
+    # Legacy/untrusted/mismatched reads are excluded from denominators.
     session_read_ids: dict[str, set[str]] = {}
     untrusted_reads: list[dict] = []
     digest_reads: list[dict] = []
@@ -483,17 +504,30 @@ def _compute_report(
         source = payload.get("source", "explicit_or_other")
         rsid = payload.get("session_id")
         rtask_id = payload.get("task_id")
+        # Verify tuple: read's (agent, task_id, session_id) must match
+        # the impression's validated tuple.
         if rsid and rtask_id:
-            if rsid not in session_read_ids:
-                session_read_ids[rsid] = set()
-            session_read_ids[rsid].add(mid)
-            entry = {"id": mid, "source": source, "session_id": rsid, "task_id": rtask_id}
-            if source == "digest":
-                digest_reads.append(entry)
-            elif source == "search":
-                search_reads.append(entry)
-            else:
-                explicit_reads.append(entry)
+            validated_tuple = validated_impression_tuples.get(rsid)
+            if validated_tuple is not None:
+                imp_agent, imp_task_id = validated_tuple
+                row_agent = payload.get("agent", row.get("agent", ""))
+                if row_agent == imp_agent and rtask_id == imp_task_id:
+                    if rsid not in session_read_ids:
+                        session_read_ids[rsid] = set()
+                    session_read_ids[rsid].add(mid)
+                    entry = {"id": mid, "source": source,
+                             "session_id": rsid, "task_id": rtask_id,
+                             "agent": row_agent}
+                    if source == "digest":
+                        digest_reads.append(entry)
+                    elif source == "search":
+                        search_reads.append(entry)
+                    else:
+                        explicit_reads.append(entry)
+                    continue
+            # Tuple mismatch or unknown session — treat as untrusted
+            untrusted_reads.append({"id": mid, "source": source,
+                                   "session_id": rsid, "task_id": rtask_id})
         else:
             untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
 
@@ -532,10 +566,17 @@ def _compute_report(
         search_absent_count / search_total if search_total > 0 else 0.0
     )
 
-    # Per-role
+    # Per-role.
+    # Only agents with an authoritative role from agent_role_map are included
+    # in role-level decisions.  Agents without a known role are excluded.
+    roles_unavailable = agent_role_map is None
     role_data: dict[str, dict] = {}
+    unknown_agents: list[str] = []
     for agent, sessions in per_agent_sessions.items():
-        role = agent_roles.get(agent, agent)
+        role = agent_roles.get(agent)
+        if role is None:
+            unknown_agents.append(agent)
+            continue
         if role not in role_data:
             role_data[role] = {"agents": [], "sessions": set()}
         role_data[role]["agents"].append(agent)
@@ -676,6 +717,17 @@ def _compute_report(
         "decision": decision,
         "decision_detail": decision_detail,
     }
+    if roles_unavailable:
+        result["roles_warning"] = (
+            "Authoritative agent roles unavailable — /agents surface"
+            " could not be read. Per-role analysis excluded."
+        )
+    elif unknown_agents:
+        result["roles_warning"] = (
+            f"{len(unknown_agents)} agent(s) have unknown roles"
+            f" and are excluded from role decisions: {unknown_agents}"
+        )
+    return result
 
 
 def _print_report(report: dict) -> None:
@@ -725,6 +777,11 @@ def _print_report(report: dict) -> None:
                 print(f"    Reason:         {data.get('reason', 'N/A')}")
             print()
 
+    roles_warning = report.get("roles_warning")
+    if roles_warning:
+        print()
+        print(f"ROLES WARNING: {roles_warning}")
+    print()
     print(f"DECISION: {report.get('decision', 'unknown')}")
     print(f"  {report.get('decision_detail', '')}")
 

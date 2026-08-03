@@ -1019,6 +1019,7 @@ class AuditLogger:
         self,
         *,
         agent_role_map: dict[str, str] | None = None,
+        current_time: "datetime | None" = None,
     ) -> dict:
         """THR-091 Slice 2: operator-facing telemetry report.
 
@@ -1036,13 +1037,25 @@ class AuditLogger:
         - Requires 14 complete calendar days AND at least 500 sessions with
           non-empty correlated digests.
         - Decision rules per the THR-091 Slice 2 spec.
+
+        Args:
+            agent_role_map: authoritative agent→role mapping from /agents.
+                When None, roles are reported as unavailable.
+            current_time: UTC datetime for time-based threshold evaluation.
+                When None (production), uses datetime.now(timezone.utc).
+                Tests seed this to simulate 14+ days elapsed.
         """
         import json
         from datetime import datetime, timedelta, timezone
 
-        # Collect digest impressions with timestamps
+        if current_time is None:
+            current_time = datetime.now(timezone.utc)
+
+        # Collect digest impressions with timestamps.
+        # Include task_id column (impressions store the actual task_id there,
+        # unlike legacy memory_read rows which use AGENT-{agent}).
         rows = self._db.fetch_all_readonly(
-            "SELECT timestamp, agent, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
             " WHERE action = 'memory_digest_impression'"
             " ORDER BY timestamp ASC",
             (),
@@ -1071,11 +1084,13 @@ class AuditLogger:
             session_id = payload.get("session_id")
             digest_ids = payload.get("digest_ids", [])
             agent = payload.get("agent", row["agent"] if "agent" in row.keys() else "")
+            row_task_id = row["task_id"] if "task_id" in row.keys() else ""
             if session_id and digest_ids:
                 impressions.append({
                     "session_id": session_id,
                     "digest_ids": digest_ids,
                     "agent": agent,
+                    "task_id": row_task_id,
                     "timestamp": row["timestamp"],
                 })
 
@@ -1101,8 +1116,7 @@ class AuditLogger:
         except (ValueError, TypeError):
             first_ts = datetime.now(timezone.utc)
 
-        now = datetime.now(timezone.utc)
-        days_elapsed = (now - first_ts).days
+        days_elapsed = (current_time - first_ts).days
 
         # Unique sessions with non-empty digests
         all_sessions: set[str] = set()
@@ -1115,9 +1129,13 @@ class AuditLogger:
             if agent not in per_agent_sessions:
                 per_agent_sessions[agent] = set()
             per_agent_sessions[agent].add(sid)
-            # Determine role if map provided
-            if agent_role_map and agent not in agent_roles:
-                agent_roles[agent] = agent_role_map.get(agent, agent)
+            # Determine role from authoritative map.
+            # Never fall back to agent name — unknown roles are excluded
+            # from role decisions rather than guessed.
+            if agent_role_map is not None and agent not in agent_roles:
+                role = agent_role_map.get(agent)
+                if role is not None:
+                    agent_roles[agent] = role
 
         total_sessions = len(all_sessions)
 
@@ -1154,19 +1172,28 @@ class AuditLogger:
                 "decision": "insufficient_sample",
             }
 
-        # Collect memory_read events for pull-through
+        # Collect memory_read events for pull-through.
+        # Include agent and task_id columns so we can verify read rows
+        # match the impression's (agent, task_id, session_id) tuple.
         read_rows = self._db.fetch_all_readonly(
-            "SELECT payload FROM audit_log"
+            "SELECT agent, task_id, payload FROM audit_log"
             " WHERE action = 'memory_read'",
             (),
         )
 
-        # Compute per-session pull-through
+        # Compute per-session pull-through.
+        # Build a validated (agent, task_id, session_id) tuple map from
+        # trusted impressions so reads can be verified against it.
         session_digest_ids: dict[str, set[str]] = {}
         session_agent: dict[str, str] = {}
+        validated_impression_tuples: dict[str, tuple[str, str]] = {}  # sid→(agent, task_id)
         for imp in impressions:
             sid = imp["session_id"]
             session_digest_ids[sid] = set(imp["digest_ids"])
+            session_agent[sid] = imp["agent"]
+            imp_task_id = imp.get("task_id", "")
+            if imp_task_id:
+                validated_impression_tuples[sid] = (imp["agent"], imp_task_id)
             session_agent[sid] = imp["agent"]
 
         # Which digest IDs were read in each session.
@@ -1187,24 +1214,48 @@ class AuditLogger:
             source = payload.get("source", "explicit_or_other")
             rsid = payload.get("session_id")
             rtask_id = payload.get("task_id")
+            # Verify that the read's (agent, task_id, session_id) tuple
+            # matches the impression's validated tuple.  Rows that fail
+            # this check are excluded from pull-through and search-absent
+            # denominators rather than treated as matches.
             if rsid and rtask_id:
-                if rsid not in session_read_ids:
-                    session_read_ids[rsid] = set()
-                session_read_ids[rsid].add(mid)
-                entry = {"id": mid, "source": source, "session_id": rsid, "task_id": rtask_id}
-                if source == "digest":
-                    digest_reads.append(entry)
-                elif source == "search":
-                    search_reads.append(entry)
-                else:
-                    explicit_reads.append(entry)
+                validated_tuple = validated_impression_tuples.get(rsid)
+                if validated_tuple is not None:
+                    imp_agent, imp_task_id = validated_tuple
+                    row_agent = row["agent"] if "agent" in row.keys() else ""
+                    if row_agent == imp_agent and rtask_id == imp_task_id:
+                        # Tuple-verified read — include in telemetry
+                        if rsid not in session_read_ids:
+                            session_read_ids[rsid] = set()
+                        session_read_ids[rsid].add(mid)
+                        entry = {"id": mid, "source": source,
+                                 "session_id": rsid, "task_id": rtask_id,
+                                 "agent": row_agent}
+                        if source == "digest":
+                            digest_reads.append(entry)
+                        elif source == "search":
+                            search_reads.append(entry)
+                        else:
+                            explicit_reads.append(entry)
+                        continue
+                # Tuple mismatch or unknown session — treat as untrusted
+                untrusted_reads.append({"id": mid, "source": source,
+                                       "session_id": rsid, "task_id": rtask_id})
             else:
                 untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
 
-        # Build per-role aggregates (roles with >=30 correlated digest sessions)
+        # Build per-role aggregates (roles with >=30 correlated digest sessions).
+        # Only agents with an authoritative role from agent_role_map are included
+        # in role-level decisions.  Agents without a known role are reported in
+        # the by_role output as ineligible and excluded from role decisions.
+        roles_unavailable = agent_role_map is None
         role_data: dict[str, dict] = {}
+        unknown_agents: list[str] = []
         for agent, sessions in per_agent_sessions.items():
-            role = agent_roles.get(agent, agent)
+            role = agent_roles.get(agent)
+            if role is None:
+                unknown_agents.append(agent)
+                continue
             if role not in role_data:
                 role_data[role] = {
                     "agents": [],
@@ -1395,7 +1446,7 @@ class AuditLogger:
             "untrusted_uncorrelated_reads": len(untrusted_reads),
         }
 
-        return {
+        result: dict = {
             "observation_period": {
                 **observation,
                 "status": "thresholds_met",
@@ -1405,6 +1456,17 @@ class AuditLogger:
             "decision": decision,
             "decision_detail": decision_detail,
         }
+        if roles_unavailable:
+            result["roles_warning"] = (
+                "Authoritative agent roles unavailable — /agents surface"
+                " could not be read. Per-role analysis excluded."
+            )
+        elif unknown_agents:
+            result["roles_warning"] = (
+                f"{len(unknown_agents)} agent(s) have unknown roles"
+                f" and are excluded from role decisions: {unknown_agents}"
+            )
+        return result
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.
