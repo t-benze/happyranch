@@ -27,17 +27,26 @@ from pathlib import Path
 class SessionContext(str, Enum):
     """The type of session being created.
 
-    Maps to the 4 callers of refresh_session_skills / inject_system_contracts:
+    Maps to the 6 callers of materialize_workspace_skills:
     - TASK: ordinary task/subtask session (orchestrator._run_agent)
     - THREAD: thread reply/bootstrap invocation (thread_runner.run_invocation)
     - WAKE: working-hours wake / task-followup (wake_runner.run_wake)
     - DREAM: scheduled dream invocation (dream_runner.run_dream)
+    - SCHEDULE: schedule fire (schedule_runner.run_schedule_fire)
+    - BOOTSTRAP: executor-switch / set-executor lifecycle event
+
+    All six contexts are valid SessionContext values.  executor-switch
+    builds a single full union of expectations from all six contexts
+    before materialization, so later contexts cannot withdraw entries
+    belonging to earlier ones.
     """
 
     TASK = "task"
     THREAD = "thread"
     WAKE = "wake"
     DREAM = "dream"
+    SCHEDULE = "schedule"
+    BOOTSTRAP = "bootstrap"
 
 
 @dataclass(frozen=True)
@@ -75,7 +84,10 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
         ),
         when_to_use="Use at the start of every task session.",
         source_path="protocol/skills/start-task/SKILL.md",
-        contexts=(SessionContext.TASK, SessionContext.WAKE),
+        contexts=(
+            SessionContext.TASK, SessionContext.WAKE,
+            SessionContext.SCHEDULE,
+        ),
     ),
     SystemContract(
         id="jobs",
@@ -91,6 +103,8 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
         ),
     ),
     SystemContract(
@@ -107,6 +121,8 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
         ),
         requires_repo=True,
     ),
@@ -122,7 +138,10 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "that may compose or post to threads."
         ),
         source_path="protocol/skills/thread/SKILL.md",
-        contexts=(SessionContext.TASK, SessionContext.THREAD, SessionContext.WAKE),
+        contexts=(
+            SessionContext.TASK, SessionContext.THREAD, SessionContext.WAKE,
+            SessionContext.SCHEDULE, SessionContext.BOOTSTRAP,
+        ),
     ),
     SystemContract(
         id="dream",

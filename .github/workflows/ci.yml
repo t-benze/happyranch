@@ -89,16 +89,17 @@ jobs:
             EXEC_UID=$(id -u "$EXEC_USER")
             EXEC_GID=$(id -g "$EXEC_USER")
           else
-            # Create group first
-            sudo dscl . -create /Groups/"$EXEC_USER" || true
-            sudo dscl . -create /Groups/"$EXEC_USER" PrimaryGroupID $EXEC_GID || true
+            # Create group first — ALL dscl commands must succeed.
+            # No || true fallback: provisioning failure fails the job.
+            sudo dscl . -create /Groups/"$EXEC_USER"
+            sudo dscl . -create /Groups/"$EXEC_USER" PrimaryGroupID $EXEC_GID
             # Create user
-            sudo dscl . -create /Users/"$EXEC_USER" || true
-            sudo dscl . -create /Users/"$EXEC_USER" UniqueID $EXEC_UID || true
-            sudo dscl . -create /Users/"$EXEC_USER" PrimaryGroupID $EXEC_GID || true
-            sudo dscl . -create /Users/"$EXEC_USER" NFSHomeDirectory /var/empty || true
-            sudo dscl . -create /Users/"$EXEC_USER" UserShell /usr/bin/false || true
-            sudo dscl . -create /Users/"$EXEC_USER" RealName "HappyRanch Executor" || true
+            sudo dscl . -create /Users/"$EXEC_USER"
+            sudo dscl . -create /Users/"$EXEC_USER" UniqueID $EXEC_UID
+            sudo dscl . -create /Users/"$EXEC_USER" PrimaryGroupID $EXEC_GID
+            sudo dscl . -create /Users/"$EXEC_USER" NFSHomeDirectory /var/empty
+            sudo dscl . -create /Users/"$EXEC_USER" UserShell /usr/bin/false
+            sudo dscl . -create /Users/"$EXEC_USER" RealName "HappyRanch Executor"
           fi
 
           # Verify the account
@@ -159,10 +160,13 @@ jobs:
             exit 1
           fi
 
-          # Verify the user can be switched to (setuid capability)
+          # Verify the user can be switched to (setuid capability).
+          # HARD FAIL — if setuid switching is unavailable, the isolated
+          # executor launch contract is broken.
           if ! sudo -u "$EXEC_USER" true 2>/dev/null; then
-            echo "WARNING: Cannot sudo to executor user — tests may be skipped"
-            echo "but provisioning itself succeeded."
+            echo "FATAL: Cannot sudo to executor user '$EXEC_USER'"
+            echo "setuid capability is required for executor isolation"
+            exit 1
           fi
 
           echo "Executor identity gate: PASS (user=$EXEC_USER, uid=$EXEC_UID)"

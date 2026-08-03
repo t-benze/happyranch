@@ -44,7 +44,6 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
-    SystemContractMaterializationError,
     _workspace_skills_transaction,
     materialize_workspace_skills,
 )
@@ -93,40 +92,36 @@ def _executor_switch_materialize(
             provider=provider,
         )
 
-        # Materialize system contracts + managed + lifecycle using the unified
-        # boundary. Failure is FATAL — the canonical architecture's fail-closed
-        # guarantee means materialization errors prevent the switch.
-        #
-        # One call per context wraps the full reconciliation, so system
-        # contracts are never withdrawn by a later managed-only repair
-        # (TASK-4001 Finding 2 fix).
+        # Materialize skills for the switched workspace using a SINGLE
+        # full-expected-spec union from all six session contexts.
+        # Sequential per-context calls would allow the LAST context
+        # (bootstrap, which has no system contracts) to withdraw
+        # system-contract links created by earlier contexts.
+        # Failure is surfaced in the response body, not as a 500 —
+        # the switch itself has already succeeded (steps 1-3 are applied).
         errors: list[str] = []
-        for ctx_name in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
-            try:
-                materialize_workspace_skills(
-                    workspace, org.settings,
-                    slug=org.slug,
-                    context=ctx_name,
-                    provider=provider,
-                    agent_name=agent_name,
-                    team=agent_team,
-                    skills_root=skills_root,
-                    org_root=org.root,
-                    db=org.db,
-                )
-            except Exception as e:
-                errors.append(str(e))
-                _logger.error(
-                    "Executor switch: materialization failed for "
-                    "context=%s provider=%s agent=%s: %s",
-                    ctx_name, provider, agent_name, e,
-                )
-
-        if errors:
-            raise SystemContractMaterializationError(
-                missing_contracts=errors,
-                workspace=workspace,
+        try:
+            from runtime.orchestrator.workspace_adapters import (
+                materialize_workspace_skills_union,
+            )
+            materialize_workspace_skills_union(
+                workspace, org.settings,
+                slug=org.slug,
+                contexts=["task", "thread", "wake", "dream",
+                          "schedule", "bootstrap"],
                 provider=provider,
+                agent_name=agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org.root,
+                db=org.db,
+            )
+        except Exception as e:
+            errors.append(str(e))
+            _logger.error(
+                "Executor switch: materialization failed for "
+                "context-union provider=%s agent=%s: %s",
+                provider, agent_name, e,
             )
 
     return errors

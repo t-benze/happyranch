@@ -397,10 +397,14 @@ class _MacOSPlatformIsolation(PlatformIsolation):
             os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
 
     def make_dir_readonly_executor(self, path: Path) -> None:
-        """Set dir to 0555 (read+execute, no write)."""
+        """Set dir to 0755 (owner rwx, group+other rx).
+
+        The daemon owner MUST retain write so new canonical packages can be
+        built in subdirectories. Executor identity has a DISTINCT uid and
+        is protected by Unix user/group model, not by removing owner write.
+        """
         if path.exists() and path.is_dir():
-            os.chmod(path, stat.S_IRUSR | stat.S_IXUSR
-                     | stat.S_IRGRP | stat.S_IXGRP
+            os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
                      | stat.S_IROTH | stat.S_IXOTH)
 
     def launch_executor(
