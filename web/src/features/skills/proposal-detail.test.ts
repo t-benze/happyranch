@@ -162,19 +162,45 @@ describe('hashDisplay', () => {
 // ── readinessFacts ───────────────────────────────────────────────────────
 
 describe('readinessFacts', () => {
-  test('proposed: not in catalog, no assignments/mats recorded, no reviewer decision', () => {
+  test('proposed: no assignments/mats recorded, no reviewer decision', () => {
     const facts = readinessFacts(baseProposal({ status: 'proposed' }));
     const labels = facts.map((f) => f.label);
-    expect(labels).toContain('Not in catalog');
+    expect(labels).not.toContain('In custom catalog');
+    expect(labels).not.toContain('Not in catalog');
     expect(labels).toContain('No assignments recorded');
     expect(labels).toContain('No materializations recorded');
     // No review_decision → no "Approved by reviewer" or "Rejected" fact
     expect(labels).not.toContain('Approved by reviewer');
   });
 
-  test('published: in custom catalog', () => {
+  test('published: no catalog-membership assertion from status alone', () => {
     const facts = readinessFacts(baseProposal({ status: 'published' }));
-    expect(facts.map((f) => f.label)).toContain('In custom catalog');
+    const labels = facts.map((f) => f.label);
+    expect(labels).not.toContain('In custom catalog');
+    expect(labels).not.toContain('Not in catalog');
+  });
+
+  test('published with all signals: still no catalog-membership assertion', () => {
+    // A fully-blessed published proposal — all response facts present — still
+    // does not produce a catalog-membership assertion because catalog
+    // membership cannot be proven from status or any returned field alone.
+    const facts = readinessFacts(
+      baseProposal({
+        status: 'published',
+        publisher: 'founder',
+        published_at: '2026-08-02T10:00:00Z',
+        review_decision: 'approved',
+        assignments: [{ agent_name: 'frontend_engineer', active: true }],
+        materializations: [{ agent_name: 'frontend_engineer', success: true, created_at: '2026-08-03T09:00:00Z' }],
+      }),
+    );
+    const labels = facts.map((f) => f.label);
+    expect(labels).not.toContain('In custom catalog');
+    expect(labels).not.toContain('Not in catalog');
+    // Readiness facts that ARE valid from response facts:
+    expect(labels).toContain('1 agent(s) assigned');
+    expect(labels).toContain('1/1 materialization(s) succeeded');
+    expect(labels).toContain('Approved by reviewer');
   });
 
   test('published with assignments shows count', () => {
@@ -212,7 +238,6 @@ describe('readinessFacts', () => {
       baseProposal({ status: 'rejected', review_decision: 'rejected' }),
     );
     const labels = facts.map((f) => f.label);
-    expect(labels).toContain('Not in catalog');
     expect(labels).toContain('Rejected — terminal');
   });
 
@@ -222,7 +247,6 @@ describe('readinessFacts', () => {
     );
     const labels = facts.map((f) => f.label);
     expect(labels).toContain('Approved by reviewer');
-    expect(labels).not.toContain('In custom catalog');
   });
 
   test('materialization with partial success shows warning count', () => {

@@ -124,14 +124,6 @@ export interface ReadinessFact {
  */
 export function readinessFacts(detail: ProposalDetailResponse): ReadinessFact[] {
   const facts: ReadinessFact[] = [];
-  const s = detail.status;
-
-  // Catalog membership: only published is in-catalog
-  if (s === 'published') {
-    facts.push({ label: 'In custom catalog', status: 'ok' });
-  } else {
-    facts.push({ label: 'Not in catalog', status: 'none' });
-  }
 
   // Assignment: derive from actual assignments array, not status
   const assignedCount = detail.assignments?.length ?? 0;

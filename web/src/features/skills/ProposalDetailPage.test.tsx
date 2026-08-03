@@ -120,7 +120,6 @@ describe('ProposalDetailPage — proposed proposal', () => {
     ).toBeInTheDocument();
 
     // Readiness facts (backed by response facts, never status-enum synthesized)
-    expect(screen.getByText('Not in catalog')).toBeInTheDocument();
     expect(screen.getByText('No assignments recorded')).toBeInTheDocument();
     expect(screen.getByText('No materializations recorded')).toBeInTheDocument();
   });
@@ -253,7 +252,6 @@ describe('ProposalDetailPage — published proposal', () => {
     ).toBeInTheDocument();
     // Published appears in header chip + timeline event; check count >= 2
     expect(screen.getAllByText('Published').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('In custom catalog')).toBeInTheDocument();
   });
 
   test('shows publisher in provenance', async () => {
@@ -343,8 +341,7 @@ describe('ProposalDetailPage — rejected proposal', () => {
 
     // No claim/publish/action affordance text (check for actionable "Claim" button/link, not "Claimed by")
 
-    // Readiness: not in catalog, review_decision backed
-    expect(screen.getByText('Not in catalog')).toBeInTheDocument();
+    // Readiness: review_decision backed (no catalog-membership claim)
     // Rejected — terminal appears in both readiness strip and banner
     expect(screen.getAllByText('Rejected — terminal').length).toBeGreaterThanOrEqual(1);
   });
@@ -854,6 +851,98 @@ describe('ProposalDetailPage — copy controls', () => {
       name: /copy full content hash/i,
     });
     expect(hashBtn).toBeInTheDocument();
+  });
+
+  test('copy hash resolve shows "Copied" feedback and aria-live status', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    const hashBtn = screen.getByRole('button', {
+      name: /copy full content hash/i,
+    });
+    fireEvent.click(hashBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Copied')).toBeInTheDocument();
+    });
+    // aria-live region text via getByText (sr-only text is in the DOM)
+    expect(screen.getByText('Copied to clipboard')).toBeInTheDocument();
+  });
+
+  test('copy hash reject shows "Failed" feedback and aria-live status', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    const hashBtn = screen.getByRole('button', {
+      name: /copy full content hash/i,
+    });
+    fireEvent.click(hashBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Clipboard copy failed')).toBeInTheDocument();
+  });
+
+  test('copy SKILL.md resolve shows "Copied" feedback', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    const skillBtn = screen.getByRole('button', {
+      name: /copy full skill/i,
+    });
+    fireEvent.click(skillBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Copied')).toBeInTheDocument();
+    });
+  });
+
+  test('copy SKILL.md reject shows "Failed" feedback', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    mockProposal(baseProposal());
+    mount();
+
+    await screen.findByText('Proposal');
+
+    const skillBtn = screen.getByRole('button', {
+      name: /copy full skill/i,
+    });
+    fireEvent.click(skillBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Clipboard copy failed')).toBeInTheDocument();
   });
 });
 
