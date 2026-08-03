@@ -761,6 +761,7 @@ class AuditLogger:
         memory_ids: list[str],
         hit_count: int,
         kb_hit_count: int,
+        task_id: str | None = None,
     ) -> None:
         """THR-091 Slice 2: log a privacy-preserving search result telemetry event.
 
@@ -769,9 +770,14 @@ class AuditLogger:
         titles, bodies, KB body content, or prompt text.  KB hits are excluded
         from ``memory_ids``; their count is recorded as ``kb_hit_count``.
 
-        Row shape: ``task_id="AGENT-{agent}"``, ``action="memory_search"``,
+        When ``task_id`` is provided (validated server-side via SessionTracker),
+        the row's ``task_id`` column is the actual task ID for trusted
+        correlation.  Otherwise ``task_id="AGENT-{agent}"`` (legacy).
+
+        Row shape: ``task_id=<task_id or AGENT-{agent}>``, ``action="memory_search"``,
         ``payload`` includes ``agent``, ``session_id`` (when available),
-        ``memory_ids``, ``hit_count``, ``kb_hit_count``.
+        ``memory_ids``, ``hit_count``, ``kb_hit_count``, and ``task_id``
+        (when available).
         """
         payload: dict = {
             "agent": agent,
@@ -781,8 +787,11 @@ class AuditLogger:
         }
         if session_id is not None:
             payload["session_id"] = session_id
+        if task_id is not None:
+            payload["task_id"] = task_id
+        row_task_id = task_id if task_id is not None else f"AGENT-{agent}"
         self._db.insert_audit_log(
-            task_id=f"AGENT-{agent}",
+            task_id=row_task_id,
             agent=agent,
             action="memory_search",
             payload=payload,
@@ -796,29 +805,37 @@ class AuditLogger:
         slug: str,
         session_id: str | None = None,
         source: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         """Log a memory read with optional same-session attribution.
 
-        THR-091 Slice 2: adds optional ``session_id`` and ``source`` metadata.
-        ``source`` is one of ``digest``, ``search``, or ``explicit_or_other``.
-        When ``source`` is None and ``session_id`` is provided, auto-resolve
-        attribution by querying the session's digest impression and search
-        events.  Legacy rows without these fields remain compatible.
+        THR-091 Slice 2: adds optional ``session_id``, ``source``, and
+        ``task_id`` metadata.  ``source`` is one of ``digest``, ``search``,
+        or ``explicit_or_other``.  When ``source`` is None and ``session_id``
+        is provided, auto-resolve attribution via
+        ``_resolve_read_source`` which now also validates ``task_id`` when
+        known (server-side SessionTracker-confirmed).
+
+        Legacy rows without these fields remain compatible.
+        task_id column stays ``AGENT-{agent}`` (legacy scope convention).
+        When a validated ``task_id`` is supplied it is stored in payload.
 
         Row shape: ``task_id="AGENT-{agent}"``, ``action="memory_read"``,
         ``payload`` includes ``id``, ``slug``, and (when available)
-        ``source`` and ``session_id``.
+        ``source``, ``session_id``, ``task_id``.
         """
         resolved_source = source
         if resolved_source is None and session_id is not None:
             resolved_source = self._resolve_read_source(
-                agent=agent, id=id, session_id=session_id,
+                agent=agent, id=id, session_id=session_id, task_id=task_id,
             )
         payload: dict = {"id": id, "slug": slug}
         if resolved_source is not None:
             payload["source"] = resolved_source
         if session_id is not None:
             payload["session_id"] = session_id
+        if task_id is not None:
+            payload["task_id"] = task_id
         self._db.insert_audit_log(
             task_id=f"AGENT-{agent}",
             agent=agent,
@@ -832,21 +849,35 @@ class AuditLogger:
         agent: str,
         id: str,
         session_id: str,
+        task_id: str | None = None,
     ) -> str:
         """Resolve the source of a memory read for same-session attribution.
 
-        Returns ``digest`` when the id is in the session's digest impression;
-        ``search`` when in the session's search result ids; otherwise
-        ``explicit_or_other``.  Never cross-credits a prior/other
-        task/session's digest or search.
+        When ``task_id`` is provided (server-side SessionTracker-validated),
+        only matches events that share the same task_id — never cross-credits
+        a different task's digest or search, even for the same agent+session.
+
+        Returns ``digest`` when the id is in the session+task's digest impression;
+        ``search`` when in the session+task's search result ids; otherwise
+        ``explicit_or_other``.
         """
         import json
-        # Check digest impression for this session
-        rows = self._db.fetch_all_readonly(
-            "SELECT payload FROM audit_log"
-            " WHERE agent = ? AND action = 'memory_digest_impression'",
-            (agent,),
-        )
+        # Check digest impression for this session (and task when known).
+        # Digest impressions already store the actual task_id in the task_id
+        # column, so we filter by it directly in SQL.
+        if task_id is not None:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_digest_impression'"
+                " AND task_id = ?",
+                (agent, task_id),
+            )
+        else:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_digest_impression'",
+                (agent,),
+            )
         for row in rows:
             try:
                 payload = json.loads(row["payload"])
@@ -856,12 +887,22 @@ class AuditLogger:
                 digest_ids = payload.get("digest_ids", [])
                 if id in digest_ids:
                     return "digest"
-        # Check search events for this session
-        rows = self._db.fetch_all_readonly(
-            "SELECT payload FROM audit_log"
-            " WHERE agent = ? AND action = 'memory_search'",
-            (agent,),
-        )
+        # Check search events for this session (and task when known).
+        # Search events with validated task_id store it in the task_id column;
+        # unvalidated ones use "AGENT-{agent}".  Filter by task_id when known.
+        if task_id is not None:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_search'"
+                " AND task_id = ?",
+                (agent, task_id),
+            )
+        else:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_search'",
+                (agent,),
+            )
         for row in rows:
             try:
                 payload = json.loads(row["payload"])
@@ -1128,12 +1169,15 @@ class AuditLogger:
             session_digest_ids[sid] = set(imp["digest_ids"])
             session_agent[sid] = imp["agent"]
 
-        # Which digest IDs were read in each session
+        # Which digest IDs were read in each session.
+        # Only include correlated reads (have both session_id and task_id).
+        # Legacy/untrusted reads excluded from pull-through and search-absent
+        # denominators.
         session_read_ids: dict[str, set[str]] = {}
-        # search-sourced read tracking
         search_reads: list[dict] = []
         digest_reads: list[dict] = []
         explicit_reads: list[dict] = []
+        untrusted_reads: list[dict] = []
         for row in read_rows:
             try:
                 payload = json.loads(row["payload"])
@@ -1142,17 +1186,20 @@ class AuditLogger:
             mid = payload.get("id")
             source = payload.get("source", "explicit_or_other")
             rsid = payload.get("session_id")
-            if rsid:
+            rtask_id = payload.get("task_id")
+            if rsid and rtask_id:
                 if rsid not in session_read_ids:
                     session_read_ids[rsid] = set()
                 session_read_ids[rsid].add(mid)
-            entry = {"id": mid, "source": source, "session_id": rsid}
-            if source == "digest":
-                digest_reads.append(entry)
-            elif source == "search":
-                search_reads.append(entry)
+                entry = {"id": mid, "source": source, "session_id": rsid, "task_id": rtask_id}
+                if source == "digest":
+                    digest_reads.append(entry)
+                elif source == "search":
+                    search_reads.append(entry)
+                else:
+                    explicit_reads.append(entry)
             else:
-                explicit_reads.append(entry)
+                untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
 
         # Build per-role aggregates (roles with >=30 correlated digest sessions)
         role_data: dict[str, dict] = {}
@@ -1166,20 +1213,27 @@ class AuditLogger:
             role_data[role]["agents"].append(agent)
             role_data[role]["sessions"] |= sessions
 
-        # Aggregate pull-through
-        all_shown_ids: set[str] = set()
-        all_read_in_session: set[str] = set()
+        # Aggregate pull-through — per-session denominators (not globally
+        # unioned).  Each session's unique shown IDs and read-in-session IDs
+        # are summed across all sessions.
+        total_shown = 0
+        total_read_in_session = 0
         for sid, d_ids in session_digest_ids.items():
-            all_shown_ids |= d_ids
+            shown = len(d_ids)
             reads = session_read_ids.get(sid, set())
-            all_read_in_session |= reads & d_ids
+            read_in_this_session = len(reads & d_ids)
+            total_shown += shown
+            total_read_in_session += read_in_this_session
 
         agg_pull_through = (
-            len(all_read_in_session) / len(all_shown_ids)
-            if all_shown_ids else 0.0
+            total_read_in_session / total_shown
+            if total_shown else 0.0
         )
 
-        # Search reads with IDs absent from session digest
+        # Search reads with IDs absent from session digest.
+        # Only correlated read rows (have both session_id and task_id) are
+        # evaluated.  Legacy/untrusted/unmatched rows are excluded rather than
+        # treated as search misses.
         search_total = len(search_reads)
         search_absent_count = 0
         for sr in search_reads:
@@ -1187,9 +1241,7 @@ class AuditLogger:
             if sid and sid in session_digest_ids:
                 if sr["id"] not in session_digest_ids[sid]:
                     search_absent_count += 1
-            else:
-                # No session correlation — count as absent (conservative)
-                search_absent_count += 1
+            # No else — untrusted rows excluded, not counted as absent
 
         search_absent_frac = (
             search_absent_count / search_total if search_total > 0 else 0.0
@@ -1210,21 +1262,23 @@ class AuditLogger:
                 continue
             eligible_roles.append(role)
 
-            # Role-specific shown IDs
-            role_shown: set[str] = set()
-            role_read_in_session: set[str] = set()
+            # Role-specific per-session shown IDs (not globally unioned)
+            role_total_shown = 0
+            role_total_read_in_session = 0
             for sid in role_sessions:
                 if sid in session_digest_ids:
-                    role_shown |= session_digest_ids[sid]
+                    role_total_shown += len(session_digest_ids[sid])
                     reads = session_read_ids.get(sid, set())
-                    role_read_in_session |= reads & session_digest_ids[sid]
+                    role_total_read_in_session += len(
+                        reads & session_digest_ids[sid]
+                    )
 
             role_pull_through = (
-                len(role_read_in_session) / len(role_shown)
-                if role_shown else 0.0
+                role_total_read_in_session / role_total_shown
+                if role_total_shown else 0.0
             )
 
-            # Role-specific search stats
+            # Role-specific search stats — only correlated reads
             role_search_total = 0
             role_search_absent = 0
             for sr in search_reads:
@@ -1234,8 +1288,7 @@ class AuditLogger:
                     if sid in session_digest_ids:
                         if sr["id"] not in session_digest_ids[sid]:
                             role_search_absent += 1
-                    else:
-                        role_search_absent += 1
+                    # No else — untrusted rows excluded
 
             role_search_absent_frac = (
                 role_search_absent / role_search_total
@@ -1248,8 +1301,8 @@ class AuditLogger:
                 "correlated_sessions": role_session_count,
                 "eligible": True,
                 "digest_pull_through": round(role_pull_through, 4),
-                "unique_digest_ids_shown": len(role_shown),
-                "unique_digest_ids_read_same_session": len(role_read_in_session),
+                "unique_digest_ids_shown": role_total_shown,
+                "unique_digest_ids_read_same_session": role_total_read_in_session,
                 "search_sourced_reads": role_search_total,
                 "search_sourced_absent_from_digest": role_search_absent,
                 "search_absent_fraction": round(role_search_absent_frac, 4),
@@ -1331,14 +1384,15 @@ class AuditLogger:
 
         aggregate = {
             "correlated_sessions": total_sessions,
-            "unique_digest_ids_shown": len(all_shown_ids),
-            "unique_digest_ids_read_same_session": len(all_read_in_session),
+            "unique_digest_ids_shown": total_shown,
+            "unique_digest_ids_read_same_session": total_read_in_session,
             "digest_pull_through": round(agg_pull_through, 4),
             "search_sourced_reads": search_total,
             "search_sourced_absent_from_digest": search_absent_count,
             "search_absent_fraction": round(search_absent_frac, 4),
             "digest_sourced_reads": len(digest_reads),
             "explicit_or_other_sourced_reads": len(explicit_reads),
+            "untrusted_uncorrelated_reads": len(untrusted_reads),
         }
 
         return {

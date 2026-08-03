@@ -88,12 +88,12 @@ def cmd_learning_list(args: argparse.Namespace) -> None:
 def cmd_learning_get(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
-    headers: dict = {}
+    params: dict = {}
     if getattr(args, "session_id", None):
-        headers["X-HappyRanch-Session-Id"] = args.session_id
+        params["session_id"] = args.session_id
     r = client.get(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/{args.id_or_slug}",
-        headers=headers or None,
+        params=params or None,
     )
     if not _ok(r):
         return
@@ -136,12 +136,14 @@ def cmd_learning_search(args: argparse.Namespace) -> None:
         payload["include_superseded"] = args.include_superseded
     if args.include_kb is not None:
         payload["include_kb"] = args.include_kb
+    params: dict = {}
     # THR-091 Slice 2: optional session_id for search telemetry correlation
     if getattr(args, "session_id", None):
-        payload["session_id"] = args.session_id
+        params["session_id"] = args.session_id
     r = client.post(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/search",
         json=payload,
+        params=params or None,
     )
     if not _ok(r):
         return
@@ -271,52 +273,70 @@ def cmd_learning_promote(args: argparse.Namespace) -> None:
 
 
 
+def _paginate(client: OpcClient, org: str, action: str) -> list[dict]:
+    """Cursor-paginate through all audit rows for the given action."""
+    all_rows: list[dict] = []
+    cursor: str | None = None
+    while True:
+        params: dict = {"action": action, "limit": 5000}
+        if cursor is not None:
+            params["cursor"] = cursor
+        r = client.get(f"/api/v1/orgs/{org}/audit", params=params)
+        if not _ok(r):
+            break
+        page = r.json()
+        entries = page.get("entries", [])
+        all_rows.extend(entries)
+        cursor = page.get("next_cursor")
+        if cursor is None:
+            break
+    return all_rows
+
+
+def _fetch_agent_roles(client: OpcClient, org: str) -> dict[str, str]:
+    """Fetch agent→role map from the authoritative /agents read surface."""
+    role_map: dict[str, str] = {}
+    r = client.get(f"/api/v1/orgs/{org}/agents")
+    if not _ok(r):
+        print("warning: could not fetch agent roles from /agents;"
+              " using agent name as role fallback", file=sys.stderr)
+        return role_map
+    agents = r.json().get("agents", [])
+    for agent in agents:
+        name = agent.get("name")
+        role = agent.get("role")
+        if name and role:
+            role_map[name] = role
+    return role_map
+
+
 def cmd_memory_report(args: argparse.Namespace) -> None:
     """THR-091 Slice 2: operator-facing memory telemetry report.
 
     Reads the org's audit_log to compute activation/retrieval telemetry
     from memory_digest_impression, memory_read, and memory_search rows.
+    Uses cursor pagination (not fixed first-page caps).  Agent roles
+    are fetched from the authoritative /agents read surface.
     Outputs in JSON or human-readable form.
     """
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
 
-    # Collect digest impressions
-    r = client.get(
-        f"/api/v1/orgs/{org}/audit",
-        params={"action": "memory_digest_impression", "limit": 10000},
-    )
-    if not _ok(r):
-        return
-    impression_rows = r.json().get("entries", [])
+    # Fetch agent roles from authoritative /agents surface
+    role_map = _fetch_agent_roles(client, org)
 
-    # Collect memory_read events
-    r = client.get(
-        f"/api/v1/orgs/{org}/audit",
-        params={"action": "memory_read", "limit": 100000},
-    )
-    if not _ok(r):
-        return
-    read_rows = r.json().get("entries", [])
+    # Collect digest impressions (cursor-paginated)
+    impression_rows = _paginate(client, org, "memory_digest_impression")
 
-    # Collect memory_search events
-    r = client.get(
-        f"/api/v1/orgs/{org}/audit",
-        params={"action": "memory_search", "limit": 10000},
-    )
-    if not _ok(r):
-        return
-    search_rows = r.json().get("entries", [])
+    # Collect memory_read events (cursor-paginated)
+    read_rows = _paginate(client, org, "memory_read")
 
-    # Load optional role map
-    role_map: dict[str, str] | None = None
-    if args.role_map:
-        with open(args.role_map) as f:
-            role_map = json.load(f)
+    # Collect memory_search events (cursor-paginated)
+    search_rows = _paginate(client, org, "memory_search")
 
     # Compute telemetry client-side (mirrors compute_memory_telemetry_report)
     report = _compute_report(impression_rows, read_rows, search_rows,
-                             agent_role_map=role_map)
+                             agent_role_map=role_map if role_map else None)
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -444,10 +464,13 @@ def _compute_report(
         session_digest_ids[sid] = set(imp["digest_ids"])
         session_agent[sid] = imp["agent"]
 
-    # Parse reads
+    # Parse reads — only include correlated reads (have session_id) when
+    # computing tracked attribution.  Legacy/uncorrelated reads are counted
+    # separately but excluded from pull-through and search-absent denominators.
     session_read_ids: dict[str, set[str]] = {}
-    search_reads: list[dict] = []
+    untrusted_reads: list[dict] = []
     digest_reads: list[dict] = []
+    search_reads: list[dict] = []
     explicit_reads: list[dict] = []
     for row in read_rows:
         payload = row.get("payload", {})
@@ -459,32 +482,43 @@ def _compute_report(
         mid = payload.get("id")
         source = payload.get("source", "explicit_or_other")
         rsid = payload.get("session_id")
-        if rsid:
+        rtask_id = payload.get("task_id")
+        if rsid and rtask_id:
             if rsid not in session_read_ids:
                 session_read_ids[rsid] = set()
             session_read_ids[rsid].add(mid)
-        entry = {"id": mid, "source": source, "session_id": rsid}
-        if source == "digest":
-            digest_reads.append(entry)
-        elif source == "search":
-            search_reads.append(entry)
+            entry = {"id": mid, "source": source, "session_id": rsid, "task_id": rtask_id}
+            if source == "digest":
+                digest_reads.append(entry)
+            elif source == "search":
+                search_reads.append(entry)
+            else:
+                explicit_reads.append(entry)
         else:
-            explicit_reads.append(entry)
+            untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
 
-    # Aggregate pull-through
-    all_shown_ids: set[str] = set()
-    all_read_in_session: set[str] = set()
+    # Aggregate pull-through — per-session denominators (not globally unioned).
+    # Each session's unique shown IDs and unique read-in-session IDs are summed
+    # across all sessions.  A MEM-001 shown in 2 sessions counts as 2 in the
+    # denominator.
+    total_shown = 0
+    total_read_in_session = 0
     for sid, d_ids in session_digest_ids.items():
-        all_shown_ids |= d_ids
+        shown = len(d_ids)
         reads = session_read_ids.get(sid, set())
-        all_read_in_session |= reads & d_ids
+        read_in_this_session = len(reads & d_ids)
+        total_shown += shown
+        total_read_in_session += read_in_this_session
 
     agg_pull_through = (
-        len(all_read_in_session) / len(all_shown_ids)
-        if all_shown_ids else 0.0
+        total_read_in_session / total_shown
+        if total_shown else 0.0
     )
 
-    # Search reads absent from session digest
+    # Search reads absent from session digest.
+    # Only correlated read rows (have both session_id and task_id) are
+    # evaluated.  Legacy/untrusted/unmatched rows are excluded rather than
+    # treated as search misses.
     search_total = len(search_reads)
     search_absent_count = 0
     for sr in search_reads:
@@ -492,8 +526,7 @@ def _compute_report(
         if sid and sid in session_digest_ids:
             if sr["id"] not in session_digest_ids[sid]:
                 search_absent_count += 1
-        else:
-            search_absent_count += 1
+        # No else — untrusted rows excluded, not counted as absent
 
     search_absent_frac = (
         search_absent_count / search_total if search_total > 0 else 0.0
@@ -522,17 +555,20 @@ def _compute_report(
             continue
         eligible_roles.append(role)
 
-        role_shown: set[str] = set()
-        role_read_in_session: set[str] = set()
+        # Per-session denominators (not globally unioned) for role pull-through
+        role_total_shown = 0
+        role_total_read_in_session = 0
         for sid in role_sessions:
             if sid in session_digest_ids:
-                role_shown |= session_digest_ids[sid]
+                role_total_shown += len(session_digest_ids[sid])
                 reads = session_read_ids.get(sid, set())
-                role_read_in_session |= reads & session_digest_ids[sid]
+                role_total_read_in_session += len(
+                    reads & session_digest_ids[sid]
+                )
 
         role_pull_through = (
-            len(role_read_in_session) / len(role_shown)
-            if role_shown else 0.0
+            role_total_read_in_session / role_total_shown
+            if role_total_shown else 0.0
         )
 
         role_search_total = 0
@@ -544,8 +580,7 @@ def _compute_report(
                 if sid in session_digest_ids:
                     if sr["id"] not in session_digest_ids[sid]:
                         role_search_absent += 1
-                else:
-                    role_search_absent += 1
+                # No else — untrusted rows excluded
 
         role_search_absent_frac = (
             role_search_absent / role_search_total
@@ -556,8 +591,8 @@ def _compute_report(
             "correlated_sessions": role_session_count,
             "eligible": True,
             "digest_pull_through": round(role_pull_through, 4),
-            "unique_digest_ids_shown": len(role_shown),
-            "unique_digest_ids_read_same_session": len(role_read_in_session),
+            "unique_digest_ids_shown": role_total_shown,
+            "unique_digest_ids_read_same_session": role_total_read_in_session,
             "search_sourced_reads": role_search_total,
             "search_sourced_absent_from_digest": role_search_absent,
             "search_absent_fraction": round(role_search_absent_frac, 4),
@@ -627,14 +662,15 @@ def _compute_report(
         "observation_period": {**observation, "status": "thresholds_met"},
         "aggregate": {
             "correlated_sessions": total_sessions,
-            "unique_digest_ids_shown": len(all_shown_ids),
-            "unique_digest_ids_read_same_session": len(all_read_in_session),
+            "unique_digest_ids_shown": total_shown,
+            "unique_digest_ids_read_same_session": total_read_in_session,
             "digest_pull_through": round(agg_pull_through, 4),
             "search_sourced_reads": search_total,
             "search_sourced_absent_from_digest": search_absent_count,
             "search_absent_fraction": round(search_absent_frac, 4),
             "digest_sourced_reads": len(digest_reads),
             "explicit_or_other_sourced_reads": len(explicit_reads),
+            "untrusted_uncorrelated_reads": len(untrusted_reads),
         },
         "by_role": by_role,
         "decision": decision,
@@ -820,9 +856,8 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     prpt.add_argument("--org", required=False, default=argparse.SUPPRESS)
     prpt.add_argument("--agent", required=True)
     prpt.add_argument("--json", action="store_true", help="Output in JSON")
-    prpt.add_argument("--role-map", required=False, default=None,
-                       help="JSON file mapping agent names to roles"
-                            " (e.g. '{\"dev_agent\": \"developer\"}')")
+    # Roles are fetched from the authoritative /agents read surface — no
+    # caller-supplied --role-map.
     prpt.set_defaults(func=wrap(cmd_memory_report))
 
 

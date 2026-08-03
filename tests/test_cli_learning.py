@@ -178,9 +178,11 @@ def _install_fake_client(monkeypatch, captured):
                 captured["headers"] = headers
             return FakeResponse()
 
-        def post(self, path, json=None):
+        def post(self, path, json=None, params=None):
             captured["path"] = path
             captured["json"] = json
+            if params:
+                captured["params"] = params
             return FakeResponse()
 
         def request(self, method, path, json=None):
@@ -451,9 +453,10 @@ def _fake_client_for_search(monkeypatch, captured: dict):
         @staticmethod
         def from_env():
             return FakeClient()
-        def post(self, path, json=None):
+        def post(self, path, json=None, params=None):
             captured["path"] = path
             captured["body"] = json
+            captured["params"] = params
             return FakeResp()
 
     monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
