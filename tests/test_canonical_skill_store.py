@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from runtime.orchestrator.workspace_adapters import _compute_dir_hash
 from runtime.platform.isolation import (
     PlatformIdentity,
     PlatformIsolation,
@@ -2152,11 +2153,25 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         for sid in ["start-task", "jobs"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
-                content_h = hashlib.sha256(
+                # Use the SAME production _compute_dir_hash the runner
+                # uses — not raw sha256(SKILL.md bytes) which would
+                # produce a nonexistent sibling hash and pass vacuously.
+                content_h = _compute_dir_hash(src_dir)
+
+                # Adversarial regression: the old raw-SKILL.md SHA
+                # MUST differ from the production _compute_dir_hash.
+                # If they ever match (single-file dir), the old
+                # approach would produce a false-positive pass.
+                old_hash = hashlib.sha256(
                     (src_dir / "SKILL.md").read_bytes()
                     if (src_dir / "SKILL.md").exists()
                     else b"empty"
                 ).hexdigest()
+                assert old_hash != content_h, (
+                    f"Adversarial guard: SKILL.md-only hash for {sid} "
+                    f"accidentally matches production _compute_dir_hash. "
+                    f"The old approach would produce a false-positive."
+                )
 
                 # (a) is_built must reject the unsafe runner package
                 assert not store.is_built(sid, "system", content_h), (
@@ -2468,11 +2483,25 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         for sid in ["start-task", "jobs"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
-                content_h = hashlib.sha256(
+                # Use the SAME production _compute_dir_hash the runner
+                # uses — not raw sha256(SKILL.md bytes) which would
+                # produce a nonexistent sibling hash and pass vacuously.
+                content_h = _compute_dir_hash(src_dir)
+
+                # Adversarial regression: the old raw-SKILL.md SHA
+                # MUST differ from the production _compute_dir_hash.
+                # If they ever match (single-file dir), the old
+                # approach would produce a false-positive pass.
+                old_hash = hashlib.sha256(
                     (src_dir / "SKILL.md").read_bytes()
                     if (src_dir / "SKILL.md").exists()
                     else b"empty"
                 ).hexdigest()
+                assert old_hash != content_h, (
+                    f"Adversarial guard: SKILL.md-only hash for {sid} "
+                    f"accidentally matches production _compute_dir_hash. "
+                    f"The old approach would produce a false-positive."
+                )
 
                 # (a) is_built must reject the unsafe runner package
                 assert not store.is_built(sid, "system", content_h), (
