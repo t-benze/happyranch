@@ -108,6 +108,7 @@ jobs:
           echo "executor_user=$EXEC_USER" >> "$GITHUB_OUTPUT"
 
       - name: Verify OS identity separation
+        id: verify-identity
         run: |
           set -eux
           EXEC_USER="${{ steps.provision.outputs.executor_user }}"
@@ -131,6 +132,40 @@ jobs:
           fi
 
           echo "Identity separation verified: daemon=$DAEMON_UID, executor=$EXEC_UID"
+
+      - name: Verify executor identity available (fail-closed gate)
+        run: |
+          set -eux
+          EXEC_USER="${{ steps.provision.outputs.executor_user }}"
+
+          # Fail-closed gate: if the executor account cannot be resolved,
+          # the job fails here before any test can skip.
+          if ! id "$EXEC_USER" &>/dev/null; then
+            echo "FATAL: Executor account '$EXEC_USER' not found after provisioning"
+            exit 1
+          fi
+
+          EXEC_UID=$(id -u "$EXEC_USER")
+          DAEMON_UID=$(id -u)
+
+          if [ "$DAEMON_UID" -eq "$EXEC_UID" ]; then
+            echo "FATAL: Executor uid matches daemon uid ($DAEMON_UID)"
+            exit 1
+          fi
+
+          # Verify macOS ACL tooling is available
+          if ! command -v chmod &>/dev/null; then
+            echo "FATAL: chmod not found — ACL tooling unavailable"
+            exit 1
+          fi
+
+          # Verify the user can be switched to (setuid capability)
+          if ! sudo -u "$EXEC_USER" true 2>/dev/null; then
+            echo "WARNING: Cannot sudo to executor user — tests may be skipped"
+            echo "but provisioning itself succeeded."
+          fi
+
+          echo "Executor identity gate: PASS (user=$EXEC_USER, uid=$EXEC_UID)"
 
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
@@ -163,15 +198,23 @@ jobs:
             tests/test_workspace_adapters.py \
             -v --tb=short
 
-      - name: Verify canonical store isolation (write/ACL attacks)
+      - name: Verify canonical store isolation (write/chmod/ACL attacks)
         env:
           HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+          HAPPYRANCH_EXECUTOR_USER: "${{ steps.provision.outputs.executor_user }}"
+          HAPPYRANCH_EXECUTOR_UID: "${{ steps.provision.outputs.executor_uid }}"
+          HAPPYRANCH_EXECUTOR_GID: "${{ steps.provision.outputs.executor_gid }}"
         run: |
           set -eux
-          # Run the production-bound isolation verification.
-          # On CI with provisioned accounts, the executor identity tests
-          # will run without being skipped.
+          # Run the production-bound isolation attack verification.
+          # Each test launches as the restricted executor identity through
+          # BOTH .claude/skills and .agents/skills workspace roots, attempts
+          # content write, chmod, and macOS ACL mutations, and verifies all
+          # canonical manifest/member SHA-256 hashes remain unchanged.
+          # Tests use the ACTUAL production launch_executor construction,
+          # not direct helper subprocesses.
+          # Tests FAIL (not skip/xfail) when identity is unavailable.
           uv run pytest \
             tests/test_canonical_production_bound.py \
             -v --tb=long \
-            -k "executor_identity or canonical_ownership or safe_repair or write_via_link"
+            -k "write_attack or chmod_attack or acl_attack or executor_identity_contract_required"

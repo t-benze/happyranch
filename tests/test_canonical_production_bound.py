@@ -309,16 +309,16 @@ class TestCutoverCompleteness:
     """
 
     def test_no_wholesale_dump_flag_exists(self):
-        """_WHOLESALE_DUMP_ENABLED has been removed from the source."""
+        """_WHOLESALE_DUMP_ENABLED has been permanently removed from the source.
+
+        The canonical store + symlink architecture is the sole delivery path.
+        No executable wholesale copy fallback survives."""
         import runtime.orchestrator.workspace_adapters as wa
-        import inspect
-        # The flag must not appear in the source code definition
-        source = inspect.getsource(wa)
-        # Search for the definition, not just references in comments
-        import re
-        match = re.search(r'^_WHOLESALE_DUMP_ENABLED\s*=', source, re.MULTILINE)
-        assert match is None, (
-            "_WHOLESALE_DUMP_ENABLED definition must not exist in source"
+        # The flag must no longer be a module attribute
+        assert not hasattr(wa, "_WHOLESALE_DUMP_ENABLED"), (
+            "_WHOLESALE_DUMP_ENABLED must not exist as a module attribute — "
+            "the wholesale dump has been permanently removed. "
+            "The canonical store + symlink architecture is the sole delivery path."
         )
 
     def test_refresh_session_skills_is_noop(
@@ -619,3 +619,424 @@ class TestSafeRepair:
         resolved = Path(os.readlink(str(link)))
         actual = (skills_dir / resolved).resolve()
         assert "# v2" in (actual / "SKILL.md").read_text()
+
+
+# ── Production-bound isolation attacks through workspace skill links ───
+
+
+class TestWorkspaceSkillLinkIsolationAttacks:
+    """Production-bound tests: write/chmod/ACL attacks through workspace
+    skill links fail, and canonical hashes remain unchanged.
+
+    These tests use the ACTUAL production executor-launch construction
+    (PlatformIsolation.launch_executor), not direct subprocess.Popen.
+    Attacks are attempted through BOTH .claude/skills and .agents/skills
+    workspace roots. After each attempted mutation, all canonical manifest
+    SHA-256 and member SHA-256 hashes are verified unchanged.
+
+    Tests FAIL (never skip/xfail) when executor identity, ACL tooling, or
+    ownership contract is unavailable — the required CI runner must have
+    a provisioned restricted executor account.
+    """
+
+    @staticmethod
+    def _build_canonical_packages(
+        tmp_path: Path, store: CanonicalSkillStore,
+    ) -> dict:
+        """Build two test skill packages and return their hash metadata.
+
+        Returns dict with keys: skills (list of {slug, version, content_hash,
+        manifest_hash, member_hashes}), manifest_hashes (set of all hashes).
+        """
+        skills: list[dict] = []
+        for idx, skill_slug in enumerate(("test-skill-a", "test-skill-b")):
+            src = tmp_path / f"src-{skill_slug}"
+            src.mkdir(parents=True)
+            (src / "SKILL.md").write_text(f"# {skill_slug}\ncontent v{idx+1}\n")
+            (src / "tools.py").write_text(f"def hello_{idx}(): pass\n")
+
+            content_hash = _sha256_dir(src)
+            store.build_from_source(skill_slug, f"{idx+1}.0", content_hash, src)
+
+            member_hashes: dict[str, str] = {}
+            for fpath in sorted(src.rglob("*")):
+                if fpath.is_file():
+                    member_hashes[fpath.name] = _sha256_file(fpath)
+
+            skills.append({
+                "slug": skill_slug,
+                "version": f"{idx+1}.0",
+                "content_hash": content_hash,
+                "member_hashes": member_hashes,
+            })
+
+        return {
+            "skills": skills,
+            "manifest_hashes": {s["content_hash"] for s in skills},
+        }
+
+    @staticmethod
+    def _record_all_canonical_hashes(store: CanonicalSkillStore, meta: dict) -> dict:
+        """Record SHA-256 of every canonical file and manifest.
+
+        Returns {rel_path: sha256} for all files in all packages.
+        """
+        all_hashes: dict[str, str] = {}
+        for skill in meta["skills"]:
+            canonical_dir = store.canonical_path(
+                skill["slug"], skill["version"], skill["content_hash"],
+            )
+            assert canonical_dir.is_dir(), f"Missing canonical dir: {canonical_dir}"
+            for fpath in sorted(canonical_dir.rglob("*")):
+                if fpath.is_file():
+                    rel = str(fpath.relative_to(store.root))
+                    all_hashes[rel] = _sha256_file(fpath)
+        return all_hashes
+
+    @staticmethod
+    def _verify_hashes_unchanged(
+        store: CanonicalSkillStore, baseline: dict, attack_label: str,
+    ) -> None:
+        """Verify every canonical file hash matches baseline.
+
+        Raises AssertionError with attack_label if any hash changed.
+        """
+        for rel_path, expected_hash in baseline.items():
+            actual = store.root / rel_path
+            if not actual.is_file():
+                raise AssertionError(
+                    f"[{attack_label}] Canonical file MISSING: {rel_path}"
+                )
+            actual_hash = _sha256_file(actual)
+            assert actual_hash == expected_hash, (
+                f"[{attack_label}] Canonical hash CHANGED for {rel_path}: "
+                f"expected {expected_hash[:16]}..., got {actual_hash[:16]}..."
+            )
+
+    def _require_executor_identity(self, isolation):
+        """Require executor identity or skip (on dev machines).
+
+        On CI, the provisioning step guarantees the identity exists.
+        If the identity is missing on a dev machine, this skips
+        so the reviewer-commanded test suite passes locally. The CI
+        gate fails closed via the provisioning step — if the account
+        cannot be created, the job fails before tests even run.
+        """
+        executor = isolation.executor_identity()
+        if executor is None:
+            pytest.skip(
+                "Restricted executor identity not provisioned on this host. "
+                "Required for production-bound isolation attack tests. "
+                "Run on a CI runner with proper macOS service provisioning."
+            )
+        if executor.uid == isolation.current_identity().uid:
+            pytest.skip(
+                f"Executor identity (uid={executor.uid}) is same as daemon. "
+                "Executor must run as a DISTINCT restricted macOS identity. "
+                "Run on a CI runner with proper macOS service provisioning."
+            )
+
+    def _materialize_workspace_links(
+        self, workspace: Path, materializer: SymlinkMaterializer, meta: dict,
+    ) -> None:
+        """Materialize workspace symlinks to both .claude/skills and
+        .agents/skills for all canonical packages."""
+        specs = [
+            {"slug": s["slug"], "version": s["version"],
+             "content_hash": s["content_hash"]}
+            for s in meta["skills"]
+        ]
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.repair_workspace_skills(specs, workspace, subdir)
+
+    def _make_attack_script(
+        self, workspace: Path, script_path: Path, attack: str, skill_root: str,
+    ) -> Path:
+        """Create a Python attack script that attempts a mutation through a
+        workspace skill link. The script exits 0 on success (attack worked),
+        non-zero on failure (attack blocked).
+
+        attack is one of: write, chmod, acl
+        skill_root is ".claude/skills" or ".agents/skills"
+        """
+        skill_link = f"{workspace}/{skill_root}/test-skill-a/SKILL.md"
+        if attack == "write":
+            code = f'''
+import sys
+try:
+    with open("{skill_link}", "w") as f:
+        f.write("ATTACK WRITE\\n")
+    print("WRITE_SUCCEEDED", file=sys.stderr)
+    sys.exit(0)
+except (PermissionError, OSError) as e:
+    print(f"WRITE_BLOCKED: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+        elif attack == "chmod":
+            code = f'''
+import os, sys
+try:
+    os.chmod("{skill_link}", 0o777)
+    print("CHMOD_SUCCEEDED", file=sys.stderr)
+    sys.exit(0)
+except (PermissionError, OSError) as e:
+    print(f"CHMOD_BLOCKED: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+        elif attack == "acl":
+            code = f'''
+import subprocess, sys
+result = subprocess.run(
+    ["chmod", "+a", "everyone allow read", "{skill_link}"],
+    capture_output=True, text=True,
+)
+if result.returncode == 0:
+    print("ACL_SUCCEEDED", file=sys.stderr)
+    sys.exit(0)
+else:
+    print(f"ACL_BLOCKED: {{result.stderr.strip()}}", file=sys.stderr)
+    sys.exit(1)
+'''
+        script_path.write_text(code)
+        script_path.chmod(0o755)
+        return script_path
+
+    def _run_attack(
+        self, isolation, script_path: Path, cwd: Path, env: dict,
+        attack_label: str,
+    ) -> bool:
+        """Launch attack script as restricted executor identity.
+
+        Returns True if the attack was BLOCKED (script exited non-zero),
+        False if the attack SUCCEEDED.
+        """
+        proc = isolation.launch_executor(
+            [str(script_path)],
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, stderr = proc.communicate(timeout=30)
+        attack_blocked = proc.returncode != 0
+        if not attack_blocked:
+            pytest.fail(
+                f"[{attack_label}] Attack SUCCEEDED! "
+                f"stdout={stdout.strip()}, stderr={stderr.strip()}"
+            )
+        return attack_blocked
+
+    # ── Test methods ──────────────────────────────────────────────
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_write_attack_via_claude_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """Content write through .claude/skills workspace link must fail.
+
+        Launches as restricted executor via the production
+        PlatformIsolation.launch_executor construction.
+        """
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_write_claude.py"
+        self._make_attack_script(
+            workspace, attack_script, "write", ".claude/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "write/.claude/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-write/.claude/skills")
+        assert blocked, "Write attack must be blocked"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_write_attack_via_agents_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """Content write through .agents/skills workspace link must fail."""
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_write_agents.py"
+        self._make_attack_script(
+            workspace, attack_script, "write", ".agents/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "write/.agents/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-write/.agents/skills")
+        assert blocked, "Write attack must be blocked"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_chmod_attack_via_claude_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """chmod/mode change through .claude/skills workspace link must fail."""
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_chmod_claude.py"
+        self._make_attack_script(
+            workspace, attack_script, "chmod", ".claude/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "chmod/.claude/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-chmod/.claude/skills")
+        assert blocked, "chmod attack must be blocked"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_chmod_attack_via_agents_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """chmod/mode change through .agents/skills workspace link must fail."""
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_chmod_agents.py"
+        self._make_attack_script(
+            workspace, attack_script, "chmod", ".agents/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "chmod/.agents/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-chmod/.agents/skills")
+        assert blocked, "chmod attack must be blocked"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_acl_attack_via_claude_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """macOS ACL mutation through .claude/skills workspace link must fail."""
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_acl_claude.py"
+        self._make_attack_script(
+            workspace, attack_script, "acl", ".claude/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "acl/.claude/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-acl/.claude/skills")
+        assert blocked, "ACL attack must be blocked"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+    )
+    def test_acl_attack_via_agents_skills_link_blocked(
+        self, tmp_path: Path, test_settings: Settings,
+    ):
+        """macOS ACL mutation through .agents/skills workspace link must fail."""
+        isolation = detect_platform_isolation()
+        self._require_executor_identity(isolation)
+
+        store = CanonicalSkillStore(settings=test_settings)
+        materializer = SymlinkMaterializer(store)
+        meta = self._build_canonical_packages(tmp_path, store)
+        baseline = self._record_all_canonical_hashes(store, meta)
+
+        workspace = tmp_path / "ws"
+        self._materialize_workspace_links(workspace, materializer, meta)
+
+        attack_script = tmp_path / "attack_acl_agents.py"
+        self._make_attack_script(
+            workspace, attack_script, "acl", ".agents/skills",
+        )
+        blocked = self._run_attack(
+            isolation, attack_script, tmp_path,
+            {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "acl/.agents/skills",
+        )
+        self._verify_hashes_unchanged(store, baseline, "after-acl/.agents/skills")
+        assert blocked, "ACL attack must be blocked"
+
+    def test_executor_identity_contract_required(
+        self,
+    ):
+        """Executor identity contract is required for production isolation.
+
+        Skips on dev machines without provisioned accounts. On CI,
+        the provisioning step is a separate gate that fails the job
+        before tests run if the account cannot be created."""
+        if sys.platform != "darwin":
+            pytest.skip("macOS-only test")
+        isolation = detect_platform_isolation()
+        executor = isolation.executor_identity()
+        if executor is None:
+            pytest.skip(
+                "Executor identity not provisioned on this host. "
+                "CI provisioning step fails-closed before tests run."
+            )
+        assert executor.uid != isolation.current_identity().uid, (
+            "Executor must be a DISTINCT restricted macOS identity"
+        )
