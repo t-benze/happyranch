@@ -1362,6 +1362,7 @@ def rollback_proposal(
             lambda d: _service.rollback_proposal(
                 db=d, actor_kind="human", skill_id=skill_id,
                 reason=body.reason, rolled_back_by="founder",
+                target_version_id=version_id,
             ),
             rollback_on_lifecycle=False,
         )

@@ -868,11 +868,76 @@ for immutable retention. Quarantined skills are never materialized — only
 published+assigned lifecycle skills reach the workspace. Migration is idempotent
 and handles malformed/unsafe filesystem and YAML fixtures.
 
-**Atomic rollback.** `POST /skill-lifecycle/rollback` wraps package status
-change, assignment deactivation, and event insertion in an explicit
-`BEGIN IMMEDIATE`/`COMMIT` transaction. All three mutations roll back together
-on failure. Workspace residue is cleaned up on the next spawn by fail-closed
-materialization.
+**Atomic rollback (version-pinned, assignment-level only).**
+`POST /skill-lifecycle/rollback` and the v2
+`POST /skill-lifecycle/proposals/{version_id}/rollback` deactivate
+assignments only — never mutate package decision status. Package
+lifecycle ends at ``published`` or terminal ``rejected``;
+assignment/unassignment is a separate append-only projection. For v2
+exact-version rollback, only assignments to the addressed
+``package_version_id`` are deactivated; if that exact version is
+REJECTED the operation returns ``rejected_terminal`` (409) with no
+assignment/event mutation. Legacy rollback (skill_id only) inspects
+every active assignment and rejects the request before any mutation if
+any assignment points to a REJECTED package version. All rollback
+mutations execute inside ``BEGIN IMMEDIATE``/``COMMIT``. Workspace
+residue is cleaned up on the next spawn by fail-closed materialization.
+
+**Terminal REJECTED.** ``in_review → rejected`` is a terminal decision
+status. After rejection, every later claim, validation, review/approval,
+publish, assign, materialization, rollback, retire, or recovery attempt
+on that proposal/version is blocked with error code ``rejected_terminal``
+(HTTP 409). Rejection retains immutable package, all evidence,
+actor/time/rationale, and append-only history. A future change is a new
+proposal/version only.
+
+**Immutable proposer vs optional claimant.** ``PackageVersion.created_by``
+/ ``proposer_agent`` is immutable proposer identity derived from verified
+server-side session context. A founder claim is a SEPARATE optional
+``claimed_by`` / ``claimed_at`` — never a rewrite of the author identity.
+Existing agent-authored rows remain readable with compatible derivation.
+New additive nullable columns preserve legacy rows with NULL.
+
+**Reproducible validation.** Validation events record: immutable
+``content_hash``, mandatory non-blank ``validator_version`` (e.g.
+``"THR-055/1.0.0"`` or legacy ``"LEGACY/1.0.0"``), deterministic
+``validator_key`` (derived from version when not explicit), and distinct
+per-invocation run/event id. Re-runs append distinct events; never
+overwrite history. Missing/blank ``validator_version`` is rejected (400).
+
+**Founder-only proposal review endpoints.** All v2 proposal-scoped routes
+are under ``/skill-lifecycle/proposals/{version_id}/...`` and require
+bearer authentication (``_require_human``). Concurrency-protected with
+``expected_event_id`` marker: check + mutation execute inside a single
+``BEGIN IMMEDIATE``/``COMMIT``. Stale marker returns 409 with
+``stale_concurrency`` code and authoritative refresh state:
+- ``POST /proposals/{version_id}/claim`` — claim with concurrency
+- ``POST /proposals/{version_id}/validate`` — validate with deterministic metadata
+- ``POST /proposals/{version_id}/submit-review`` — VALIDATED → IN_REVIEW
+- ``POST /proposals/{version_id}/review`` — approve/reject with concurrency
+- ``POST /proposals/{version_id}/publish`` — publish with approval event id
+- ``POST /proposals/{version_id}/assign`` — assign to agent
+- ``POST /proposals/{version_id}/rollback`` — version-pinned rollback
+- ``GET /proposals/queue`` — paginated/filterable queue
+- ``GET /proposals/{version_id}`` — full detail with concurrency marker
+
+**Decision vs assignment separation.** Package decision lifecycle ends at
+``published`` or terminal ``rejected``. Assignment/unassignment/
+materialization are append-only version-pinned projections. ``rollback``
+and ``retire`` deactivate assignments only — they do NOT set package
+status to ``ROLLED_BACK`` or ``RETIRED``. Historical legacy rows retain
+their status for backward compatibility; new flows never generate
+``ROLLED_BACK`` or ``RETIRED`` as package decision status.
+
+**Materialization preflight.** Before writing any filesystem bytes,
+materialization checks that the target package version is not terminally
+REJECTED. A rejected version immediately raises ``LifecycleMaterializationError``
+with no workspace residue produced.
+
+**Migration.** This THR-055 implementation is additive: two new nullable
+columns ``claimed_by`` / ``claimed_at`` via ``ALTER TABLE ADD COLUMN``.
+No column drops, no semantic changes to existing columns, no overloaded-column
+semantic migration. All legacy rows remain readable.
 
 **Legacy route cutover.** `POST /skills`, `PATCH /skills/{id}`,
 `POST /skills/{id}/validate`, and `POST /agents/{agent}/skills/{skill}/assign`

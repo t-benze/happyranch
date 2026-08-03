@@ -467,17 +467,28 @@ class SkillLifecycleService:
         # record the accurate prior state, not the new state.
         previous_status = pkg.status.value
 
+        # validator_version is MANDATORY — reject blank/missing values.
+        # Every validation path (legacy and v2) must supply a deterministic
+        # version identifier. The documented deterministic validator key
+        # derivation is only valid when a nonblank version is present.
+        if not validator_version or not validator_version.strip():
+            raise LifecycleError(
+                code="missing_validator_version",
+                detail="validator_version is mandatory for every validation. "
+                       "Supply a deterministic version identifier (e.g. 'LEGACY/1.0.0' or 'THR-055/1.0.0').",
+                status_code=400,
+            )
+
         new_status = LifecycleStatus.VALIDATED if ok else LifecycleStatus.VALIDATION_FAILED
         stores.update_package_status(db, version_id, new_status)
         pkg.status = new_status
 
         meta: dict = {"findings": findings or []}
-        if validator_version:
-            meta["validator_version"] = validator_version
+        meta["validator_version"] = validator_version
         if validator_key:
             meta["validator_key"] = validator_key
         else:
-            meta["validator_key"] = validator_version or "UNKNOWN"
+            meta["validator_key"] = validator_version
         # Include immutable content_hash for reproducibility
         meta["content_hash"] = pkg.content_hash
 
@@ -748,11 +759,19 @@ class SkillLifecycleService:
         reason: str, rolled_back_by: str = "founder",
         target_version_id: int | None = None,
     ) -> int:
-        """Emergency rollback: deactivate all assignments for a skill.
+        """Emergency rollback: deactivate assignments for a skill.
 
         Assignment-level operation only — does NOT mutate package decision
         status. Package lifecycle ends at published (or rejected terminal);
         assignment/unassignment is a separate append-only projection.
+
+        When target_version_id is supplied (v2 route), acts ONLY on
+        assignments to that exact version. If that version is REJECTED,
+        returns rejected_terminal with NO assignment/event mutation.
+
+        When target_version_id is NOT supplied (legacy route), inspects
+        every active assignment: if any points to a REJECTED package
+        version the entire request is rejected before any mutation.
 
         The caller (HTTP handler) must wrap this in BEGIN IMMEDIATE/COMMIT.
 
@@ -760,11 +779,47 @@ class SkillLifecycleService:
         """
         self._ensure_human(actor_kind, "rollback")
 
-        # Get the latest package for event metadata + REJECTED guard —
-        # do NOT mutate package status. Assignment is a separate projection.
-        pkg = stores.get_latest_package_version(db, skill_id)
-        if pkg is not None:
-            self._ensure_not_rejected(pkg)
+        if target_version_id is not None:
+            # V2 exact-version rollback: act only on the addressed version.
+            pkg = stores.get_package_version(db, target_version_id)
+            if pkg is None:
+                raise LifecycleError(
+                    code="not_found",
+                    detail=f"No package version found with id {target_version_id}.",
+                    status_code=404,
+                )
+            if pkg.skill_id != skill_id:
+                raise LifecycleError(
+                    code="skill_id_mismatch",
+                    detail=f"Version {target_version_id} belongs to skill '{pkg.skill_id}', not '{skill_id}'.",
+                    status_code=400,
+                )
+            if pkg.status == LifecycleStatus.REJECTED:
+                # Exact-version rejected: return rejected_terminal with NO mutation.
+                raise LifecycleError(
+                    code="rejected_terminal",
+                    detail=f"Proposal version {target_version_id} is terminally REJECTED. "
+                           f"No rollback is permitted on a rejected version.",
+                    status_code=409,
+                )
+        else:
+            # Legacy rollback (no version_id): inspect every active assignment.
+            # If ANY active assignment points to a REJECTED package version,
+            # reject the entire request before any mutation.
+            if stores.has_active_assignment_on_rejected_version(db, skill_id):
+                raise LifecycleError(
+                    code="rejected_terminal",
+                    detail=f"Skill '{skill_id}' has at least one active assignment on a "
+                           f"terminally REJECTED version. Rollback would mutate a rejected "
+                           f"assignment — rejected. Use a version-addressed rollback instead.",
+                    status_code=409,
+                )
+
+            # For legacy path without a rejected assignment, still ensure we
+            # don't use latest as a misplaced authorization proxy.
+            pkg = stores.get_latest_package_version(db, skill_id)
+            if pkg is not None:
+                self._ensure_not_rejected(pkg)
 
         count = stores.deactivate_assignments_for_skill(
             db, skill_id,
@@ -773,15 +828,26 @@ class SkillLifecycleService:
             target_version_id=target_version_id,
         )
 
+        # Use the addressed version for event metadata.
+        event_version_id = target_version_id
+        event_content_hash = None
+        if event_version_id is not None:
+            addressed_pkg = stores.get_package_version(db, event_version_id)
+        else:
+            addressed_pkg = stores.get_latest_package_version(db, skill_id)
+        if addressed_pkg is not None:
+            event_version_id = addressed_pkg.id
+            event_content_hash = addressed_pkg.content_hash
+
         stores.insert_lifecycle_event(db, LifecycleEvent(
             skill_id=skill_id,
-            package_version_id=pkg.id if pkg else None,
+            package_version_id=event_version_id,
             event_type="rolled_back",
             actor=rolled_back_by,
             actor_role="human",
             previous_status=None,  # Assignment projection — does not touch package status
             new_status=None,
-            content_hash=None,
+            content_hash=event_content_hash,
             metadata={
                 "reason": reason,
                 "assignments_deactivated": count,
@@ -804,8 +870,25 @@ class SkillLifecycleService:
         assignment/unassignment is a separate append-only projection.
         Only PUBLISHED packages may be retired; REJECTED and all non-PUBLISHED
         states are rejected.
+
+        Legacy path (skill_id only): inspects every active assignment.
+        If ANY active assignment points to a REJECTED package version,
+        the entire request is rejected before any mutation.
         """
         self._ensure_human(actor_kind, "retire")
+
+        # Inspect active assignments: if any point to a REJECTED version,
+        # reject before any mutation. The 'latest version' is NOT an
+        # authorization proxy for a version-addressed action.
+        if stores.has_active_assignment_on_rejected_version(db, skill_id):
+            raise LifecycleError(
+                code="rejected_terminal",
+                detail=f"Skill '{skill_id}' has at least one active assignment on a "
+                       f"terminally REJECTED version. Retire would mutate a rejected "
+                       f"assignment — rejected.",
+                status_code=409,
+            )
+
         pkg = stores.get_latest_package_version(db, skill_id)
         if pkg is None:
             raise LifecycleError(
@@ -1045,9 +1128,17 @@ class SkillLifecycleService:
     def rollback_proposal(
         self, db, actor_kind: str, skill_id: str,
         reason: str, rolled_back_by: str = "founder",
+        target_version_id: int | None = None,
     ) -> int:
-        """Founder rollback (v2 — assignment-level only, concurrency-protected)."""
-        return self.rollback(db, actor_kind, skill_id, reason, rolled_back_by)
+        """Founder rollback (v2 — assignment-level only, concurrency-protected).
+
+        V2 rollback at /proposals/{version_id}/rollback acts only on the
+        addressed version's assignments. target_version_id is passed
+        through to the underlying rollback() to ensure exact-version
+        targeting.
+        """
+        return self.rollback(db, actor_kind, skill_id, reason, rolled_back_by,
+                            target_version_id=target_version_id)
 
     # ── Guards ────────────────────────────────────────────────────────────
 

@@ -78,7 +78,7 @@ def _full_lifecycle_to_published(db, service, **proposal_overrides):
     """Run a skill through the full lifecycle to PUBLISHED. Returns PackageVersion."""
     pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs(**proposal_overrides))
     pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-    pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+    pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
     pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
     pkg = service.review_decision(
         db=db, actor_kind="human", version_id=pkg.id,
@@ -174,7 +174,7 @@ class TestHumanLifecycle:
     def test_full_lifecycle_happy_path(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -206,7 +206,7 @@ class TestHumanLifecycle:
             db=db, actor_kind="agent",
             **_proposal_kwargs(proposer_agent="founder"))
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id, sponsor="founder")
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         with pytest.raises(LifecycleError, match="must be distinct from author"):
             service.review_decision(
@@ -231,7 +231,7 @@ class TestHumanLifecycle:
         """Publish must reference the correct approval event ID."""
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -246,7 +246,9 @@ class TestHumanLifecycle:
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
         pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=False,
-                                         findings=["Missing required reference"])
+                                         findings=["Missing required reference"],
+                                         validator_version="THR-055/1.0.0",
+                                         validator_key="THR-055/1.0.0")
         assert pkg.status == LifecycleStatus.VALIDATION_FAILED
 
     def test_hash_change_forks_version(self, db, service):
@@ -266,7 +268,7 @@ class TestHumanLifecycle:
             db=db, actor_kind="agent",
             **_proposal_kwargs(proposer_agent="dev_agent"))
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id, sponsor="founder")
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -350,7 +352,7 @@ class TestTwoPublishedCap:
             task_id="TASK-3", session_id="sess-3",
             proposer_agent="dev_agent")
         pkg3 = service.claim_proposal(db=db, actor_kind="human", version_id=pkg3.id)
-        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True)
+        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg3 = service.submit_for_review(db=db, actor_kind="human", version_id=pkg3.id)
         pkg3 = service.review_decision(
             db=db, actor_kind="human", version_id=pkg3.id,
@@ -383,7 +385,7 @@ class TestTwoPublishedCap:
             task_id="TASK-3", session_id="sess-3",
             proposer_agent="dev_agent")
         pkg3 = service.claim_proposal(db=db, actor_kind="human", version_id=pkg3.id)
-        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True)
+        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg3 = service.submit_for_review(db=db, actor_kind="human", version_id=pkg3.id)
         pkg3 = service.review_decision(
             db=db, actor_kind="human", version_id=pkg3.id,
@@ -569,14 +571,14 @@ class TestCatalogVisibility:
     def test_validated_not_in_catalog(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         catalog = service.list_catalog(db)
         assert all(c.skill_id != pkg.skill_id for c in catalog)
 
     def test_approved_not_in_catalog(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -800,7 +802,7 @@ class TestMaterializationFailClosed:
                 **_proposal_kwargs(skill_md="# Test Content\n"),
             )
             pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-            pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+            pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
             pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
             pkg = service.review_decision(
                 db=db, actor_kind="human", version_id=pkg.id,
@@ -870,7 +872,7 @@ class TestMaterializationFailClosed:
             **_proposal_kwargs(),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -922,7 +924,7 @@ class TestRollbackAtomicityAndResidue:
             **_proposal_kwargs(slug="test-rollback-skill"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -976,7 +978,7 @@ class TestRollbackAtomicityAndResidue:
             **_proposal_kwargs(slug="test-atomic-rollback"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1031,7 +1033,7 @@ class TestLegacyCatalogVisibility:
             **_proposal_kwargs(slug="lifecycle-visible"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1070,7 +1072,7 @@ class TestLegacyCatalogVisibility:
             **_proposal_kwargs(slug="active-skill"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1770,7 +1772,7 @@ class TestFullPackageRetention:
         )
         # Publish and assign
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1831,7 +1833,7 @@ class TestFullPackageRetention:
             org_root=str(org_root),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,

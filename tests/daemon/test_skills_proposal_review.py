@@ -18,6 +18,8 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
+from runtime.skills.lifecycle.service import LifecycleError
+
 
 _VALID_PROPOSAL = {
     "slug": "frontend-development",
@@ -1637,3 +1639,384 @@ class TestDecisionAssignmentSeparation:
             headers=_founder_headers(),
         )
         assert r.json()["status"] == "published"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix 1: Version-pinned rollback/retire + legacy rejected guard
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestVersionPinnedRollbackRetire:
+    """Version-pinned rollback and retire with mixed rejected+published fixtures."""
+
+    def test_v2_rollback_rejected_exact_version_no_mutation(self, app, org_state):
+        """V2 rollback on exact rejected version returns rejected_terminal,
+        leaves assignments and event count unchanged."""
+        from runtime.skills.lifecycle import stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+
+        db = org_state.db
+        service = SkillLifecycleService()
+        slug_val = "v2-reject-rollback"
+
+        # v1: published + assigned to dev_agent
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="V2 Reject Rollback", description="Test",
+            skill_md="# v1\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+            org_root=org_state.root,
+        )
+        v1_id = pkg1.id
+        pkg1 = service.claim_proposal(db, "human", v1_id, "founder")
+        pkg1 = service.record_validation(db, "human", v1_id, True,
+            validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
+        pkg1 = service.submit_for_review(db, "human", v1_id, "founder")
+        pkg1 = service.review_decision(db, "human", v1_id, "approved", "OK", "founder")
+        aid = None
+        for e in stores.list_lifecycle_events(db, skill_id=pkg1.skill_id):
+            if e.event_type == "approved" and e.package_version_id == v1_id:
+                aid = e.id
+                break
+        assert aid is not None
+        pkg1 = service.publish(db, "human", v1_id, aid, "founder")
+        service.assign(db, "human", pkg1.skill_id, "dev_agent", v1_id, "founder")
+
+        # v2: just publish another version
+        pkg2 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="V2 Reject Rollback v2", description="Test v2",
+            skill_md="# v2 diff\n", version="0.2.0",
+            proposer_agent="frontend_engineer",
+        )
+        v2_id = pkg2.id
+
+        # REJECT v1 after the fact
+        db.execute(
+            "UPDATE skill_lifecycle_packages SET status = 'rejected' WHERE id = ?",
+            (v1_id,),
+        )
+        from runtime.skills.lifecycle.models import LifecycleEvent as LE
+        stores.insert_lifecycle_event(db, LE(
+            skill_id=pkg1.skill_id, package_version_id=v1_id,
+            event_type="rejected", actor="founder", actor_role="reviewer",
+            previous_status="in_review", new_status="rejected",
+            content_hash=pkg1.content_hash,
+        ))
+
+        # Event count and assignments before
+        events_before = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        event_count_before = len(events_before)
+        active_before = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+
+        # V2 rollback on REJECTED v1 → rejected_terminal
+        with pytest.raises(LifecycleError) as exc_info:
+            service.rollback(
+                db, "human", pkg1.skill_id, "test", "founder",
+                target_version_id=v1_id,
+            )
+        assert exc_info.value.code == "rejected_terminal"
+
+        # No mutation
+        events_after = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        assert len(events_after) == event_count_before
+        active_after = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+        assert len(active_after) == len(active_before)
+
+    def test_v2_rollback_targets_only_addressed_version(self, app, org_state):
+        """V2 exact-version rollback deactivates only addressed version's assignments."""
+        from runtime.skills.lifecycle import stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+
+        db = org_state.db
+        service = SkillLifecycleService()
+        slug_val = "v2-targeted-rollback"
+
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Targeted Rollback", description="Test",
+            skill_md="# v1\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+            org_root=org_state.root,
+        )
+        v1_id = pkg1.id
+        pkg1 = service.claim_proposal(db, "human", v1_id, "founder")
+        pkg1 = service.record_validation(db, "human", v1_id, True,
+            validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
+        pkg1 = service.submit_for_review(db, "human", v1_id, "founder")
+        pkg1 = service.review_decision(db, "human", v1_id, "approved", "OK", "founder")
+        aid = None
+        for e in stores.list_lifecycle_events(db, skill_id=pkg1.skill_id):
+            if e.event_type == "approved" and e.package_version_id == v1_id:
+                aid = e.id
+                break
+        assert aid is not None
+        pkg1 = service.publish(db, "human", v1_id, aid, "founder")
+        service.assign(db, "human", pkg1.skill_id, "dev_agent", v1_id, "founder")
+
+        # v2: published, no assignment
+        pkg2 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Targeted Rollback v2", description="Test v2",
+            skill_md="# v2 diff\n", version="0.2.0",
+            proposer_agent="frontend_engineer",
+        )
+        v2_id = pkg2.id
+
+        # Rollback v1 — only deactivates v1
+        count = service.rollback(
+            db, "human", pkg1.skill_id, "test", "founder",
+            target_version_id=v1_id,
+        )
+        assert count >= 1
+
+        # v1 assignment inactive
+        active = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+        assert len(active) == 0
+
+        # Package statuses correct
+        pkg1_chk = stores.get_package_version(db, v1_id)
+        assert pkg1_chk.status.value == "published"
+
+    def test_legacy_rollback_blocked_on_rejected_assignment(self, app, org_state):
+        """Legacy rollback (skill_id only) blocked when active assignment
+        is on a REJECTED version. No assignment/event mutation."""
+        from runtime.skills.lifecycle import stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.skills.lifecycle.models import LifecycleEvent as LE
+
+        db = org_state.db
+        service = SkillLifecycleService()
+        slug_val = "legacy-blocked-rollback"
+
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Legacy Rollback Blocked", description="Test",
+            skill_md="# v1\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+            org_root=org_state.root,
+        )
+        v1_id = pkg1.id
+        pkg1 = service.claim_proposal(db, "human", v1_id, "founder")
+        pkg1 = service.record_validation(db, "human", v1_id, True,
+            validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
+        pkg1 = service.submit_for_review(db, "human", v1_id, "founder")
+        pkg1 = service.review_decision(db, "human", v1_id, "approved", "OK", "founder")
+        aid = None
+        for e in stores.list_lifecycle_events(db, skill_id=pkg1.skill_id):
+            if e.event_type == "approved" and e.package_version_id == v1_id:
+                aid = e.id
+                break
+        assert aid is not None
+        pkg1 = service.publish(db, "human", v1_id, aid, "founder")
+        service.assign(db, "human", pkg1.skill_id, "dev_agent", v1_id, "founder")
+
+        # v2 published
+        pkg2 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Legacy Rollback Blocked v2", description="Test v2",
+            skill_md="# v2 diff\n", version="0.2.0",
+            proposer_agent="frontend_engineer",
+        )
+
+        # Reject v1 after assignment
+        db.execute(
+            "UPDATE skill_lifecycle_packages SET status = 'rejected' WHERE id = ?",
+            (v1_id,),
+        )
+        stores.insert_lifecycle_event(db, LE(
+            skill_id=pkg1.skill_id, package_version_id=v1_id,
+            event_type="rejected", actor="founder", actor_role="reviewer",
+            previous_status="in_review", new_status="rejected",
+            content_hash=pkg1.content_hash,
+        ))
+
+        events_before = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        event_count_before = len(events_before)
+        active_before = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+
+        # Legacy rollback blocked
+        with pytest.raises(LifecycleError) as exc_info:
+            service.rollback(db, "human", pkg1.skill_id, "test", "founder")
+        assert exc_info.value.code == "rejected_terminal"
+
+        events_after = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        assert len(events_after) == event_count_before
+        active_after = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+        assert len(active_after) == len(active_before)
+
+    def test_legacy_retire_blocked_on_rejected_assignment(self, app, org_state):
+        """Legacy retire blocked when active assignment is on REJECTED version.
+        Both assignments and event count unchanged."""
+        from runtime.skills.lifecycle import stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.skills.lifecycle.models import LifecycleEvent as LE
+
+        db = org_state.db
+        service = SkillLifecycleService()
+        slug_val = "legacy-retire-blocked"
+
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Retire Blocked", description="Test",
+            skill_md="# v1\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+            org_root=org_state.root,
+        )
+        v1_id = pkg1.id
+        pkg1 = service.claim_proposal(db, "human", v1_id, "founder")
+        pkg1 = service.record_validation(db, "human", v1_id, True,
+            validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
+        pkg1 = service.submit_for_review(db, "human", v1_id, "founder")
+        pkg1 = service.review_decision(db, "human", v1_id, "approved", "OK", "founder")
+        aid = None
+        for e in stores.list_lifecycle_events(db, skill_id=pkg1.skill_id):
+            if e.event_type == "approved" and e.package_version_id == v1_id:
+                aid = e.id
+                break
+        assert aid is not None
+        pkg1 = service.publish(db, "human", v1_id, aid, "founder")
+        service.assign(db, "human", pkg1.skill_id, "dev_agent", v1_id, "founder")
+
+        # v2
+        pkg2 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Retire Blocked v2", description="Test v2",
+            skill_md="# v2 diff\n", version="0.2.0",
+            proposer_agent="frontend_engineer",
+        )
+
+        # Reject v1
+        db.execute(
+            "UPDATE skill_lifecycle_packages SET status = 'rejected' WHERE id = ?",
+            (v1_id,),
+        )
+        stores.insert_lifecycle_event(db, LE(
+            skill_id=pkg1.skill_id, package_version_id=v1_id,
+            event_type="rejected", actor="founder", actor_role="reviewer",
+            previous_status="in_review", new_status="rejected",
+            content_hash=pkg1.content_hash,
+        ))
+
+        events_before = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        event_count_before = len(events_before)
+        active_before = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+
+        with pytest.raises(LifecycleError) as exc_info:
+            service.retire(db, "human", pkg1.skill_id, "obsolete", "founder")
+        assert exc_info.value.code == "rejected_terminal"
+
+        events_after = stores.list_lifecycle_events(db, skill_id=pkg1.skill_id)
+        assert len(events_after) == event_count_before
+        active_after = stores.get_all_active_assignments_for_skill(db, pkg1.skill_id)
+        assert len(active_after) == len(active_before)
+
+    def test_legacy_retire_succeeds_with_no_rejected_assignment(self, app, org_state):
+        """Legacy retire succeeds when all active assignments are on PUBLISHED versions."""
+        from runtime.skills.lifecycle import stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+
+        db = org_state.db
+        service = SkillLifecycleService()
+        slug_val = "legacy-retire-ok"
+
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="human", slug=slug_val,
+            name="Retire OK", description="Test",
+            skill_md="# v1\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+            org_root=org_state.root,
+        )
+        v1_id = pkg1.id
+        pkg1 = service.claim_proposal(db, "human", v1_id, "founder")
+        pkg1 = service.record_validation(db, "human", v1_id, True,
+            validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
+        pkg1 = service.submit_for_review(db, "human", v1_id, "founder")
+        pkg1 = service.review_decision(db, "human", v1_id, "approved", "OK", "founder")
+        aid = None
+        for e in stores.list_lifecycle_events(db, skill_id=pkg1.skill_id):
+            if e.event_type == "approved" and e.package_version_id == v1_id:
+                aid = e.id
+                break
+        assert aid is not None
+        pkg1 = service.publish(db, "human", v1_id, aid, "founder")
+        service.assign(db, "human", pkg1.skill_id, "dev_agent", v1_id, "founder")
+
+        result = service.retire(db, "human", pkg1.skill_id, "obsolete", "founder")
+        assert result is not None
+        assert result.status.value == "published"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix 3: Deterministic validation identifiers mandatory
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMandatoryValidatorVersion:
+    """Missing/blank validator_version must be rejected."""
+
+    def test_missing_validator_version_rejected_direct(self, app, org_state):
+        """record_validation with missing validator_version raises error."""
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+
+        db = org_state.db
+        service = SkillLifecycleService()
+
+        pkg = service.submit_proposal(
+            db=db, actor_kind="human", slug="mandatory-val",
+            name="Mandatory Val", description="Test",
+            skill_md="# Test\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id, "founder")
+
+        with pytest.raises(LifecycleError) as exc_info:
+            service.record_validation(db, "human", pkg.id, True)
+        assert exc_info.value.code == "missing_validator_version"
+
+    def test_blank_validator_version_rejected_direct(self, app, org_state):
+        """record_validation with blank validator_version raises error."""
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+
+        db = org_state.db
+        service = SkillLifecycleService()
+
+        pkg = service.submit_proposal(
+            db=db, actor_kind="human", slug="blank-val",
+            name="Blank Val", description="Test",
+            skill_md="# Test\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id, "founder")
+
+        with pytest.raises(LifecycleError) as exc_info:
+            service.record_validation(db, "human", pkg.id, True, validator_version="   ")
+        assert exc_info.value.code == "missing_validator_version"
+
+    def test_validator_version_with_value_succeeds(self, app, org_state):
+        """record_validation with non-blank validator_version succeeds."""
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.skills.lifecycle import stores
+
+        db = org_state.db
+        service = SkillLifecycleService()
+
+        pkg = service.submit_proposal(
+            db=db, actor_kind="human", slug="valid-val",
+            name="Valid Val", description="Test",
+            skill_md="# Test\n", version="0.1.0",
+            proposer_agent="frontend_engineer",
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id, "founder")
+
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="THR-055/1.0.0",
+        )
+        assert pkg.status.value == "validated"
+
+        events = stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        assert val_events[-1].metadata.get("validator_version") == "THR-055/1.0.0"
+        assert val_events[-1].metadata.get("validator_key") == "THR-055/1.0.0"
+        assert val_events[-1].metadata.get("content_hash") == pkg.content_hash

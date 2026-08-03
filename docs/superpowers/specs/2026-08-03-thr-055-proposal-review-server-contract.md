@@ -94,6 +94,7 @@ conflict: HTTP 409, code `stale_concurrency`, with `current_event_id`,
 | --- | --- | --- |
 | Claim | `POST /proposals/{version_id}/claim` | `expected_event_id` |
 | Validate | `POST /proposals/{version_id}/validate` | `validator_version`, `expected_event_id` |
+| Submit-Review | `POST /proposals/{version_id}/submit-review` | `expected_event_id`, `intended_audience`, `review_notes` |
 | Review | `POST /proposals/{version_id}/review` | `decision`, `rationale`, `expected_event_id` |
 | Publish | `POST /proposals/{version_id}/publish` | `approval_event_id`, `expected_event_id` |
 | Assign | `POST /proposals/{version_id}/assign` | `agent_name`, `expected_event_id` |
@@ -117,6 +118,7 @@ All Founder-only review endpoints have corresponding functions in
 - `getProposalDetail(slug, versionId)`
 - `claimProposalV2(slug, versionId, body)`
 - `validateProposal(slug, versionId, body)`
+- `submitReviewProposal(slug, versionId, body)`
 - `reviewProposal(slug, versionId, body)`
 - `publishProposal(slug, versionId, body)`
 - `assignProposal(slug, versionId, body)`

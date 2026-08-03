@@ -467,16 +467,51 @@ def deactivate_assignments_for_skill(
     db, skill_id: str, rolled_back_by: str = "", reason: str = "",
     target_version_id: int | None = None,
 ) -> int:
-    """Atomically deactivate all active assignments for a skill (rollback)."""
+    """Atomically deactivate all active assignments for a skill (rollback).
+
+    When target_version_id is supplied, only assignments to THAT EXACT
+    package version are deactivated. This prevents a rollback addressed
+    to one version from silently affecting assignments to a different
+    version of the same skill.
+    """
     now = _now_iso()
-    row = db.execute(
-        """UPDATE skill_lifecycle_assignments
-           SET active = 0, rolled_back_by = ?, rolled_back_at = ?,
-               rollback_reason = ?, rollback_target_version_id = ?
-           WHERE skill_id = ? AND active = 1""",
-        (rolled_back_by, now, reason, target_version_id, skill_id),
-    )
+    if target_version_id is not None:
+        row = db.execute(
+            """UPDATE skill_lifecycle_assignments
+               SET active = 0, rolled_back_by = ?, rolled_back_at = ?,
+                   rollback_reason = ?, rollback_target_version_id = ?
+               WHERE skill_id = ? AND active = 1 AND package_version_id = ?""",
+            (rolled_back_by, now, reason, target_version_id, skill_id, target_version_id),
+        )
+    else:
+        row = db.execute(
+            """UPDATE skill_lifecycle_assignments
+               SET active = 0, rolled_back_by = ?, rolled_back_at = ?,
+                   rollback_reason = ?, rollback_target_version_id = ?
+               WHERE skill_id = ? AND active = 1""",
+            (rolled_back_by, now, reason, target_version_id, skill_id),
+        )
     return row.rowcount
+
+
+def has_active_assignment_on_rejected_version(db, skill_id: str) -> bool:
+    """Check whether any active assignment for this skill points to a
+    REJECTED package version.
+
+    Used by legacy rollback/retire paths (which take only skill_id, not a
+    specific version_id) to fail-closed before any assignment mutation
+    when the operation would affect a terminally rejected version.
+    """
+    conn = _get_conn(db)
+    row = conn.execute(
+        """SELECT 1
+           FROM skill_lifecycle_assignments a
+           JOIN skill_lifecycle_packages p ON a.package_version_id = p.id
+           WHERE a.skill_id = ? AND a.active = 1 AND p.status = 'rejected'
+           LIMIT 1""",
+        (skill_id,),
+    ).fetchone()
+    return row is not None
 
 
 def deactivate_assignment(db, skill_id: str, agent_name: str, unassigned_by: str = "") -> int:
