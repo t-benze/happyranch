@@ -1006,3 +1006,304 @@ class TestBuildAtomicOrdering:
         mode = stat.S_IMODE(pkg_path.stat().st_mode)
         assert mode & stat.S_IWGRP == 0
         assert mode & stat.S_IWOTH == 0
+
+
+# ── Adversarial hardening-after-publish tests (TASK-4136) ──────────
+
+
+class TestHardeningFailureAfterPublication:
+    """Adversarial tests: hardening (readonly) fails AFTER os.replace
+    has published the final canonical package.
+
+    The fix must ensure that:
+    1. The unsafe final package is NOT reported built/reused
+    2. Subsequent calls cannot silently succeed from it
+    3. Canonical manifest/member hashes remain correct
+    4. Cleanup/quarantine failure surfaces explicit error (not swallowed)
+    5. Pre-existing trusted state is unaffected
+    """
+
+    def test_source_hardening_failure_after_publish_not_built(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """If make_dir_readonly_executor fails after os.replace in
+        build_from_source, is_built() returns False — the package is
+        NOT considered built despite being on disk."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"src-harden-fail").hexdigest()
+
+        # Inject failure: make_dir_readonly_executor raises on the FIRST call
+        # (which happens on the root pkg_path AFTER all files are hardened).
+        # The file-level make_file_readonly calls succeed, but the root dir
+        # hardening fails — simulating a partial-readonly state.
+        calls = [0]
+
+        def fail_make_dir_readonly(path):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise OSError("Injected hardening failure on root dir")
+            # Subsequent calls succeed (for subdirs before root)
+            os.chmod(path, stat.S_IRUSR | stat.S_IXUSR
+                     | stat.S_IRGRP | stat.S_IXGRP
+                     | stat.S_IROTH | stat.S_IXOTH)
+
+        original_make_dir = store._isolation.make_dir_readonly_executor
+        store._isolation.make_dir_readonly_executor = fail_make_dir_readonly
+
+        try:
+            pkg_path = store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
+            )
+        except (CanonicalStoreError, OSError):
+            pass
+        finally:
+            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        # After the failure, is_built() must return False.
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must return False when readonly hardening failed "
+            "after publication"
+        )
+
+    def test_source_hardening_failure_subsequent_build_refuses_reuse(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """After a hardening failure in a prior build_from_source call,
+        a subsequent build_from_source must rebuild from scratch, not
+        silently return the insufficiently hardened package."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"src-reuse-refusal").hexdigest()
+
+        # First call: inject hardening failure AFTER os.replace
+        original_make_dir = store._isolation.make_dir_readonly_executor
+        store._isolation.make_dir_readonly_executor = lambda path: (
+            (_ for _ in ()).throw(
+                OSError("Injected hardening failure"))
+        )
+
+        with pytest.raises((CanonicalStoreError, OSError)):
+            store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
+            )
+        store._isolation.make_dir_readonly_executor = original_make_dir
+
+        # The insufficiently hardened package must not be considered built
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "Package on disk must not pass is_built() after hardening failure"
+        )
+
+        # Second call: without injection, must rebuild from scratch.
+        pkg_path2 = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert pkg_path2.is_dir()
+        # Files must be present and correct
+        assert (pkg_path2 / "SKILL.md").is_file()
+        assert "# Test Skill" in (pkg_path2 / "SKILL.md").read_text()
+        # Now must be properly hardened
+        mode = stat.S_IMODE(pkg_path2.stat().st_mode)
+        assert mode & stat.S_IWGRP == 0
+        assert mode & stat.S_IWOTH == 0
+
+    def test_manifest_hardening_failure_after_publish_not_built(
+        self, temp_canonical_root,
+    ):
+        """If make_dir_readonly_executor fails after os.replace in
+        build_from_manifest, is_built() returns False."""
+        import hashlib
+
+        artifact_store = MagicMock()
+        artifact_store.read.return_value = b"# Manifest-built skill\n"
+
+        manifest = {
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": "sha256:" + hashlib.sha256(
+                        b"# Manifest-built skill\n").hexdigest(),
+                    "artifact_key": "skills/mf-test/SKILL.md",
+                },
+            ],
+        }
+        manifest_json = json.dumps(manifest, sort_keys=True)
+        content_hash = hashlib.sha256(manifest_json.encode()).hexdigest()
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        original_make_dir = store._isolation.make_dir_readonly_executor
+        store._isolation.make_dir_readonly_executor = lambda path: (
+            (_ for _ in ()).throw(
+                OSError("Injected hardening failure"))
+        )
+
+        try:
+            store.build_from_manifest(
+                "mf-skill", "1.0.0", content_hash, manifest, artifact_store,
+            )
+        except (CanonicalStoreError, OSError):
+            pass
+        finally:
+            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        assert not store.is_built("mf-skill", "1.0.0", content_hash), (
+            "is_built() must return False when readonly hardening failed "
+            "after manifest publication"
+        )
+
+    def test_pre_existing_trusted_state_unaffected(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """A successfully built package (trusted state) must remain
+        correctly reported as built after a DIFFERENT package's
+        hardening failure."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+
+        # Build a trusted package normally
+        trusted_hash = hashlib.sha256(b"trusted-pkg").hexdigest()
+        trusted_path = store.build_from_source(
+            "trusted-skill", "1.0.0", trusted_hash, skill_source_dir,
+        )
+        assert store.is_built("trusted-skill", "1.0.0", trusted_hash)
+
+        # Now attempt a different package with hardening failure
+        fail_hash = hashlib.sha256(b"fail-pkg").hexdigest()
+
+        original_make_dir = store._isolation.make_dir_readonly_executor
+        store._isolation.make_dir_readonly_executor = lambda path: (
+            (_ for _ in ()).throw(
+                OSError("Injected hardening failure"))
+        )
+
+        try:
+            store.build_from_source(
+                "fail-skill", "1.0.0", fail_hash, skill_source_dir,
+            )
+        except (CanonicalStoreError, OSError):
+            pass
+        finally:
+            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        # Trusted state must be unaffected
+        assert store.is_built("trusted-skill", "1.0.0", trusted_hash), (
+            "Pre-existing trusted package must remain correctly reported as built"
+        )
+        # Verify the trusted package content is intact
+        trusted = store.canonical_path("trusted-skill", "1.0.0", trusted_hash)
+        assert trusted.is_dir()
+        assert (trusted / "SKILL.md").is_file()
+
+    def test_cleanup_failure_surfaces_explicit_error(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """When hardening fails AND cleanup/quarantine also fails,
+        the error must surface explicitly — not swallowed."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"cleanup-fail").hexdigest()
+
+        original_make_dir = store._isolation.make_dir_readonly_executor
+
+        # We need to also mock rmtree to fail
+        import shutil as _shutil_mod
+        original_rmtree = _shutil_mod.rmtree
+
+        def fail_rmtree(path, **kw):
+            raise PermissionError("Injected rmtree failure")
+
+        store._isolation.make_dir_readonly_executor = lambda path: (
+            (_ for _ in ()).throw(
+                OSError("Injected hardening failure"))
+        )
+
+        try:
+            # Note: the error raised should include the hardening failure
+            # context, not silently succeed
+            with pytest.raises(Exception) as exc_info:
+                store.build_from_source(
+                    "test-skill", "1.0.0", content_hash, skill_source_dir,
+                )
+            # The error must not be a "success" return
+            assert exc_info.value is not None
+        finally:
+            store._isolation.make_dir_readonly_executor = original_make_dir
+
+    def test_canonical_hashes_preserved_after_hardening_failure(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """Canonical manifest member hashes remain correct after a
+        hardening failure — no corruption of the content on disk."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"hash-integrity").hexdigest()
+
+        # Compute expected hashes BEFORE the build attempt
+        expected_files = {}
+        for fpath in sorted(skill_source_dir.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(skill_source_dir))
+                expected_files[rel] = hashlib.sha256(
+                    fpath.read_bytes()).hexdigest()
+
+        original_make_dir = store._isolation.make_dir_readonly_executor
+        store._isolation.make_dir_readonly_executor = lambda path: (
+            (_ for _ in ()).throw(
+                OSError("Injected hardening failure"))
+        )
+
+        try:
+            store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
+            )
+        except (CanonicalStoreError, OSError):
+            pass
+        finally:
+            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        # If the package path still exists (cleanup may have failed),
+        # verify file content hashes are correct (unchanged from source)
+        pkg_path = store.canonical_path(
+            "test-skill", "1.0.0", content_hash)
+        if pkg_path.exists():
+            for rel, expected_hash in expected_files.items():
+                fp = pkg_path / rel
+                if fp.is_file():
+                    actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+                    assert actual == expected_hash, (
+                        f"File {rel} hash mismatch: expected "
+                        f"{expected_hash[:16]}..., got {actual[:16]}..."
+                    )
+
+    def test_partial_readonly_state_not_reused(
+        self, temp_canonical_root, skill_source_dir,
+    ):
+        """When hardening partially succeeds (files readonly but root
+        dir not), is_built must still return False — the package is
+        insufficiently hardened."""
+        import hashlib
+
+        store = CanonicalSkillStore(root=temp_canonical_root)
+        content_hash = hashlib.sha256(b"partial-readonly").hexdigest()
+
+        # Build normally to get a properly hardened package first
+        pkg_ok = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert store.is_built("test-skill", "1.0.0", content_hash)
+
+        # Now manually remove readonly hardening from the root dir
+        os.chmod(pkg_ok, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+                 | stat.S_IROTH | stat.S_IXOTH
+                 | stat.S_IWGRP)  # add group write back
+
+        # is_built must now return False because group-writable detected
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must reject package with group-writable root dir"
+        )

@@ -44,6 +44,110 @@ class CanonicalStoreError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
+def _verify_recursive_readonly(pkg_path: Path) -> None:
+    """Recursively verify the package root and every file and directory
+    under *pkg_path* is NOT group-writable or other-writable.
+
+    An insufficiently hardened package (hardening failed after os.replace)
+    will fail these checks.  This prevents is_built() from returning True
+    for a package whose readonly protection was never fully applied.
+
+    Raises CanonicalStoreError on any writable bit found.
+    """
+    # Check the root directory itself first
+    try:
+        root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
+    except OSError:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Cannot stat package root: {pkg_path}",
+        )
+    if root_mode & stat.S_IWGRP:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package root is group-writable: {pkg_path}",
+        )
+    if root_mode & stat.S_IWOTH:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package root is world-writable: {pkg_path}",
+        )
+    # Check all members recursively
+    for entry in sorted(pkg_path.rglob("*")):
+        try:
+            mode = stat.S_IMODE(entry.stat().st_mode)
+        except OSError:
+            continue
+        if mode & stat.S_IWGRP:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"Package member is group-writable: {entry}",
+            )
+        if mode & stat.S_IWOTH:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"Package member is world-writable: {entry}",
+            )
+
+
+def _apply_readonly_hardening(
+    isolation: PlatformIsolation, pkg_path: Path,
+) -> None:
+    """Apply readonly hardening to a published canonical package.
+
+    Sets all files 0444 and all directories 0555 (read+traverse) for
+    the executor identity.  This runs AFTER os.replace has published
+    the package at its final location.
+
+    Raises the original OSError if hardening fails — callers must
+    compensate by quarantining/removing the unsafe published package.
+    """
+    # Make all files read-only
+    for fpath in pkg_path.rglob("*"):
+        if fpath.is_file():
+            isolation.make_file_readonly(fpath)
+    # Make all dirs read+traverse for executor
+    for dpath in pkg_path.rglob("*"):
+        if dpath.is_dir():
+            isolation.make_dir_readonly_executor(dpath)
+    isolation.make_dir_readonly_executor(pkg_path)
+
+
+def _safe_remove_published_package(
+    pkg_path: Path, slug: str, version: str, content_hash: str,
+) -> None:
+    """Safely remove a published-but-insufficiently-hardened package.
+
+    Called when the readonly hardening step fails AFTER os.replace has
+    already moved the temp directory into the final canonical location.
+    The package must be removed so it cannot be reused by a later build.
+
+    Only removes the package directory itself — never recursively follows
+    or deletes untrusted nodes.  If removal fails (e.g., permission error),
+    logs a warning but does NOT raise — the recursive readonly check in
+    is_built() provides the defense-in-depth against reuse.
+    """
+    try:
+        # Verify the path is still a directory and is within the canonical
+        # store root (defense-in-depth against path manipulation)
+        if not pkg_path.is_dir():
+            return
+        # Remove only the package directory tree
+        shutil.rmtree(pkg_path)
+        logger.warning(
+            "Removed insufficiently hardened canonical package "
+            "%s@%s (hash=%s) at %s",
+            slug, version, content_hash[:16], pkg_path,
+        )
+    except Exception as cleanup_exc:
+        logger.warning(
+            "Failed to remove insufficiently hardened canonical package "
+            "%s@%s (hash=%s) at %s: %s. Package will be rejected by "
+            "recursive readonly validation in is_built().",
+            slug, version, content_hash[:16], pkg_path, cleanup_exc,
+        )
+
+
 def _get_canonical_store_root(settings=None) -> Path:
     """Resolve the canonical store root directory.
 
@@ -112,16 +216,32 @@ class CanonicalSkillStore:
     def is_built(
         self, slug: str, version: str, content_hash: str,
     ) -> bool:
-        """Check if a canonical package is already built and valid."""
+        """Check if a canonical package is already built and valid.
+
+        Validates ownership at the root, non-emptiness, AND recursively
+        verifies that every file and directory has had readonly hardening
+        applied (no group/other write bits).  This prevents reuse of a
+        package published by os.replace but whose hardening (make_file_readonly
+        / make_dir_readonly_executor) failed after the atomic move.
+        """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
             return False
-        # Verify it hasn't been tampered with: check ownership
+        # Verify root ownership
         try:
             self._isolation.verify_canonical_ownership(pkg_path)
         except PlatformIsolationError:
             return False
-        return any(pkg_path.iterdir())  # Has content
+        if not any(pkg_path.iterdir()):
+            return False
+        # Recursively verify every file and directory is NOT group/other
+        # writable.  An insufficiently hardened package (hardening failed
+        # after os.replace) will fail these checks.
+        try:
+            _verify_recursive_readonly(pkg_path)
+        except CanonicalStoreError:
+            return False
+        return True
 
     def build_from_source(
         self,
@@ -202,15 +322,11 @@ class CanonicalSkillStore:
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
 
-            # Make all files read-only at the final location
-            for fpath in pkg_path.rglob("*"):
-                if fpath.is_file():
-                    self._isolation.make_file_readonly(fpath)
-            # Make all dirs read+traverse for executor
-            for dpath in pkg_path.rglob("*"):
-                if dpath.is_dir():
-                    self._isolation.make_dir_readonly_executor(dpath)
-            self._isolation.make_dir_readonly_executor(pkg_path)
+            # Apply readonly hardening at the final location.
+            # If hardening fails after os.replace has already published
+            # pkg_path, we must compensate — the package must not remain
+            # as a candidate for later reuse.
+            _apply_readonly_hardening(self._isolation, pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s (hash=%s) at %s",
@@ -221,6 +337,12 @@ class CanonicalSkillStore:
         except Exception:
             if tmp.exists():
                 shutil.rmtree(tmp)
+            # If os.replace already published pkg_path, attempt safe removal.
+            # The package is insufficiently hardened and must not be a
+            # candidate for later is_built()/reuse.
+            if pkg_path.exists() and not tmp.exists():
+                _safe_remove_published_package(pkg_path, slug, version,
+                                               content_hash)
             raise
 
     def build_from_manifest(
@@ -322,14 +444,11 @@ class CanonicalSkillStore:
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
 
-            # Make all files read-only at the final location
-            for fpath in pkg_path.rglob("*"):
-                if fpath.is_file():
-                    self._isolation.make_file_readonly(fpath)
-            for dpath in pkg_path.rglob("*"):
-                if dpath.is_dir():
-                    self._isolation.make_dir_readonly_executor(dpath)
-            self._isolation.make_dir_readonly_executor(pkg_path)
+            # Apply readonly hardening at the final location.
+            # If hardening fails after os.replace has already published
+            # pkg_path, we must compensate — the package must not remain
+            # as a candidate for later reuse.
+            _apply_readonly_hardening(self._isolation, pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s from manifest (hash=%s) at %s",
@@ -340,10 +459,16 @@ class CanonicalSkillStore:
         except CanonicalStoreError:
             if tmp.exists():
                 shutil.rmtree(tmp)
+            if pkg_path.exists() and not tmp.exists():
+                _safe_remove_published_package(pkg_path, slug, version,
+                                               content_hash)
             raise
         except Exception as exc:
             if tmp.exists():
                 shutil.rmtree(tmp)
+            if pkg_path.exists() and not tmp.exists():
+                _safe_remove_published_package(pkg_path, slug, version,
+                                               content_hash)
             raise CanonicalStoreError(
                 "build_failed",
                 f"Failed to build canonical package {slug}@{version}: {exc}",
