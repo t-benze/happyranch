@@ -351,14 +351,13 @@ class TestContractCompletenessPostCutover:
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.context_builder import ContextBuilder
         from runtime.orchestrator.workspace_adapters import (
-            inject_system_contracts,
-            inject_managed_skills,
+            materialize_workspace_skills,
         )
 
-        # ── Confirm the flag is OFF ──────────────────────────────────
-        assert wa._WHOLESALE_DUMP_ENABLED is False, (
-            "_WHOLESALE_DUMP_ENABLED must be OFF for the cutover gate test"
-        )
+        # ── Confirm the cutover is complete ──────────────────────────
+        # _WHOLESALE_DUMP_ENABLED no longer exists — the cutover is final.
+        # All materialization uses canonical store + symlinks via
+        # materialize_workspace_skills.
 
         # _SKILLS_SRC is already set by the _isolate_skills_src_override fixture
         # Use the REAL runtime/skills/ as the managed catalog
@@ -409,19 +408,17 @@ class TestContractCompletenessPostCutover:
                             f"({name}, {context_str}, repos={has_repos})"
                         )
 
-                    # ── Step 2: Inject system contracts ──────────────
-                    inject_system_contracts(
-                        ws, test_settings, slug="test",
-                        context=context_str,
-                    )
-
-                    # ── Step 3: Inject managed-catalog skills ────────
-                    inject_managed_skills(
+                    # ── Step 2+3: Materialize all skills (unified) ──
+                    # Use the single unified materialization path.
+                    materialize_workspace_skills(
                         ws, test_settings,
                         slug="test",
+                        context=context_str,
+                        provider=executor,
                         agent_name=name,
                         team=team,
                         skills_root=managed_root,
+                        org_root=test_runtime.root,
                     )
 
                     # ── Step 4: Collect final state ──────────────────

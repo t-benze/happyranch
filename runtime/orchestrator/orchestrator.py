@@ -41,7 +41,6 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    inject_system_contracts,
     materialize_workspace_skills,
     refresh_workspace_repos,
 )

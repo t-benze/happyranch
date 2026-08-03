@@ -18,6 +18,23 @@ def test_settings(tmp_dir: Path) -> Settings:
     return Settings(project_root=tmp_dir)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_canonical_store(tmp_path: Path):
+    """Point HAPPYRANCH_DAEMON_HOME at a temp dir for test isolation.
+
+    The canonical skill store resolves its root from daemon_home. In tests,
+    this must point at a temp directory so no real user state leaks.
+    """
+    import os
+    old = os.environ.get("HAPPYRANCH_DAEMON_HOME")
+    os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path / ".happyranch")
+    yield
+    if old is not None:
+        os.environ["HAPPYRANCH_DAEMON_HOME"] = old
+    else:
+        os.environ.pop("HAPPYRANCH_DAEMON_HOME", None)
+
+
 @pytest.fixture
 def test_runtime(tmp_dir: Path) -> OrgPaths:
     """OrgPaths rooted at <tmp>/runtime/orgs/test/.
