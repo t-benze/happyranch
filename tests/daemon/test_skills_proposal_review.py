@@ -1279,12 +1279,14 @@ class TestProposalDetailArtifactIntegrity:
 
     def test_blank_member_hash_fails_closed_skill_md(self, app, org_state):
         """When the manifest member ('SKILL.md') has a blank hash, skill_md
-        must be null.
+        must be null — member-digest validation rejects the empty hash.
 
         Direct stores-layer test: after submitting a valid proposal, overwrite
         the manifest artifact to give the SKILL.md member an empty hash, then
-        restore the manifest to its original hash.  The manifest passes
-        content_hash verification, but the blank member hash is fail-closed."""
+        update the ledger content_hash to match the tampered manifest.  The
+        manifest passes content_hash verification, but the blank member hash
+        is fail-closed at the member-digest validation step."""
+        import hashlib
         import json
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
@@ -1293,10 +1295,13 @@ class TestProposalDetailArtifactIntegrity:
         data = _submit_agent_proposal(app, org_state)
         version_id = data["version_id"]
 
-        # Get original manifest bytes and key
+        # Baseline: valid detail returns content
         detail = lifecycle_stores.get_proposal_detail(
             org_state.db, version_id, org_root=str(org_state.root)
         )
+        assert detail["skill_md"] is not None
+        assert detail["package_members"] is not None
+
         store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
         manifest_key = detail["content_artifact_key"]
         original_manifest_raw = store.read(manifest_key)
@@ -1308,24 +1313,41 @@ class TestProposalDetailArtifactIntegrity:
                 m["hash"] = ""
                 break
 
-        # Write the tampered manifest (its SHA-256 changes, so content_hash
-        # check fails, but we also want to test the member-hash guard).
-        # Overwrite manifest → content_hash mismatch → both loaders return None.
-        store.put(manifest_key, json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8"))
+        # Write the tampered manifest
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
 
-        # With overwritten manifest (wrong content_hash), both are null
+        # Update ledger content_hash to match the tampered manifest so
+        # manifest verification passes and we genuinely reach member-digest
+        # validation (the blank hash is rejected THERE).
+        tampered_content_hash = hashlib.sha256(tampered_bytes).hexdigest()
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (tampered_content_hash, version_id),
+        )
+
+        # Member-digest validation catches the blank hash, not manifest verification
         detail2 = lifecycle_stores.get_proposal_detail(
             org_state.db, version_id, org_root=str(org_state.root)
         )
-        assert detail2["skill_md"] is None
-        assert detail2["package_members"] is None
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when member hash is blank"
+        )
+        # package_members loads from the manifest (which now passes content_hash)
+        assert detail2["package_members"] is not None
+        # Provenance preserved
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
 
     def test_malformed_member_hash_fails_closed(self, app, org_state):
         """A non-sha256 member hash (e.g. 'md5:...') is fail-closed —
         skill_md must be null.
 
         Direct stores-layer: overwrite manifest member hash to use an
-        unsupported algorithm prefix."""
+        unsupported algorithm prefix, then update the ledger content_hash
+        so manifest verification passes.  The unsupported algorithm is
+        caught at the member-digest validation step, not manifest check."""
+        import hashlib
         import json
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
@@ -1337,6 +1359,8 @@ class TestProposalDetailArtifactIntegrity:
         detail = lifecycle_stores.get_proposal_detail(
             org_state.db, version_id, org_root=str(org_state.root)
         )
+        assert detail["skill_md"] is not None
+
         store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
         manifest_key = detail["content_artifact_key"]
         manifest_raw = store.read(manifest_key)
@@ -1348,16 +1372,177 @@ class TestProposalDetailArtifactIntegrity:
                 m["hash"] = "md5:d41d8cd98f00b204e9800998ecf8427e"
                 break
 
-        # Overwrite manifest — content_hash check will fail since manifest
-        # bytes changed, but the point is the member-hash guard rejects
-        # unsupported algorithms.
-        store.put(manifest_key, json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8"))
+        # Write tampered manifest and update ledger content_hash so
+        # manifest verification passes and member-digest validation is
+        # genuinely exercised.
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
 
         detail2 = lifecycle_stores.get_proposal_detail(
             org_state.db, version_id, org_root=str(org_state.root)
         )
-        assert detail2["skill_md"] is None
-        assert detail2["package_members"] is None
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null for unsupported member hash algorithm"
+        )
+        assert detail2["package_members"] is not None
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_missing_skill_md_member_returns_null(self, app, org_state):
+        """When the manifest has no SKILL.md member, skill_md is null.
+
+        Direct stores-layer: remove the SKILL.md member from the manifest
+        members array, update the ledger content_hash, and verify that the
+        loader returns null skill_md.  The manifest still passes content_hash
+        verification, but there is no SKILL.md entry to load."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+        assert detail["package_members"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Remove the SKILL.md member entirely
+        manifest["members"] = [
+            m for m in manifest["members"] if m["path"] != "SKILL.md"
+        ]
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when manifest has no SKILL.md member"
+        )
+        # package_members still loads from the valid manifest
+        assert detail2["package_members"] is not None
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_mismatched_sha256_member_digest_fails_closed(self, app, org_state):
+        """A sha256: member hash with a wrong hex digest is fail-closed —
+        skill_md must be null.
+
+        The member hash has the canonical sha256: prefix format, but the
+        hex value does not match the actual artifact bytes.  The manifest
+        passes content_hash verification (ledger is updated to match),
+        but the member hash mismatch is caught at member-digest validation."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Replace member hash with a canonical-format sha256 that does NOT
+        # match the actual bytes (wrong hex)
+        wrong_hex = hashlib.sha256(b"tampered content").hexdigest()
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                m["hash"] = f"sha256:{wrong_hex}"
+                break
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when sha256 member digest does not match actual bytes"
+        )
+        assert detail2["package_members"] is not None
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
+
+    def test_no_digest_key_on_member_fails_closed(self, app, org_state):
+        """When the manifest SKILL.md member has no 'hash' key at all,
+        skill_md must be null.
+
+        Direct stores-layer: remove the hash key from the SKILL.md member
+        entry, update the ledger content_hash, and verify that the loader
+        returns null skill_md.  The manifest passes content_hash verification,
+        but the absent hash field is fail-closed at member-digest validation."""
+        import hashlib
+        import json
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        data = _submit_agent_proposal(app, org_state)
+        version_id = data["version_id"]
+
+        detail = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail["skill_md"] is not None
+
+        store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        manifest_key = detail["content_artifact_key"]
+        manifest_raw = store.read(manifest_key)
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+
+        # Remove the hash key from the SKILL.md member
+        for m in manifest["members"]:
+            if m["path"] == "SKILL.md":
+                del m["hash"]
+                break
+
+        tampered_bytes = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+        store.put(manifest_key, tampered_bytes)
+        org_state.db.execute(
+            "UPDATE skill_lifecycle_packages SET content_hash = ? WHERE id = ?",
+            (hashlib.sha256(tampered_bytes).hexdigest(), version_id),
+        )
+
+        detail2 = lifecycle_stores.get_proposal_detail(
+            org_state.db, version_id, org_root=str(org_state.root)
+        )
+        assert detail2["skill_md"] is None, (
+            "skill_md must be null when member has no hash key"
+        )
+        assert detail2["package_members"] is not None
+        assert detail2["version_id"] == version_id
+        assert detail2["status"] == "proposed"
 
     def test_no_events_on_hash_rejected_read(self, app, org_state):
         """Every rejected read (hash mismatch, blank hash) must append
