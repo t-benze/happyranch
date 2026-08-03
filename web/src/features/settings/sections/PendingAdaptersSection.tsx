@@ -34,19 +34,6 @@ import {
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { useQueryClient } from '@tanstack/react-query';
 
-/** Extract a human-readable message from an ApiError or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
-    if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
-    }
-    return err.message;
-  }
-  if (err instanceof Error) return err.message;
-  return fallback;
-}
-
 /** Build the 6-field exact snapshot body for approval. */
 function buildApproveBody(adapter: AdapterEntry) {
   return {
@@ -101,7 +88,10 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
       if (err instanceof ApiError && err.status === 404) {
         refetchLists();
       } else {
-        setError(errMessage(err, 'Could not approve this CLI.'));
+        // Deliberately do not echo raw server text — it may contain
+        // implementation terms that must not appear on the ordinary
+        // Settings page. Keep the message CLI-neutral and actionable.
+        setError('Could not approve this CLI. Please try again.');
       }
     }
   };
@@ -121,7 +111,10 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
       if (err instanceof ApiError && err.status === 404) {
         void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
       } else {
-        setError(errMessage(err, 'Could not reject this CLI.'));
+        // Deliberately do not echo raw server text — it may contain
+        // implementation terms that must not appear on the ordinary
+        // Settings page. Keep the message CLI-neutral and actionable.
+        setError('Could not reject this CLI. Please try again.');
       }
     }
   };
@@ -296,6 +289,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
 
 export function PendingAdaptersSection(): JSX.Element {
   const query = useAdapters();
+  const qc = useQueryClient();
   const adapters = query.data ?? [];
   // seq334: the approval queue contains ONLY adapters whose status is exactly
   // pending. Approved records (already_bound, ready_to_bind, recovery_ready)
@@ -317,10 +311,21 @@ export function PendingAdaptersSection(): JSX.Element {
       )}
 
       {query.isError && (
-        <p className="text-feedback-danger text-sm" role="alert">
-          Could not load pending approvals.
-          {query.error?.message ? ` ${query.error.message}` : ''}
-        </p>
+        <div className="text-feedback-danger text-sm" role="alert">
+          Could not load pending approvals.{" "}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void qc.refetchQueries({ queryKey: ADAPTERS_KEY });
+            }}
+            disabled={query.isLoading}
+            data-testid="pending-adapters-retry"
+          >
+            Retry
+          </Button>
+        </div>
       )}
 
       {query.data &&

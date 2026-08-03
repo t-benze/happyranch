@@ -141,14 +141,19 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     expect(screen.getByText('Loading pending approvals…')).toBeInTheDocument();
   });
 
-  test('error: shows error when list fails', async () => {
+  test('error: shows CLI-neutral message and retry affordance when list fails', async () => {
     server.use(
-      http.get(API_BASE, () => HttpResponse.json({ detail: 'internal error' }, { status: 500 })),
+      http.get(API_BASE, () =>
+        HttpResponse.json({ detail: 'Adapter list unavailable' }, { status: 500 }),
+      ),
     );
     renderWithProviders(<PendingAdaptersSection />);
     await waitFor(() => {
       expect(screen.getByText(/Could not load pending approvals/)).toBeInTheDocument();
     });
+    // The raw server detail (which contains implementation terms) must not leak.
+    expect(screen.queryByText(/Adapter list unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('pending-adapters-retry')).toHaveTextContent('Retry');
   });
 
   /* ---- Approve flow ---- */
@@ -276,7 +281,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     expect(screen.queryByTestId('pending-adapter-rows')).not.toBeInTheDocument();
   });
 
-  test('approve: error surfaces inline', async () => {
+  test('approve: error surfaces inline with CLI-neutral copy, not raw server detail', async () => {
     mockListAdapters(makePendingAdapter());
     server.use(
       http.post(`${API_BASE}/test-adapter/approve`, () =>
@@ -291,7 +296,10 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-confirm-approve-test-adapter'));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('Adapter hash mismatch');
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('Could not approve this CLI. Please try again.');
+      // The raw server error (which contains an implementation term) must not leak.
+      expect(alert).not.toHaveTextContent('Adapter hash mismatch');
     });
   });
 
@@ -430,7 +438,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     });
   });
 
-  test('reject: error surfaces inline', async () => {
+  test('reject: error surfaces inline with CLI-neutral copy, not raw server detail', async () => {
     mockListAdapters(makePendingAdapter());
     server.use(
       http.post(`${API_BASE}/test-adapter/reject`, () =>
@@ -445,7 +453,10 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-confirm-reject-test-adapter'));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('Adapter not PENDING');
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('Could not reject this CLI. Please try again.');
+      // The raw server error (which contains an implementation term) must not leak.
+      expect(alert).not.toHaveTextContent('Adapter not PENDING');
     });
   });
 

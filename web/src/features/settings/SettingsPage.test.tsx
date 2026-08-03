@@ -1160,6 +1160,44 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(bodyText).not.toMatch(/adapter/i);
   });
 
+  test('TASK-4038 regression: adapter-list failure with adapter-term payload renders CLI-neutral error and no page-wide adapter text', async () => {
+    let adapterGets = 0;
+    server.use(
+      http.get('/api/v1/runtime/adapters', () => {
+        adapterGets += 1;
+        return HttpResponse.json(
+          { detail: 'Adapter hash mismatch on retrieval' },
+          { status: 500 },
+        );
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Wait for the CLI-neutral failure surface.
+    await waitFor(() => {
+      expect(screen.getByText(/Could not load pending approvals/)).toBeInTheDocument();
+    });
+
+    // Retry affordance is present.
+    const retryBtn = screen.getByTestId('pending-adapters-retry');
+    expect(retryBtn).toHaveTextContent('Retry');
+
+    // Clicking Retry re-fetches the adapter list.
+    const user = userEvent.setup();
+    const getsBeforeRetry = adapterGets;
+    await user.click(retryBtn);
+    await waitFor(() => {
+      expect(adapterGets).toBeGreaterThan(getsBeforeRetry);
+    });
+
+    // The raw server error text (which deliberately contains an implementation
+    // term) must not appear anywhere on the ordinary founder-facing page.
+    const bodyText = document.body.textContent ?? '';
+    expect(bodyText).not.toMatch(/adapter hash mismatch on retrieval/i);
+    expect(bodyText).not.toMatch(/adapter/i);
+  });
+
   test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip)', async () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
