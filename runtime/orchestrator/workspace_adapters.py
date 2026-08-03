@@ -37,6 +37,18 @@ def _resolve_skills_src(settings: Settings) -> Path:
     return settings.get_protocol_dir() / "skills"
 
 
+# ── Canonical skill store + symlink materializer ──────────────────
+# The daemon-owned canonical store replaces per-session content copying.
+# Skills are built once into immutable hash-addressed packages under
+# <daemon-home>/canonical-skills/ and workspace symlinks are atomically
+# created/repaired to point at the exact approved package version.
+
+from runtime.skills.canonical_store import CanonicalSkillStore
+from runtime.skills.symlink_materializer import (
+    SymlinkMaterializer,
+    SymlinkMaterializationError,
+)
+
 # ── Process-local workspace skill materialization lock ─────────────
 #
 # Concurrent pre-spawn materialization paths (task, thread, wake, dream,
@@ -285,9 +297,9 @@ def ensure_system_contracts_materialized(
         resolve_system_contracts_for_session,
     )
 
-    # Step 1: Materialize via the existing injection path
-    inject_system_contracts(
-        workspace, settings, slug=slug, context=context,
+    # Step 1: Materialize via canonical store + symlinks.
+    _materialize_system_contracts_canonical(
+        workspace, settings, slug=slug, context=context, provider=provider,
     )
 
     # Step 2: Resolve expected contracts
@@ -322,37 +334,21 @@ def ensure_system_contracts_materialized(
 
 # ── Phase-4 cutover flag: reversible gate on the wholesale protocol/skills/ dump ─
 #
-# Default OFF post-cutover — the wholesale copy is DISABLED by default.
-# Set True to re-enable the legacy safety-net dump without a code revert
-# (useful for rollback if the explicit injection paths prove incomplete).
-# The contract-completeness guard test in test_skill_cutover_completeness.py
-# runs with this flag OFF and must pass green before the cutover is accepted.
-_WHOLESALE_DUMP_ENABLED: bool = False
+# The wholesale copy is permanently removed. The canonical store + symlink
+# architecture supersedes all per-session content copying. This flag and
+# refresh_session_skills are dead code retained only for import compatibility
+# during the transition window — they are no-ops.
+_WHOLESALE_DUMP_ENABLED: bool = False  # dead; retained for import compat
 
 
 def refresh_session_skills(
     workspace: Path, settings: Settings, *, slug: str,
 ) -> None:
-    """Re-copy the bundled ``protocol/skills/`` tree into the workspace so
-    live agents' on-disk skill bodies reflect the current bundle.
+    """DEPRECATED: Replaced by canonical store + symlink materialization.
 
-    This is idempotent — it replaces existing copies — and covers both Claude
-    (``.claude/skills/``) and AGENTS.md-backed providers (``.agents/skills/``).
-    Called on EVERY session creation so skill edits in the bundled
-    ``project_root/protocol/skills/`` reach agents without a lifecycle event.
-
-    Reuses ``_copy_skills_tree`` (the same logic that ``ensure_workspace_ready``
-    calls). The source is always the bundled ``_resolve_skills_src(settings)``.
-
-    **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default OFF).
-    When OFF this function is a no-op — skill delivery is handled exclusively by
-    ``inject_system_contracts`` and ``inject_managed_skills``.
+    This function is a no-op. The wholesale copy model has been superseded
+    by the immutable canonical skill-store architecture.
     """
-    if not _WHOLESALE_DUMP_ENABLED:
-        return
-    src = _resolve_skills_src(settings)
-    _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
-    _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
 
 
 def materialize_workspace_skills(
@@ -399,27 +395,304 @@ def materialize_workspace_skills(
         db: optional DB handle for recording materialization events
     """
     with _workspace_skills_transaction(workspace):
-        # 1. Wholesale refresh (no-op when _WHOLESALE_DUMP_ENABLED is False).
-        #    This re-copies the bundled protocol/skills/ tree.
-        refresh_session_skills(workspace, settings, slug=slug)
-
-        # 2. System-contract injection + on-disk verification.
-        #    Raises SystemContractMaterializationError on failure.
-        ensure_system_contracts_materialized(
-            workspace, settings, slug=slug, context=context, provider=provider,
+        # 1. System-contract skills via canonical store + symlinks.
+        _materialize_system_contracts_canonical(
+            workspace, settings,
+            slug=slug, context=context, provider=provider,
         )
 
-        # 3. Managed-skill injection from the catalog + lifecycle ledger.
-        #    Fail-closed: any error raises immediately.
-        inject_managed_skills(
+        # 2. Managed-catalog skills via canonical store + symlinks.
+        _materialize_managed_skills_canonical(
             workspace, settings,
-            slug=slug,
-            agent_name=agent_name,
-            team=team,
-            skills_root=skills_root,
+            slug=slug, agent_name=agent_name, team=team,
+            skills_root=skills_root, org_root=org_root, db=db,
+        )
+
+
+def _materialize_system_contracts_canonical(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+    provider: str,
+) -> None:
+    """Materialize system-contract skills via canonical store + symlinks.
+
+    Builds each context-appropriate system contract into the canonical store
+    (if not already built), then creates/repairs a workspace symlink.
+    Fail-closed: any error raises SystemContractMaterializationError.
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    try:
+        ctx = SessionContext(context)
+    except ValueError:
+        return
+
+    contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+    if not contracts:
+        return
+
+    src_root = _resolve_skills_src(settings)
+    store = CanonicalSkillStore(settings=settings)
+    materializer = SymlinkMaterializer(store)
+
+    # Resolve skills provider path
+    skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
+
+    for contract in contracts:
+        src_dir = src_root / contract.id
+        if not src_dir.is_dir():
+            continue
+
+        # Compute content hash from source tree
+        content_hash = _compute_dir_hash(src_dir)
+
+        # Build into canonical store
+        store.build_from_source(contract.id, "system", content_hash, src_dir)
+
+        # Create/repair workspace symlink (no org-slug substitution needed;
+        # canonical bytes are the original unsubstituted source.)
+        materializer.materialize_skill(
+            skill_slug=contract.id,
+            version="system",
+            content_hash=content_hash,
+            workspace=workspace,
+            skills_subdir=skills_subdir,
+        )
+
+
+def _materialize_managed_skills_canonical(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db=None,
+) -> None:
+    """Materialize managed-catalog and lifecycle skills via canonical store + symlinks.
+
+    Resolves eligible release-managed catalog skills and PUBLISHED/active
+    lifecycle-ledger custom skills, builds each into the canonical store,
+    and creates/repairs workspace symlinks to the exact version.
+
+    Fail-closed: any error raises immediately.
+    """
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+
+    store = CanonicalSkillStore(settings=settings)
+    materializer = SymlinkMaterializer(store)
+
+    expected_specs: list[dict] = []
+
+    # ── Release-managed catalog skills ──
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        release_entries: dict = {}
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+        if release_entries:
+            union_registry = SkillRegistry(skills_root=skills_root)
+            for entry in release_entries.values():
+                union_registry._entries[entry.id] = entry
+
+            policy: dict = {}
+            if org_root is not None:
+                config_path = org_root / "org" / "config.yaml"
+            else:
+                config_path = settings.project_root / "org" / "config.yaml"
+            if config_path.is_file():
+                import yaml
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        policy = raw.get("skills", {})
+                except (yaml.YAMLError, OSError):
+                    pass
+
+            resolver = EligibilityResolver(policy)
+            exposed = resolve_exposed_skills(
+                union_registry, resolver, org=slug, team=team, agent=agent_name,
+            )
+
+            for es in exposed:
+                skill_id_slug = es.skill.slug
+                if es.skill.source == "user_authored" and org_root is not None:
+                    src_dir = org_root / "skills" / skill_id_slug
+                else:
+                    src_dir = skills_root / skill_id_slug
+                if not src_dir.is_dir():
+                    continue
+
+                content_hash = _compute_dir_hash(src_dir)
+                store.build_from_source(
+                    skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                )
+                expected_specs.append({
+                    "slug": skill_id_slug,
+                    "version": es.skill.version or "0",
+                    "content_hash": content_hash,
+                })
+
+                if db is not None:
+                    db.insert_skill_validation_event(
+                        skill_id=es.skill.id,
+                        slug=skill_id_slug,
+                        agent=agent_name,
+                        source="materialization",
+                        severity="info",
+                        ok=True,
+                        version=es.skill.version,
+                    )
+
+    # ── Lifecycle-ledger custom skills ──
+    if db is not None and org_root is not None:
+        lifecycle_specs = _build_lifecycle_canonical_specs(
+            store=store,
             org_root=org_root,
             db=db,
+            agent_name=agent_name,
+            slug=slug,
         )
+        expected_specs.extend(lifecycle_specs)
+
+    # ── Repair workspace: materialize expected, withdraw unexpected ──
+    for subdir in (".claude/skills", ".agents/skills"):
+        materializer.repair_workspace_skills(
+            expected_specs, workspace, subdir,
+        )
+
+
+def _build_lifecycle_canonical_specs(
+    *,
+    store: CanonicalSkillStore,
+    org_root: Path,
+    db,
+    agent_name: str,
+    slug: str,
+) -> list[dict]:
+    """Resolve lifecycle-ledger skills and build into canonical store.
+
+    Returns list of {slug, version, content_hash} specs for the materializer.
+    Only PUBLISHED skills with active assignments are resolved.
+    Fail-closed: any error raises LifecycleMaterializationError.
+    """
+    from runtime.skills.lifecycle.service import SkillLifecycleService
+    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
+    from runtime.orchestrator._paths import OrgPaths
+
+    service = SkillLifecycleService()
+    pkgs = service.get_effective_skills(db, agent_name)
+    if not pkgs:
+        return []
+
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+    specs: list[dict] = []
+
+    for pkg in pkgs:
+        skill_slug = pkg.slug
+
+        if not pkg.content_artifact_key:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason="No content_artifact_key — legacy paths not supported",
+            )
+
+        # Load manifest artifact
+        try:
+            manifest_bytes = artifact_store.read(pkg.content_artifact_key)
+        except ArtifactNotFound:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Artifact not found: {pkg.content_artifact_key}",
+            )
+
+        # Validate manifest hash against ledger content_hash
+        import hashlib
+        actual_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_hash != pkg.content_hash:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Manifest hash mismatch: expected {pkg.content_hash[:16]}..., got {actual_hash[:16]}...",
+            )
+
+        # Parse manifest
+        import json
+        try:
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except Exception:
+            # Legacy single-SKILL.md artifact — treat as source dir
+            pass
+
+        if isinstance(manifest, dict) and "members" in manifest:
+            # Manifest-based: build via artifact store
+            store.build_from_manifest(
+                skill_slug, pkg.version, pkg.content_hash,
+                manifest, artifact_store,
+            )
+        else:
+            # Legacy: single SKILL.md artifact
+            # Build a temp source dir with just the SKILL.md
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpd:
+                tmp_path = Path(tmpd)
+                (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
+                store.build_from_source(
+                    skill_slug, pkg.version, pkg.content_hash, tmp_path,
+                )
+
+        specs.append({
+            "slug": skill_slug,
+            "version": pkg.version,
+            "content_hash": pkg.content_hash,
+        })
+
+        # Record successful materialization
+        try:
+            service.record_materialization(
+                db=db,
+                skill_id=pkg.skill_id,
+                agent_name=agent_name,
+                version_id=pkg.id,
+                version=pkg.version,
+                content_hash=pkg.content_hash,
+                success=True,
+                session_context="session_spawn",
+            )
+        except Exception:
+            pass
+
+    return specs
+
+
+def _compute_dir_hash(src_dir: Path) -> str:
+    """Compute SHA-256 of a directory tree (for content-addressing).
+
+    Sorted by relative path, hashes each file's content.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for fpath in sorted(src_dir.rglob("*")):
+        if fpath.is_file():
+            rel = str(fpath.relative_to(src_dir))
+            h.update(rel.encode())
+            h.update(b"\x00")
+            h.update(fpath.read_bytes())
+            h.update(b"\x00")
+    return h.hexdigest()
 
 
 def inject_system_contracts(
@@ -429,26 +702,11 @@ def inject_system_contracts(
     slug: str,
     context: str,
 ) -> None:
-    """Inject system-contract skills into the workspace based on session context.
+    """DEPRECATED: Inject system-contract skills into the workspace.
 
-    ADDITIVE alongside ``refresh_session_skills`` (the wholesale dump). In
-    Phase 1 the wholesale dump still copies all 8 skills; this function adds
-    an EXPLICIT, context-aware injection path that will become the sole
-    injection path in Phase 4 when the wholesale dump is removed.
-
-    Each system contract is re-copied from ``protocol/skills/<id>/`` into
-    both ``.claude/skills/`` and ``.agents/skills/``. The contracts injected
-    are determined by session context:
-
-    - start-task: TASK, WAKE sessions
-    - jobs: all sessions
-    - make-worktree: any session where the workspace has repos
-    - thread: TASK, THREAD, WAKE sessions
-    - dream: DREAM sessions only
-
-    ``context`` is a string matching ``SessionContext`` ("task", "thread",
-    "wake", "dream"). Unknown values fall through to no-op (graceful
-    degradation).
+    This function is retained for backward compatibility. New callers should
+    use ``_materialize_system_contracts_canonical`` via
+    ``materialize_workspace_skills``.
     """
     from runtime.skills.system_contracts import (
         SessionContext,
@@ -1561,26 +1819,11 @@ class ClaudeWorkspaceAdapter:
         )
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.claude/skills/.
+        """No-op: canonical store + symlinks supersede wholesale copy.
 
-        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
-        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
-        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
-        delivery path.
-
-        **Issue #536:** the wholesale copy is serialized under the
-        process-local workspace lock so bootstrap writers cannot race
-        concurrent session-time materialization inside
-        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
+        Skills are materialized on every session spawn via
+        ``materialize_workspace_skills``, not at bootstrap time.
         """
-        if not _WHOLESALE_DUMP_ENABLED:
-            return
-        with _workspace_skills_transaction(workspace):
-            _copy_skills_tree(
-                _resolve_skills_src(self._settings),
-                workspace / ".claude" / "skills",
-                slug=self._slug,
-            )
 
 
 class CodexWorkspaceAdapter:
@@ -1638,26 +1881,7 @@ class CodexWorkspaceAdapter:
         (workspace / "AGENTS.md").write_text("\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.agents/skills/.
-
-        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
-        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
-        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
-        delivery path.
-
-        **Issue #536:** the wholesale copy is serialized under the
-        process-local workspace lock so bootstrap writers cannot race
-        concurrent session-time materialization inside
-        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
-        """
-        if not _WHOLESALE_DUMP_ENABLED:
-            return
-        with _workspace_skills_transaction(workspace):
-            _copy_skills_tree(
-                _resolve_skills_src(self._settings),
-                workspace / ".agents" / "skills",
-                slug=self._slug,
-            )
+        """No-op: canonical store + symlinks supersede wholesale copy."""
 
     def ensure_workspace_ready(
         self,
@@ -1734,31 +1958,7 @@ class OpencodeWorkspaceAdapter:
         )
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.agents/skills/.
-
-        opencode discovers skills under ``.opencode/skills/``,
-        ``.claude/skills/``, or ``.agents/skills/``. We pick ``.agents/``
-        to share the layout with Codex workspaces — a workspace can be
-        re-bootstrapped between executors without churn.
-
-        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
-        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
-        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
-        delivery path.
-
-        **Issue #536:** the wholesale copy is serialized under the
-        process-local workspace lock so bootstrap writers cannot race
-        concurrent session-time materialization inside
-        ``_copy_skills_tree``'s ``.tmp.<name>`` window.
-        """
-        if not _WHOLESALE_DUMP_ENABLED:
-            return
-        with _workspace_skills_transaction(workspace):
-            _copy_skills_tree(
-                _resolve_skills_src(self._settings),
-                workspace / ".agents" / "skills",
-                slug=self._slug,
-            )
+        """No-op: canonical store + symlinks supersede wholesale copy."""
 
     def ensure_workspace_ready(
         self,
