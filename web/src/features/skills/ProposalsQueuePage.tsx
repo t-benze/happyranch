@@ -43,18 +43,26 @@ const SUPPORTED_PARAMS = [
   'page_size',
 ] as const;
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 /**
  * Read URL search params and return only the server-supported keys.
  * Never forwards unsupported params to the API.
+ *
+ * page_size is forwarded when provided and validated as a positive
+ * integer; otherwise the default (20) is sent. The server response's
+ * `page` and `page_size` are authoritative for all pagination labels.
  */
 function useQueueParams() {
   const [searchParams] = useSearchParams();
   const page = Number(searchParams.get('page')) || 1;
-  const params: Record<string, string | number | undefined> = { page_size: PAGE_SIZE, page: 1 };
-  params.page = page;
-  params.page_size = PAGE_SIZE;
+  let pageSize = Number(searchParams.get('page_size'));
+  if (!Number.isFinite(pageSize) || pageSize < 1) pageSize = DEFAULT_PAGE_SIZE;
+
+  const params: Record<string, string | number | undefined> = {
+    page,
+    page_size: pageSize,
+  };
   for (const key of SUPPORTED_PARAMS) {
     const val = searchParams.get(key);
     if (val && key !== 'page' && key !== 'page_size') {
@@ -157,9 +165,10 @@ export function ProposalsQueuePage(): JSX.Element {
     setSearchInput(searchParams.get('search') ?? '');
   }, [searchParams]);
 
-  const page = Number(searchParams.get('page')) || 1;
+  const page = query.data?.page ?? (Number(searchParams.get('page')) || 1);
+  const pageSize = query.data?.page_size ?? DEFAULT_PAGE_SIZE;
   const total = query.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const filters = buildActiveFilters(searchParams, setSearchParams);
   const activeStatus = searchParams.get('status') ?? '';
@@ -213,10 +222,10 @@ export function ProposalsQueuePage(): JSX.Element {
         <Shield size={15} aria-hidden="true" className="text-fg-subtle mt-0.5 shrink-0" />
         <span>
           <b className="text-fg font-semibold">Founder-only.</b>{' '}
-          This queue shows all agent-submitted proposals. Lifecycle actions
-          (claim, validate, review, publish, assign, rollback) are available
-          through the CLI and detail views. Proposals are immutable — a new
-          version requires a fresh submission.
+          This queue shows all agent-submitted proposals in read-only form.
+          Lifecycle action UI (claim, validate, review, publish, assign,
+          rollback) is deferred to a future slice. Proposals are immutable —
+          a new version requires a fresh submission.
         </span>
       </div>
 
@@ -366,7 +375,7 @@ export function ProposalsQueuePage(): JSX.Element {
               {total} {total === 1 ? 'proposal' : 'proposals'}
             </span>
             <span className="text-xs">
-              (page {page} of {totalPages})
+              (page {page} of {totalPages}, {pageSize} per page)
             </span>
           </div>
 

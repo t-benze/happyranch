@@ -319,6 +319,150 @@ describe('ProposalsQueuePage', () => {
   });
 });
 
+  // ── Regression coverage: validation_outcome, proposer, date bounds, page_size ─
+
+  test('forwards validation_outcome values as query params', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?validation_outcome=validated` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('validation_outcome')).toBe('validated');
+  });
+
+  test('forwards validation_failed outcome', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?validation_outcome=validation_failed` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('validation_outcome')).toBe('validation_failed');
+  });
+
+  test('forwards unvalidated outcome', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?validation_outcome=unvalidated` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('validation_outcome')).toBe('unvalidated');
+  });
+
+  test('forwards proposer filter', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?proposer=frontend_engineer` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('proposer')).toBe('frontend_engineer');
+  });
+
+  test('forwards submitted_after date bound', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?submitted_after=2026-07-01` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('submitted_after')).toBe('2026-07-01');
+  });
+
+  test('forwards submitted_before date bound', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({ items: ALL, total: ALL.length, page: 1, page_size: 20 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?submitted_before=2026-08-01` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('submitted_before')).toBe('2026-08-01');
+  });
+
+  test('forwards non-default page_size to query API', async () => {
+    let capturedParams: URLSearchParams | null = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, ({ request }) => {
+        capturedParams = new URL(request.url).searchParams;
+        return HttpResponse.json({
+          items: ALL.slice(0, 10),
+          total: ALL.length,
+          page: 1,
+          page_size: 10,
+        });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals?page_size=10` });
+    await waitFor(() => {
+      expect(screen.getByText('Proposal Queue')).toBeInTheDocument();
+    });
+    expect(capturedParams!.get('page_size')).toBe('10');
+  });
+
+  test('pagination display uses response page and page_size, not client constant', async () => {
+    const many = Array.from({ length: 30 }, (_, i) =>
+      qi({ skill_id: `hr:many${i}`, version_id: i + 1 }),
+    );
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, () => {
+        // Response says page=2, page_size=10, total=30 → page 2 of 3
+        return HttpResponse.json({
+          items: many.slice(10, 20),
+          total: 30,
+          page: 2,
+          page_size: 10,
+        });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals` });
+    await waitFor(() => {
+      expect(screen.getByText(/30 proposals/)).toBeInTheDocument();
+    });
+    // Must reflect the server response, not the former 20 constant
+    expect(screen.getByText(/page 2 of 3/)).toBeInTheDocument();
+    expect(screen.getByText(/10 per page/)).toBeInTheDocument();
+  });
+
 describe('ProposalsQueue route precedence', () => {
   test('/skills/proposals is not swallowed by skills/:skillId', async () => {
     mountQueue([ITEM_1]);
