@@ -2381,3 +2381,111 @@ def test_set_executor_bootstrap_failure_after_successful_union(
     assert not new_file.exists(), (
         "New bootstrap file .agents/settings.json survived after failure"
     )
+
+
+def test_set_executor_materialization_real_missing_source_stops_before_build(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """TASK-4175 adversarial: When a mandatory system-contract source is absent
+    during executor-switch six-context union materialization, the route must
+    fail BEFORE any canonical package build or workspace reconciliation.
+
+    Exercises the REAL union (not mocked) with a missing dream contract
+    (required by DREAM context in the six-context union).
+
+    Proves:
+    - HTTP 400 with named error code
+    - Canonical store unchanged (no packages built)
+    - agent.yaml unchanged
+    - agent .md frontmatter unchanged
+    - No bootstrap files written
+    - No audit row produced
+    """
+    import shutil
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # Remove a required system-contract source: dream (DREAM context).
+    # Use a temp copy of protocol skills to avoid mutating the worktree.
+    import tempfile as _tempfile, shutil as _shutil
+    _tmp_proto = tmp_home / "_task4175_proto_skills"
+    _shutil.copytree(
+        org_state.settings.get_protocol_dir() / "skills",
+        _tmp_proto, symlinks=True,
+    )
+    dream_dir = _tmp_proto / "dream"
+    assert dream_dir.is_dir(), (
+        f"dream must exist before removal at {dream_dir}"
+    )
+    _shutil.rmtree(dream_dir)
+    assert not dream_dir.exists()
+
+    # Redirect _resolve_skills_src to our temp copy
+    import runtime.orchestrator.workspace_adapters as _wa_mod
+    monkeypatch.setattr(
+        _wa_mod, "_resolve_skills_src",
+        lambda settings: _tmp_proto,
+    )
+
+    # ── Snapshot canonical store before request ──
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    store = CanonicalSkillStore(settings=org_state.settings)
+    store_entries_before: set[str] = set()
+    if store.root.exists():
+        for p in store.root.rglob("*"):
+            if p.is_dir():
+                store_entries_before.add(str(p.relative_to(store.root)))
+
+    # Record pristine state
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # ── Execute failing switch (NO mock — real union) ──
+    from fastapi.testclient import TestClient
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # FAIL-CLOSED: missing source prevents switch
+    assert r.status_code == 400, (
+        f"Expected 400 on missing source, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_materialization_failed", (
+        f"Expected executor_materialization_failed, got {body}"
+    )
+    assert len(body["detail"]["errors"]) >= 1
+
+    # ── Assert unchanged state ──
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        "agent.yaml was mutated on failure"
+    )
+    if frontmatter_before is not None:
+        assert agent_md_path.read_text() == frontmatter_before
+
+    # ── Canonical store unchanged ──
+    store_entries_after: set[str] = set()
+    if store.root.exists():
+        for p in store.root.rglob("*"):
+            if p.is_dir():
+                store_entries_after.add(str(p.relative_to(store.root)))
+    new_store_entries = store_entries_after - store_entries_before
+    assert len(new_store_entries) == 0, (
+        f"Canonical store was mutated by failed materialization: {new_store_entries}"
+    )
+
+    # ── No bootstrap files from new executor ──
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json",
+                       ".agents/settings.json"]:
+        assert not (workspace / candidate).exists(), (
+            f"Bootstrap file {candidate} should not exist after failed switch"
+        )

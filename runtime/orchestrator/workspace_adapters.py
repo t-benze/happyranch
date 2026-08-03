@@ -369,6 +369,37 @@ def materialize_workspace_skills_union(
         )
 
 
+def _preflight_system_contract_sources(
+    contract_ids: set[str],
+    src_root: Path,
+    *,
+    workspace: Path,
+    provider: str,
+) -> None:
+    """Preflight: verify ALL required system-contract source directories exist.
+
+    Called BEFORE any canonical package build or workspace link reconciliation.
+    A missing required source must raise BEFORE any store mutation — earlier
+    contracts must not be built if a later one is absent.
+
+    Raises:
+        SystemContractMaterializationError: one or more required source
+            directories are absent, each identified by contract id, source
+            path, workspace, and provider.
+    """
+    missing: list[tuple[str, Path]] = []
+    for cid in sorted(contract_ids):
+        src_dir = src_root / cid
+        if not src_dir.is_dir():
+            missing.append((cid, src_dir))
+    if missing:
+        raise SystemContractMaterializationError(
+            missing_contracts=[cid for cid, _ in missing],
+            workspace=workspace,
+            provider=provider,
+        )
+
+
 def _materialize_context_union(
     workspace: Path,
     settings: Settings,
@@ -382,7 +413,13 @@ def _materialize_context_union(
     org_root: Path | None = None,
     db=None,
 ) -> None:
-    """Core union logic: build expected_specs from all contexts, repair once."""
+    """Core union logic: build expected_specs from all contexts, repair once.
+
+    Preflight: validates every mandatory system-contract source required by
+    the full context union BEFORE building any canonical package or
+    reconciling either workspace root. A missing required source raises
+    SystemContractMaterializationError — never silently continues.
+    """
     from runtime.skills.system_contracts import (
         SessionContext,
         resolve_system_contracts_for_session,
@@ -395,31 +432,35 @@ def _materialize_context_union(
     materializer = SymlinkMaterializer(store)
     src_root = _resolve_skills_src(settings)
 
-    # ── 1. Union system contracts from ALL contexts ─────────────────
+    # ── 0. PREFLIGHT: collect ALL required system-contract ids ──────
     seen_system_contracts: set[str] = set()
-    expected_specs: list[dict] = []
-
     for ctx_name in contexts:
         try:
             ctx = SessionContext(ctx_name)
         except ValueError:
-            # Unknown context name — skip system contracts for it
             continue
         contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
         for contract in contracts:
-            if contract.id in seen_system_contracts:
-                continue
             seen_system_contracts.add(contract.id)
-            src_dir = src_root / contract.id
-            if not src_dir.is_dir():
-                continue
-            content_hash = _compute_dir_hash(src_dir)
-            store.build_from_source(contract.id, "system", content_hash, src_dir)
-            expected_specs.append({
-                "slug": contract.id,
-                "version": "system",
-                "content_hash": content_hash,
-            })
+
+    # Validate ALL sources before any build.
+    _preflight_system_contract_sources(
+        seen_system_contracts, src_root,
+        workspace=workspace, provider=provider,
+    )
+
+    # ── 1. Union system contracts from ALL contexts ─────────────────
+    expected_specs: list[dict] = []
+
+    for cid in sorted(seen_system_contracts):
+        src_dir = src_root / cid
+        content_hash = _compute_dir_hash(src_dir)
+        store.build_from_source(cid, "system", content_hash, src_dir)
+        expected_specs.append({
+            "slug": cid,
+            "version": "system",
+            "content_hash": content_hash,
+        })
 
     # ── 2. Release-managed catalog skills (once) ───────────────────
     if skills_root.is_dir():
@@ -535,25 +576,32 @@ def _materialize_unified_canonical(
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
 
-    # ── Build unified expected_specs ────────────────────────────
-    expected_specs: list[dict] = []
-
-    # 1. System-contract skills (required session contracts)
+    # Resolve session context
     try:
         ctx = SessionContext(context)
     except ValueError:
         ctx = None
 
+    # ── 0. PREFLIGHT: collect ALL required system-contract ids ────
+    contract_ids: set[str] = set()
+    if ctx is not None:
+        for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
+            contract_ids.add(contract.id)
+
+    # Validate ALL sources before any build.
+    _preflight_system_contract_sources(
+        contract_ids, src_root,
+        workspace=workspace, provider=provider,
+    )
+
+    # ── Build unified expected_specs ────────────────────────────
+    expected_specs: list[dict] = []
+
+    # 1. System-contract skills (required session contracts)
     if ctx is not None:
         contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
         for contract in contracts:
             src_dir = src_root / contract.id
-            if not src_dir.is_dir():
-                raise SystemContractMaterializationError(
-                    missing_contracts=[contract.id],
-                    workspace=workspace,
-                    provider=provider,
-                )
             content_hash = _compute_dir_hash(src_dir)
             store.build_from_source(contract.id, "system", content_hash, src_dir)
             # Org context is carried via session/task metadata, not

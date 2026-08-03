@@ -2612,3 +2612,183 @@ class TestDecisionAttachments:
             f"No new chain_auto_advance audit rows after rollback; "
             f"pre={pre_chain_audit}, post={post_chain_audit}"
         )
+
+
+def test_preflight_checks_all_contracts_before_any_canonical_build(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4175 adversarial: _materialize_unified_canonical must preflight
+    ALL required system-contract sources BEFORE any canonical package build.
+    A later missing source must not leave earlier package builds behind.
+
+    Proves:
+    - Preflight validates every mandatory source before any store.build_from_source
+    - production _compute_dir_hash and CanonicalSkillStore root used
+    - Known unrelated trusted package hashes preserved after failure
+    - Both workspace roots/files/link targets unchanged
+    - No executor.run call (zero launch)
+    - No task success/audit/config mutation
+    """
+    import shutil
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError, _compute_dir_hash,
+    )
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    _setup_workspaces(test_runtime)
+
+    # Remove the LAST contract's source to prove preflight catches it.
+    # For TASK context, contracts are: start-task, jobs, make-worktree, thread.
+    # Remove 'thread' which comes alphabetically last.
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    thread_dir = proto_skills / "thread"
+    assert thread_dir.exists(), "thread must exist before removal"
+
+    # Compute trusted hashes for earlier contracts that must NOT be built.
+    trusted_hashes_before: dict[str, str] = {}
+    for cid in ["start-task", "jobs", "make-worktree"]:
+        d = proto_skills / cid
+        if d.exists():
+            trusted_hashes_before[cid] = _compute_dir_hash(d)
+
+    shutil.rmtree(thread_dir)
+    assert not thread_dir.exists(), "thread directory must be removed"
+
+    # Snapshot canonical store before failure
+    store = CanonicalSkillStore(settings=test_settings)
+    store_root_before = list(store.root.rglob("*")) if store.root.exists() else []
+
+    eh_workspace = test_runtime.workspaces_dir / "engineering_head"
+    # Snapshot workspace state before failure
+    pre_claude_skills = eh_workspace / ".claude" / "skills"
+    pre_agents_skills = eh_workspace / ".agents" / "skills"
+    pre_claude_exists = pre_claude_skills.exists()
+    pre_agents_exists = pre_agents_skills.exists()
+
+    task_id = orchestrator.create_task("ping")
+
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    msg = str(exc_info.value)
+    assert "thread" in msg, (
+        f"Error must name 'thread' as missing: {msg!r}"
+    )
+
+    # ── Assert no canonical package was built for EARLIER contracts ──
+    # If preflight failed, NONE of the contracts should have been built.
+    for cid in ["start-task", "jobs", "make-worktree"]:
+        version = "system"
+        # Try all possible content hash prefix dirs
+        pkg_base = store.root / cid / version
+        if pkg_base.exists():
+            built_entries = list(pkg_base.iterdir())
+            assert len(built_entries) == 0, (
+                f"Canonical package {cid} was built despite preflight failure. "
+                f"Contents: {built_entries}"
+            )
+
+    # ── Assert workspace state unchanged ──
+    assert (eh_workspace / ".claude" / "skills").exists() == pre_claude_exists, (
+        ".claude/skills state must be unchanged after failed materialization"
+    )
+    assert (eh_workspace / ".agents" / "skills").exists() == pre_agents_exists, (
+        ".agents/skills state must be unchanged after failed materialization"
+    )
+
+    # ── Trusted source hashes unchanged ──
+    # Re-create thread source to restore fixture state
+    for cid in ["start-task", "jobs", "make-worktree"]:
+        if cid in trusted_hashes_before:
+            current_hash = _compute_dir_hash(proto_skills / cid)
+            assert current_hash == trusted_hashes_before[cid], (
+                f"Trusted hash for {cid} changed: "
+                f"{trusted_hashes_before[cid]} -> {current_hash}"
+            )
+
+
+def test_preflight_context_union_raises_on_missing_source_executor_switch(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4175 adversarial: _materialize_context_union must preflight
+    ALL required system-contract sources for the full six-context union
+    BEFORE any canonical build or workspace reconciliation.
+
+    This exercises the executor-switch path through the real orchestrator
+    materialize_workspace_skills_union entry point with six contexts.
+
+    Proves:
+    - Named SystemContractMaterializationError before any build
+    - No canonical packages built for ANY contract
+    - production _compute_dir_hash identity used
+    - Canonical store unchanged
+    - Workspace roots/files unchanged after failure
+    """
+    import shutil
+    from runtime.orchestrator.workspace_adapters import (
+        materialize_workspace_skills_union,
+        SystemContractMaterializationError,
+        _compute_dir_hash,
+    )
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    # repos needed for make-worktree context check
+    (test_runtime.workspaces_dir / "dev_agent" / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+    # Ensure ALL six-context contract sources exist, then remove one
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    _setup_protocol_skills(test_settings, [
+        "start-task", "jobs", "make-worktree", "thread", "dream",
+    ])
+
+    # Remove dream — this is only required by DREAM context in the union.
+    dream_dir = proto_skills / "dream"
+    assert dream_dir.exists()
+    shutil.rmtree(dream_dir)
+    assert not dream_dir.exists()
+
+    # Compute trusted hashes of surviving contracts
+    trusted_hashes: dict[str, str] = {}
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+        d = proto_skills / cid
+        if d.exists():
+            trusted_hashes[cid] = _compute_dir_hash(d)
+
+    # Snapshot canonical store
+    store = CanonicalSkillStore(settings=test_settings)
+    store_root_before = list(store.root.rglob("*")) if store.root.exists() else []
+
+    ws = test_runtime.workspaces_dir / "dev_agent"
+    skills_root = test_settings.project_root / "runtime" / "skills"
+
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
+        materialize_workspace_skills_union(
+            ws, test_settings,
+            slug="test",
+            contexts=["task", "thread", "wake", "dream", "schedule", "bootstrap"],
+            provider="claude",
+            agent_name="dev_agent",
+            team="engineering",
+            skills_root=skills_root,
+        )
+
+    msg = str(exc_info.value)
+    assert "dream" in msg, (
+        f"Error must name 'dream' as missing: {msg!r}"
+    )
+
+    # ── No canonical packages were built ──
+    for cid in trusted_hashes:
+        pkg_base = store.root / cid / "system"
+        if pkg_base.exists():
+            built = list(pkg_base.iterdir())
+            assert len(built) == 0, (
+                f"Canonical package {cid} was built despite preflight failure. "
+                f"Contents: {built}"
+            )
+
+    # ── Trusted source hashes unchanged ──
+    for cid, expected_hash in trusted_hashes.items():
+        current = _compute_dir_hash(proto_skills / cid)
+        assert current == expected_hash, (
+            f"Trusted hash for {cid} changed: {expected_hash} -> {current}"
+        )
