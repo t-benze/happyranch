@@ -32,6 +32,12 @@ export type {
 
 export type { ProposalDetailResponse } from '@/lib/api/skillLifecycle';
 
+// Re-export proposal queue types for feature consumption (THR-055 Slice 3A).
+export type {
+  ProposalQueueItem,
+  ProposalQueueResponse,
+} from '@/lib/api/skillLifecycle';
+
 export const useSkillsCatalog: ReturnType<
   typeof useData
 >['skills']['useSkillsCatalog'] = (params) =>
@@ -88,3 +94,10 @@ export function useProposalDetail(
 }
 
 export { ApiError } from '@/lib/api/client';
+
+// ── THR-055 Slice 3A: Proposal Queue ───────────────────────────────────
+
+export const useProposalsQueue: ReturnType<
+  typeof useData
+>['skills']['useProposalsQueue'] = (params) =>
+  useData().skills.useProposalsQueue(params);

@@ -620,4 +620,11 @@ export const mockSkillsApi: SkillsApi = {
     ),
   useSkillValidation: (params) =>
     ok({ events: filterValidation(params), label: 'Runtime Validation' }),
+  useProposalsQueue: (_params) =>
+    ok({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 20,
+    }),
 };

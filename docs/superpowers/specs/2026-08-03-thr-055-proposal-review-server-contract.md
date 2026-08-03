@@ -2,12 +2,13 @@
 
 **Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
 
-**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), protocol/05c-orchestrator.md §4.5.
+**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), TASK-4154 (Slice 3A), protocol/05c-orchestrator.md §4.5.
 
-**Scope:** Server contract + TypeScript API mirror + read-only founder UI detail.
+**Scope:** Server contract + TypeScript API mirror + read-only founder UI.
 Slice 1 (PR #546): founder-only proposal review routes + concurrency + state machine.
 Slice 2A (PR #549): immutable SKILL.md bytes in detail, typed server filters in queue.
-Slice 2B (PR #550): read-only Founder Proposal Detail page. **Queue UI and all action/confirmation/stale-refresh mutation UI are deferred to later slices.**
+Slice 2B (PR #550): read-only Founder Proposal Detail page.
+Slice 3A (PR #551): read-only Founder Proposal Queue page. **All action/confirmation/stale-refresh mutation UI remains deferred to later slices.**
 
 ---
 
@@ -248,29 +249,65 @@ PR #550 delivers a **read-only, static presentation page** at
 **No server/API/schema/auth/permission/token/notification/dependency**
 change in Slice 2B.
 
-### 6.2 Deferred UI Slices (explicitly out of scope)
+### 6.2 Slice 3A — Read-Only Founder Proposal Queue Page (Delivered)
 
-The following surfaces are **explicitly deferred** to later slices and are
-NOT implemented in Slice 2B:
+PR #551 delivers a **read-only, static queue page** at
+`/orgs/:slug/skills/proposals` that consumes the existing server contract
+(§2.1, `GET /skill-lifecycle/proposals/queue`) and TypeScript API mirror (§3,
+`getProposalsQueue`). No backend route, auth change, or schema migration is
+added by this slice.
 
-- **Proposals Queue UI** — list/queue page with status, validation, proposer
-  filters, search, pagination, navigation
+**Delivered features:**
+- **Route:** `/orgs/:slug/skills/proposals` — declared before `skills/:skillId`
+  in React Router so "proposals" is not swallowed as a dynamic `:skillId`.
+- **Status quick-filter chips:** All, Proposed, Draft, Validated, In Review,
+  Approved, Published, Rejected.
+- **Free-text search** with server query on Enter.
+- **Active filter badges** with per-filter removal and "Clear all".
+- **Server-authoritative filtering, total, ordering, and pagination** — only
+  supported query params forwarded: `status`, `validation_outcome`
+  (`validated`, `validation_failed`, `unvalidated`), `search`, `proposer`,
+  `submitted_after`, `submitted_before`, `page`, `page_size`. Never
+  re-sorted/re-counted client-side.
+- **Read-only rows** — status badge, version, claimant (distinct from
+  immutable proposer_agent), validator version/key, submitted date.
+- **Deep-link navigation** — each row links to the existing Slice 2B detail
+  page at `/orgs/:slug/skills/proposals/:versionId`.
+- **Loading/empty/error/403 states** with contextual messages. 403 shows the
+  standard error UI; no proposal data, row counts, or filter state is leaked.
+- **No mutation controls** — no claim, validate, submit-review, review,
+  publish, assign, rollback, or retire buttons. Queue is completely read-only.
+
+**Explicitly omitted (no server filter support):**
+- "Any assignment" selector — no corresponding server query param exists.
+- "Any use case" selector — no corresponding server query param exists.
+
+**Detail page continuity:** The existing Slice 2B Proposal Detail page
+remains byte-for-byte as delivered (Founder 403 no-data-leak, immutable
+facts, distinct published/rejected view-only rendering, fact-only
+readiness/timeline/projections, no catalog-membership/visibility assertion,
+both clipboard accessibility feedback controls). Queue rows deep-link to it.
+
+### 6.3 Deferred UI Slices (explicitly out of scope)
+
+The following surfaces are **explicitly deferred** to later slices:
+
 - **All action/confirmation/stale-refresh mutation UI** — no claim, validate,
   submit-review, review decision, publish, assign, rollback, retire, or
   reopen controls of any kind
-- **Queue navigation, mutation controls, editor surface, agent approval UI,
+- **Mutation controls, editor surface, agent approval UI,
   comments/notes, bulk actions, ranking/sorting UI, recovery/reopen
   affordances**
 - **Stale-refresh handling** for concurrent mutations (expected_event_id
   concurrency protection is server-only; UI surface deferred)
 - **Navigation links** from Skills page to Proposals section
 
-### 6.3 Fidelity Targets
+### 6.4 Fidelity Targets
 
 - Proposal detail v3: `THR-055-20260802T015112Z-Skill-Proposal-Review-standalone-3-.html`
 - Queue v2: `THR-055-20260802T141333Z-Skill-Proposals-Queue-standalone-2-.html`
 
-### 6.4 Server Lifecycle Contract (Unchanged)
+### 6.5 Server Lifecycle Contract (Unchanged)
 
 The server lifecycle contract defined in §2 is **not modified** by any UI
 slice. All routes, response shapes, auth rules, and agent-submission policies
