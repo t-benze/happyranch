@@ -720,19 +720,199 @@ class AuditLogger:
             payload={"id": id, "kb_slug": kb_slug},
         )
 
+    def log_memory_digest_impression(
+        self,
+        *,
+        agent: str,
+        task_id: str,
+        session_id: str,
+        digest_ids: list[str],
+        budget: int,
+    ) -> None:
+        """THR-091 Slice 2: log a digest impression at agent spawn.
+
+        Emitted exactly once per non-empty digest injected into an agent
+        prompt.  Carries the shown digest's memory IDs plus agent, current
+        task ID, and generated session ID.  No digest text, titles,
+        directive/full bodies, prompts, or briefs are stored.
+
+        Row shape: ``task_id=<task_id>``, ``action="memory_digest_impression"``,
+        ``payload`` includes ``agent``, ``session_id``, ``digest_ids``,
+        ``digest_count``, ``budget``.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="memory_digest_impression",
+            payload={
+                "agent": agent,
+                "session_id": session_id,
+                "digest_ids": digest_ids,
+                "digest_count": len(digest_ids),
+                "budget": budget,
+            },
+        )
+
+    def log_memory_search(
+        self,
+        *,
+        agent: str,
+        session_id: str | None,
+        memory_ids: list[str],
+        hit_count: int,
+        kb_hit_count: int,
+        task_id: str | None = None,
+    ) -> None:
+        """THR-091 Slice 2: log a privacy-preserving search result telemetry event.
+
+        Stores only returned memory IDs (and minimal counts/correlation/source
+        metadata).  NEVER persists raw query text, query tokens/hashes, snippets,
+        titles, bodies, KB body content, or prompt text.  KB hits are excluded
+        from ``memory_ids``; their count is recorded as ``kb_hit_count``.
+
+        When ``task_id`` is provided (validated server-side via SessionTracker),
+        the row's ``task_id`` column is the actual task ID for trusted
+        correlation.  Otherwise ``task_id="AGENT-{agent}"`` (legacy).
+
+        Row shape: ``task_id=<task_id or AGENT-{agent}>``, ``action="memory_search"``,
+        ``payload`` includes ``agent``, ``session_id`` (when available),
+        ``memory_ids``, ``hit_count``, ``kb_hit_count``, and ``task_id``
+        (when available).
+        """
+        payload: dict = {
+            "agent": agent,
+            "memory_ids": memory_ids,
+            "hit_count": hit_count,
+            "kb_hit_count": kb_hit_count,
+        }
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if task_id is not None:
+            payload["task_id"] = task_id
+        row_task_id = task_id if task_id is not None else f"AGENT-{agent}"
+        self._db.insert_audit_log(
+            task_id=row_task_id,
+            agent=agent,
+            action="memory_search",
+            payload=payload,
+        )
+
     def log_memory_read(
         self,
         *,
         agent: str,
         id: str,
         slug: str,
+        session_id: str | None = None,
+        source: str | None = None,
+        task_id: str | None = None,
     ) -> None:
+        """Log a memory read with optional same-session attribution.
+
+        THR-091 Slice 2: adds optional ``session_id``, ``source``, and
+        ``task_id`` metadata.  ``source`` is one of ``digest``, ``search``,
+        or ``explicit_or_other``.  When ``source`` is None and ``session_id``
+        is provided, auto-resolve attribution via
+        ``_resolve_read_source`` which now also validates ``task_id`` when
+        known (server-side SessionTracker-confirmed).
+
+        Legacy rows without these fields remain compatible.
+        task_id column stays ``AGENT-{agent}`` (legacy scope convention).
+        When a validated ``task_id`` is supplied it is stored in payload.
+
+        Row shape: ``task_id="AGENT-{agent}"``, ``action="memory_read"``,
+        ``payload`` includes ``id``, ``slug``, and (when available)
+        ``source``, ``session_id``, ``task_id``.
+        """
+        resolved_source = source
+        if resolved_source is None and session_id is not None:
+            resolved_source = self._resolve_read_source(
+                agent=agent, id=id, session_id=session_id, task_id=task_id,
+            )
+        payload: dict = {"id": id, "slug": slug}
+        if resolved_source is not None:
+            payload["source"] = resolved_source
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if task_id is not None:
+            payload["task_id"] = task_id
         self._db.insert_audit_log(
             task_id=f"AGENT-{agent}",
             agent=agent,
             action="memory_read",
-            payload={"id": id, "slug": slug},
+            payload=payload,
         )
+
+    def _resolve_read_source(
+        self,
+        *,
+        agent: str,
+        id: str,
+        session_id: str,
+        task_id: str | None = None,
+    ) -> str:
+        """Resolve the source of a memory read for same-session attribution.
+
+        When ``task_id`` is provided (server-side SessionTracker-validated),
+        only matches events that share the same task_id — never cross-credits
+        a different task's digest or search, even for the same agent+session.
+
+        Returns ``digest`` when the id is in the session+task's digest impression;
+        ``search`` when in the session+task's search result ids; otherwise
+        ``explicit_or_other``.
+        """
+        import json
+        # Check digest impression for this session (and task when known).
+        # Digest impressions already store the actual task_id in the task_id
+        # column, so we filter by it directly in SQL.
+        if task_id is not None:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_digest_impression'"
+                " AND task_id = ?",
+                (agent, task_id),
+            )
+        else:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_digest_impression'",
+                (agent,),
+            )
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if payload.get("session_id") == session_id:
+                digest_ids = payload.get("digest_ids", [])
+                if id in digest_ids:
+                    return "digest"
+        # Check search events for this session (and task when known).
+        # Search events with validated task_id store it in the task_id column;
+        # unvalidated ones use "AGENT-{agent}".  Filter by task_id when known.
+        if task_id is not None:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_search'"
+                " AND task_id = ?",
+                (agent, task_id),
+            )
+        else:
+            rows = self._db.fetch_all_readonly(
+                "SELECT payload FROM audit_log"
+                " WHERE agent = ? AND action = 'memory_search'",
+                (agent,),
+            )
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if payload.get("session_id") == session_id:
+                memory_ids = payload.get("memory_ids", [])
+                if id in memory_ids:
+                    return "search"
+        return "explicit_or_other"
 
     def log_memory_lifecycle_changed(
         self,
@@ -763,9 +943,27 @@ class AuditLogger:
             },
         )
 
-    # THR-091 WS-C: pull-through telemetry — of the memory pointers pushed in a
-    # session's digest, how many were fetched via memory get. Built from the
-    # memory_read audit event + digest pointer primitives.
+    # THR-091 Slice 2: telemetry primitives — digest impression, memory_read
+    # attribution, search telemetry, and the operator-facing telemetry report
+    # (replacing the earlier WS-C pull-through stub).
+
+    @staticmethod
+    def _extract_digest_ids(digest_text: str) -> list[str]:
+        """Extract MEM-NNN ids from a digest string.
+
+        Matches markers like ``- `MEM-139` — ...`` or ``**Directive:** ``MEM-001`` ...``
+        """
+        import re
+        ids = re.findall(r'MEM-\d{3,}', digest_text)
+        # Preserve order, deduplicate
+        seen: set[str] = set()
+        result: list[str] = []
+        for mid in ids:
+            if mid not in seen:
+                seen.add(mid)
+                result.append(mid)
+        return result
+
     def compute_memory_pull_through(
         self,
         *,
@@ -780,6 +978,8 @@ class AuditLogger:
         - pull_through: fraction read (0.0–1.0)
         - read_ids: sorted list of ids that were read
         - unread_ids: sorted list of ids in digest but never read
+
+        THR-091 WS-C: retained for backward-compatible per-agent analysis.
         """
         if not digest_ids:
             return {
@@ -814,6 +1014,459 @@ class AuditLogger:
             "read_ids": sorted(read_set),
             "unread_ids": sorted(digest_ids - read_set),
         }
+
+    def compute_memory_telemetry_report(
+        self,
+        *,
+        agent_role_map: dict[str, str] | None = None,
+        current_time: "datetime | None" = None,
+    ) -> dict:
+        """THR-091 Slice 2: operator-facing telemetry report.
+
+        Computes aggregate and per-role telemetry from audit_log rows.
+        Returns a structured dict with:
+        - observation_period: pre-registration + threshold status
+        - aggregate: across all agents
+        - by_role: per-role breakdown (when agent_role_map provided)
+        - decision: activation_loss | retrieval_loss | no_demonstrated_problem
+                    | insufficient_sample
+
+        Pre-registration:
+        - Observation starts only after the first production
+          ``memory_digest_impression`` row.
+        - Requires 14 complete calendar days AND at least 500 sessions with
+          non-empty correlated digests.
+        - Decision rules per the THR-091 Slice 2 spec.
+
+        Args:
+            agent_role_map: authoritative agent→role mapping from /agents.
+                When None, roles are reported as unavailable.
+            current_time: UTC datetime for time-based threshold evaluation.
+                When None (production), uses datetime.now(timezone.utc).
+                Tests seed this to simulate 14+ days elapsed.
+        """
+        import json
+        from datetime import datetime, timedelta, timezone
+
+        if current_time is None:
+            current_time = datetime.now(timezone.utc)
+
+        # Collect digest impressions with timestamps.
+        # Include task_id column (impressions store the actual task_id there,
+        # unlike legacy memory_read rows which use AGENT-{agent}).
+        rows = self._db.fetch_all_readonly(
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
+            " WHERE action = 'memory_digest_impression'"
+            " ORDER BY timestamp ASC",
+            (),
+        )
+        if not rows:
+            return {
+                "observation_period": {
+                    "status": "insufficient_sample",
+                    "reason": "No memory_digest_impression rows found —"
+                              " observation has not started.",
+                    "trigger": "First production memory_digest_impression row"
+                               " emitted by the deployed revision.",
+                },
+                "aggregate": {},
+                "by_role": {},
+                "decision": "insufficient_sample",
+            }
+
+        # Parse impressions
+        impressions: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            session_id = payload.get("session_id")
+            digest_ids = payload.get("digest_ids", [])
+            agent = payload.get("agent", row["agent"] if "agent" in row.keys() else "")
+            row_task_id = row["task_id"] if "task_id" in row.keys() else ""
+            if session_id and digest_ids:
+                impressions.append({
+                    "session_id": session_id,
+                    "digest_ids": digest_ids,
+                    "agent": agent,
+                    "task_id": row_task_id,
+                    "timestamp": row["timestamp"],
+                })
+
+        if not impressions:
+            return {
+                "observation_period": {
+                    "status": "insufficient_sample",
+                    "reason": "No non-empty correlated digest impressions found.",
+                    "trigger": "First production memory_digest_impression row"
+                               " emitted by the deployed revision.",
+                },
+                "aggregate": {},
+                "by_role": {},
+                "decision": "insufficient_sample",
+            }
+
+        # Determine observation start (first impression timestamp)
+        first_ts_str = impressions[0]["timestamp"]
+        try:
+            first_ts = datetime.fromisoformat(
+                first_ts_str.replace("Z", "+00:00")
+            )
+        except (ValueError, TypeError):
+            first_ts = datetime.now(timezone.utc)
+
+        days_elapsed = (current_time - first_ts).days
+
+        # Unique sessions with non-empty digests
+        all_sessions: set[str] = set()
+        per_agent_sessions: dict[str, set[str]] = {}
+        agent_roles: dict[str, str] = {}
+        for imp in impressions:
+            sid = imp["session_id"]
+            all_sessions.add(sid)
+            agent = imp["agent"]
+            if agent not in per_agent_sessions:
+                per_agent_sessions[agent] = set()
+            per_agent_sessions[agent].add(sid)
+            # Determine role from authoritative map.
+            # Never fall back to agent name — unknown roles are excluded
+            # from role decisions rather than guessed.
+            if agent_role_map is not None and agent not in agent_roles:
+                role = agent_role_map.get(agent)
+                if role is not None:
+                    agent_roles[agent] = role
+
+        total_sessions = len(all_sessions)
+
+        # Pre-registration thresholds
+        met_days = days_elapsed >= 14
+        met_sessions = total_sessions >= 500
+        thresholds_met = met_days and met_sessions
+
+        observation = {
+            "trigger": "First production memory_digest_impression row emitted"
+                       " by the deployed revision.",
+            "first_impression_at": first_ts_str,
+            "days_elapsed": days_elapsed,
+            "required_days": 14,
+            "total_correlated_sessions": total_sessions,
+            "required_sessions": 500,
+            "thresholds_met": thresholds_met,
+            "days_met": met_days,
+            "sessions_met": met_sessions,
+        }
+
+        if not thresholds_met:
+            return {
+                "observation_period": {
+                    **observation,
+                    "status": "insufficient_sample",
+                    "reason": (
+                        f"Need 14 days (have {days_elapsed}) AND"
+                        f" 500 sessions (have {total_sessions})."
+                    ),
+                },
+                "aggregate": {},
+                "by_role": {},
+                "decision": "insufficient_sample",
+            }
+
+        # Collect memory_read events for pull-through.
+        # Include agent and task_id columns so we can verify read rows
+        # match the impression's (agent, task_id, session_id) tuple.
+        read_rows = self._db.fetch_all_readonly(
+            "SELECT agent, task_id, payload FROM audit_log"
+            " WHERE action = 'memory_read'",
+            (),
+        )
+
+        # Compute per-session pull-through.
+        # Build a validated (agent, task_id, session_id) tuple map from
+        # trusted impressions so reads can be verified against it.
+        session_digest_ids: dict[str, set[str]] = {}
+        session_agent: dict[str, str] = {}
+        validated_impression_tuples: dict[str, tuple[str, str]] = {}  # sid→(agent, task_id)
+        for imp in impressions:
+            sid = imp["session_id"]
+            session_digest_ids[sid] = set(imp["digest_ids"])
+            session_agent[sid] = imp["agent"]
+            imp_task_id = imp.get("task_id", "")
+            if imp_task_id:
+                validated_impression_tuples[sid] = (imp["agent"], imp_task_id)
+            session_agent[sid] = imp["agent"]
+
+        # Which digest IDs were read in each session.
+        # Only include correlated reads (have both session_id and task_id).
+        # Legacy/untrusted reads excluded from pull-through and search-absent
+        # denominators.
+        session_read_ids: dict[str, set[str]] = {}
+        search_reads: list[dict] = []
+        digest_reads: list[dict] = []
+        explicit_reads: list[dict] = []
+        untrusted_reads: list[dict] = []
+        for row in read_rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            mid = payload.get("id")
+            source = payload.get("source", "explicit_or_other")
+            rsid = payload.get("session_id")
+            rtask_id = payload.get("task_id")
+            # Verify that the read's (agent, task_id, session_id) tuple
+            # matches the impression's validated tuple.  Rows that fail
+            # this check are excluded from pull-through and search-absent
+            # denominators rather than treated as matches.
+            if rsid and rtask_id:
+                validated_tuple = validated_impression_tuples.get(rsid)
+                if validated_tuple is not None:
+                    imp_agent, imp_task_id = validated_tuple
+                    row_agent = row["agent"] if "agent" in row.keys() else ""
+                    if row_agent == imp_agent and rtask_id == imp_task_id:
+                        # Tuple-verified read — include in telemetry
+                        if rsid not in session_read_ids:
+                            session_read_ids[rsid] = set()
+                        session_read_ids[rsid].add(mid)
+                        entry = {"id": mid, "source": source,
+                                 "session_id": rsid, "task_id": rtask_id,
+                                 "agent": row_agent}
+                        if source == "digest":
+                            digest_reads.append(entry)
+                        elif source == "search":
+                            search_reads.append(entry)
+                        else:
+                            explicit_reads.append(entry)
+                        continue
+                # Tuple mismatch or unknown session — treat as untrusted
+                untrusted_reads.append({"id": mid, "source": source,
+                                       "session_id": rsid, "task_id": rtask_id})
+            else:
+                untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
+
+        # Build per-role aggregates (roles with >=30 correlated digest sessions).
+        # Only agents with an authoritative role from agent_role_map are included
+        # in role-level decisions.  Agents without a known role are reported in
+        # the by_role output as ineligible and excluded from role decisions.
+        roles_unavailable = agent_role_map is None
+        role_data: dict[str, dict] = {}
+        unknown_agents: list[str] = []
+        for agent, sessions in per_agent_sessions.items():
+            role = agent_roles.get(agent)
+            if role is None:
+                unknown_agents.append(agent)
+                continue
+            if role not in role_data:
+                role_data[role] = {
+                    "agents": [],
+                    "sessions": set(),
+                }
+            role_data[role]["agents"].append(agent)
+            role_data[role]["sessions"] |= sessions
+
+        # Aggregate pull-through — per-session denominators (not globally
+        # unioned).  Each session's unique shown IDs and read-in-session IDs
+        # are summed across all sessions.
+        total_shown = 0
+        total_read_in_session = 0
+        for sid, d_ids in session_digest_ids.items():
+            shown = len(d_ids)
+            reads = session_read_ids.get(sid, set())
+            read_in_this_session = len(reads & d_ids)
+            total_shown += shown
+            total_read_in_session += read_in_this_session
+
+        agg_pull_through = (
+            total_read_in_session / total_shown
+            if total_shown else 0.0
+        )
+
+        # Search reads with IDs absent from session digest.
+        # Only correlated read rows (have both session_id and task_id) are
+        # evaluated.  Legacy/untrusted/unmatched rows are excluded rather than
+        # treated as search misses.
+        search_total = len(search_reads)
+        search_absent_count = 0
+        for sr in search_reads:
+            sid = sr.get("session_id")
+            if sid and sid in session_digest_ids:
+                if sr["id"] not in session_digest_ids[sid]:
+                    search_absent_count += 1
+            # No else — untrusted rows excluded, not counted as absent
+
+        search_absent_frac = (
+            search_absent_count / search_total if search_total > 0 else 0.0
+        )
+
+        # Per-role computation
+        by_role: dict[str, dict] = {}
+        eligible_roles: list[str] = []
+        for role, data in role_data.items():
+            role_sessions = data["sessions"]
+            role_session_count = len(role_sessions)
+            if role_session_count < 30:
+                by_role[role] = {
+                    "correlated_sessions": role_session_count,
+                    "eligible": False,
+                    "reason": f"Need >=30 sessions (have {role_session_count})",
+                }
+                continue
+            eligible_roles.append(role)
+
+            # Role-specific per-session shown IDs (not globally unioned)
+            role_total_shown = 0
+            role_total_read_in_session = 0
+            for sid in role_sessions:
+                if sid in session_digest_ids:
+                    role_total_shown += len(session_digest_ids[sid])
+                    reads = session_read_ids.get(sid, set())
+                    role_total_read_in_session += len(
+                        reads & session_digest_ids[sid]
+                    )
+
+            role_pull_through = (
+                role_total_read_in_session / role_total_shown
+                if role_total_shown else 0.0
+            )
+
+            # Role-specific search stats — only correlated reads
+            role_search_total = 0
+            role_search_absent = 0
+            for sr in search_reads:
+                sid = sr.get("session_id")
+                if sid and sid in role_sessions:
+                    role_search_total += 1
+                    if sid in session_digest_ids:
+                        if sr["id"] not in session_digest_ids[sid]:
+                            role_search_absent += 1
+                    # No else — untrusted rows excluded
+
+            role_search_absent_frac = (
+                role_search_absent / role_search_total
+                if role_search_total > 0 else 0.0
+            )
+
+            role_search_threshold_met = role_search_total >= 30
+
+            by_role[role] = {
+                "correlated_sessions": role_session_count,
+                "eligible": True,
+                "digest_pull_through": round(role_pull_through, 4),
+                "unique_digest_ids_shown": role_total_shown,
+                "unique_digest_ids_read_same_session": role_total_read_in_session,
+                "search_sourced_reads": role_search_total,
+                "search_sourced_absent_from_digest": role_search_absent,
+                "search_absent_fraction": round(role_search_absent_frac, 4),
+                "search_threshold_met": role_search_threshold_met,
+            }
+
+        # Decision logic
+        # Rule 1: Activation loss — pointer pull-through <10% aggregate AND
+        #          majority of eligible roles <10%
+        # Rule 2: Retrieval loss — search-sourced reads of IDs absent from
+        #          session digest >25% both aggregate AND in any eligible role
+        #          with >=30 such reads
+        # Rule 3: Otherwise no demonstrated problem
+
+        decision: str
+        decision_detail: str
+
+        if agg_pull_through < 0.10:
+            eligible_roles_below_10 = sum(
+                1 for r in eligible_roles
+                if by_role[r]["digest_pull_through"] < 0.10
+            )
+            if eligible_roles and eligible_roles_below_10 > len(eligible_roles) / 2:
+                decision = "activation_loss"
+                decision_detail = (
+                    "Aggregate pointer-level same-session pull-through"
+                    f" ({agg_pull_through:.2%}) < 10% AND majority of eligible"
+                    f" roles ({eligible_roles_below_10}/{len(eligible_roles)}) < 10%."
+                    " Next step: provenance/push tuning only, no aliases/embeddings."
+                )
+            elif not eligible_roles:
+                decision = "no_demonstrated_problem"
+                decision_detail = (
+                    f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
+                    " but no eligible roles to confirm (role analysis"
+                    " unavailable). Do not tune ranking/push."
+                )
+            else:
+                # Aggregate <10% but majority of roles are NOT <10% => no global
+                # remedy; fall through to retrieval check
+                decision = "no_demonstrated_problem"
+                decision_detail = (
+                    f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
+                    " but majority of eligible roles are NOT <10%."
+                    " No global remedy applied. Contradictory role visibility"
+                    " preserved."
+                )
+        elif search_absent_frac > 0.25:
+            # Check if any eligible role with >=30 search reads also >25%
+            retrieval_roles = [
+                r for r in eligible_roles
+                if by_role[r]["search_threshold_met"]
+                and by_role[r]["search_absent_fraction"] > 0.25
+            ]
+            if retrieval_roles:
+                decision = "retrieval_loss"
+                decision_detail = (
+                    "Search reads of IDs absent from digest >25% in"
+                    f" aggregate ({search_absent_frac:.2%}) AND in eligible"
+                    f" role(s): {retrieval_roles}."
+                    " Next step: alias/synonym-tag evaluation first."
+                    " Embeddings remain founder-gated."
+                )
+            else:
+                decision = "no_demonstrated_problem"
+                decision_detail = (
+                    "Search absent fraction >25% aggregate"
+                    f" ({search_absent_frac:.2%}) but no eligible role"
+                    " with >=30 search reads exceeds 25%."
+                    " No demonstrated retrieval problem."
+                )
+        else:
+            decision = "no_demonstrated_problem"
+            decision_detail = (
+                "Aggregate pull-through >=10% and search absent"
+                " fraction <=25%. No demonstrated activation or retrieval"
+                " problem. Do not tune ranking/push."
+            )
+
+        aggregate = {
+            "correlated_sessions": total_sessions,
+            "unique_digest_ids_shown": total_shown,
+            "unique_digest_ids_read_same_session": total_read_in_session,
+            "digest_pull_through": round(agg_pull_through, 4),
+            "search_sourced_reads": search_total,
+            "search_sourced_absent_from_digest": search_absent_count,
+            "search_absent_fraction": round(search_absent_frac, 4),
+            "digest_sourced_reads": len(digest_reads),
+            "explicit_or_other_sourced_reads": len(explicit_reads),
+            "untrusted_uncorrelated_reads": len(untrusted_reads),
+        }
+
+        result: dict = {
+            "observation_period": {
+                **observation,
+                "status": "thresholds_met",
+            },
+            "aggregate": aggregate,
+            "by_role": by_role,
+            "decision": decision,
+            "decision_detail": decision_detail,
+        }
+        if roles_unavailable:
+            result["roles_warning"] = (
+                "Authoritative agent roles unavailable — /agents surface"
+                " could not be read. Per-role analysis excluded."
+            )
+        elif unknown_agents:
+            result["roles_warning"] = (
+                f"{len(unknown_agents)} agent(s) have unknown roles"
+                f" and are excluded from role decisions: {unknown_agents}"
+            )
+        return result
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.

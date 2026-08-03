@@ -96,17 +96,22 @@ export const getMemory = (
   slug: string,
   agentName: string,
   idOrSlug: string,
+  sessionId?: string,
 ): Promise<MemoryEntry> =>
-  request(`/orgs/${slug}/agents/${agentName}/memory/entries/${idOrSlug}`);
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/${idOrSlug}`, {
+    params: sessionId ? { session_id: sessionId } : undefined,
+  });
 
 export const searchMemory = (
   slug: string,
   agentName: string,
   body: { query: string; limit?: number; include_promoted?: boolean },
+  sessionId?: string,
 ): Promise<{ hits: { id: string; slug: string; title: string; snippet: string; score: number }[] }> =>
   request(`/orgs/${slug}/agents/${agentName}/memory/entries/search`, {
     method: 'POST',
     body,
+    params: sessionId ? { session_id: sessionId } : undefined,
   });
 
 // ---------------------------------------------------------------------------

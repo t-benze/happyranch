@@ -740,6 +740,10 @@
             "header"
           ],
           [
+            "session_id",
+            "query"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -764,6 +768,10 @@
           [
             "id_or_slug",
             "path"
+          ],
+          [
+            "session_id",
+            "query"
           ],
           [
             "slug",

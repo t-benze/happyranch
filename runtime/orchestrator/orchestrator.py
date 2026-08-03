@@ -787,6 +787,23 @@ class Orchestrator:
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
 
+        # THR-091 Slice 2: emit exactly one memory_digest_impression audit
+        # event per non-empty digest injected into the agent prompt, AFTER
+        # the trusted session binding exists but BEFORE executor launch.
+        # The impression carries the shown digest's memory IDs plus agent,
+        # task_id, and session_id.  No digest text, titles, or bodies.
+        # Empty/None digest => no impression event.
+        if memory_digest:
+            digest_ids = AuditLogger._extract_digest_ids(memory_digest)
+            if digest_ids:
+                self._audit.log_memory_digest_impression(
+                    agent=agent_name,
+                    task_id=task_id,
+                    session_id=session_id,
+                    digest_ids=digest_ids,
+                    budget=budget,
+                )
+
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
 

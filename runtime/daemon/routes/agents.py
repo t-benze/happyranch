@@ -1302,7 +1302,13 @@ async def list_learnings(
 
 
 @router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}", include_in_schema=False)
-async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
+async def get_learning(
+    slug: str,
+    agent_name: str,
+    id_or_slug: str,
+    org: OrgDep,
+    session_id: str | None = Query(None),
+) -> dict:
     store = _workspace_memory_store(org, agent_name)
     try:
         entry = store.read_entry(id_or_slug)
@@ -1311,8 +1317,25 @@ async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep)
             status_code=404,
             detail={"error": "id_not_found", "id_or_slug": id_or_slug},
         )
+    # THR-091 Slice 2: validate session_id via SessionTracker before
+    # using it for correlation.  Only a server-side-verified
+    # (org_slug, task_id, agent_name) tuple qualifies for same-session
+    # attribution.  No validated context → source=explicit_or_other.
+    validated_task_id: str | None = None
+    validated_session_id: str | None = None
+    if session_id is not None:
+        ctx = org.sessions.get_context_by_session(session_id)
+        if ctx is not None:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
+                validated_task_id = task_id
+                validated_session_id = session_id
     AuditLogger(org.db).log_memory_read(
-        agent=agent_name, id=entry.id, slug=entry.slug,
+        agent=agent_name,
+        id=entry.id,
+        slug=entry.slug,
+        session_id=validated_session_id,
+        task_id=validated_task_id,
     )
     return _entry_to_dict(entry)
 
@@ -1331,7 +1354,11 @@ class LearningSearchBody(BaseModel):
 
 @router.post("/agents/{agent_name}/learnings/entries/search", include_in_schema=False)
 async def search_learnings(
-    slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
+    slug: str,
+    agent_name: str,
+    body: LearningSearchBody,
+    org: OrgDep,
+    session_id: str | None = Query(None),
 ) -> dict:
     org_cfg = load_org_config(OrgPaths(root=org.root))
     sc = org_cfg.memory_search
@@ -1368,6 +1395,30 @@ async def search_learnings(
     # THR-032 P4b: merge + sort combined memory+KB hits, then truncate
     hits.sort(key=lambda h: (-h.score, h.updated_at or "", h.title, h.id))
     hits = hits[:limit]
+    # THR-091 Slice 2: log privacy-preserving search telemetry.
+    # Store only memory IDs (exclude KB hits), plus counts/correlation.
+    # NEVER persist raw query text, snippets, titles, or bodies.
+    # Validate session_id via SessionTracker before using it for
+    # correlation — only a server-side-verified context qualifies.
+    memory_hit_ids = [h.id for h in hits if h.source != "kb"]
+    kb_hit_count = sum(1 for h in hits if h.source == "kb")
+    validated_task_id: str | None = None
+    validated_session_id: str | None = None
+    if session_id is not None:
+        ctx = org.sessions.get_context_by_session(session_id)
+        if ctx is not None:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
+                validated_task_id = task_id
+                validated_session_id = session_id
+    AuditLogger(org.db).log_memory_search(
+        agent=agent_name,
+        session_id=validated_session_id,
+        memory_ids=memory_hit_ids,
+        hit_count=len(memory_hit_ids),
+        kb_hit_count=kb_hit_count,
+        task_id=validated_task_id,
+    )
     result: dict = {
         "hits": [
             {
