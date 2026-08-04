@@ -3255,11 +3255,14 @@ class TestSameOwnerAdversarialLimits:
         branch: an intact valid artifact/canonical-store is reused
         without spurious rebuild.
 
-        When the canonical package content matches the verified source
-        hash, the second call returns the same specs (no rebuild).
-        This would fail if verify_source_hash were omitted because a
-        spurious rebuild would manifest as a different path or build
-        error.
+        The second call passes the same verified source hash and the
+        canonical package content still matches — build_from_source
+        must return the existing path without entering the rebuild
+        code path.  We intercept _apply_readonly_hardening, which is
+        only invoked during rebuild (after os.replace publishes the
+        package).  If it is called during the second materialization
+        the implementation is needlessly deleting/rebuilding the
+        content-addressed package.
         """
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
@@ -3315,13 +3318,38 @@ class TestSameOwnerAdversarialLimits:
         pkg_path = store.canonical_path("test-valid", "1.0.0", raw_artifact_sha)
         assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
 
-        # ── 3. Second call does NOT rebuild — same specs, same content ──
-        specs2 = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
+        # ── 3. Intercept the rebuild primitive and call again ──
+        # _apply_readonly_hardening is invoked exclusively during rebuild
+        # (after os.replace publishes the package).  If the second
+        # materialization reuses the existing package, this primitive
+        # must never be reached.
+        import runtime.skills.canonical_store as cs_mod
+
+        rebuild_calls: list[str] = []
+
+        def _track_rebuild(isolation, pkg_path_arg):
+            rebuild_calls.append(str(pkg_path_arg))
+            # Still call through so the test exercises the full path.
+            return cs_mod._apply_readonly_hardening(isolation, pkg_path_arg)
+
+        with patch.object(
+            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
+        ):
+            specs2 = _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+
+        # ── 4. Assert no rebuild occurred ──
+        assert len(rebuild_calls) == 0, (
+            f"_apply_readonly_hardening invoked {len(rebuild_calls)} time(s) "
+            f"on second materialization — rebuild detected when none should "
+            f"occur (paths: {rebuild_calls}). A spurious rebuild means the "
+            f"implementation is needlessly deleting and reconstructing the "
+            f"content-addressed canonical package."
         )
         assert len(specs2) == 1
         assert specs2[0] == specs1[0], (
