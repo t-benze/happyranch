@@ -44,60 +44,114 @@ class CanonicalStoreError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
-def _verify_recursive_readonly(pkg_path: Path) -> None:
+def _verify_recursive_readonly(
+    pkg_path: Path, *, same_owner: bool = False,
+) -> None:
     """Recursively verify the package root and every file and directory
-    under *pkg_path* is NOT owner-writable, group-writable, or other-writable.
+    under *pkg_path* is NOT group-writable or other-writable.
+
+    When *same_owner* is False (strict distinct-identity mode), owner-writable
+    is also rejected — every entry must be fully read-only.
+
+    When *same_owner* is True, directories MAY be owner-writable (0755) because
+    the daemon owner must retain write to create new packages in
+    subdirectories.  This matches the shipping macOS same-owner hardening
+    behavior (``make_dir_readonly_executor`` produces 0755 directories).
+    ALL files must still be non-writable regardless of mode.
 
     An insufficiently hardened package (hardening failed after os.replace)
     will fail these checks.  This prevents is_built() from returning True
     for a package whose readonly protection was never fully applied.
 
-    Raises CanonicalStoreError on any writable bit found.
+    Raises CanonicalStoreError on any forbidden writable bit found.
     """
     # Check the root directory itself first
     try:
-        root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
+        root_stat = pkg_path.stat()
     except OSError:
         raise CanonicalStoreError(
             "insufficient_hardening",
             f"Cannot stat package root: {pkg_path}",
         )
-    if root_mode & stat.S_IWUSR:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package root is owner-writable: {pkg_path}",
-        )
-    if root_mode & stat.S_IWGRP:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package root is group-writable: {pkg_path}",
-        )
-    if root_mode & stat.S_IWOTH:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package root is world-writable: {pkg_path}",
-        )
+    root_mode = stat.S_IMODE(root_stat.st_mode)
+    _check_directory_writability(
+        pkg_path, root_mode, same_owner=same_owner, label=f"Package root",
+    )
     # Check all members recursively
     for entry in sorted(pkg_path.rglob("*")):
         try:
-            mode = stat.S_IMODE(entry.stat().st_mode)
+            entry_stat = entry.stat()
         except OSError:
             continue
-        if mode & stat.S_IWUSR:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"Package member is owner-writable: {entry}",
+        mode = stat.S_IMODE(entry_stat.st_mode)
+        if entry.is_dir():
+            _check_directory_writability(
+                entry, mode, same_owner=same_owner,
+                label=f"Package member",
             )
+        else:
+            _check_file_writability(entry, mode)
+
+
+def _check_directory_writability(
+    path: Path, mode: int, *, same_owner: bool, label: str,
+) -> None:
+    """Check a directory's writability bits.
+
+    In strict mode (same_owner=False): ALL write bits are forbidden.
+    In same-owner mode (same_owner=True): owner-writable is permitted
+    (matching the shipping 0755 hardening), but group/other-writable
+    is still rejected.
+    """
+    if same_owner:
+        # Same-owner mode: directories may be owner-writable (0755 expected)
         if mode & stat.S_IWGRP:
             raise CanonicalStoreError(
                 "insufficient_hardening",
-                f"Package member is group-writable: {entry}",
+                f"{label} is group-writable: {path}",
             )
         if mode & stat.S_IWOTH:
             raise CanonicalStoreError(
                 "insufficient_hardening",
-                f"Package member is world-writable: {entry}",
+                f"{label} is world-writable: {path}",
             )
+    else:
+        # Strict distinct-identity mode: NO write bits anywhere
+        if mode & stat.S_IWUSR:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"{label} is owner-writable: {path}",
+            )
+        if mode & stat.S_IWGRP:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"{label} is group-writable: {path}",
+            )
+        if mode & stat.S_IWOTH:
+            raise CanonicalStoreError(
+                "insufficient_hardening",
+                f"{label} is world-writable: {path}",
+            )
+
+
+def _check_file_writability(path: Path, mode: int) -> None:
+    """Check a file's writability bits — ALL write bits are forbidden
+    regardless of mode (files should always be 0444)."""
+    if mode & stat.S_IWUSR:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package member is owner-writable: {path}",
+        )
+    if mode & stat.S_IWGRP:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package member is group-writable: {path}",
+        )
+    if mode & stat.S_IWOTH:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"Package member is world-writable: {path}",
+        )
 
 
 def _apply_readonly_hardening(
@@ -231,10 +285,11 @@ class CanonicalSkillStore:
         """Check if a canonical package is already built and valid.
 
         Validates ownership at the root, non-emptiness, AND recursively
-        verifies that every file and directory has had readonly hardening
-        applied (no owner, group, or other write bits).  This prevents reuse of a
-        package published by os.replace but whose hardening (make_file_readonly
-        / make_dir_readonly_executor) failed after the atomic move.
+        verifies that hardening has been applied. In strict distinct-identity
+        mode every file and directory must be fully non-writable. In
+        same-owner mode directories at 0755 (owner-writable) are permitted
+        — matching the shipping macOS same-owner hardening behavior — but
+        group/other-writable entries are still rejected.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -246,11 +301,12 @@ class CanonicalSkillStore:
             return False
         if not any(pkg_path.iterdir()):
             return False
-        # Recursively verify every file and directory is NOT group/other
-        # writable.  An insufficiently hardened package (hardening failed
-        # after os.replace) will fail these checks.
+        # Recursively verify hardening. Strict mode rejects all write bits;
+        # same-owner mode permits owner-writable directories (0755) but
+        # rejects group/other writability and all writability on files.
         try:
-            _verify_recursive_readonly(pkg_path)
+            same_owner = self._isolation.is_same_owner_mode
+            _verify_recursive_readonly(pkg_path, same_owner=same_owner)
         except CanonicalStoreError:
             return False
         return True
@@ -261,6 +317,8 @@ class CanonicalSkillStore:
         version: str,
         content_hash: str,
         source_dir: Path,
+        *,
+        verify_source_hash: str | None = None,
     ) -> Path:
         """Build a canonical package from a source directory.
 
@@ -268,11 +326,22 @@ class CanonicalSkillStore:
         safe paths (no traversal), then atomically replaces into the canonical
         path. Sets all files read-only after build.
 
+        When *verify_source_hash* is provided and the package already exists
+        (``is_built``), the actual content of the canonical package is
+        compared against the expected source hash. If the content has been
+        altered (e.g. by a same-owner executor), the package is forcibly
+        rebuilt from *source_dir*. This is best-effort corruption detection
+        and recovery for same-owner deployments — it is NOT an
+        attacker-independent security guarantee.
+
         Args:
             slug: Skill slug
             version: Package version
             content_hash: Expected content hash (SHA-256 of canonical tree)
             source_dir: Directory containing skill files (SKILL.md, references/, assets/)
+            verify_source_hash: If set, verify existing package content
+                against this hash (source tree hash) before reusing. Mismatch
+                triggers rebuild from *source_dir*.
 
         Returns:
             Path to the built canonical package directory.
@@ -282,9 +351,27 @@ class CanonicalSkillStore:
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
-        # If already built and valid, return
+        # If already built and valid, verify content integrity before reusing.
         if self.is_built(slug, version, content_hash):
-            return pkg_path
+            if verify_source_hash is not None:
+                try:
+                    actual_hash = self.compute_tree_hash(slug, version, content_hash)
+                except CanonicalStoreError:
+                    actual_hash = ""
+                if actual_hash != verify_source_hash:
+                    logger.warning(
+                        "Canonical package %s@%s content mismatch "
+                        "(expected %s... got %s...) — forcibly rebuilding "
+                        "from source. This indicates possible tampering or "
+                        "accidental corruption; in same-owner mode this is "
+                        "best-effort detection only, not a security guarantee.",
+                        slug, version,
+                        verify_source_hash[:16], actual_hash[:16] if actual_hash else "<error>",
+                    )
+                else:
+                    return pkg_path
+            else:
+                return pkg_path
 
         # Collect files from source
         members: list[tuple[str, bytes]] = []
@@ -357,6 +444,40 @@ class CanonicalSkillStore:
                                                content_hash)
             raise
 
+    def verify_content_integrity(
+        self,
+        slug: str,
+        version: str,
+        content_hash: str,
+        expected_content_hash: str,
+    ) -> tuple[bool, str | None]:
+        """Verify that canonical package content matches expected hash.
+
+        Computes the actual tree hash of the existing package and compares
+        it to *expected_content_hash*. This is used for best-effort
+        corruption detection in same-owner deployments — it is NOT an
+        attacker-independent security guarantee.
+
+        Args:
+            slug: Skill slug
+            version: Package version
+            content_hash: The content_hash used for addressing
+            expected_content_hash: The expected tree hash to compare against
+
+        Returns:
+            (True, None) if content matches, (False, reason_string) if not.
+        """
+        try:
+            actual = self.compute_tree_hash(slug, version, content_hash)
+        except CanonicalStoreError:
+            return False, "package_missing_or_corrupt"
+        if actual != expected_content_hash:
+            return False, (
+                f"content_mismatch: expected {expected_content_hash[:16]}..., "
+                f"got {actual[:16]}..."
+            )
+        return True, None
+
     def build_from_manifest(
         self,
         slug: str,
@@ -391,8 +512,21 @@ class CanonicalSkillStore:
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
+        # If already built, verify content integrity before reusing.
+        # In same-owner mode an executor could tamper with the package
+        # bytes; this check detects that and forces a rebuild from the
+        # trusted ArtifactStore source.
         if self.is_built(slug, version, content_hash):
-            return pkg_path
+            if self._manifest_content_matches(pkg_path, manifest):
+                return pkg_path
+            logger.warning(
+                "Canonical package %s@%s content mismatch detected — "
+                "forcibly rebuilding from ArtifactStore manifest. "
+                "This indicates possible tampering or accidental "
+                "corruption; in same-owner mode this is best-effort "
+                "detection only, not a security guarantee.",
+                slug, version,
+            )
 
         members = manifest.get("members", [])
         if not members:
@@ -515,7 +649,8 @@ class CanonicalSkillStore:
         # Enforce the full immutable invariant at the materialization gate.
         # A package whose hardening failed after os.replace must never be
         # materialized into a workspace link.
-        _verify_recursive_readonly(pkg_path)
+        same_owner = self._isolation.is_same_owner_mode
+        _verify_recursive_readonly(pkg_path, same_owner=same_owner)
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).
@@ -523,6 +658,11 @@ class CanonicalSkillStore:
         Returns hex digest of all file contents sorted by relative path.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
+        if not pkg_path.is_dir():
+            raise CanonicalStoreError(
+                "package_missing",
+                f"Canonical package not found: {slug}@{version}",
+            )
         h = hashlib.sha256()
         for fpath in sorted(pkg_path.rglob("*")):
             if fpath.is_file():
@@ -532,3 +672,45 @@ class CanonicalSkillStore:
                 h.update(fpath.read_bytes())
                 h.update(b"\x00")
         return h.hexdigest()
+
+    @staticmethod
+    def _manifest_content_matches(pkg_path: Path, manifest: dict) -> bool:
+        """Check if the canonical package content matches the manifest.
+
+        Compares each member file in *pkg_path* against the expected hash
+        declared in *manifest*. Returns True if ALL members match;
+        False if any member is missing, extra, or has wrong hash.
+
+        This is best-effort corruption detection for same-owner deployments —
+        NOT an attacker-independent security guarantee.
+        """
+        members = manifest.get("members", [])
+        if not members:
+            return True  # Empty manifest — nothing to verify
+
+        # Collect actual files
+        actual_files: set[str] = set()
+        for fpath in sorted(pkg_path.rglob("*")):
+            if fpath.is_file():
+                actual_files.add(str(fpath.relative_to(pkg_path)))
+
+        for member in members:
+            member_path = member["path"]
+            member_hash = member.get("hash", "")
+            expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+
+            member_file = pkg_path / member_path
+            if not member_file.is_file():
+                return False
+
+            actual_hex = hashlib.sha256(member_file.read_bytes()).hexdigest()
+            if actual_hex != expected_hex:
+                return False
+
+            actual_files.discard(member_path)
+
+        # Any files present that aren't in the manifest?
+        if actual_files:
+            return False
+
+        return True

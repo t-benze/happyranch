@@ -22,7 +22,10 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 Skill delivery uses an **immutable canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed.
 
 - **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
-- **Isolation:** Distinct daemon/materializer and restricted executor OS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate ACLs through workspace symlinks.
+- **Two modes:**
+  - **Strict distinct-identity (default):** Separate daemon/materializer and restricted executor macOS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate through workspace symlinks — enforced by Unix user/group permissions.
+  - **Same-owner (opt-in, `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`):** Executor runs under daemon's OS identity. NO OS-level isolation — symlinks, prompt guidance, hashes, verification, and repair are best-effort corruption detection/recovery only. Do NOT claim the target is immutable, protected, or that write/chmod/ACL denial exists.
+- **Integrity verification:** Before each launch the daemon compares actual canonical package content against the separately retained expected manifest (source tree for system contracts, ArtifactStore manifest for lifecycle skills). On mismatch: rebuild from trusted source when available; fail closed when trusted source is absent. This is recovery for accidental corruption — NOT an attacker-independent external attestation authority.
 - **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/repair boundary before launch.
 - **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
 - **Serving deployment** is independently verified after merge.

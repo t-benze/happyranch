@@ -455,7 +455,10 @@ def _materialize_context_union(
     for cid in sorted(seen_system_contracts):
         src_dir = src_root / cid
         content_hash = _compute_dir_hash(src_dir)
-        store.build_from_source(cid, "system", content_hash, src_dir)
+        store.build_from_source(
+            cid, "system", content_hash, src_dir,
+            verify_source_hash=content_hash,
+        )
         expected_specs.append({
             "slug": cid,
             "version": "system",
@@ -505,6 +508,7 @@ def _materialize_context_union(
                 content_hash = _compute_dir_hash(src_dir)
                 store.build_from_source(
                     skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                    verify_source_hash=content_hash,
                 )
                 expected_specs.append({
                     "slug": skill_id_slug,
@@ -603,7 +607,10 @@ def _materialize_unified_canonical(
         for contract in contracts:
             src_dir = src_root / contract.id
             content_hash = _compute_dir_hash(src_dir)
-            store.build_from_source(contract.id, "system", content_hash, src_dir)
+            store.build_from_source(
+                contract.id, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
+            )
             # Org context is carried via session/task metadata, not
             # literal {ORG_SLUG} substitution in canonical bytes.
             expected_specs.append({
@@ -655,6 +662,7 @@ def _materialize_unified_canonical(
                 content_hash = _compute_dir_hash(src_dir)
                 store.build_from_source(
                     skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                    verify_source_hash=content_hash,
                 )
                 expected_specs.append({
                     "slug": skill_id_slug,
@@ -767,13 +775,19 @@ def _build_lifecycle_canonical_specs(
             )
         else:
             # Legacy: single SKILL.md artifact
-            # Build a temp source dir with just the SKILL.md
+            # Build a temp source dir with just the SKILL.md.
+            # Derive the expected source tree hash from the already-verified
+            # manifest_bytes so build_from_source can verify the existing
+            # canonical package content before reuse — if a same-owner
+            # process tampered with it, the mismatch triggers a rebuild.
             import tempfile
             with tempfile.TemporaryDirectory() as tmpd:
                 tmp_path = Path(tmpd)
                 (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
+                source_hash = _compute_dir_hash(tmp_path)
                 store.build_from_source(
                     skill_slug, pkg.version, pkg.content_hash, tmp_path,
+                    verify_source_hash=source_hash,
                 )
 
         specs.append({
@@ -1347,6 +1361,42 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     ]
 
 
+def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
+    """System-injected operational guidance: do not edit managed skill links.
+
+    Skill entries under *skills_dir* (``.claude/skills`` or
+    ``.agents/skills``, per executor) are daemon-materialized from the
+    canonical skill store. This section directs agents NOT to edit these
+    managed links and to use the lifecycle/proposal workflow instead.
+
+    **IMPORTANT:** This is operational guidance, NOT enforcement. On
+    deployments running in same-owner mode
+    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``, see
+    ``runtime/platform/isolation.py``) there is NO security boundary —
+    the executor runs under the daemon's own OS identity and CAN write
+    through these symlinks. The daemon performs best-effort integrity
+    verification before each launch to detect and recover from accidental
+    corruption, but this is NOT an attacker-independent security guarantee.
+    """
+    return [
+        "## Skills Directory (do not edit)\n",
+        f"`{skills_dir}/` is materialized by the daemon from the canonical",
+        "skill store. DO NOT author, edit, move, or delete anything under",
+        "it, even if a task seems to call for it. Treat it as read-only.\n",
+        "**Same-owner mode:** if ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``",
+        "is set on this deployment, the filesystem CAN be written through",
+        "these symlinks — there is no OS-enforced security boundary.",
+        "The daemon performs best-effort integrity checks before each",
+        "launch to detect and recover from accidental corruption, but",
+        "this is NOT a guarantee. Do not rely on it as a security control.\n",
+        "If a skill's content is wrong or a new skill is needed, propose the",
+        "change through the skill lifecycle instead of editing files directly:",
+        "```",
+        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
+        "```\n",
+    ]
+
+
 def _non_stop_command_warning_section() -> list[str]:
     """Persistent warning: never run a non-returning command synchronously.
 
@@ -1406,6 +1456,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Knowledge Base (shared across agents)",
     "Shared Artifacts (org-wide)",
     "Thread Dispatch is Self-Only",
+    "Skills Directory (do not edit)",
     "Long-running and non-stop commands",
     "Task Completion Format",
     "Task Recall",
@@ -1711,6 +1762,7 @@ class ClaudeWorkspaceAdapter:
                 "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
                 "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
+            skills_dir=".claude/skills",
         )
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
 
@@ -1724,6 +1776,7 @@ class ClaudeWorkspaceAdapter:
         repo_refresh_note: str,
         callback_note: str,
         workflow_section: list[str],
+        skills_dir: str,
     ) -> list[str]:
         sections = [
             f"# Agent: {agent_name}\n",
@@ -1763,6 +1816,7 @@ class ClaudeWorkspaceAdapter:
             callback_note + "\n",
             *_shared_artifacts_section(),
             *_thread_talk_dispatch_doctrine_section(),
+            *_skills_directory_readonly_section(skills_dir),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
             "## Task Recall\n",
@@ -1857,6 +1911,7 @@ class CodexWorkspaceAdapter:
                 "(in `.agents/skills/start-task/`) to parse parameters and report completion via",
                 "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
+            skills_dir=".agents/skills",
         )
         (workspace / "AGENTS.md").write_text("\n".join(sections))
 

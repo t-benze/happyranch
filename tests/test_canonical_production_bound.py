@@ -204,10 +204,12 @@ class TestPlatformIsolationIdentities:
         reason="macOS-only; requires macOS CI runner with provisioned executor account",
     )
     def test_macos_executor_identity_is_distinct(self):
-        """On Unix, executor identity must differ from daemon identity.
+        """Executor identity must differ from daemon identity.
 
-        This test validates the isolation contract: daemon uid != executor uid.
-        If the provisioned executor account doesn't exist, it reports the gap.
+        This test validates the isolation contract: in strict distinct-identity
+        mode daemon uid != executor uid. In same-owner mode
+        (HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1), the executor uid IS the
+        daemon uid — that is the explicit operator tradeoff.
         """
         isolation = detect_platform_isolation()
         daemon = isolation.current_identity()
@@ -216,29 +218,59 @@ class TestPlatformIsolationIdentities:
         if executor is None:
             # No provisioned executor — report the gap
             pytest.skip(
-                "No provisioned executor account (_hrexec/happyranch-exec). "
+                "No provisioned executor account (_hrexec/happyranch-exec) "
+                "and same-owner mode not enabled. "
                 "This test requires a real restricted executor identity. "
                 "Create the account and re-run on a CI runner."
             )
 
-        # Executor must be a DIFFERENT identity
-        assert executor.uid != daemon.uid, (
-            f"Executor uid={executor.uid} must differ from daemon uid={daemon.uid}"
-        )
-        assert executor.is_restricted, "Executor identity must be marked restricted"
+        if isolation.is_same_owner_mode:
+            # Same-owner mode: executor IS the daemon. This is the
+            # explicit operator tradeoff — verify the mode is correctly
+            # recorded and identities match.
+            assert executor.uid == daemon.uid, (
+                f"Same-owner mode: executor uid={executor.uid} must equal "
+                f"daemon uid={daemon.uid}"
+            )
+        else:
+            # Strict distinct-identity mode
+            assert executor.uid != daemon.uid, (
+                f"Executor uid={executor.uid} must differ from daemon uid={daemon.uid}"
+            )
+            assert executor.is_restricted, "Executor identity must be marked restricted"
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with provisioned executor account",
     )
     def test_macos_launch_executor_requires_distinct_identity(self):
-        """launch_executor raises PlatformIsolationError if same-owner.
+        """launch_executor behavior depends on mode.
 
-        On CI (where sudo is provisioned for the executor account), a real
-        launch via sudo -n -u <executor> must succeed. On dev machines
-        without provisioned accounts, the test verifies fail-closed behavior."""
+        In strict distinct-identity mode without provisioned executor account:
+        fail-closed with executor_unprovisioned. In same-owner mode: the
+        executor runs under the daemon's own identity (no error).
+        """
         isolation = detect_platform_isolation()
 
+        if isolation.is_same_owner_mode:
+            # Same-owner mode: launch directly under daemon identity.
+            # No error expected — this IS the explicit operator tradeoff.
+            proc = isolation.launch_executor(
+                ["true"],
+                cwd=Path("/tmp"),
+                env={},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            proc.wait(timeout=5)
+            assert proc.returncode == 0, (
+                f"Same-owner executor launch failed with rc={proc.returncode}"
+            )
+            return
+
+        # Strict distinct-identity mode
         # If executor identity is None, launch_executor should fail-closed
         if isolation.executor_identity() is None:
             with pytest.raises(PlatformIsolationError, match="executor_unprovisioned"):
@@ -254,14 +286,11 @@ class TestPlatformIsolationIdentities:
             return
 
         # If provisioned and distinct, launch via sudo -n -u <executor>.
-        # The daemon env is always merged as a base by launch_executor
-        # so sudo never starves for PATH/HOME. We pass a minimal caller
-        # env here to prove that the base-merge works.
         try:
             proc = isolation.launch_executor(
                 ["true"],
                 cwd=Path("/tmp"),
-                env={},  # caller provides empty; launch_executor merges daemon env
+                env={},
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -272,11 +301,6 @@ class TestPlatformIsolationIdentities:
                 f"Executor launch failed with rc={proc.returncode}"
             )
         except PlatformIsolationError as e:
-            # If sudo capability is unavailable (no sudoers entry for this
-            # user on the executor account), skip on dev environments.
-            # The CI provisioning step guarantees sudo access — if this
-            # raises on CI, the job must fail (which it will, since there
-            # is no pytest.skip here for the sudo_capability_failed code).
             if "sudo_capability_failed" in str(e):
                 pytest.skip(
                     f"sudo -n -u <executor> not configured on this host: {e}. "
@@ -1236,11 +1260,11 @@ else:
     def test_executor_identity_contract_required(
         self,
     ):
-        """Executor identity contract is required for production isolation.
+        """Executor identity contract respects mode selection.
 
-        Skips on dev machines without provisioned accounts. On CI,
-        the provisioning step is a separate gate that fails the job
-        before tests run if the account cannot be created."""
+        In strict distinct-identity mode: executor uid != daemon uid.
+        In same-owner mode: executor uid == daemon uid (explicit tradeoff).
+        """
         if sys.platform != "darwin":
             pytest.skip("macOS-only test")
         isolation = detect_platform_isolation()
@@ -1250,6 +1274,11 @@ else:
                 "Executor identity not provisioned on this host. "
                 "CI provisioning step fails-closed before tests run."
             )
-        assert executor.uid != isolation.current_identity().uid, (
-            "Executor must be a DISTINCT restricted macOS identity"
-        )
+        if isolation.is_same_owner_mode:
+            assert executor.uid == isolation.current_identity().uid, (
+                "Same-owner mode: executor uid must equal daemon uid"
+            )
+        else:
+            assert executor.uid != isolation.current_identity().uid, (
+                "Executor must be a DISTINCT restricted macOS identity"
+            )
