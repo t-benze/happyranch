@@ -1,5 +1,5 @@
 /**
- * Deterministic numeric LIGHT pixel-diff for THR-105 Todos — TASK-4129.
+ * Deterministic numeric LIGHT pixel-diff for THR-105 Todos — TASK-4223.
  *
  * Compares the two approved reference states (list and weekly-armed detail)
  * against the current built captures using the browser's canvas API via
@@ -25,12 +25,24 @@ const COMPARISONS = [
     reference: 'reference-todos-list-light.png',
     built: 'todos-list-light.png',
     state: 'List (all groups)',
+    mask: null,
   },
   {
     name: 'todos-detail-weekly-armed',
     reference: 'reference-todos-detail-armed-light.png',
     built: 'todos-detail-weekly_armed_schedule-101-light.png',
     state: 'Weekly armed detail (SCHEDULE-101)',
+    mask: {
+      id: 'V8',
+      rationale:
+        'Schema-blocked "Normalized commitment" card text. The build has one normalized_brief field; the approved reference shows a distinct longer sentence that would require a second schema field. Masking this card is the sole permitted omission.',
+      // Measured from the built 1440x900 capture: card rect at viewport x=278, y=640, w=837, h=94.
+      // Relative to the content crop origin (x=230, y=60).
+      x: 48,
+      y: 580,
+      w: 837,
+      h: 94,
+    },
   },
 ];
 
@@ -51,7 +63,7 @@ function pw(args) {
   });
 }
 
-async function compareImages(refPath, builtPath) {
+async function compareImages(refPath, builtPath, mask) {
   let capturedResult = null;
   let capturedError = null;
 
@@ -78,7 +90,8 @@ async function compareImages(refPath, builtPath) {
       {
         path: '/api/compare.html',
         handler: (_req, res) => {
-          const html = `<!doctype html>
+          const maskJson = JSON.stringify(mask);
+  const html = `<!doctype html>
 <html><head><meta charset="utf-8"></head>
 <body>
 <img id="ref" src="/api/ref.png" crossorigin="anonymous" style="display:none">
@@ -93,6 +106,7 @@ async function go() {
     new Promise((r, rej) => { built.onload = r; built.onerror = rej; })
   ]);
   const crop = { x: 230, y: 60, w: 1210, h: 840 };
+  const mask = ${maskJson};
   const c = document.getElementById('c');
   c.width = crop.w; c.height = crop.h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -103,7 +117,14 @@ async function go() {
   const builtData = ctx.getImageData(0, 0, crop.w, crop.h).data;
   let diff = 0;
   let alphaDiff = 0;
+  let maskedPixels = 0;
   for (let i = 0; i < refData.length; i += 4) {
+    const px = (i / 4) % crop.w;
+    const py = Math.floor((i / 4) / crop.w);
+    if (mask && px >= mask.x && px < mask.x + mask.w && py >= mask.y && py < mask.y + mask.h) {
+      maskedPixels++;
+      continue;
+    }
     const r = Math.abs(refData[i] - builtData[i]);
     const g = Math.abs(refData[i + 1] - builtData[i + 1]);
     const b = Math.abs(refData[i + 2] - builtData[i + 2]);
@@ -113,12 +134,15 @@ async function go() {
   }
   const result = {
     crop,
+    mask,
     width: crop.w,
     height: crop.h,
     totalPixels: crop.w * crop.h,
+    maskedPixels,
+    unmaskedPixels: crop.w * crop.h - maskedPixels,
     differingPixels: diff,
     alphaDifferences: alphaDiff,
-    percentDiff: Number(((diff / (crop.w * crop.h)) * 100).toFixed(4)),
+    percentDiff: Number(((diff / (crop.w * crop.h - maskedPixels)) * 100).toFixed(4)),
   };
   await fetch('/api/result', {
     method: 'POST',
@@ -180,7 +204,7 @@ async function main() {
     const refPath = join(REF_DIR, cmp.reference);
     const builtPath = join(OUT, cmp.built);
     try {
-      const result = await compareImages(refPath, builtPath);
+      const result = await compareImages(refPath, builtPath, cmp.mask);
       results.push({ ...cmp, ...result });
     } catch (err) {
       results.push({ ...cmp, error: err.message });
