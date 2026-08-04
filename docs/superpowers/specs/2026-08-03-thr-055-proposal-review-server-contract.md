@@ -323,11 +323,13 @@ The following surfaces remain **explicitly deferred** to later slices:
   (claim/validate/submit-review/approve/reject)
 - **Assignment / materialization decision controls** on the detail page
 
-**Delivered (TASK-4267):** A "Proposal review" `SidebarNavItem` was added to
- the Primary group of the AppShell Sidebar immediately adjacent to the
- existing Skills/Catalog entry, targeting `/orgs/:slug/skills/proposals`.
- The entry is visible to authenticated users per existing sidebar conventions;
- Founder-only authorization is enforced server-side (no client-side role gating).
+**Delivered (TASK-4267 / TASK-4338):** A `Proposals` entry is present in the
+ Skills page top action area, linking to `/orgs/:slug/skills/proposals`
+ as a peer to Runtime Validation and Add custom skill controls. There is no
+ global or sidebar navigation entry for proposal review — the canonical
+ point of discoverability is the Skills surface. The entry is visible to
+ authenticated users per existing page conventions; Founder-only
+ authorization is enforced server-side (no client-side role gating).
 
 ### 6.4 Fidelity Targets
 

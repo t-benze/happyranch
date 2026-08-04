@@ -120,6 +120,13 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.getAllByText('Validated').length).toBeGreaterThan(0);
   });
 
+  test('exposes a Proposals entry point to the proposals queue route', async () => {
+    mount();
+    await screen.findByText('kb-curation');
+    const proposals = screen.getByRole('link', { name: /Proposals/i });
+    expect(proposals).toHaveAttribute('href', `/orgs/${SLUG}/skills/proposals`);
+  });
+
   test('exposes an "Add custom skill" entry point to the create route', async () => {
     mount();
     await screen.findByText('kb-curation');

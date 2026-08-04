@@ -4,7 +4,6 @@ import {
   Activity,
   BookOpen,
   ChevronDown,
-  ClipboardList,
   Clock,
   type LucideIcon,
   ListChecks,
@@ -214,9 +213,6 @@ export function Sidebar(): JSX.Element {
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
             Skills
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('skills/proposals', true)} icon={ClipboardList}>
-            Proposal review
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
             Knowledge
