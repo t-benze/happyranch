@@ -70,6 +70,21 @@ scripts/local_ci.sh help         # List targets and caveats
 
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
 
+## Engineering delivery gates
+
+- **CI recovery:** For a pinned PR head and failure signature, allow one
+  cancel/rerun at most. Then capture SHA, job URL, and log excerpt; classify
+  branch-scoped repair vs mainline/environmental block vs diagnosis. Never
+  re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
+  The `jobs` skill defines the full gate and the existing external-job terminal
+  verdict still controls completion.
+- **Frontend handoff:** Before review/QA, supply acceptance/spec mapping,
+  relevant state coverage, screenshot or deterministic-test evidence, and
+  changes since prior review. Return incomplete handoffs rather than discovering
+  missing proof piecemeal. Reuse the behavioral doc-sweep and adversarial
+  evidence checklists; a third fix-forward round requires structural
+  diagnosis/escalation, not a fourth retry.
+
 ## Code Conventions
 
 - Type hints on all function signatures.
