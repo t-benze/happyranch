@@ -1,15 +1,23 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4195):** Skill materialization now uses
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
 > the **canonical skill store + workspace symlink architecture**
-> (macOS-only) with two isolation modes: distinct-identity (default) and
-> same-owner opt-in (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``). The legacy
-> per-session copy model is REMOVED. See
-> ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
-> for ownership, provenance, link validation, repair/refusal/withdrawal/retention
-> semantics, macOS provisioning, same-owner opt-in, pre-launch integrity validation,
-> and the compatibility-fallback boundary.
-> Linux and Windows are NOT supported — explicitly fail closed.
+> (macOS-only). The legacy per-session copy model is REMOVED. Two operating
+> modes exist: **strict distinct-identity** (default) with OS-enforced
+> ownership/permission isolation, and **same-owner** (explicit opt-in,
+> `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`) where integrity checks are
+> best-effort corruption detection only — no OS-level security boundary.
+> See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
+> symlinks" for ownership, provenance, link validation, repair/refusal/withdrawal/
+> retention semantics, macOS provisioning, integrity verification, and the
+> compatibility-fallback boundary. Linux and Windows are NOT supported —
+> explicitly fail closed.
+>
+> **SAME-OWNER HONESTY NOTICE (TASK-4189):** In same-owner mode do NOT call
+> canonical targets immutabe, protected, or claim write/chmod/ACL denial.
+> The prompt guard is operational guidance, not enforcement. Integrity
+> verification is best-effort recovery for accidental corruption, not an
+> attacker-independent external attestation authority.
 
 # Agent Executors And Permissions
 
@@ -193,6 +201,30 @@ endpoint returns JSON Schemas generated from the shipping Pydantic models
 (``runtime/orchestrator/adapter_contract.py``) — the **server-derived schema is
 canonical**. Candidates implementing adapter wrappers must fetch this reference
 first and follow the returned schemas exactly.
+
+**Canonical daemon-managed adapter path (THR-107 seq339/340).** The
+contract-reference response includes ``canonical_directory`` (absolute path to
+``<daemon-home>/adapters/``, created with restrictive 0o700 owner-only mode) and
+``required_executable_path`` (the exact absolute canonical path where the adapter
+wrapper MUST live — ``<daemon-home>/adapters/<canonical-adapter-id>``). The
+filename is the canonical adapter ID itself (lowercase alnum/hyphen only).
+
+**The scoped adapter submission route** (``POST /runtime/adapters/submit``)
+validates ``body.executable`` against this server-owned canonical target:
+
+- Rejects any non-canonical path (foreign directories, traversal spellings,
+  alternate filenames, symlink escape) with a 422 error that names
+  ``required_executable_path`` and keeps the token retryable.
+- The registration seam (``register_custom_adapter`` with
+  ``intended_profile_name``) independently rechecks the canonical path so a
+  route-only check cannot be bypassed.
+- Applies to **new scoped submissions and scoped re-registrations** — both
+  must use the exact canonical location.
+- Does **NOT** apply to dependency records (their existing absolute-path/
+  hash-pinned rules remain) or the master-bearer ``/register`` route
+  (no-intended-profile operational/recovery path unchanged).
+- Existing APPROVED adapters at arbitrary locations remain hash-valid and
+  launchable — no automatic migration, invalidation, or rewriting occurs.
 
 **Adapter lifecycle:**
 
@@ -528,3 +560,28 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 When adding orchestrator capabilities, keep them under the `happyranch` binary so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation cannot be wrapped in `happyranch`.
 
 Agent-side completion payloads must be single-line `happyranch` invocations. The Claude permission matcher treats newlines and shell separators as separate commands. New callbacks with multiple arguments should use `--from-file <path>`.
+
+## Canonical Adapter Path Migration Story (THR-107 seq339/340)
+
+Existing APPROVED custom adapters at arbitrary (non-canonical) locations are
+**not affected** — they remain hash-valid, launchable, and are never auto-migrated,
+invalidated, rewritten, or moved. No automatic migration occurs.
+
+An operator who wants to bring an existing adapter under the canonical
+managed-location model should:
+
+1. Create a **new scoped registration** with the same intended profile name
+   via the normal Settings → onboarding flow. This places the wrapper at its
+   canonical path (``<daemon-home>/adapters/<canonical-id>``).
+2. Complete the existing founder approval and lifecycle gates for the new
+   registration.
+3. When ready, retire the old adapter record via the management UI.
+
+Both old and new registrations coexist during the transition — there is no
+conflict, no forced cutover, and no downtime. The old adapter remains launchable
+until explicitly retired.
+
+**Master-bearer /register path:** Enforcing canonical placement on the
+master-bearer ``/register`` route (no intended profile, operational/recovery
+path) is a separate founder authorization/contract decision and is **not**
+implemented in this phase.

@@ -9,6 +9,7 @@ import {
   health as healthApi,
   orgs as orgsApi,
   settings as settingsApi,
+  adapters as adaptersApi,
 } from '@/lib/api';
 
 function renderPage() {
@@ -563,6 +564,25 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         { tool: 'pi', present: true, path: '/usr/bin/pi', hint: '' },
       ],
     });
+    // Default: contract-reference returns a deterministic non-guessed path
+    // so the prompt renders the literal server-returned value.
+    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
+      contract_version: 1,
+      canonical_adapter_id: '',
+      canonical_adapter_id_description: '',
+      adapter_input_schema: {},
+      adapter_output_schema: {},
+      rules: {},
+      submission: {},
+      dependency_manifest: {},
+      token_metering: {},
+      reapproval_rule: '',
+      probe: {},
+      canonical_directory: '/tmp/happyranch-daemon/adapters',
+      canonical_directory_description: '',
+      required_executable_path: '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter',
+      required_executable_path_description: '',
+    });
   });
 
   /** Navigate to the adapter-backed custom-CLI form (NOT clicking through to legacy). */
@@ -680,6 +700,30 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(promptText).toContain('AdapterInput');
     // Does NOT mention source-only Python path
     expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
+  });
+
+  test('adapter-backed: prompt includes literal server-returned required_executable_path (seq339)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_SEQ339', expires_at: Date.now() / 1000 + 1800 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'cmdline-tester-1');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // The LITERAL server-returned path (from mocked contract-reference)
+    // must appear in the prompt, not a placeholder or guessed path.
+    const expectedPath = '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter';
+    expect(promptText).toContain(expectedPath);
+    // The path appears in the "create at exactly" instruction
+    expect(promptText).toContain('LITERAL server-authoritative path');
+    // Path also appears in the submit body (pre-filled)
+    expect(promptText).toContain(`"executable":"${expectedPath}"`);
+    // Must tell the candidate NOT to place in home dir or self-chosen path
+    expect(promptText).toContain('Do NOT place');
   });
 
   test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
@@ -1127,6 +1171,36 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
 /* ── Adversarial: onboarding recovery/Bind absence (TASK-3836 fix-forward) ── */
 
 describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // Default: healthy container
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+      ],
+    });
+    // Contract-reference must be mocked since useAdapterConnect fetches it
+    // after minting the scoped token.
+    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
+      contract_version: 1,
+      canonical_adapter_id: '',
+      canonical_adapter_id_description: '',
+      adapter_input_schema: {},
+      adapter_output_schema: {},
+      rules: {},
+      submission: {},
+      dependency_manifest: {},
+      token_metering: {},
+      reapproval_rule: '',
+      probe: {},
+      canonical_directory: '/tmp/happyranch-daemon/adapters',
+      canonical_directory_description: '',
+      required_executable_path: '/tmp/happyranch-daemon/adapters/test-cli-adapter',
+      required_executable_path_description: '',
+    });
+  });
+
   /** Navigate to the adapter-backed custom-CLI form. */
   async function goAdapter(user: UserEvent): Promise<void> {
     await user.click(

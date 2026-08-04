@@ -11,72 +11,24 @@ from runtime.runtime import RuntimeDir
 # ── Test-mode platform isolation ──────────────────────────────────────
 # In test environments, we don't have provisioned macOS executor accounts.
 # This fixture monkeypatches detect_platform_isolation to return a
-# test-mode isolation. By DEFAULT, the test isolation models distinct-
-# identity (is_same_owner_mode=False), reflecting production behavior.
-# Tests that need same-owner mode (prelaunch integrity adversarial tests,
-# mutation feasibility proofs) must request the ``same_owner_mode``
-# fixture explicitly.
-#
-# Real isolation tests against provisioned accounts live in
-# test_canonical_production_bound.py and bypass the monkeypatch entirely.
+# test-mode isolation that permits same-owner launches (the user running
+# the tests IS both daemon and executor). Real isolation tests against
+# provisioned accounts live in test_canonical_production_bound.py.
 
 _TEST_ISOLATION_FIXTURE_ACTIVE = True
 
-# Internal flag: set to True by the ``same_owner_mode`` fixture so the
-# autouse fixture knows to configure same-owner isolation for that test.
-_SAME_OWNER_REQUESTED = False
-
-
-@pytest.fixture
-def same_owner_mode():
-    """Fixture: request same-owner test isolation for this test.
-
-    Use this ON tests that need same-owner mode:
-    - Adversarial prelaunch integrity tests (mutation detection)
-    - Mutation feasibility proofs (technical possibility of chmod+write)
-    - Specific canonical store tests that exercise same-owner code paths
-
-    Without this fixture, the default test isolation models distinct-
-    identity, matching production behavior for provisioned deployments.
-
-    Manages both the monkeypatched isolation AND the
-    ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR`` env var so tests that
-    branch on the env var get consistent behavior.
-    """
-    global _SAME_OWNER_REQUESTED
-    import os as _os
-    _SAME_OWNER_REQUESTED = True
-    _prev = _os.environ.get("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR")
-    _os.environ["HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"] = "1"
-    yield
-    _SAME_OWNER_REQUESTED = False
-    if _prev is not None:
-        _os.environ["HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"] = _prev
-    else:
-        _os.environ.pop("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", None)
-
 
 @pytest.fixture(autouse=True)
-def _test_mode_platform_isolation(monkeypatch, request):
-    """Install a test-mode platform detector.
-
-    By default, this models DISTINCT-IDENTITY isolation (production-
-    faithful). Tests that need same-owner mode must request the
-    ``same_owner_mode`` fixture.
-
-    Also manages ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR`` env var so
-    tests branching on it see the same mode as the isolation object.
+def _test_mode_platform_isolation(monkeypatch):
+    """Install a test-mode platform detector that permits same-owner launches.
 
     Real isolation tests in test_canonical_production_bound.py call
     detect_platform_isolation directly (bypassing the monkeypatch) or
     are skipped on non-provisioned hosts.
     """
-    global _SAME_OWNER_REQUESTED
     if not _TEST_ISOLATION_FIXTURE_ACTIVE:
         yield
         return
-
-    _same_owner = _SAME_OWNER_REQUESTED
 
     from runtime.platform.isolation import (
         PlatformIdentity,
@@ -90,14 +42,6 @@ def _test_mode_platform_isolation(monkeypatch, request):
     import subprocess
     import sys
 
-    # Manage env var consistently with the isolation mode so tests that
-    # branch on HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR get the right path.
-    _prev_so_env = os.environ.get("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR")
-    if not _same_owner:
-        os.environ.pop("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", None)
-    else:
-        os.environ["HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"] = "1"
-
     # Try to get the real isolation; if it fails (unsupported platform),
     # create a test-only stub.
     try:
@@ -106,18 +50,10 @@ def _test_mode_platform_isolation(monkeypatch, request):
         _real_isolation = None
 
     class _TestMacOSIsolation(PlatformIsolation):
-        """Test-mode macOS isolation.
+        """Test-mode macOS isolation: permits same-owner for unit tests.
 
-        Two configurations, controlled by ``_same_owner``:
-        - Distinct-identity (default): models production provisioned
-          deployment. ``is_same_owner_mode`` returns False, and
-          ``_assert_executor_distinct`` passes (test process IS the
-          daemon — we model the executor as distinct via the isolation
-          contract, not via actual UID separation). File hardening
-          (make_file_readonly) still sets 0o444.
-        - Same-owner (opt-in via ``same_owner_mode`` fixture): the
-          executor and daemon share the same UID. Files may be owner-
-          writable; integrity relies on hash detection.
+        Inherits from _RealMacOSIsolation but overrides the executor identity
+        probe to return the current user as both daemon and executor.
         """
 
         def __init__(self) -> None:
@@ -130,7 +66,6 @@ def _test_mode_platform_isolation(monkeypatch, request):
                 is_service=False,
                 is_restricted=True,  # Treat as restricted for contract conformance
             )
-            self._same_owner = _same_owner
 
         def current_identity(self) -> PlatformIdentity:
             return PlatformIdentity(
@@ -145,14 +80,11 @@ def _test_mode_platform_isolation(monkeypatch, request):
 
         @property
         def is_same_owner_mode(self) -> bool:
-            # Default: distinct-identity (production-faithful).
-            # Only True when same_owner_mode fixture is active.
-            return self._same_owner
+            # Test mode IS same-owner (executor runs as the same user)
+            return True
 
         def _assert_executor_distinct(self) -> None:
-            # In test mode, we model distinct-identity via the isolation
-            # contract, not actual UID separation. The test process IS the
-            # daemon user — we accept this as test-mode accommodation.
+            # Test mode: allow same-owner launches
             pass
 
         def provision_canonical_store(self, path: Path) -> None:
@@ -292,11 +224,6 @@ def _test_mode_platform_isolation(monkeypatch, request):
         _test_detect,
     )
     yield
-    # Restore env var to its pre-test value
-    if _prev_so_env is not None:
-        os.environ["HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"] = _prev_so_env
-    else:
-        os.environ.pop("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", None)
 
 
 @pytest.fixture
