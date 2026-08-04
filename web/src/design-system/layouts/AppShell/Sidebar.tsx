@@ -236,6 +236,9 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
             Work Hours
           </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
+            Todos
+          </SidebarNavItem>
           <SidebarNavItem
             {...sidebarLink('audit', true)}
             icon={ScrollText}

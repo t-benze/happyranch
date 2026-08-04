@@ -40,6 +40,7 @@ import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/Wa
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
+import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
 
@@ -105,6 +106,8 @@ export function AppRoutes(): JSX.Element {
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="tasks/:task_id" element={<TaskDetailPage />} />
+          <Route path="todos" element={<TodosPage />} />
+          <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="kb" element={<KbPage />} />
           <Route path="kb/*" element={<KbPage />} />
 
