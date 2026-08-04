@@ -133,12 +133,12 @@ The server returns a schedule response including:
 Report to the founder: the `schedule_id`, the normalized commitment,
 kind, timezone, and next fire time.  Let them know:
 
-> ✅ **Armed.**  Founders can inspect all Todos with `happyranch todos list`
-> and pause, cancel, or edit timing/recurrence/timezone through the
-> `todos` surface.  Original `source_instruction` and `normalized_brief`
+> ✅ **Armed.**  Founders can inspect all Todos through the Todos list
+> surface and pause, cancel, or edit timing/recurrence/timezone through
+> the Todos controls.  Original `source_instruction` and `normalized_brief`
 > are immutable and cannot be edited through founder controls.
 
-**Founder management (separate from agent create):** `happyranch todos list`, `happyranch todos show <id>`, `happyranch todos pause <id>`, `happyranch todos cancel <id>`, `happyranch todos edit <id>`.  Do NOT use `todos create` — agent creation is `schedules create`.
+**Founder management (separate from agent create):** The Todos surface provides list, show/id detail, pause, cancel, and edit (timing/recurrence/timezone only) operations.  Do NOT use `todos create` — agent creation is `schedules create`.
 
 ## Examples
 
