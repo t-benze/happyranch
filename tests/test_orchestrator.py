@@ -37,7 +37,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in protocol/skills/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -300,7 +300,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # Create source skill dirs in protocol/skills/ for the project_root temp.
     proto_skills = test_settings.get_protocol_dir() / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
-    for sid in ("start-task", "jobs", "make-worktree", "thread"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
         (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -3004,4 +3004,153 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
         f"Workspace was mutated by failed union materialization.\n"
         f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
         f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+
+# ── Issue #568: Task/subtask production-seam model-forwarding tests ──────
+# These drive the real Orchestrator._run_agent production seam through the
+# real executor-factory boundary, testing that executor.run receives the
+# authoritative AgentDef.model and that the task path cannot silently fall
+# through to provider default.
+
+
+def _write_agent_def_with_model(agents_dir, agent_name, model=None):
+    """Write an AgentDef frontmatter file with an optional model field."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    ad = AgentDef(
+        name=agent_name, team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent_name}.", description="",
+        model=model,
+    )
+    (agents_dir / f"{agent_name}.md").write_text(render_agent_text(ad))
+
+
+def test_task_subtask_forwards_configured_model_to_executor_run(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """When AgentDef.model is set, _run_agent passes it to executor.run(model=...).
+
+    Drives the real production seam — Orchestrator._run_agent calls
+    executor.run(model=model_name) after resolving via _resolve_model_name
+    from the authoritative org/agents/<name>.md frontmatter.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model="gpt-5.6-terra",
+    )
+
+    task_id = orchestrator.create_task("Test model forwarding")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-model")
+
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-model",
+            )
+
+    with patch.object(orchestrator, "_build_executor", return_value=_CapturingExec()):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert captured_model.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
+    )
+
+
+def test_task_subtask_no_configured_model_preserves_default(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """When AgentDef.model is absent, _run_agent passes model=None.
+
+    Proves the established model=None/default behavior through the real
+    production seam — executor.run receives None, not a fabricated default.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model=None,
+    )
+
+    task_id = orchestrator.create_task("Test no-model default")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-nodef")
+
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-nodef",
+            )
+
+    with patch.object(orchestrator, "_build_executor", return_value=_CapturingExec()):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert captured_model.get("model") is None, (
+        f"model should be None when AgentDef has no model, "
+        f"got {captured_model.get('model')!r}"
+    )
+
+
+def test_task_subtask_model_mismatch_detected_by_fake_executor(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Deterministic mismatch: fake executor fails only when gpt-5.6-terra
+    is actually forwarded, proving the task path cannot silently fall through
+    to provider default.
+
+    A fake executor that rejects gpt-5.6-terra MUST cause the task to fail
+    when the model IS configured; the failure proves the model was forwarded
+    through the full production seam. If the model silently fell through to
+    default, the fake would succeed — and this test would fail.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model="gpt-5.6-terra",
+    )
+
+    task_id = orchestrator.create_task("Test model mismatch")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-mismatch")
+
+    # Fake executor that FAILS only when gpt-5.6-terra reaches it.
+    # If the task path silently fell to provider default, this fake
+    # would return success — and the test assertion below would catch it.
+    class _MismatchDetector:
+        def __init__(self):
+            self.received_model = None
+
+        def run(self, **kwargs):
+            self.received_model = kwargs.get("model")
+            if self.received_model == "gpt-5.6-terra":
+                # Deterministic failure: model WAS forwarded correctly.
+                result = ExecutorResult(
+                    success=False,
+                    error="fake: gpt-5.6-terra intentionally rejected",
+                    duration_seconds=0, session_id="",
+                )
+                result.returncode = 1
+                return result
+            # Otherwise succeed — would be the fall-to-default case.
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-mismatch",
+            )
+
+    detector = _MismatchDetector()
+    with patch.object(orchestrator, "_build_executor", return_value=detector):
+        result, report = orchestrator._run_agent(task_id, "dev_agent", "")
+
+    # The fake MUST have received and rejected gpt-5.6-terra.
+    assert detector.received_model == "gpt-5.6-terra", (
+        f"fake executor did NOT receive the configured model; "
+        f"got {detector.received_model!r} — task path fell through to default"
+    )
+    # The executor MUST have failed (detector rejected the model).
+    assert not result.success, (
+        f"mismatch test must fail when model is forwarded; "
+        f"a success here means the model was dropped. "
+        f"error={result.error!r}"
     )

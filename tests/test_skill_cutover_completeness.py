@@ -80,22 +80,26 @@ _REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
 
 # ── Expected system contracts per (context, has_repos) ─────────────────────
 
+# After TASK-4360, materialize_workspace_skills unions system contracts
+# across all six ordinary SessionContext values. Every context therefore
+# receives the FULL union set — the workspace is intentionally a safe
+# superset to prevent cross-context withdrawal.
 SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     "task": {
-        True:  {"start-task", "jobs", "make-worktree", "thread"},
-        False: {"start-task", "jobs", "thread"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream"},
+        False: {"start-task", "jobs", "thread", "dream"},
     },
     "thread": {
-        True:  {"jobs", "make-worktree", "thread"},
-        False: {"jobs", "thread"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream"},
+        False: {"start-task", "jobs", "thread", "dream"},
     },
     "wake": {
-        True:  {"start-task", "jobs", "make-worktree", "thread"},
-        False: {"start-task", "jobs", "thread"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream"},
+        False: {"start-task", "jobs", "thread", "dream"},
     },
     "dream": {
-        True:  {"jobs", "make-worktree", "dream"},
-        False: {"jobs", "dream"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream"},
+        False: {"start-task", "jobs", "thread", "dream"},
     },
 }
 

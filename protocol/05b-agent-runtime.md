@@ -26,6 +26,33 @@ file system access, shell commands, web search, and git operations. Executor sel
 is stored in the org agent frontmatter (``AgentDef.executor``), so agents can run on
 different executors in the same org.
 
+**Per-agent model override (Issue #568).** An agent may override the default
+model its executor launches with via the ``model:`` field in its frontmatter
+(``AgentDef.model``). This is the SINGLE authoritative per-agent model store.
+When set, the runtime forwards it to the executor via ``executor.run(model=...)``
+in every built-in invocation class:
+
+- **Task/subtask:** ``Orchestrator._run_agent`` resolves model via
+  ``_resolve_model_name`` and passes it to ``executor.run(model=model_name)``.
+- **Thread bootstrap/reply:** ``thread_runner.run_invocation`` resolves model
+  from ``AgentDef.model`` and passes it in the `_invoke` closure.
+- **Working-hours wake:** ``wake_runner.run_wake`` resolves model from
+  ``AgentDef.model`` and passes it to ``executor.run(model=...)``.
+- **Dream:** ``dream_runner.run_dream`` resolves model from ``AgentDef.model``
+  and passes it to ``executor.run(model=...)``.
+- **Schedule fire:** ``schedule_runner.run_schedule`` resolves model from
+  ``AgentDef.model`` and passes it to ``executor.run(model=...)``.
+
+When ``model`` is absent (``None`` or not set in frontmatter), the executor
+launches with its CLI-default behavior — the same as before Issue #568.
+Custom executor profiles and custom-adapter profiles are unaffected: model
+is forwarded through the standard ``executor.run(model=...)`` API without
+modifying the executor factory, permission construction, or adapter semantics.
+
+The session-not-found eviction fallback in ``run_invocation`` also forwards
+the model on its clean-slate retry — both the initial resume attempt and the
+fallback full-prompt launch receive the same ``model`` value.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
@@ -175,6 +202,13 @@ Skills — structured guidance packages that tell an agent how to perform specif
 operations — are materialized into the agent's workspace on every session spawn
 by `materialize_workspace_skills` (`workspace_adapters.py`). This runs on all
 spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch).
+An unrecognised context string — one that is not a valid ``SessionContext`` value
+— is a no-op: the function returns immediately without creating, building,
+preflighting, or reconciling any links, and must not withdraw or mutate an
+existing valid workspace state.  For valid contexts, system-contract links are
+unioned across all ordinary session contexts so a later single-context launch
+never withdraws a valid link belonging to another context; release-managed and
+lifecycle links remain policy-reconciled and withdrawable.
 
 #### Canonical skill store + workspace symlinks (macOS-only)
 
@@ -273,8 +307,12 @@ schema change. The mode is recorded in daemon logs at startup.
 canonical store. Stale, broken, wrong-version, non-symlink, external, or
 mismatched-hash entries are atomically repaired.
 - Withdrawal removes only owned validated links, retains canonical packages.
-- The full expected union is derived once per provider root so system contracts
-are never withdrawn by managed/lifecycle-only reconciliation.
+- The full expected union is derived once per provider root:
+  **system-contract links are unioned across all ordinary session contexts**
+  (task, thread, wake, dream, schedule, bootstrap) and retained so a later
+  single-context launch never withdraws a valid link belonging to another
+  context.  **Release-managed and lifecycle links remain policy-reconciled**
+  and are withdrawn when the agent becomes ineligible, retired, or unassigned.
 
 **Legacy compatibility fallback:** The legacy per-session copy model
 (``_copy_skills_tree``, ``refresh_session_skills``, and the former

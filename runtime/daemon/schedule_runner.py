@@ -153,6 +153,9 @@ async def run_schedule(
         )
         return
 
+    # Issue #568: forward AgentDef.model to executor.run for schedule invocations.
+    model_name: str | None = agent_def.model
+
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
         org_config = load_org_config(paths)
@@ -256,6 +259,7 @@ async def run_schedule(
         timeout_seconds=settings.session_timeout_seconds,
         pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:

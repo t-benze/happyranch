@@ -149,7 +149,11 @@ async def run_dream(
         agent_def = load_agent(paths, dream.agent_name)
         agent_team = agent_def.team if agent_def else "engineering"
     except Exception:
+        agent_def = None
         agent_team = "engineering"
+
+    # Issue #568: forward AgentDef.model to executor.run for dream invocations.
+    model_name: str | None = agent_def.model if agent_def else None
 
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.
@@ -233,6 +237,7 @@ async def run_dream(
         timeout_seconds=settings.session_timeout_seconds,
         pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:
