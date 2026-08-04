@@ -1105,3 +1105,287 @@ describe('ProposalDetailPage — no synthetic readiness', () => {
     expect(screen.queryByText('In custom catalog')).not.toBeInTheDocument();
   });
 });
+
+// ── THR-136 Founder review actions ───────────────────────────────────────
+
+describe('ProposalDetailPage — THR-136 review action affordances', () => {
+  function expectActionButton(name: string) {
+    return expect(screen.getByRole('button', { name }));
+  }
+  function expectNoActionButton(name: string) {
+    return expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+  }
+
+  test.each([
+    ['proposed', ['Claim for review']],
+    ['draft', ['Validate']],
+    ['validation_failed', ['Validate']],
+    ['validated', ['Submit for review']],
+    ['in_review', ['Approve', 'Reject']],
+  ] as const)(
+    'status %s exposes exact action set: %s',
+    async (status, expectedActions) => {
+      mockProposal(baseProposal({ status: status as string }));
+      mount();
+      await screen.findByText('Proposal');
+
+      const expectedSet = new Set<string>(expectedActions);
+      for (const action of expectedActions) {
+        expectActionButton(action).toBeInTheDocument();
+      }
+      // None of the other action labels should appear
+      const allActions = ['Claim for review', 'Validate', 'Submit for review', 'Approve', 'Reject'];
+      for (const action of allActions) {
+        if (!expectedSet.has(action)) {
+          expectNoActionButton(action);
+        }
+      }
+    },
+  );
+
+  test.each([
+    ['unknown_status'],
+    ['approved'],
+    ['published'],
+    ['rejected'],
+  ] as const)('status %s hides all lifecycle controls', async (status) => {
+    mockProposal(baseProposal({ status: status as string }));
+    mount();
+    await screen.findByText('Proposal');
+
+    expect(screen.queryByRole('button', { name: 'Claim for review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Validate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit for review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+
+  test('approve calls review endpoint with expected_event_id and refetches to approved', async () => {
+    let requestBody: unknown;
+    let getCount = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`, () => {
+        getCount += 1;
+        return HttpResponse.json(
+          baseProposal({
+            status: getCount === 1 ? 'in_review' : 'approved',
+            last_event_id: getCount === 1 ? 7 : 10,
+            review_decision: getCount === 2 ? 'approved' : null,
+          }),
+        );
+      }),
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/review`,
+        async ({ request }) => {
+          requestBody = await request.json();
+          return HttpResponse.json({
+            skill_id: 'hr:frontend-development',
+            version_id: VERSION_ID,
+            status: 'approved',
+            decision: 'approved',
+          });
+        },
+      ),
+    );
+
+    mount();
+    await screen.findByText('Proposal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Confirm approve')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm approve' }));
+
+    await waitFor(() => {
+      expect(requestBody).toEqual({
+        decision: 'approved',
+        rationale: '',
+        expected_event_id: 7,
+      });
+    });
+
+    // After mutation + refetch, the page should render the approved state
+    await waitFor(() => {
+      expect(screen.getAllByText('Approved').length).toBeGreaterThanOrEqual(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+
+  test('reject calls review endpoint with non-empty rationale and shows terminal rationale', async () => {
+    let requestBody: unknown;
+    let getCount = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`, () => {
+        getCount += 1;
+        return HttpResponse.json(
+          baseProposal({
+            status: getCount === 1 ? 'in_review' : 'rejected',
+            last_event_id: getCount === 1 ? 8 : 11,
+            review_decision: getCount === 2 ? 'rejected' : null,
+            review_rationale: getCount === 2 ? 'Does not meet quality bar' : null,
+            reviewer: getCount === 2 ? 'founder' : null,
+            reviewed_at: getCount === 2 ? '2026-08-02T10:00:00Z' : null,
+          }),
+        );
+      }),
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/review`,
+        async ({ request }) => {
+          requestBody = await request.json();
+          return HttpResponse.json({
+            skill_id: 'hr:frontend-development',
+            version_id: VERSION_ID,
+            status: 'rejected',
+            decision: 'rejected',
+          });
+        },
+      ),
+    );
+
+    mount();
+    await screen.findByText('Proposal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    expect(await screen.findByText('Confirm reject')).toBeInTheDocument();
+
+    const rationaleInput = screen.getByLabelText(/Rationale/);
+    fireEvent.change(rationaleInput, { target: { value: 'Does not meet quality bar' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm reject' }));
+
+    await waitFor(() => {
+      expect(requestBody).toEqual({
+        decision: 'rejected',
+        rationale: 'Does not meet quality bar',
+        expected_event_id: 8,
+      });
+    });
+
+    // Refetched rejected state renders terminal explanation
+    await waitFor(() => {
+      expect(screen.getAllByText('Rejected — terminal').length).toBeGreaterThanOrEqual(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+
+  test('validation cannot submit without a Founder-entered validator version', async () => {
+    let called = false;
+    server.use(
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/validate`,
+        () => {
+          called = true;
+          return HttpResponse.json({
+            skill_id: 'hr:frontend-development',
+            version_id: VERSION_ID,
+            status: 'validated',
+            version: '0.1.0',
+          });
+        },
+      ),
+    );
+
+    mockProposal(baseProposal({ status: 'draft', last_event_id: 3 }));
+    mount();
+    await screen.findByText('Proposal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Validate' }));
+    expect(await screen.findByText('Confirm validate')).toBeInTheDocument();
+
+    // Confirm button should be disabled while version is empty
+    const confirmBtn = screen.getByRole('button', { name: 'Confirm validate' });
+    expect(confirmBtn).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/Validator version/), {
+      target: { value: 'THR-055/1.0.0' },
+    });
+
+    await waitFor(() => expect(confirmBtn).not.toBeDisabled());
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => expect(called).toBe(true));
+  });
+
+  test('stale 409 refetches the same mounted component and replaces controls with refreshed state', async () => {
+    let requestCount = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`, () => {
+        requestCount += 1;
+        // First load: in_review. After stale conflict refetch: already approved.
+        return HttpResponse.json(
+          baseProposal({
+            status: requestCount === 1 ? 'in_review' : 'approved',
+            last_event_id: requestCount === 1 ? 9 : 10,
+            review_decision: requestCount === 2 ? 'approved' : null,
+          }),
+        );
+      }),
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/review`,
+        () =>
+          HttpResponse.json(
+            {
+              detail: {
+                code: 'stale_concurrency',
+                current_event_id: 10,
+                expected_event_id: 9,
+                current_status: 'approved',
+              },
+            },
+            { status: 409 },
+          ),
+      ),
+    );
+
+    mount();
+    await screen.findByText('Approve');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Confirm approve')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm approve' }));
+
+    // Conflict explanation appears and the refreshed authoritative state is shown
+    await screen.findByText(/Another action changed this proposal/);
+    await waitFor(() => {
+      expect(screen.getAllByText('Approved').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Original in-review controls are gone
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ProposalDetailPage — 403 action discipline', () => {
+  test('403 hides all proposal bytes and all action affordances', async () => {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`,
+        () =>
+          HttpResponse.json(
+            {
+              detail: {
+                code: 'human_only',
+                detail: 'This action requires human/founder authority.',
+              },
+            },
+            { status: 403 },
+          ),
+      ),
+    );
+    mount();
+
+    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+
+    expect(screen.queryByRole('button', { name: 'Claim for review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Validate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit for review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+});

@@ -2,13 +2,16 @@
 
 **Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
 
-**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), TASK-4154 (Slice 3A), protocol/05c-orchestrator.md §4.5.
+**Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), TASK-4154 (Slice 3A), TASK-4312 (THR-136 bounded review actions), protocol/05c-orchestrator.md §4.5.
 
-**Scope:** Server contract + TypeScript API mirror + read-only founder UI.
+**Scope:** Server contract + TypeScript API mirror + Founder proposal UI.
 Slice 1 (PR #546): founder-only proposal review routes + concurrency + state machine.
 Slice 2A (PR #549): immutable SKILL.md bytes in detail, typed server filters in queue.
 Slice 2B (PR #550): read-only Founder Proposal Detail page.
-Slice 3A (PR #551): read-only Founder Proposal Queue page. **All action/confirmation/stale-refresh mutation UI remains deferred to later slices.**
+Slice 3A (PR #551): read-only Founder Proposal Queue page.
+THR-136 (TASK-4312): bounded Founder review-action controls on the Proposal Detail page
+(claim, validate, submit-for-review, approve, reject) with status-allowlist rendering,
+required validator version / reject rationale, and stale-concurrency refresh.
 
 ---
 
@@ -218,13 +221,20 @@ See `tests/daemon/test_skills_proposal_review.py` (comprehensive suite) covering
 
 ## 6. UI Slices
 
-### 6.1 Slice 2B — Read-Only Founder Proposal Detail Page (Delivered)
+### 6.1 Slice 2B — Founder Proposal Detail Page (Delivered; THR-136 actions added)
 
-PR #550 delivers a **read-only, static presentation page** at
-`/orgs/:slug/skills/proposals/:versionId` with NO state-changing controls.
+PR #550 originally delivered a **read-only, static presentation page** at
+`/orgs/:slug/skills/proposals/:versionId`. THR-136 (TASK-4312) adds the
+minimal bounded Founder review-action surface while preserving the read-only
+package content, provenance, timeline, and projection sections.
 
 **Delivered sections:**
 - Shell breadcrumb + mono identity/version/full copyable hash
+- Lifecycle status + bounded Founder review-action affordances (THR-136):
+  `proposed → claim`, `draft/validation_failed → validate`,
+  `validated → submit-for-review`, `in_review → approve OR reject`.
+  Controls are rendered only from the server-returned status allowlist;
+  terminal/unknown statuses show no lifecycle control.
 - Readiness strip (backed by response facts: events, assignments,
   materializations, supplied status/decision fields — never status-enum
   synthesized)
@@ -244,10 +254,24 @@ PR #550 delivers a **read-only, static presentation page** at
 
 **State handling:** loading skeleton, 403 Founder-access (no data leak),
 404, generic error with Retry, skill_md:null warning, rejected terminal
-(view-only), published distinct banner.
+(view-only), published distinct banner, 409 stale-concurrency conflict
+explanation with authoritative detail refresh.
+
+**THR-136 action behavior:**
+- Each mutation sends the detail's current `last_event_id` as
+  `expected_event_id`.
+- Validation requires a Founder-entered `validator_version`; no prefilled
+  value or fabricated selector.
+- Reject requires a non-empty human rationale; approve accepts an optional
+  Founder-entered rationale.
+- On `stale_concurrency` 409, the page refetches the mounted detail query,
+  clears any pending confirmation, and shows an explicit conflict message.
+- `publishProposal`, `assignProposal`, and `rollbackProposal` are NOT
+  implemented in this slice; publish/assign require additional server fields
+  that are not prerequisites of the minimal review decision.
 
 **No server/API/schema/auth/permission/token/notification/dependency**
-change in Slice 2B.
+change in Slice 2B or THR-136.
 
 ### 6.2 Slice 3A — Read-Only Founder Proposal Queue Page (Delivered)
 
@@ -290,16 +314,14 @@ both clipboard accessibility feedback controls). Queue rows deep-link to it.
 
 ### 6.3 Deferred UI Slices (explicitly out of scope)
 
-The following surfaces are **explicitly deferred** to later slices:
+The following surfaces remain **explicitly deferred** to later slices:
 
-- **All action/confirmation/stale-refresh mutation UI** — no claim, validate,
-  submit-review, review decision, publish, assign, rollback, retire, or
-  reopen controls of any kind
-- **Mutation controls, editor surface, agent approval UI,
-  comments/notes, bulk actions, ranking/sorting UI, recovery/reopen
+- **Publish, assign, rollback, retire, reopen, editor, agent approval,
+  comments/notes, bulk actions, ranking/sorting, and recovery/reopen
   affordances**
-- **Stale-refresh handling** for concurrent mutations (expected_event_id
-  concurrency protection is server-only; UI surface deferred)
+- **Non-review lifecycle controls** beyond the THR-136 bounded set
+  (claim/validate/submit-review/approve/reject)
+- **Assignment / materialization decision controls** on the detail page
 
 **Delivered (TASK-4267):** A "Proposal review" `SidebarNavItem` was added to
  the Primary group of the AppShell Sidebar immediately adjacent to the

@@ -77,6 +77,36 @@ export function isTerminal(status: string): boolean {
   return isPublished(status) || isRejected(status);
 }
 
+// ── Founder review actions (THR-136) ─────────────────────────────────────
+
+export type ProposalReviewAction =
+  | 'claim'
+  | 'validate'
+  | 'submit-review'
+  | 'approve'
+  | 'reject';
+
+/**
+ * Map a server-returned status to the single next Founder review action.
+ * Returns `null` for terminal, unknown, or out-of-scope statuses so the UI
+ * hides controls instead of speculating about transitions.
+ */
+export function availableReviewAction(status: string): ProposalReviewAction | null {
+  switch (status) {
+    case 'proposed':
+      return 'claim';
+    case 'draft':
+    case 'validation_failed':
+      return 'validate';
+    case 'validated':
+      return 'submit-review';
+    case 'in_review':
+      return 'approve'; // rendered alongside reject in this state
+    default:
+      return null;
+  }
+}
+
 // ── Tone styling helpers ─────────────────────────────────────────────────
 
 export const TONE_CHIP: Record<StatusTone, string> = {

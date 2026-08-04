@@ -11,9 +11,19 @@
  * consumes this hook and must not directly import getProposalDetail,
  * ApiError, or useQuery.
  */
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useData } from '@/design-system/providers/DataContext';
-import { getProposalDetail } from '@/lib/api/skillLifecycle';
+import {
+  claimProposalV2,
+  getProposalDetail,
+  reviewProposal,
+  submitReviewProposal,
+  validateProposal,
+  type ClaimProposalV2Request,
+  type ReviewProposalRequest,
+  type SubmitReviewProposalRequest,
+  type ValidateProposalRequest,
+} from '@/lib/api/skillLifecycle';
 
 export type {
   AssignSkillRequest,
@@ -93,7 +103,97 @@ export function useProposalDetail(
   });
 }
 
+// ── THR-136: Founder proposal review mutations ───────────────────────────
+
+const PROPOSAL_DETAIL_QUERY_KEY = ['proposal-detail'];
+
+function useInvalidateProposalDetail() {
+  const queryClient = useQueryClient();
+  return (slug: string, versionId: number) =>
+    queryClient.invalidateQueries({
+      queryKey: [...PROPOSAL_DETAIL_QUERY_KEY, slug, versionId],
+    });
+}
+
+export function useClaimProposal() {
+  const invalidate = useInvalidateProposalDetail();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      versionId,
+      expectedEventId,
+    }: {
+      slug: string;
+      versionId: number;
+      expectedEventId: number;
+    }) => claimProposalV2(slug, versionId, { expected_event_id: expectedEventId }),
+    onSuccess: (_data, variables) => {
+      void invalidate(variables.slug, variables.versionId);
+    },
+  });
+}
+
+export function useValidateProposal() {
+  const invalidate = useInvalidateProposalDetail();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      versionId,
+      body,
+    }: {
+      slug: string;
+      versionId: number;
+      body: ValidateProposalRequest;
+    }) => validateProposal(slug, versionId, body),
+    onSuccess: (_data, variables) => {
+      void invalidate(variables.slug, variables.versionId);
+    },
+  });
+}
+
+export function useSubmitReviewProposal() {
+  const invalidate = useInvalidateProposalDetail();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      versionId,
+      body,
+    }: {
+      slug: string;
+      versionId: number;
+      body: SubmitReviewProposalRequest;
+    }) => submitReviewProposal(slug, versionId, body),
+    onSuccess: (_data, variables) => {
+      void invalidate(variables.slug, variables.versionId);
+    },
+  });
+}
+
+export function useReviewProposal() {
+  const invalidate = useInvalidateProposalDetail();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      versionId,
+      body,
+    }: {
+      slug: string;
+      versionId: number;
+      body: ReviewProposalRequest;
+    }) => reviewProposal(slug, versionId, body),
+    onSuccess: (_data, variables) => {
+      void invalidate(variables.slug, variables.versionId);
+    },
+  });
+}
+
 export { ApiError } from '@/lib/api/client';
+export type {
+  ClaimProposalV2Request,
+  ReviewProposalRequest,
+  SubmitReviewProposalRequest,
+  ValidateProposalRequest,
+};
 
 // ── THR-055 Slice 3A: Proposal Queue ───────────────────────────────────
 

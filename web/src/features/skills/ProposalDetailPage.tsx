@@ -1,18 +1,20 @@
 /**
- * ProposalDetailPage — THR-055 Slice 2B: read-only Founder Proposal Detail.
+ * ProposalDetailPage — THR-055 Founder Proposal Detail + THR-136 review actions.
  *
  * Reached via the static route /orgs/:slug/skills/proposals/:versionId.
- * Displays immutable proposal/version facts with NO state-changing controls.
- * All mutations belong to later serial slices.
+ * Displays immutable proposal/version facts and exposes the minimal Founder
+ * review-action set bounded by THR-136: claim, validate, submit-for-review,
+ * approve, and reject. Publish, assign, and rollback remain out of scope here.
  *
  * Sections (top-to-bottom):
  *   1. Shell breadcrumb + identity (mono skill_id, version, full copyable hash)
- *   2. Readiness strip (not-in-catalog, not-assigned, etc.)
- *   3. SKILL.md primary pane (read-only, wrapped, copy control, null warning)
- *   4. Evidence rail (purpose, policy class, advisory target, validation)
- *   5. Provenance + audit timeline (immutable proposer, claimant, events)
- *   6. Assignment & materialization projection (separate from package status)
- *   7. Guidance-only footer
+ *   2. Lifecycle status + Founder review-action affordances (THR-136)
+ *   3. Readiness strip (not-in-catalog, not-assigned, etc.)
+ *   4. SKILL.md primary pane (read-only, wrapped, copy control, null warning)
+ *   5. Evidence rail (purpose, policy class, advisory target, validation)
+ *   6. Provenance + audit timeline (immutable proposer, claimant, events)
+ *   7. Assignment & materialization projection (separate from package status)
+ *   8. Guidance-only footer
  *
  * State handling:
  *   - 403 → Founder-access state with NO bytes/hash/proposer/audit/assignment
@@ -20,6 +22,8 @@
  *   - Error → generic error with Retry (refetches authoritative state)
  *   - skill_md: null → visible warning, no fabrication
  *   - Loading → structural skeleton
+ *   - 409 stale_concurrency → refetch authoritative detail, clear confirmation,
+ *     show explicit conflict explanation
  *
  * Copy discipline: renders ONLY response facts — never synthesizes SKILL.md,
  * hash, validation pass, claimant, audit row, assignment, materialization,
@@ -44,10 +48,23 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react';
-import { useProposalDetail, ApiError } from '@/hooks/skills';
+import {
+  useClaimProposal,
+  useProposalDetail,
+  useReviewProposal,
+  useSubmitReviewProposal,
+  useValidateProposal,
+  ApiError,
+} from '@/hooks/skills';
+import { useQueryClient } from '@tanstack/react-query';
+import { Button } from '@/design-system/primitives/Button';
+import { Input } from '@/design-system/primitives/Input';
+import { Label } from '@/design-system/primitives/Label';
+import { Textarea } from '@/design-system/primitives/Textarea';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import {
   assignmentProjection,
+  availableReviewAction,
   hasAssignmentProjection,
   hashDisplay,
   isPublished,
@@ -61,6 +78,7 @@ import {
   TONE_CHIP,
   validatorFacts,
   type MaterializationAttempt,
+  type ProposalReviewAction,
   type ReadinessFact,
   type TimelineEvent,
 } from './proposal-detail';
@@ -343,6 +361,128 @@ function LoadingSkeleton(): JSX.Element {
   );
 }
 
+// ── Founder review actions (THR-136) ─────────────────────────────────────
+
+const ACTION_CONFIG: Record<
+  ProposalReviewAction,
+  { label: string; confirm: string; variant: 'default' | 'destructive' | 'secondary' }
+> = {
+  claim: { label: 'Claim for review', confirm: 'Claim', variant: 'default' },
+  validate: { label: 'Validate', confirm: 'Validate', variant: 'default' },
+  'submit-review': { label: 'Submit for review', confirm: 'Submit', variant: 'default' },
+  approve: { label: 'Approve', confirm: 'Approve', variant: 'default' },
+  reject: { label: 'Reject', confirm: 'Reject', variant: 'destructive' },
+};
+
+interface ActionConfirmationPanelProps {
+  action: ProposalReviewAction;
+  onCancel: () => void;
+  onConfirm: (payload: { validatorVersion?: string; rationale?: string }) => void;
+  isPending: boolean;
+}
+
+function ActionConfirmationPanel({
+  action,
+  onCancel,
+  onConfirm,
+  isPending,
+}: ActionConfirmationPanelProps): JSX.Element {
+  const [validatorVersion, setValidatorVersion] = useState('');
+  const [rationale, setRationale] = useState('');
+
+  const needsValidatorVersion = action === 'validate';
+  const needsRationale = action === 'approve' || action === 'reject';
+  const rationaleRequired = action === 'reject';
+  const canSubmit =
+    !isPending &&
+    (!needsValidatorVersion || validatorVersion.trim().length > 0) &&
+    (!rationaleRequired || rationale.trim().length > 0);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    onConfirm({
+      validatorVersion: needsValidatorVersion ? validatorVersion.trim() : undefined,
+      rationale: needsRationale ? rationale.trim() : undefined,
+    });
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border-border-default bg-surface-raised mt-4 rounded-md border p-4"
+      aria-label={`Confirm ${ACTION_CONFIG[action].label}`}
+    >
+      <div className="text-fg text-body-sm mb-3 font-semibold">
+        Confirm {ACTION_CONFIG[action].label.toLowerCase()}
+      </div>
+
+      {needsValidatorVersion && (
+        <div className="mb-3">
+          <Label htmlFor="validator-version">
+            Validator version <span className="text-attention-text">*</span>
+          </Label>
+          <Input
+            id="validator-version"
+            value={validatorVersion}
+            onChange={(e) => setValidatorVersion(e.target.value)}
+            placeholder="e.g. THR-055/1.0.0"
+            disabled={isPending}
+            className="mt-1.5"
+          />
+        </div>
+      )}
+
+      {needsRationale && (
+        <div className="mb-3">
+          <Label htmlFor="action-rationale">
+            {action === 'reject' ? (
+              <>
+                Rationale <span className="text-attention-text">*</span>
+              </>
+            ) : (
+              'Rationale (optional)'
+            )}
+          </Label>
+          <Textarea
+            id="action-rationale"
+            value={rationale}
+            onChange={(e) => setRationale(e.target.value)}
+            placeholder={
+              action === 'reject'
+                ? 'Explain why this proposal is rejected…'
+                : 'Optional approval notes…'
+            }
+            disabled={isPending}
+            className="mt-1.5"
+          />
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={onCancel}
+          disabled={isPending}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          variant={ACTION_CONFIG[action].variant}
+          size="sm"
+          disabled={!canSubmit}
+          aria-label={`Confirm ${ACTION_CONFIG[action].label.toLowerCase()}`}
+        >
+          {isPending ? 'Working…' : 'Confirm'}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 // ── Main page ────────────────────────────────────────────────────────────
 
 export function ProposalDetailPage(): JSX.Element {
@@ -353,6 +493,103 @@ export function ProposalDetailPage(): JSX.Element {
   const versionId = versionIdParam ? Number(versionIdParam) : undefined;
 
   const query = useProposalDetail(slug, versionId);
+  const queryClient = useQueryClient();
+
+  const claim = useClaimProposal();
+  const validate = useValidateProposal();
+  const submitReview = useSubmitReviewProposal();
+  const review = useReviewProposal();
+
+  const [confirmingAction, setConfirmingAction] = useState<ProposalReviewAction | null>(null);
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null);
+
+  const anyPending = claim.isPending || validate.isPending || submitReview.isPending || review.isPending;
+
+  const refreshDetail = useCallback(() => {
+    if (slug && versionId !== undefined) {
+      void queryClient.invalidateQueries({
+        queryKey: ['proposal-detail', slug, versionId],
+        refetchType: 'active',
+      });
+    }
+  }, [slug, versionId, queryClient]);
+
+  const handleStale = useCallback(() => {
+    setConfirmingAction(null);
+    setConflictMessage(
+      'Another action changed this proposal. The page now shows the refreshed authoritative state.',
+    );
+    refreshDetail();
+  }, [refreshDetail]);
+
+  const runMutation = useCallback(
+    async (
+      action: ProposalReviewAction,
+      payload: { validatorVersion?: string; rationale?: string },
+    ) => {
+      if (!slug || versionId === undefined || query.data?.last_event_id == null) return;
+      const expectedEventId = query.data.last_event_id;
+      try {
+        switch (action) {
+          case 'claim':
+            await claim.mutateAsync({ slug, versionId, expectedEventId });
+            break;
+          case 'validate':
+            await validate.mutateAsync({
+              slug,
+              versionId,
+              body: {
+                validator_version: payload.validatorVersion!,
+                expected_event_id: expectedEventId,
+              },
+            });
+            break;
+          case 'submit-review':
+            await submitReview.mutateAsync({
+              slug,
+              versionId,
+              body: { expected_event_id: expectedEventId },
+            });
+            break;
+          case 'approve':
+            await review.mutateAsync({
+              slug,
+              versionId,
+              body: {
+                decision: 'approved',
+                rationale: payload.rationale,
+                expected_event_id: expectedEventId,
+              },
+            });
+            break;
+          case 'reject':
+            await review.mutateAsync({
+              slug,
+              versionId,
+              body: {
+                decision: 'rejected',
+                rationale: payload.rationale!,
+                expected_event_id: expectedEventId,
+              },
+            });
+            break;
+        }
+        setConfirmingAction(null);
+        setConflictMessage(null);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409 && err.code === 'stale_concurrency') {
+          handleStale();
+          return;
+        }
+        // For any other rejected/invalid response, refetch authoritative state
+        // and surface a generic explanation without leaking server data.
+        refreshDetail();
+        setConfirmingAction(null);
+        setConflictMessage('The action could not be applied. The page shows the current authoritative state.');
+      }
+    },
+    [slug, versionId, query, claim, validate, submitReview, review, handleStale],
+  );
 
   const backLink = (
     <Link
@@ -505,7 +742,7 @@ export function ProposalDetailPage(): JSX.Element {
               )}
             </div>
 
-            {/* Right-side context: permitted_next_action as info only */}
+            {/* Right-side context: lifecycle status + Founder review actions */}
             {detail.status && (
               <div className="shrink-0 text-right">
                 <div className="text-fg-subtle text-2xs mb-1 font-bold tracking-wide uppercase">
@@ -517,10 +754,80 @@ export function ProposalDetailPage(): JSX.Element {
                     Terminal — view only
                   </p>
                 )}
+
+                {/* THR-136: minimal Founder review-action affordances */}
+                {!terminal && (
+                  <div className="mt-2 flex flex-col items-end gap-2">
+                    {(() => {
+                      const primary = availableReviewAction(detail.status);
+                      const showReject = detail.status === 'in_review';
+                      if (!primary && !showReject) return null;
+                      return (
+                        <>
+                          {primary && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="default"
+                              disabled={anyPending || confirmingAction != null}
+                              onClick={() => {
+                                setConfirmingAction(primary);
+                                setConflictMessage(null);
+                              }}
+                              aria-label={ACTION_CONFIG[primary].label}
+                            >
+                              {ACTION_CONFIG[primary].label}
+                            </Button>
+                          )}
+                          {showReject && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              disabled={anyPending || confirmingAction != null}
+                              onClick={() => {
+                                setConfirmingAction('reject');
+                                setConflictMessage(null);
+                              }}
+                              aria-label="Reject"
+                            >
+                              Reject
+                            </Button>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </header>
+
+        {/* ── Conflict / stale-concurrency explanation ──────────────── */}
+        {conflictMessage && (
+          <section
+            className="border-attention/40 bg-attention-soft mt-4 rounded-md border p-4"
+            aria-label="Conflict"
+            role="status"
+          >
+            <div className="text-attention-text flex items-center gap-2 text-sm font-semibold">
+              <AlertTriangle size={15} aria-hidden="true" />
+              Conflict
+            </div>
+            <p className="text-fg-muted text-body-sm mt-1.5">{conflictMessage}</p>
+          </section>
+        )}
+
+        {/* ── Founder action confirmation panel ─────────────────────── */}
+        {confirmingAction && (
+          <ActionConfirmationPanel
+            action={confirmingAction}
+            isPending={anyPending}
+            onCancel={() => setConfirmingAction(null)}
+            onConfirm={(payload) => void runMutation(confirmingAction, payload)}
+          />
+        )}
 
         {/* ── Rejected terminal banner ──────────────────────────────── */}
         {rejected && (
