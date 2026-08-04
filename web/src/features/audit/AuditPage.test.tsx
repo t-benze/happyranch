@@ -325,6 +325,35 @@ describe('AuditPage — day-grouped timeline', () => {
     expect(screen.getByText('from dream')).toBeInTheDocument();
   });
 
+  // THR-137: long progress messages must render fully readable, not ellipsized.
+  test('renders long progress message in full without ellipsis', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const longMessage =
+      'Pinned head reviewed; targeted recovery/retry/switch probes passed. ' +
+      'Finalizing evidence, PR metadata, and immutable-head recheck.';
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        agent: 'dev_agent',
+        action: 'progress',
+        payload: { message: longMessage },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      // The full message must be present in the document.
+      expect(screen.getByText(longMessage)).toBeInTheDocument();
+    });
+    // Regression lock: the detail paragraph must NOT carry the old
+    // clipping class. If `truncate` were present the text would render
+    // with text-overflow:ellipsis and this assertion fails.
+    const detailEl = screen.getByText(longMessage);
+    expect(detailEl).not.toHaveClass('truncate');
+  });
+
   test('renders object ID as click-through link', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit([

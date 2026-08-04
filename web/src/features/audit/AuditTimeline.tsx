@@ -207,7 +207,7 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
 
         {/* Mono secondary detail line */}
         {narrative.detail && (
-          <p className="text-text-muted mt-0.5 truncate font-mono text-xs">
+          <p className="text-text-muted mt-0.5 break-words font-mono text-xs">
             {narrative.detail}
           </p>
         )}
