@@ -45,7 +45,7 @@ def _make_skill_dir(src_root: Path, skill_id: str) -> Path:
 
 
 def _make_all_system_contract_dirs(src_root: Path) -> set[str]:
-    """Create all 5 system-contract protocol/skills/<id>/ dirs."""
+    """Create all 6 system-contract protocol/skills/<id>/ dirs."""
     ids = set()
     for sc in SYSTEM_CONTRACTS:
         _make_skill_dir(src_root, sc.id)
@@ -648,7 +648,7 @@ class TestConcurrentMaterialization:
         from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "thread", "dream", "todos"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -717,10 +717,10 @@ class TestConcurrentMaterialization:
         import runtime.orchestrator.workspace_adapters as wa
 
         src = tmp_path / "protocol" / "skills"
-        # All 5 system contracts must be present now that
+        # All 6 system contracts must be present now that
         # _materialize_unified_canonical unions across all ordinary
         # contexts (dream is DREAM-only but still in the union).
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -851,7 +851,7 @@ class TestConcurrentMaterialization:
 
         # Create source skills so the adapter has something to copy
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "thread", "dream", "todos"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -946,7 +946,7 @@ class TestConcurrentMaterialization:
 
         # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")

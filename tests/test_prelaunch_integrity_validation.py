@@ -1190,8 +1190,8 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         # System contracts source
         protocol_skills = tmp_path / "protocol" / "skills"
-        # All 5 system contracts must exist for the context union.
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        # All 6 system contracts must exist for the context union.
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
             d = protocol_skills / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -1725,7 +1725,7 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         # ── Set up protocol skills source ───────────────────────────
         protocol_skills = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
             d = protocol_skills / sid
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")

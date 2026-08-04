@@ -2868,7 +2868,7 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
 
     proto_skills = test_settings.get_protocol_dir() / "skills"
     _setup_protocol_skills(test_settings, [
-        "start-task", "jobs", "make-worktree", "thread", "dream",
+        "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
     ])
 
     # ── Seed a known unrelated trusted package in the canonical store ─────

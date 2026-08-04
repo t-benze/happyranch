@@ -697,12 +697,13 @@ class TestSkillsCliReflection:
         out = capsys.readouterr().out
         # Check system contracts section does NOT list reflection
         # reflection appears only in Effective skills / Blocked, not in System Contracts
-        # The system contracts section should show exactly 5 contracts
+        # The system contracts section should show exactly 6 contracts
         assert "System Contracts (runtime-injected):" in out
         # review should appear in effective/blocked section, not system contracts
-        # Verify the existing 5 contracts are still there
+        # Verify the existing 6 contracts are still there
         assert "start-task" in out
         assert "jobs" in out
+        assert "todos" in out
 
 
 class TestSkillsCliRegistration:
@@ -1051,12 +1052,13 @@ class TestSystemContractsCliDisplay:
 
         out = capsys.readouterr().out
         assert "System Contracts (runtime-injected):" in out
-        assert "Total: 5 contract(s)" in out
+        assert "Total: 6 contract(s)" in out
         assert "start-task" in out
         assert "jobs" in out
         assert "make-worktree" in out
         assert "thread" in out
         assert "dream" in out
+        assert "todos" in out
         # Managed catalog section still present
         assert "Effective skills" in out
 
@@ -1075,7 +1077,7 @@ class TestSystemContractsCliDisplay:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "system_contracts" in data
-        assert len(data["system_contracts"]) == 5
+        assert len(data["system_contracts"]) == 6
         ids = [sc["id"] for sc in data["system_contracts"]]
         assert "start-task" in ids
         assert "jobs" in ids

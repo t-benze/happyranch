@@ -72,7 +72,7 @@ class SystemContract:
     requires_repo: bool = False
 
 
-# ── The 5 system contracts (single source of truth) ──────────────────
+# ── The 6 system contracts (single source of truth) ──────────────────
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
@@ -153,6 +153,28 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
         when_to_use="Use during scheduled dream invocations only.",
         source_path="protocol/skills/dream/SKILL.md",
         contexts=(SessionContext.DREAM,),
+    ),
+    SystemContract(
+        id="todos",
+        name="Todos",
+        description=(
+            "Agent-owned scheduled commitments (THR-105): create one-shot and "
+            "weekly self-schedules from explicit founder/operator instruction. "
+            "Capability-gated, self-only, immutable brief."
+        ),
+        when_to_use=(
+            "Use when the founder or operator has explicitly instructed you to "
+            "schedule a Todo for yourself."
+        ),
+        source_path="protocol/skills/todos/SKILL.md",
+        contexts=(
+            SessionContext.TASK,
+            SessionContext.THREAD,
+            SessionContext.WAKE,
+            SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
+        ),
     ),
 )
 
