@@ -935,10 +935,17 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       screen.getByRole('button', { name: /generate connect prompt/i }),
     );
 
-    const pre = await screen.findByText(/connecting the built-in "claude"/i);
+    const pre = await screen.findByText(/connect the built-in.*claude/i);
     expect(pre).toHaveTextContent('hrreg_runtime_bin');
     expect(pre).toHaveTextContent('/executors/runtime/register-binary');
     expect(mintPaths).toEqual(['runtime']);
+    // THR-107 seq352: prompt parity — same structure as onboarding
+    const text = pre.textContent || '';
+    expect(text).toMatch(/--fail-with-body/);
+    expect(text).toMatch(/all_complete/);
+    const regIdx = text.indexOf('register-binary');
+    const acIdx = text.indexOf('all_complete');
+    expect(acIdx).toBeLessThan(regIdx);
   });
 
   test('custom connect mints via the RUNTIME token route and shows the profile-register prompt (no legacy CLI / config.yaml)', async () => {

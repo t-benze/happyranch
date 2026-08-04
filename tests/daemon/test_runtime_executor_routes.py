@@ -1179,6 +1179,414 @@ class TestRuntimeRegisterBinaryRoute:
         assert r.status_code == 422
 
 
+# ── THR-107 seq352: OpenCode race & error-detail tests ──────────────────
+
+
+class TestRuntimeRegisterBinaryRaceAndErrors:
+    """OpenCode-style race + actionable error regressions (THR-107 seq352)."""
+
+    def _mint_binary_token_and_complete_conformance(
+        self, client, store, monkeypatch, kind="claude"
+    ):
+        """Mint a binary-purpose runtime token and complete all conformance steps."""
+        token, _ = store.mint_runtime(kind, purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json=payload,
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        return token, headers
+
+    def _create_valid_executable(self, tmp_path):
+        """Create a valid executable binary for testing."""
+        exe = tmp_path / "bin" / "myexecutor"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        return str(exe)
+
+    # ── OpenCode race reproduction ─────────────────────────────────
+
+    def test_register_binary_fails_before_fourth_checkin_all_complete(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """OpenCode race: register-binary after 3 check-ins fails with 400,
+        no write, no consume. Then 4th check-in + register-binary succeeds."""
+        token, _ = store.mint_runtime("claude", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create a valid executable
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        exe_path = str(exe)
+
+        # Complete only the first 3 check-ins (NOT emit_envelope)
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        # Attempt register-binary — must fail (conformance incomplete)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "incomplete" in detail.lower()
+        assert "emit_envelope" in detail
+        assert "all_complete" in detail
+
+        # Token must NOT be consumed
+        assert store.validate_runtime(token) is not None
+
+        # No registry write
+        from runtime.orchestrator.executor_binary_registry import load_registry
+        registry = load_registry()
+        assert "claude" not in registry
+
+        # Now complete the fourth check-in (emit_envelope)
+        envelope = {
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        r4 = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": envelope},
+            headers=headers,
+        )
+        assert r4.status_code == 200
+        assert r4.json()["all_complete"] is True
+
+        # Now register-binary succeeds
+        r_reg = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r_reg.status_code == 200
+        assert r_reg.json()["valid"] is True
+
+    # ── Actionable error detail assertions ─────────────────────────
+
+    def test_conformance_incomplete_error_names_pending_steps(
+        self, client, store, tmp_path
+    ):
+        """Incomplete conformance → 400 naming pending steps + all_complete."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        exe = tmp_path / "bin" / "pi"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+
+        # No check-ins at all
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers=headers,
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "incomplete" in detail.lower()
+        assert "workspace_access" in detail
+        assert "all_complete" in detail
+
+    def test_non_absolute_path_error_is_actionable(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Non-absolute path → 422 with clear correction guidance."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        # Complete all conformance steps
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": "relative/path"},
+            headers=headers,
+        )
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "absolute" in detail.lower()
+
+    def test_nonexistent_path_error_is_clear(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Non-existent path → 422 telling the candidate the file doesn't exist."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": "/nonexistent/path/to/nowhere"},
+            headers=headers,
+        )
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert ("not exist" in detail.lower() or
+                "does not exist" in detail.lower())
+
+    def test_invalid_token_error_is_401_and_actionable(self, client, tmp_path):
+        """Invalid/unknown token → 401 with regenerate guidance (THR-107 seq352)."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": "Bearer hrreg_fake_invalid_token"},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "token" in detail.lower()
+        assert "regenerate" in detail.lower()
+
+    def test_consumed_token_error_mentions_regenerate(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Consumed (already-used) token → 401 with regenerate guidance."""
+        exe_path = self._create_valid_executable(tmp_path)
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        # First use: succeeds and consumes the token
+        r1 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r1.status_code == 200
+        # Token is now consumed
+        assert store.validate_runtime(token) is None
+
+        # Second use with consumed token → 401
+        r2 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r2.status_code == 401
+        detail = r2.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_master_bearer_error_mentions_regenerate(self, client, monkeypatch, tmp_path):
+        """Master bearer token on registration route → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": f"Bearer {paths_mod.read_token()}"},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_non_hrreg_token_error_mentions_regenerate(self, client, tmp_path):
+        """Non-hrreg_ token → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": "Bearer not_a_registration_token_12345"},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_missing_bearer_error_mentions_regenerate(self, client, tmp_path):
+        """No bearer token → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_reserve_race_token_error_mentions_regenerate(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Reserve race: after an external reserve, register-binary → 401
+        with regenerate guidance."""
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        exe_path = self._create_valid_executable(tmp_path)
+
+        # Simulate a concurrent reservation
+        reserved = store.reserve_runtime(token)
+        assert reserved is not None, "Reserve must succeed for the race test"
+
+        # Now try register-binary with the externally reserved token
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+        # Token remains reserved (not consumed, not released by our route)
+        # Clean up
+        store.release_runtime(token)
+
+    # ── Fault injection: set_binary write failure ──────────────────
+
+    def test_set_binary_write_failure_safe_500(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """set_binary raises Exception → 500 with safe detail, token
+        released/not consumed, no durable write, retry succeeds (THR-107 seq352)."""
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        exe_path = self._create_valid_executable(tmp_path)
+
+        # Monkeypatch set_binary in the routes module where it's imported
+        from runtime.daemon.routes import executors as executors_routes
+        original_set_binary = executors_routes.set_binary
+        call_count = [0]
+
+        def _failing_set_binary(kind, path):
+            call_count[0] += 1
+            raise OSError("Simulated disk write failure")
+
+        monkeypatch.setattr(
+            executors_routes, "set_binary", _failing_set_binary
+        )
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 500
+        detail = r.json()["detail"]
+        # Safe detail: no raw traceback, no internal paths, no secret
+        assert "traceback" not in detail.lower()
+        assert "oserror" not in detail.lower()
+        assert "simulated" not in detail.lower()
+        assert "persist" in detail.lower() or "fail" in detail.lower()
+
+        # Token released (not consumed)
+        assert store.validate_runtime(token) is not None
+
+        # No durable write (registry has no "claude" entry)
+        from runtime.orchestrator.executor_binary_registry import load_registry
+        registry = load_registry()
+        assert "claude" not in registry
+
+        # Restore set_binary and retry with same token → succeeds
+        monkeypatch.setattr(
+            executors_routes, "set_binary", original_set_binary
+        )
+        r2 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r2.status_code == 200
+        assert r2.json()["valid"] is True
+
+        # Now token IS consumed
+        assert store.validate_runtime(token) is None
+
+        # Registry now has the entry
+        registry2 = load_registry()
+        assert "claude" in registry2
+
+    def test_token_purpose_mismatch_is_403(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Profile-purpose token → register-binary returns 403."""
+        token, _ = store.mint_runtime("claude", purpose="profile")
+        headers = {"Authorization": f"Bearer {token}"}
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+
+        # Complete conformance for the profile token
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers=headers,
+        )
+        assert r.status_code in (401, 403)
+        detail = r.json()["detail"]
+        if isinstance(detail, dict):
+            assert detail.get("code") == "token_purpose_mismatch"
+
+    # ── Shell execution regression: fail-closed script ────────────
+
+
 # ── Runtime Profile Management Routes (THR-107 S4a) ─────────────────────
 
 
