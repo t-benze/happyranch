@@ -34,37 +34,46 @@ from runtime.skills.canonical_store import parse_strict_sha256_hash
 router = APIRouter(dependencies=[require_token()])
 
 
-def _try_recover_audit_event(
+def _recover_audit_event_mandatory(
     db,
     *,
     slug: str,
     agent: str = "operator",
-    severity: str = "error",
-    ok: bool = False,
     detail: str,
     reason_codes: list[str] | None = None,
     skill_id: str | None = None,
     version: str | None = None,
+    ok: bool = False,
+    severity: str = "error",
+    source: str = "operator_recovery",
 ) -> None:
-    """Best-effort audit event emission for operator recovery paths.
+    """Emit a durable audit event for operator recovery paths.
 
-    Failure to persist is logged but not re-raised from this helper —
-    callers decide whether to fail-closed when audit persistence matters.
+    Persistence is mandatory for refusal and recovery events.  On
+    failure this helper raises HTTPException(500) — the caller must
+    NOT return or proceed with any destructive action.
     """
     try:
         db.insert_skill_validation_event(  # type: ignore[union-attr]
             skill_id=skill_id or f"hr:{slug}",
             slug=slug,
             agent=agent,
-            source="operator_recovery",
+            source=source,
             severity=severity,
             ok=ok,
             version=version,
             findings=[detail],
             reason_codes=reason_codes or [],
         )
-    except Exception:
-        pass  # Best-effort; caller decides on fail-closed
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Recovery audit event persistence failed: {exc}. "
+                f"No changes were made. Retry recovery after resolving "
+                f"the persistence issue."
+            ),
+        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -1169,9 +1178,9 @@ def skill_recover(
         pkgs = service.list_catalog(org.db)
     except Exception as exc:
         # Emit durable failure event before refusing
-        _try_recover_audit_event(
+        _recover_audit_event_mandatory(
             org.db, slug=slug, agent="operator",
-            severity="error", ok=False,
+            ok=False,
             detail=f"Ledger query failure for recover {slug}@{version}: {exc}",
             reason_codes=["ledger_query_failure"],
         )
@@ -1187,9 +1196,9 @@ def skill_recover(
             break
 
     if pkg_match is None:
-        _try_recover_audit_event(
+        _recover_audit_event_mandatory(
             org.db, slug=slug, agent="operator",
-            severity="error", ok=False,
+            ok=False,
             detail=(
                 f"No PUBLISHED lifecycle package found for "
                 f"{slug}@{version}"
@@ -1207,9 +1216,9 @@ def skill_recover(
 
     # Validate content_hash matches ledger
     if pkg_match.content_hash != content_hash:
-        _try_recover_audit_event(
+        _recover_audit_event_mandatory(
             org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", severity="error", ok=False,
+            agent="operator", ok=False,
             detail=(
                 f"content_hash mismatch: provided {content_hash[:16]}..., "
                 f"ledger has {pkg_match.content_hash[:16]}..."
@@ -1233,9 +1242,9 @@ def skill_recover(
         try:
             manifest_bytes = artifact_store.read(pkg_match.content_artifact_key)
         except Exception:
-            _try_recover_audit_event(
+            _recover_audit_event_mandatory(
                 org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", severity="error", ok=False,
+                agent="operator", ok=False,
                 detail=(
                     f"Manifest artifact not found: "
                     f"{pkg_match.content_artifact_key}"
@@ -1253,9 +1262,9 @@ def skill_recover(
         # Verify manifest hash against ledger
         actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
         if actual_manifest_hash != content_hash:
-            _try_recover_audit_event(
+            _recover_audit_event_mandatory(
                 org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", severity="error", ok=False,
+                agent="operator", ok=False,
                 detail=(
                     f"Manifest artifact hash mismatch: "
                     f"expected {content_hash[:16]}..., "
@@ -1277,9 +1286,9 @@ def skill_recover(
         try:
             manifest = _json.loads(manifest_bytes.decode("utf-8"))
         except Exception:
-            _try_recover_audit_event(
+            _recover_audit_event_mandatory(
                 org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", severity="error", ok=False,
+                agent="operator", ok=False,
                 detail="Manifest artifact is not valid JSON",
                 reason_codes=["invalid_manifest"],
             )
@@ -1297,9 +1306,9 @@ def skill_recover(
                 try:
                     member_bytes = artifact_store.read(member_key)
                 except Exception:
-                    _try_recover_audit_event(
+                    _recover_audit_event_mandatory(
                         org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", severity="error", ok=False,
+                        agent="operator", ok=False,
                         detail=(
                             f"Member artifact not found: {member_key}. "
                             f"Recovery requires intact ArtifactStore."
@@ -1319,9 +1328,9 @@ def skill_recover(
                 try:
                     expected_hex = parse_strict_sha256_hash(member_hash)
                 except ValueError as exc:
-                    _try_recover_audit_event(
+                    _recover_audit_event_mandatory(
                         org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", severity="error", ok=False,
+                        agent="operator", ok=False,
                         detail=(
                             f"Member {member_path} hash invalid: {exc}"
                         ),
@@ -1336,9 +1345,9 @@ def skill_recover(
 
                 actual_hex = hashlib.sha256(member_bytes).hexdigest()
                 if actual_hex != expected_hex:
-                    _try_recover_audit_event(
+                    _recover_audit_event_mandatory(
                         org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", severity="error", ok=False,
+                        agent="operator", ok=False,
                         detail=(
                             f"Member {member_path} hash mismatch: "
                             f"expected {expected_hex[:16]}..., "
@@ -1363,9 +1372,9 @@ def skill_recover(
     pkg_path = store.canonical_path(slug, version, content_hash)
 
     if not pkg_path.exists():
-        _try_recover_audit_event(
+        _recover_audit_event_mandatory(
             org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", severity="error", ok=False,
+            agent="operator", ok=False,
             detail=(
                 f"Canonical package not found at {pkg_path}. "
                 f"Package will be rebuilt on next materialization."
@@ -1407,9 +1416,9 @@ def skill_recover(
                 break
 
         if all_members_valid:
-            _try_recover_audit_event(
+            _recover_audit_event_mandatory(
                 org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", severity="error", ok=False,
+                agent="operator", ok=False,
                 detail=(
                     f"Recovery refused: canonical package {slug}@{version} "
                     f"at {pkg_path} is valid (all member hashes match ledger)."
@@ -1466,12 +1475,13 @@ def skill_recover(
         _make_writable_for_removal(pkg_path)
         shutil.rmtree(pkg_path)
     except Exception as exc:
-        _try_recover_audit_event(
+        _recover_audit_event_mandatory(
             org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", severity="error", ok=False,
+            agent="operator", ok=False,
             detail=(
                 f"Failed to delete corrupted package {slug}@{version} "
-                f"at {pkg_path} (event was already persisted): {exc}"
+                f"at {pkg_path} (successful recovery event was "
+                f"already persisted): {exc}"
             ),
             reason_codes=["deletion_failed"],
         )
