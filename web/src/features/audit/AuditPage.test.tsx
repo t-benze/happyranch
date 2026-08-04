@@ -325,6 +325,62 @@ describe('AuditPage — day-grouped timeline', () => {
     expect(screen.getByText('from dream')).toBeInTheDocument();
   });
 
+  // THR-137: long progress messages must render fully readable with word-wrap
+  // semantics, not ellipsized or horizontally clipped. The old `truncate` class
+  // composes overflow-hidden + text-ellipsis + whitespace-nowrap — together they
+  // force single-line overflow with an ellipsis. The fix replaces it with
+  // `break-words` so long text wraps within the container.
+  //
+  // jsdom has no true layout, so the assertions are class-level: the absence of
+  // every truncation-enabling utility class IS the proof the element wraps
+  // rather than clips. Each assertion would fail with the old `truncate` render.
+  test('renders long progress message in full with word-wrap semantics', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Deliberately long message — far longer than the original fixture — that
+    // would be visibly clipped (ellipsized) under the old `truncate` class.
+    const longMessage =
+      'Pinned head reviewed; targeted recovery/retry/switch probes passed. ' +
+      'Finalizing evidence, PR metadata, and immutable-head recheck. ' +
+      'All contract snapshots regenerated and verified against baseline. ' +
+      'Adapter lifecycle integration: submit → place → resolve → fetch all ' +
+      'green at 100%. The fix-forward is clean and surgical — no scope widen, ' +
+      'no redesign, no opportunistic refactors.';
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        agent: 'dev_agent',
+        action: 'progress',
+        payload: { message: longMessage },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      expect(screen.getByText(longMessage)).toBeInTheDocument();
+    });
+
+    const detailEl = screen.getByText(longMessage);
+
+    // 1. Full text content character-for-character — no truncation, no
+    //    injected ellipsis character (…), no mid-word cut.
+    expect(detailEl.textContent).toBe(longMessage);
+
+    // 2. The old Tailwind `truncate` shorthand class must not be present.
+    expect(detailEl).not.toHaveClass('truncate');
+
+    // 3. Each utility that composes `truncate` must be absent individually.
+    //    With `truncate` present, ALL three of these classes appear on the
+    //    element; with `break-words`, NONE do.
+    expect(detailEl).not.toHaveClass('overflow-hidden');
+    expect(detailEl).not.toHaveClass('whitespace-nowrap');
+    expect(detailEl).not.toHaveClass('text-ellipsis');
+
+    // 4. The replacement `break-words` class IS present — this is the fix.
+    expect(detailEl).toHaveClass('break-words');
+  });
+
   test('renders object ID as click-through link', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit([
