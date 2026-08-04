@@ -55,7 +55,7 @@ async function main() {
     </tr>
     <tr>
       <td colspan="4" class="side-by-side">
-        <div><img src="../reference/${escapeHtml(refFile)}" alt="reference"><p>Reference</p></div>
+        <div><img src="${escapeHtml(refFile)}" alt="reference"><p>Reference</p></div>
         <div><img src="${escapeHtml(builtFile)}" alt="built"><p>Built</p></div>
       </td>
     </tr>`;

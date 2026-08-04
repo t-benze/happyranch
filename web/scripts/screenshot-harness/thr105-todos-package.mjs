@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const OUT = process.argv[2] || join(HERE, 'out', 'thr105-complete-light');
+const REF_DIR = join(HERE, 'reference');
 
 const PR = 548;
 const BRANCH = 'task/TASK-4084';
@@ -92,6 +93,19 @@ async function main() {
     fileHashes[name] = await sha256File(dst);
   }
 
+  // Stage the approved reference PNGs so the downloaded archive is standalone.
+  const refEntries = await readdir(REF_DIR, { withFileTypes: true });
+  const refFiles = refEntries
+    .filter((e) => e.isFile() && e.name.startsWith('reference-todos') && e.name.endsWith('.png'))
+    .map((e) => e.name)
+    .sort();
+  for (const name of refFiles) {
+    const src = join(REF_DIR, name);
+    const dst = join(staging, name);
+    await stageFile(src, dst, mtimeEpoch);
+    fileHashes[name] = await sha256File(dst);
+  }
+
   const manifest = {
     manifest_id: manifestId,
     task_id: 'TASK-4230',
@@ -113,7 +127,7 @@ async function main() {
 
   // Build deterministic tar.gz: sorted names, fixed mtime, no gzip filename/timestamp.
   const archivePath = resolve(OUT, archiveName);
-  const sortedNames = [...files, 'MANIFEST.json'].sort().map((n) => `"${n}"`).join(' ');
+  const sortedNames = [...files, ...refFiles, 'MANIFEST.json'].sort().map((n) => `"${n}"`).join(' ');
   await exec(
     `cd "${staging}" && tar -cf - ${sortedNames} | gzip -n > "${archivePath}"`,
   );
