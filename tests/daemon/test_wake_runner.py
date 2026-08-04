@@ -137,3 +137,97 @@ async def test_run_wake_passes_org_paths_to_executor_factory(org_state) -> None:
 
     assert isinstance(captured["paths"], OrgPaths)
     assert captured["paths"].root == org_state.root
+
+
+# ── Issue #568: AgentDef.model forwarding to executor.run ──────────────
+
+async def test_run_wake_forwards_model_to_executor_run(org_state) -> None:
+    """When AgentDef.model is set, wake runner passes it to executor.run(model=...)."""
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\n"
+        "name: dev_agent\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "model: gpt-5.6-terra\n"
+        "---\n\n"
+        "## Routine Tasks\n\n"
+        "- Triage open tickets.\n"
+    )
+    (org_state.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-002",
+        agent_name="dev_agent",
+        local_date="2026-06-12",
+        slot="09:00",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=datetime(2026, 6, 12, 1, 0, tzinfo=timezone.utc),
+        status=WorkHourStatus.PENDING,
+        routine_count=1,
+    ))
+    captured_model = {}
+
+    def factory(executor_name, settings, paths):
+        class _CapturingExec:
+            def run(self, **kwargs):
+                captured_model["model"] = kwargs.get("model")
+                return _FakeResult()
+        return _CapturingExec()
+
+    await run_wake(
+        org_state=org_state,
+        work_hour_id="WORKHOUR-002",
+        settings=Settings(),
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
+    )
+
+
+async def test_run_wake_no_model_preserves_default_behavior(org_state) -> None:
+    """When AgentDef.model is absent, wake runner passes model=None."""
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\n"
+        "name: dev_agent\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "---\n\n"
+        "## Routine Tasks\n\n"
+        "- Triage open tickets.\n"
+    )
+    (org_state.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-003",
+        agent_name="dev_agent",
+        local_date="2026-06-13",
+        slot="09:00",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=datetime(2026, 6, 13, 1, 0, tzinfo=timezone.utc),
+        status=WorkHourStatus.PENDING,
+        routine_count=1,
+    ))
+    captured_model = {}
+
+    def factory(executor_name, settings, paths):
+        class _CapturingExec:
+            def run(self, **kwargs):
+                captured_model["model"] = kwargs.get("model")
+                return _FakeResult()
+        return _CapturingExec()
+
+    await run_wake(
+        org_state=org_state,
+        work_hour_id="WORKHOUR-003",
+        settings=Settings(),
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") is None, (
+        f"model should be None when AgentDef has no model, "
+        f"got {captured_model.get('model')!r}"
+    )

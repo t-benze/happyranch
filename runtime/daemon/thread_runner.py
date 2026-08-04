@@ -505,9 +505,13 @@ async def run_invocation(
         agent_def = load_agent(paths, inv.agent_name) if paths else None
         executor_name = (agent_def.executor if agent_def else "claude").lower()
     except Exception:
+        agent_def = None
         executor_name = "claude"
     if not _is_registered_executor(executor_name):
         executor_name = "claude"
+
+    # Issue #568: forward AgentDef.model to executor.run for thread invocations.
+    model_name: str | None = agent_def.model if agent_def else None
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
@@ -684,6 +688,7 @@ async def run_invocation(
                 on_throttle_event=_on_throttle_event,
                 pre_launch_validator=_pre_launch_validator,
                 org_slug=org_state.slug,
+                model=model_name,
             )
             if resume:
                 run_kwargs["resume_session_id"] = resume
