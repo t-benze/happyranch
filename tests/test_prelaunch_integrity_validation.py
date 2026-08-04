@@ -1570,25 +1570,48 @@ class TestProductionSeamLifecycleCorruptionRefusal:
             f"ok=False, got {len(integrity_events)}"
         )
 
-        # ── Phase 2: Route handler contract via set_agent_executor ──
-        # Exercises the actual route handler with mocked dependencies
-        # to prove the HTTP response format, status codes, and fail-closed
-        # behavior. Phase 1 (above) already proves real lifecycle corruption
-        # detection with Popen interception.
-        from runtime.daemon.routes.agents import (
-            set_agent_executor, SetExecutorBody,
-        )
-        from runtime.orchestrator.agent_def import AgentDef
-        from fastapi import HTTPException
+        # ── Phase 2: Authenticated HTTP executor-switch route proof ──
+        # Exercises the REAL set_agent_executor endpoint through the
+        # FastAPI TestClient with a valid bearer token. The daemon is
+        # constructed with the org state already holding the corrupted
+        # canonical package. This proves: authentication enforcement,
+        # real post-corruption refusal, mandatory durable validation
+        # event, zero Popen calls, no config/audit success side effects.
         import datetime
+        from fastapi.testclient import TestClient
 
-        mock_org = MagicMock()
-        mock_org.db = db
-        mock_org.root = org_root
-        mock_org.slug = "test-org"
-        mock_org.settings = orch._settings
+        from runtime.daemon import paths as daemon_paths
+        from runtime.daemon.agent_config import load_agent_config
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.config import Settings
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+        from runtime.orchestrator import (
+            workspace_adapters as wa,
+            prompt_loader,
+        )
+        from runtime.runtime import RuntimeDir
 
-        mock_agent = AgentDef(
+        # ── Reconstruct RuntimeDir from workspace path ──────────
+        # workspace = org_paths.workspaces_dir / "dev_agent"
+        # org_paths.root = workspace.parent.parent
+        # rt.root = org_paths.root.parent.parent
+        daemon_org_root = workspace.parent.parent
+        rt = RuntimeDir(daemon_org_root.parent.parent)
+
+        # ── Build org structure needed by DaemonState.from_runtime ───
+        daemon_org_paths = OrgPaths(root=daemon_org_root)
+        daemon_org_paths.org_dir.mkdir(parents=True, exist_ok=True)
+
+        (daemon_org_paths.org_dir / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        agent_def = AgentDef(
             name="dev_agent", team="engineering", role="worker",
             executor="claude", allow_rules=(), repos={},
             enrolled_by="engineering_head",
@@ -1596,51 +1619,123 @@ class TestProductionSeamLifecycleCorruptionRefusal:
             enrolled_at=datetime.datetime.now(datetime.timezone.utc),
             system_prompt="test prompt\n",
         )
+        daemon_org_paths.agents_dir.mkdir(parents=True, exist_ok=True)
+        (daemon_org_paths.agents_dir / "dev_agent.md").write_text(
+            render_agent_text(agent_def))
 
-        # Prepare workspace for the route handler
-        mock_workspace = org_root / "workspaces" / "dev_agent"
-        mock_workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "agent.yaml").write_text(
+            "repos: {}\nexecutor: claude\n")
 
-        # Mock agent loading, config, and materialization failure
-        with mock_patch(
-            "runtime.daemon.routes.agents.prompt_loader.load_agent",
-            return_value=mock_agent,
-        ), mock_patch(
-            "runtime.daemon.routes.agents.load_agent_config",
-            return_value={"executor": "claude"},
-        ), mock_patch(
-            "runtime.daemon.routes.agents._executor_switch_materialize",
-            return_value=[
-                "Package tree hash mismatch for corrupt-switch@1.0.0: "
-                "expected a1b2c3..., got d4e5f6..."
-            ],
-        ):
-            body = SetExecutorBody(executor="codex")
-            with pytest.raises(HTTPException) as exc:
-                asyncio.run(
-                    set_agent_executor(
-                        slug="test-org",
-                        agent_name="dev_agent",
-                        body=body,
-                        org=mock_org,
-                    )
+        # ── Set up daemon home with auth token ──────────────────────
+        monkeypatch.setenv(
+            "HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        daemon_paths.ensure_daemon_home()
+        token = daemon_paths.ensure_token()
+        auth_headers = {"Authorization": f"Bearer {token}"}
+
+        # ── Set up env for canonical store + same-owner mode ────────
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
+
+        # ── Set up protocol skills source ───────────────────────────
+        protocol_skills = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            d = protocol_skills / sid
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+        saved_skills_src = wa._SKILLS_SRC
+        wa._SKILLS_SRC = protocol_skills
+
+        # ── Set up runtime skills for project_root ──────────────────
+        project_skills = tmp_path / "runtime" / "skills"
+        project_skills.mkdir(parents=True, exist_ok=True)
+        (project_skills / "SKILL.md").write_text(
+            "# runtime system contracts\n")
+
+        # ── Create DaemonState from the RuntimeDir ──────────────────
+        # Close the _setup_orchestrator db first to flush WAL so the
+        # OrgState's new Database connection sees all lifecycle data.
+        db.close()
+        settings_for_daemon = Settings(project_root=tmp_path)
+        state = DaemonState.from_runtime(rt, settings_for_daemon)
+        app = create_app(state)
+
+        try:
+            # ── Intercept subprocess.Popen — prove zero launches ────
+            popen_calls_phase2 = []
+            def fake_popen_phase2(*args, **kwargs):
+                popen_calls_phase2.append(len(popen_calls_phase2) + 1)
+                return MagicMock(
+                    pid=99999,
+                    communicate=MagicMock(return_value=("", "")),
+                    returncode=0,
                 )
 
-        # ── Assert concrete refusal status/body ────────────────────
-        assert exc.value.status_code == 400, (
-            f"Expected HTTP 400 on executor switch failure, "
-            f"got {exc.value.status_code}"
-        )
-        detail = exc.value.detail
-        assert isinstance(detail, dict), (
-            f"Expected dict detail, got {type(detail)}: {detail}"
-        )
-        assert detail.get("code") == "executor_materialization_failed", (
-            f"Expected executor_materialization_failed, got {detail}"
-        )
-        assert len(detail.get("errors", [])) >= 1, (
-            f"Expected at least 1 materialization error, got {detail}"
-        )
+            with mock_patch(
+                "runtime.platform.isolation.subprocess.Popen",
+                side_effect=fake_popen_phase2, autospec=True,
+            ):
+                r = TestClient(app).put(
+                    "/api/v1/orgs/test-org/agents/dev_agent/executor",
+                    json={"executor": "codex"},
+                    headers=auth_headers,
+                )
+
+            # ── Assert concrete refusal status/body ─────────────────
+            assert r.status_code == 400, (
+                f"Expected HTTP 400 on executor switch failure, "
+                f"got {r.status_code}: {r.text}"
+            )
+            detail = r.json()["detail"]
+            assert isinstance(detail, dict), (
+                f"Expected dict detail, got {type(detail)}: {detail}"
+            )
+            assert detail.get("code") == "executor_materialization_failed", (
+                f"Expected executor_materialization_failed, got {detail}"
+            )
+            assert len(detail.get("errors", [])) >= 1, (
+                f"Expected at least 1 materialization error, got {detail}"
+            )
+
+            # ── Prove zero Popen calls ──────────────────────────────
+            assert len(popen_calls_phase2) == 0, (
+                f"Expected 0 subprocess.Popen calls during executor "
+                f"switch refusal, got {len(popen_calls_phase2)}"
+            )
+
+            # ── Prove mandatory durable validation event persisted ──
+            org_db = state.orgs["test-org"].db
+            events = org_db.list_skill_validation_events(
+                source="integrity_check",
+            )
+            integrity_events_phase2 = [
+                e for e in events
+                if e.get("source") == "integrity_check"
+                and not e.get("ok")
+            ]
+            assert len(integrity_events_phase2) >= 1, (
+                f"Expected at least 1 durable integrity_check event "
+                f"with ok=False from phase 2, got "
+                f"{len(integrity_events_phase2)}"
+            )
+
+            # ── Prove no config/audit success side effects ──────────
+            after_agent = prompt_loader.load_agent(
+                daemon_org_paths, "dev_agent")
+            assert after_agent is not None
+            assert after_agent.executor == "claude", (
+                f"Agent executor must remain 'claude' after refusal, "
+                f"got {after_agent.executor}"
+            )
+
+            ws_after_cfg = load_agent_config(workspace)
+            assert ws_after_cfg.get("executor") == "claude", (
+                f"Workspace executor must remain 'claude' after "
+                f"refusal, got {ws_after_cfg}"
+            )
+        finally:
+            wa._SKILLS_SRC = saved_skills_src
 
         # ── Prove corruption persists (no auto-repair) ───────────
         pkg_path = store.canonical_path(
