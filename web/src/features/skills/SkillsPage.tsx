@@ -17,7 +17,7 @@
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
+import { Activity, ClipboardList, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillsCatalog } from '@/hooks/skills';
 import { SkillCard } from './SkillCard';
@@ -110,6 +110,15 @@ export function SkillsPage(): JSX.Element {
                 {attention} {attention === 1 ? 'needs' : 'need'} attention
               </span>
             )}
+            {/* Proposals entry point — peer to the Catalog surface's topbar controls.
+                Links to the Founder-only proposal review queue. */}
+            <Link
+              to={`/orgs/${slug ?? ''}/skills/proposals`}
+              className="border-border-default text-fg-muted hover:bg-bg-subtle hover:text-fg text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+            >
+              <ClipboardList size={15} aria-hidden="true" />
+              Proposals
+            </Link>
             {/* Runtime Validation entry point — mirrors the mockup's Skills
                 topbar link (the read-only event list). One nav entry into the
                 Slice-6 surface. */}

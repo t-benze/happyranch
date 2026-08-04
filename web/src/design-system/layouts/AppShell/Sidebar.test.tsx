@@ -93,7 +93,6 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       expect(aside.getByText('Tasks')).toBeInTheDocument();
       expect(aside.getByText('Agents')).toBeInTheDocument();
       expect(aside.getByText('Skills')).toBeInTheDocument();
-      expect(aside.getByText('Proposal review')).toBeInTheDocument();
       expect(aside.getByText('Knowledge')).toBeInTheDocument();
       expect(aside.getByText('Artifacts')).toBeInTheDocument();
     });
@@ -253,7 +252,6 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       expect(aside.getByText('Tasks').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
       expect(aside.getByText('Agents').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/agents`);
       expect(aside.getByText('Skills').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/skills`);
-      expect(aside.getByText('Proposal review').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/skills/proposals`);
       expect(aside.getByText('Knowledge').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/kb`);
       expect(aside.getByText('Artifacts').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/artifacts`);
       // Operate group
@@ -426,53 +424,23 @@ describe('Operate surfaces', () => {
   });
 });
 
-describe('THR-055: Proposal review sidebar navigation discoverability', () => {
-  test('Proposal review nav item is immediately adjacent to Skills', async () => {
+describe('THR-136: Proposal review navigation correction — no sidebar entry', () => {
+  test('sidebar contains Skills but no Proposal review or Proposals-to-queue link', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {
       const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      expect(aside.getByText('Proposal review')).toBeInTheDocument();
+      expect(aside.getByText('Skills')).toBeInTheDocument();
     });
     const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-    const skillsLink = aside.getByText('Skills').closest('a')!;
-    const proposalsLink = aside.getByText('Proposal review').closest('a')!;
-    // Proposal review must be a sibling immediately after Skills in DOM order
-    expect(skillsLink.nextElementSibling).toBe(proposalsLink);
-  });
-
-  test('Proposal review links to the correct proposal queue route', async () => {
-    seedSidebarShell();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-    await waitFor(() => {
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      const link = aside.getByText('Proposal review').closest('a');
-      expect(link).toHaveAttribute('href', `/orgs/${SLUG}/skills/proposals`);
-    });
-  });
-
-  test('clicking Proposal review navigates to the proposal queue and renders the founder-only page (non-Founder safe convention)', async () => {
-    // Seed proposals queue endpoint with 403 to prove safe no-data-leak behavior
-    sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/queue`, () => {
-        return new HttpResponse('Forbidden', { status: 403 });
-      }),
-    );
-    seedSidebarShell();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-    await waitFor(() => {
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      expect(aside.getByText('Proposal review')).toBeInTheDocument();
-    });
-    // Navigate directly to the proposal queue
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals` });
-    await waitFor(() => {
-      // Standard 403 error state — no proposal data leaked
-      expect(screen.getByText('Could not load proposals')).toBeInTheDocument();
-    });
-    // No proposal data rendered
-    expect(screen.queryByText(/Skill hr:/)).not.toBeInTheDocument();
+    // No Proposal review or Proposals entry exists in the sidebar
+    expect(aside.queryByText('Proposal review')).toBeNull();
+    expect(aside.queryByText('Proposals')).toBeNull();
+    // Verify that no sidebar link targets the proposal queue route
+    const links = aside.getAllByRole('link');
+    for (const link of links) {
+      expect(link.getAttribute('href')).not.toMatch(/\/skills\/proposals$/);
+    }
   });
 });
 
