@@ -502,24 +502,30 @@ export function ProposalDetailPage(): JSX.Element {
 
   const [confirmingAction, setConfirmingAction] = useState<ProposalReviewAction | null>(null);
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
+  const [refreshPending, setRefreshPending] = useState(false);
 
   const anyPending = claim.isPending || validate.isPending || submitReview.isPending || review.isPending;
 
-  const refreshDetail = useCallback(() => {
+  const refreshDetail = useCallback(async () => {
     if (slug && versionId !== undefined) {
-      void queryClient.invalidateQueries({
+      await queryClient.refetchQueries({
         queryKey: ['proposal-detail', slug, versionId],
-        refetchType: 'active',
+        type: 'active',
       });
     }
   }, [slug, versionId, queryClient]);
 
-  const handleStale = useCallback(() => {
+  const handleStale = useCallback(async () => {
     setConfirmingAction(null);
     setConflictMessage(
       'Another action changed this proposal. The page now shows the refreshed authoritative state.',
     );
-    refreshDetail();
+    setRefreshPending(true);
+    try {
+      await refreshDetail();
+    } finally {
+      setRefreshPending(false);
+    }
   }, [refreshDetail]);
 
   const runMutation = useCallback(
@@ -576,14 +582,20 @@ export function ProposalDetailPage(): JSX.Element {
         }
         setConfirmingAction(null);
         setConflictMessage(null);
+        setRefreshPending(true);
+        try {
+          await refreshDetail();
+        } finally {
+          setRefreshPending(false);
+        }
       } catch (err) {
         if (err instanceof ApiError && err.status === 409 && err.code === 'stale_concurrency') {
-          handleStale();
+          await handleStale();
           return;
         }
         // For any other rejected/invalid response, refetch authoritative state
         // and surface a generic explanation without leaking server data.
-        refreshDetail();
+        await refreshDetail();
         setConfirmingAction(null);
         setConflictMessage('The action could not be applied. The page shows the current authoritative state.');
       }
@@ -769,7 +781,7 @@ export function ProposalDetailPage(): JSX.Element {
                               type="button"
                               size="sm"
                               variant="default"
-                              disabled={anyPending || confirmingAction != null}
+                              disabled={anyPending || confirmingAction != null || refreshPending}
                               onClick={() => {
                                 setConfirmingAction(primary);
                                 setConflictMessage(null);
@@ -784,7 +796,7 @@ export function ProposalDetailPage(): JSX.Element {
                               type="button"
                               size="sm"
                               variant="destructive"
-                              disabled={anyPending || confirmingAction != null}
+                              disabled={anyPending || confirmingAction != null || refreshPending}
                               onClick={() => {
                                 setConfirmingAction('reject');
                                 setConflictMessage(null);

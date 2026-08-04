@@ -1356,6 +1356,158 @@ describe('ProposalDetailPage — THR-136 review action affordances', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
   });
+
+  test('successful approve disables lifecycle controls until authoritative detail resolves', async () => {
+    let requestBody: unknown;
+    let getCount = 0;
+    let resolveDetail: (value: ProposalDetailResponse) => void = () => {};
+    const detailPromise = new Promise<ProposalDetailResponse>((resolve) => {
+      resolveDetail = resolve;
+    });
+
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`, () => {
+        getCount += 1;
+        if (getCount === 1) {
+          return HttpResponse.json(
+            baseProposal({
+              status: 'in_review',
+              last_event_id: 7,
+            }),
+          );
+        }
+        return detailPromise.then((proposal) => HttpResponse.json(proposal));
+      }),
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/review`,
+        async ({ request }) => {
+          requestBody = await request.json();
+          return HttpResponse.json({
+            skill_id: 'hr:frontend-development',
+            version_id: VERSION_ID,
+            status: 'approved',
+            decision: 'approved',
+          });
+        },
+      ),
+    );
+
+    mount();
+    await screen.findByText('Proposal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Confirm approve')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm approve' }));
+
+    await waitFor(() => {
+      expect(requestBody).toEqual({
+        decision: 'approved',
+        rationale: '',
+        expected_event_id: 7,
+      });
+    });
+
+    // While awaiting authoritative detail, old in_review controls are disabled
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    });
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+
+    // A second action cannot begin while controls are disabled
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(screen.queryByText('Confirm approve')).not.toBeInTheDocument();
+
+    // Resolve authoritative detail: approved / no action controls
+    resolveDetail(
+      baseProposal({
+        status: 'approved',
+        last_event_id: 10,
+        review_decision: 'approved',
+        reviewer: 'founder',
+        reviewed_at: '2026-08-02T10:00:00Z',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Approved').length).toBeGreaterThanOrEqual(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+
+  test('stale 409 disables lifecycle controls until authoritative detail resolves', async () => {
+    let requestCount = 0;
+    let resolveDetail: (value: ProposalDetailResponse) => void = () => {};
+    const detailPromise = new Promise<ProposalDetailResponse>((resolve) => {
+      resolveDetail = resolve;
+    });
+
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}`, () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return HttpResponse.json(
+            baseProposal({
+              status: 'in_review',
+              last_event_id: 9,
+            }),
+          );
+        }
+        return detailPromise.then((proposal) => HttpResponse.json(proposal));
+      }),
+      http.post(
+        `/api/v1/orgs/${SLUG}/skill-lifecycle/proposals/${VERSION_ID}/review`,
+        () =>
+          HttpResponse.json(
+            {
+              detail: {
+                code: 'stale_concurrency',
+                current_event_id: 10,
+                expected_event_id: 9,
+                current_status: 'approved',
+              },
+            },
+            { status: 409 },
+          ),
+      ),
+    );
+
+    mount();
+    await screen.findByText('Approve');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Confirm approve')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm approve' }));
+
+    // Conflict explanation appears immediately and old controls are disabled
+    await screen.findByText(/Another action changed this proposal/);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    });
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+
+    // A second action cannot begin while controls are disabled
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(screen.queryByText('Confirm approve')).not.toBeInTheDocument();
+
+    // Resolve authoritative detail
+    resolveDetail(
+      baseProposal({
+        status: 'approved',
+        last_event_id: 10,
+        review_decision: 'approved',
+        reviewer: 'founder',
+        reviewed_at: '2026-08-02T10:00:00Z',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Approved').length).toBeGreaterThanOrEqual(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
 });
 
 describe('ProposalDetailPage — 403 action discipline', () => {
