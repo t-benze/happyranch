@@ -52,11 +52,17 @@ function exec(cmd) {
   });
 }
 
+function touchTime(epoch) {
+  // BSD touch -t expects [[CC]YY]MMDDhhmm.SS
+  const d = new Date(epoch * 1000).toISOString();
+  const [, year, month, day, hour, minute, second] = d.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/) || [];
+  return `${year}${month}${day}${hour}${minute}.${second}`;
+}
+
 async function stageFile(src, dst, mtimeEpoch) {
   await copyFile(src, dst);
   // Normalize mtime for deterministic tar output.
-  const d = new Date(mtimeEpoch * 1000).toISOString().replace(/[-:T]/g, '').replace(/\..*/, '');
-  await exec(`touch -t ${d} "${dst}"`);
+  await exec(`touch -t ${touchTime(mtimeEpoch)} "${dst}"`);
 }
 
 async function main() {
@@ -103,7 +109,7 @@ async function main() {
 
   const manifestPath = join(staging, 'MANIFEST.json');
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-  await exec(`touch -t ${new Date(mtimeEpoch * 1000).toISOString().replace(/[-:T]/g, '').replace(/\..*/, '')} "${manifestPath}"`);
+  await exec(`touch -t ${touchTime(mtimeEpoch)} "${manifestPath}"`);
 
   // Build deterministic tar.gz: sorted names, fixed mtime, no gzip filename/timestamp.
   const archivePath = join(OUT, archiveName);
