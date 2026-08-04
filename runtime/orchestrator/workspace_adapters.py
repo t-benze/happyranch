@@ -37,10 +37,11 @@ def _resolve_skills_src(settings: Settings) -> Path:
 
 
 # ── Canonical skill store + symlink materializer ──────────────────
-# The daemon-owned canonical store replaces per-session content copying.
-# Skills are built once into immutable hash-addressed packages under
+# The canonical store replaces per-session content copying.
+# Skills are built once into hash-addressed packages under
 # <daemon-home>/canonical-skills/ and workspace symlinks are atomically
-# created/repaired to point at the exact approved package version.
+# created/repaired to point at the exact approved package version under
+# BOTH .claude/skills and .agents/skills.
 
 from runtime.skills.canonical_store import CanonicalSkillStore, parse_strict_sha256_hash
 from runtime.skills.symlink_materializer import (
@@ -1276,7 +1277,7 @@ def validate_workspace_skills_integrity(
     #   recover <slug> <version> <content_hash>`. Validates ledger
     #   provenance and member hashes before deletion; refuses already-
     #   valid targets. Next materialization rebuilds from ArtifactStore.
-    #   There is NO trusted immutable same-UID repair source and
+    #   There is NO automatic same-UID local source repair and
     #   NO automatic recovery from any local same-UID source.
     recovery = (
         "For broken/missing links: happyranch set-executor <agent> "
@@ -1832,26 +1833,25 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     canonical skill store. This section directs agents NOT to edit these
     managed links and to use the lifecycle/proposal workflow instead.
 
-    **IMPORTANT:** This is operational guidance, NOT enforcement. On
-    deployments running in same-owner mode
-    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``, see
-    ``runtime/platform/isolation.py``) there is NO security boundary —
-    the executor runs under the daemon's own OS identity and CAN write
-    through these symlinks. The daemon performs best-effort integrity
+    **IMPORTANT:** This is operational guidance, NOT enforcement. The
+    executor and daemon share the same OS identity — there is NO OS-level
+    security boundary. The daemon performs best-effort integrity
     verification before each launch to detect and recover from accidental
     corruption, but this is NOT an attacker-independent security guarantee.
+    Do NOT call the target immutable, protected, or claim write/chmod/ACL
+    denial.
     """
     return [
         "## Skills Directory (do not edit)\n",
         f"`{skills_dir}/` is materialized by the daemon from the canonical",
         "skill store. DO NOT author, edit, move, or delete anything under",
         "it, even if a task seems to call for it. Treat it as read-only.\n",
-        "**Same-owner mode:** if ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``",
-        "is set on this deployment, the filesystem CAN be written through",
-        "these symlinks — there is no OS-enforced security boundary.",
-        "The daemon performs best-effort integrity checks before each",
-        "launch to detect and recover from accidental corruption, but",
-        "this is NOT a guarantee. Do not rely on it as a security control.\n",
+        "The executor and daemon share the same OS identity — the",
+        "filesystem CAN be written through these symlinks; there is no",
+        "OS-enforced security boundary. The daemon performs best-effort",
+        "integrity checks before each launch to detect and recover from",
+        "accidental corruption, but this is NOT a guarantee. Do not rely",
+        "on it as a security control.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",

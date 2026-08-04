@@ -2,8 +2,8 @@
 
 Provides macOS-only implementation for:
 - Service/daemon identity checks
-- Restricted executor identity provisioning
-- Filesystem ownership and permission enforcement
+- Executor identity and launch
+- Filesystem ownership and permission checks
 - Symlink creation and validation
 
 Linux and Windows are NOT supported in this release — explicitly fail closed.

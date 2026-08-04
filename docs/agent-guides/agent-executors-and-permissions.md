@@ -1,31 +1,30 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
-> the **canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. Two operating
-> modes exist: **strict distinct-identity** (default) with OS-enforced
-> ownership/permission isolation, and **same-owner** (explicit opt-in,
-> `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`) where integrity checks are
-> DETECTION-ONLY with FAIL-CLOSED refusal — no OS-level security boundary,
-> no automatic repair from same-UID local source.
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
+> now uses the **canonical skill store + workspace symlink architecture**
+> (macOS-only). The legacy per-session copy model is REMOVED. The executor
+> and daemon share the same OS identity — linked, validated relative skill
+> links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
+> user-facing and executor-facing guidance surface names both roots.
+> Integrity verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO
+> OS-level security boundary, no automatic repair from same-UID local source.
 > See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
 > symlinks" for ownership, provenance, link validation, refusal/withdrawal/
-> retention semantics, macOS provisioning, integrity verification, and the
-> compatibility-fallback boundary. Linux and Windows are NOT supported —
-> explicitly fail closed.
+> retention semantics, integrity verification, and the compatibility-fallback
+> boundary. Linux and Windows are NOT supported — explicitly fail closed.
 >
-> **SAME-OWNER HONESTY NOTICE (TASK-4189):** In same-owner mode do NOT call
-> canonical targets immutable, protected, or claim write/chmod/ACL denial.
-> The prompt guard is operational guidance, not enforcement. Integrity
-> verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO automatic
-> repair from same-UID local source. A same-UID process may mutate, race
-> validation, and affect active/overlapping sessions. Manual recovery only:
-> (a) ``set-executor`` for broken links, (b) ``happyranch skills recover
-> <slug> <version> <content_hash>`` for corrupted canonical bytes. No
-> automatic repair from same-UID local source. Recovery requires that an
-> authoritative re-sync/redeploy of release or custom artifacts has occurred
-> outside the compromised same-owner local source before recovery can safely
-> materialize again.
+> **SAME-OWNER HONESTY NOTICE:** Do NOT call canonical targets immutable,
+> protected, or claim write/chmod/ACL denial. The prompt guard is operational
+> guidance, not enforcement. Integrity verification is DETECTION-ONLY with
+> FAIL-CLOSED refusal — NO automatic repair from same-UID local source. A
+> same-UID process may mutate, race validation, and affect active/overlapping
+> sessions. Manual recovery only: (a) ``set-executor`` for broken links,
+> (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
+> corrupted canonical bytes. No automatic repair from same-UID local source.
+> Recovery requires that an authoritative re-sync/redeploy of release or
+> custom artifacts has occurred outside the compromised same-owner local
+> source before recovery can safely materialize again. Policy withdrawal
+> and atomic link repair remain safe.
 
 # Agent Executors And Permissions
 

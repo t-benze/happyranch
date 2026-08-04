@@ -59,11 +59,11 @@ class TestPreLaunchIntegrityValidation:
     # ── Hash-based detection tests (Finding 1) ────────────────────
 
     def test_same_owner_mutation_detected_by_hash(self, tmp_path):
-        """Same-owner mutates content, restores 0444 — hash catches it.
+        """Same-owner mutates content, restores permissions — hash catches it.
 
         In same-owner mode _verify_recursive_readonly allows owner-writable
-        files. An attacker who chmods 0o644, mutates content, then restores
-        0o444 would evade mode-only checks. The tree hash comparison in
+        files. A mutator who chmods writable, mutates content, then restores
+        non-writable would evade mode-only checks. The tree hash comparison in
         verify_package() catches the content change.
         """
         canonical_root = tmp_path / "canonical"

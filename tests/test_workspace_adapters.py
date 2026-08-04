@@ -459,6 +459,57 @@ def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
     )
 
 
+def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
+    """The skills-directory guidance must name both .claude/skills and
+    .agents/skills roots, acknowledge same-owner residency, and disclaim
+    OS-level security enforcement.
+
+    This injected section is read by every agent every session — a stale
+    distinct-identity or opt-in-mode claim is a contract violation.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        _skills_directory_readonly_section,
+    )
+
+    # Verify with both roots
+    for skills_dir in (".claude/skills", ".agents/skills"):
+        lines = _skills_directory_readonly_section(skills_dir)
+        text = "".join(lines)
+
+        # Section heading exists
+        assert "## Skills Directory (do not edit)" in text
+
+        # Names the concrete skills path
+        assert skills_dir in text, (
+            f"skills directory guidance must name {skills_dir}"
+        )
+
+        # Same-owner residency: executor and daemon share OS identity
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+
+        # No OS-enforced security claims — the join() concatenates
+        # strings without space, so "no" and "OS-enforced" abut.
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+
+        # Does NOT reference opt-in env var
+        assert "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR" not in text, (
+            "must not reference HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR env var"
+        )
+
+        # Does NOT claim immutable or ACL denial (the text does
+        # accurately disclaim "not a security control")
+        for forbidden in ("immutable", "ACL denial"):
+            assert forbidden not in text.lower().replace("-", " "), (
+                f"must not claim {forbidden!r}"
+            )
+
+        # Recommends lifecycle proposal workflow
+
+
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
     """Every agent's bootstrap doc must carry the self-only dispatch doctrine.
 

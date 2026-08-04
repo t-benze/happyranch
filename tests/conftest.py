@@ -9,11 +9,11 @@ from runtime.runtime import RuntimeDir
 
 
 # ── Test-mode platform isolation ──────────────────────────────────────
-# In test environments, we don't have provisioned macOS executor accounts.
+# Test environments may not have distinct macOS executor accounts.
 # This fixture monkeypatches detect_platform_isolation to return a
 # test-mode isolation that permits same-owner launches (the user running
 # the tests IS both daemon and executor). Real isolation tests against
-# provisioned accounts live in test_canonical_production_bound.py.
+# available accounts live in test_canonical_production_bound.py.
 
 _TEST_ISOLATION_FIXTURE_ACTIVE = True
 

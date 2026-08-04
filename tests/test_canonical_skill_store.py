@@ -650,8 +650,8 @@ class TestWriteViaLinkIsolation:
         original_content = canonical_file.read_bytes()
 
         # In a dev environment (same uid), chmod through symlink DOES work
-        # because we own the file. This is expected — the real isolation
-        # requires OS-provisioned executor identity with different uid.
+        # because we own the file. This is expected — same-owner mode
+        # relies on hash-based integrity verification, not OS enforcement.
         link_path = workspace_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
         try:
             link_path.chmod(0o644)  # Make writable by owner
@@ -970,7 +970,7 @@ class TestBuildAtomicOrdering:
     def test_build_from_source_files_readonly_after_build(
         self, temp_canonical_root, skill_source_dir,
     ):
-        """After build, individual package files are read-only (0444)."""
+        """After build, individual package files are non-writable."""
         import hashlib
 
         store = CanonicalSkillStore(root=temp_canonical_root)
@@ -1465,8 +1465,8 @@ class TestHardeningFailureAfterPublication:
     ):
         """Regression: an owner-writable 0644 member is rejected by
         verify_package() and is_built() in ALL isolation modes.
-        Files must always be 0444 — the immutable file invariant
-        is enforced regardless of same-owner vs distinct-identity."""
+        Files must always be non-writable — the file invariant
+        is enforced regardless of same-owner mode."""
         import hashlib
         import os as _os
 
@@ -2637,7 +2637,7 @@ class TestSameOwnerAdversarialLimits:
         assert "# Test Skill" in original
 
         # ── Adversarial write: alter canonical content through symlink ──
-        # In same-owner mode the daemon sets files read-only (0444), but
+        # In same-owner mode the daemon sets files non-writable, but
         # since the executor is the same uid, it can simply chmod them
         # back to writable first. This is the honest limit: readonly
         # hardening is cosmetic when the attacker shares the daemon's uid.
