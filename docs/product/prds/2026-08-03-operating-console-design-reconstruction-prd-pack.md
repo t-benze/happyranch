@@ -7,7 +7,7 @@
 | Date | 2026-08-03 |
 | Source Links | THR-140; `artifact:thread-draft-20260803T143323Z-screens.zip`; feasibility consultation THR-141 |
 | Commitment Boundary | analysis-only — no build, roadmap, or external delivery commitment |
-| Founder Decisions | Required: cutline, authority model, and treatment of prototype-only disclosures; Ruled: none in the supplied thread |
+| Founder Decisions | Current baseline: founder-authenticated actions and existing read-only cutlines remain authoritative. Only a new assistant write-authority scope requires a Founder decision. |
 
 ## Purpose and evidence boundary
 
@@ -23,7 +23,7 @@ I downloaded and rendered all 34 HTML entry points in the bundle (31 product scr
 
 ## Product framing shared by the pack
 
-The observed product is a founder-facing, organization-scoped operating console for an agentic runtime. Its recurring design principle is clear separation between:
+The observed product is a founder-facing, organization-scoped operating console for an agentic runtime. Current browser actions use the founder-authenticated authority baseline; prototype copy cannot silently invent a broader operator/RBAC model. Its recurring design principle is clear separation between:
 
 - read-only status/triage and an action's actual decision surface;
 - guidance/visibility and authority/permissions;
@@ -50,12 +50,12 @@ The bundle does **not** establish a commercial target market, pricing, service l
 | --- | --- |
 | Status | draft |
 | Commitment Boundary | analysis-only |
-| Primary user | Founder/operator of an organization |
+| Primary user | Founder operating an organization |
 | Screen evidence | `a-onboarding.html`, `shell.js`, `a-dashboard.html`, `a-threads.html`, `a-thread-detail.html`, `a-tasks.html`, `a-task-detail.html`, `a-task-detail-fanout.html`, `a-jobs.html`, `a-job-detail.html`, `a-agents.html`, `a-settings.html` |
 
 ## Problem
 
-An operator needs to register a conformant agentic CLI, create/select an organization, see what needs a decision, and navigate to the record where a consequential action is resolved.
+A founder needs to register a conformant agentic CLI, create/select an organization, see what needs a decision, and navigate to the record where a consequential action is resolved.
 
 ## Observed UI facts
 
@@ -82,12 +82,10 @@ An operator needs to register a conformant agentic CLI, create/select an organiz
 - A test fixture can traverse each onboarding terminal state without reporting success for an unregistered/failed executor.
 - A fan-out fixture preserves a failed child and associated follow-up after the parent joins.
 
-## Unresolved decisions / feasibility gates
+## Deferred gaps — documented missing fields only
 
-1. Which onboarding identities, authentication model, token scope, expiry, and loopback trust boundary are approved? The screen alone does not specify them.
-2. Which actions are Founder-only versus delegated operator actions, particularly executor enrollment, task revisit, fan-out approval, and system-setting changes?
-3. Does the runtime already support the shown task/job links and job-context fields, or must `JobRecord` be extended? Treat the job-detail disclosure as evidence of a gap, not a requirement already met.
-4. Is `PUT /settings/org` the approved concurrency/validation contract? Define versioning/conflict handling and authorization before implementation.
+1. The displayed Thread/routed-via/kind/PR job context is not backed by the current `JobRecord`. Those fields need a data-model and route extension before the console can claim them as recorded facts.
+2. Organization/runtime CRUD and agent-callback operations remain outside the browser cutline; the prototype’s controls do not override their current CLI/TTY or agent-session authority boundaries.
 
 ---
 
@@ -113,29 +111,25 @@ The operator needs to understand and safely change when individual agents are el
 - The prototype has validation-before-save, an impact preview before change, save rejection that leaves the previously valid configuration running, a last-known-good degraded banner, and a “feature off” state that pauses scheduled wakes.
 - `a-schedule.html` is a simpler legacy view: weekday working hours, a dream window, weekend pause, finish-in-flight work, hold escalations, optional urgent override, and catch-up status. The shared shell comments say the retired Schedule surface is folded into Work Hours.
 
-## Provisional requirements
+## Current implementation constraints
 
-1. The system shall resolve schedule leaves independently with documented precedence: agent override, then team value, then organization default. The UI shall show the effective value and its source for a selected agent.
-2. The system shall support windowed and continuous modes, timezone, interval, active days, and startup catch-up according to a validated schema; exact permitted values remain an engineering decision.
-3. Work Hours shall use a single organization-level feature gate and a separate eligibility set. Per-agent status shall be derived, not independently toggled.
-4. Before persisting a schedule/eligibility change, the UI shall validate it and show impacted agents/effective outcomes. Invalid changes must not replace the last valid configuration.
-5. If live configuration cannot load or validate, the console shall disclose degraded state and the active fallback/last-known-good posture rather than implying new settings are active.
-6. The console shall display routine tasks and whether an eligible wake would dispatch work; it must distinguish “no routine tasks” from a disabled/ineligible schedule.
-7. Routine-task authoring is out of this v1 cutline unless Founder explicitly approves Phase 2. The UI may link to its established source of truth but must not promise in-console editing.
+Work Hours is Founder-approved and implemented; its executable contract, rather than the prototype JavaScript, is the authority for this area.
 
-## Acceptance signals
+1. Configuration is opt-in per organization and resolves leaf-by-leaf as organization default → team default → agent override. Windowed and continuous modes, timezone, interval, active days, and startup catch-up have an implemented validation contract.
+2. The organization-level `working_hours.enabled` gate and the configured agent eligibility selector determine whether an agent can wake. There is no independent per-agent enable switch.
+3. A wake is a scheduler trigger, not a task, thread, or talk. For a selected agent with a non-empty `## Routine Tasks` section in its agent markdown, each top-level routine item becomes one self-dispatched root task on that agent’s own team. The wake record retains the spawned root-task IDs for provenance.
+4. The scheduler records one row per `(agent, local_date, slot)`, limits startup catch-up to the most recent eligible slot, and does not replay all missed slots. Invalid configuration is rejected; a failed wake or callback retains its terminal error rather than silently retrying the same slot.
+5. The existing console can edit schedule tiers and eligibility under the founder-authenticated browser baseline, shows effective-value provenance and next wakes, and keeps Routine Tasks read-only. Routine authoring remains in agent markdown; it is not an in-console write feature.
 
-- Given fixtures with org, team, and agent values, every displayed effective leaf and next wake is deterministic and traceable to its winning source.
-- Invalid edits never change the active runtime configuration; the user sees the field-level reason and an intact fallback state.
-- Disabling the global feature stops scheduled wakes without rewriting eligibility or per-agent schedule records.
+## Current verification signals
 
-## Unresolved decisions / feasibility gates
+- Implemented tests and the current UI expose deterministic effective schedules/provenance, validation errors, eligibility state, next wakes, and the read-only routine list.
+- Disabling the global feature prevents wakes without converting the derived status into a per-agent toggle or rewriting schedule records.
 
-1. Confirm the authoritative configuration store and API; the JavaScript is a self-contained prototype, not evidence of a production persistence contract.
-2. Confirm whether team membership exists as a stable runtime entity and how agent markdown, routine tasks, and UI configuration reconcile.
-3. Decide whether “one routine bullet = one root task” is the approved dispatch contract, including idempotency, missed-wake/catch-up, concurrency, and duplicate prevention.
-4. Decide time-zone/DST behavior, blackout/holiday behavior, urgent override authority, and whether held escalations are in v1. The legacy Schedule screen is insufficient to settle these policies.
-5. Confirm print/export needs; the print-variant filename demonstrates a prototype variant, not a required output format.
+## Deferred gaps — only fields not currently backed
+
+1. The current wake list payload does not expose every prototype display field (for example an effective timezone, calendar/timeline projections, schedule-health metrics, or next-run prediction). Do not render those as facts until a backing record/endpoint is added.
+2. The legacy prototype’s blackout/holiday, urgent-override, held-escalation, and print/export controls are not present in the current Work Hours contract. They are neither implicit requirements nor open policy decisions for this PRD pack.
 
 ---
 
@@ -161,29 +155,25 @@ The operator needs to govern reusable guidance given to agents without confusing
 - The proposal flow depicts an immutable submitted package with hash/version/evidence, technical validation, a claimed human-review stage, publication, and a separate assignment/effectiveness projection. It says proposal approval is required before publication and a proposal is excluded from catalog/agent sessions before publication.
 - Human review screens include a policy/use-case checklist and a rationale field. The screens label the pilot as Founder-only, internal, standard-operational, with two sample use cases; those are prototype examples, not an approved policy.
 
-## Provisional requirements
+## Current lifecycle and web-cutline constraints
 
 1. The product shall preserve the guidance-only boundary in data model, copy, and authorization behavior: no skill action may grant runtime permissions.
-2. Each skill/package shall retain source class, stable identifier, version, content/reference integrity evidence, validation result, and provenance sufficient to explain its catalog state.
-3. Validation failure shall retain an editable draft and a concrete failure reason; validation must be distinct from human approval.
-4. Publication/lifecycle and assignment/effectiveness shall be independently represented. A package that is assigned but not yet materialized must not be presented as effective.
-5. System contracts shall be predicate-scoped and read-only within the catalog UI. Custom-skill assignment shall be explicit and agent-scoped.
-6. The runtime shall surface materialization failure without silently stripping a previously effective, known-good version; the applicable fallback must be visible.
-7. If custom-skill proposals are included in the product cutline, an immutable package must pass technical validation and authorized human review before publication, and reviewer rationale/audit evidence must be retained.
+2. The catalog shall preserve the current lifecycle ledger: source class, stable identifier, version, validation event/result, scoped assignment, and per-agent materialization/effectiveness projection.
+3. Validation failure shall retain the saved custom draft and a concrete failure reason; validation is technical evidence, not human approval.
+4. A package that is assigned but whose latest materialization does not match the current version shall be shown as `assigned_not_yet_effective`, not effective.
+5. The web cutline is source-gated: system-contract skills are read-only and context-applied; managed/bundled skills remain platform-managed; only validated user-authored skills use the bounded per-agent assignment path.
+6. The Runtime Validation and lifecycle-status surfaces are read-only evidence/projections. They do not constitute an approval queue or grant a skill permissions, commands, tools, or credentials.
 
-## Acceptance signals
+## Current verification signals
 
-- A reviewer can distinguish draft, validation failed, validated, in review, approved/published, assigned-next-session, effective, and rolled-back states using fixture data.
-- A failed validation or materialization yields a visible actionable record and does not result in an untraceable loss of existing effective guidance.
-- An attempt to use skill content to expand tools/permissions is rejected by the platform contract and verified in tests.
+- The existing ledger distinguishes saved custom catalog state, validation result, assignment, `assigned_not_yet_effective`, and effective materialization by version; the status endpoint exposes this as a read-only projection.
+- Source gates prevent system contracts from being edited/unassigned through the web, and assignment rejects a user-authored skill whose current version has not passed validation.
+- Skill content remains guidance-only and cannot expand platform permissions.
 
-## Unresolved decisions / feasibility gates
+## Deferred gaps — only functionality not in the current ledger
 
-1. Confirm which lifecycle states are authoritative and which are projections; the prototype uses rich state labels but supplies no canonical transition model.
-2. Confirm the publisher/reviewer role model, claim lease/timeout, review edit semantics, and whether Founder-only review is intentional or merely pilot copy.
-3. Define rollback semantics: unassign, restore predecessor, delayed effect, audit retention, and what counts as a known-safe version.
-4. Define technical validation/malware or prompt-injection review boundary; the visible checklist is a review aid, not a complete security policy.
-5. Confirm per-agent guidance budgets, version materialization timing, and the runtime APIs needed for the effective/pending/fallback projections.
+1. The prototype-only immutable proposal, claim/review, publication, and reviewer-rationale records are not part of the current skills ledger. They require new persisted fields and an explicit authorization design before they can be presented as a workflow.
+2. A richer rollback/history view and additional materialization/budget projections require backing records beyond the current validation and latest-materialization evidence.
 
 ---
 
@@ -215,21 +205,18 @@ The operator needs credible, source-linked evidence about what the organization 
 3. Audit history shall be append-only; corrective events must add a new linked record rather than mutate prior event meaning.
 4. Usage shall distinguish fresh token categories from cache activity and shall not present currency/cost unless a real metering source exists.
 5. Dream and knowledge flows shall retain origin/proposer/status and require the authorized review action before a candidate becomes shared knowledge.
-6. Assistant responses that cite runtime facts shall show enough tool/source evidence for an operator to verify the answer. Assistant-proposed actions must route to the existing canonical approval/decision surfaces until a separately approved write path exists.
+6. Assistant responses that cite runtime facts shall show enough tool/source evidence for an operator to verify the answer. Until a new assistant write path is approved and built, founder-authenticated canonical task, job, thread, and configuration actions remain the only authority surfaces; the assistant may navigate or explain them but cannot approve, deny, or mutate on their behalf.
 
 ## Acceptance signals
 
 - Every shown count, status, and summary in a representative dashboard fixture can be traced to a record/metric source or is labeled unavailable/derived.
 - Cache activity cannot inflate “total tokens” unless the product definition explicitly changes and tests are updated.
 - An audit correction creates a new record rather than modifying the original event.
-- A user cannot approve a job or escalation solely through assistant presentation if no authorized write route is implemented.
+- A user cannot approve a job or escalation solely through assistant presentation; the action remains on its founder-authenticated canonical surface.
 
-## Unresolved decisions / feasibility gates
+## Deferred gap — assistant authority
 
-1. Define event-retention, export, access-control, and privacy policy for audit/artifact/assistant traces.
-2. Confirm which metrics endpoints and aggregation windows are production-supported; the Health screen names prototype endpoints but is not API documentation.
-3. Decide whether Dreams are a product feature in this cutline, their scheduling/resource policy, and whether private learning vs shared KB requires explicit owner approval.
-4. Decide assistant memory, conversation retention, tool transparency level, and write-authority scope before treating the dock as more than a read-oriented assistant UX.
+The assistant currently has no canonical routed-action/approval write path. The sole Founder decision left by this pack is whether to retain the current read-oriented assistant with founder-authenticated handoffs, or authorize a separately designed, auditable assistant write-authority scope. Retention/privacy, metric, and Dream behavior remain governed by their existing runtime contracts; prototype labels do not reopen them here.
 
 ---
 
@@ -239,26 +226,25 @@ The operator needs credible, source-linked evidence about what the organization 
 | --- | --- | --- | --- |
 | Organization settings | Screen names `OrgSettings`, `PUT /settings/org`, and deep merge | Persist field ownership, live/restart state, and change audit | Version/concurrency/authorization contract |
 | Tasks/fan-out/jobs | Task/thread/job IDs and rolled-up or linked views | Keep root/child/dependency/job linkage and decision audit | Whether required back-links exist on `JobRecord` |
-| Work Hours | Prototype JS objects and computed resolution | Store scoped values plus effective projection and last-known-good result | Canonical config store and scheduler API |
-| Skills | Package/hash/version, validation, lifecycle and projection UI | Separate immutable package/lifecycle records from assignment/materialization records | Canonical state machine and reviewer authorization |
+| Work Hours | Implemented org config, scheduler/runner, wake store, and founder-authenticated UI | Preserve resolved configuration, wake, provenance, and read-only routine-authoring constraints | Prototype-only display fields absent from the wake payload |
+| Skills | Existing catalog, validation-event, assignment, and materialization ledger | Preserve source gates and distinguish validation, assignment, and effectiveness | Proposal/review/publication fields are not yet persisted |
 | Audit/knowledge/dreams | Append-only audit; candidates with origin/proposer | Preserve provenance and non-destructive corrections | Retention and approval ownership |
 | Usage/health | Metrics and aggregation labels | Show metric definition/window/source; distinguish unavailable | Stable production endpoints and data freshness |
-| Assistant | Tool call cards and stated non-approval posture | Cite sources and route actions to canonical surfaces | Conversation/tool authorization and retention |
+| Assistant | Tool call cards and stated non-approval posture | Cite sources and route actions to founder-authenticated canonical surfaces | No assistant routed-action/approval write path |
 
 ## Founder decision ledger
 
-These choices are required before an implementation-ready PRD can be issued. They are consolidated to prevent accidental scope expansion.
+The reviewed runtime establishes the following baseline and prevents this reconstruction from reopening shipped contracts:
 
-1. **Cutline:** Is this a single operating-console release, or should work be sequenced into (a) core console/onboarding, (b) Work Hours, (c) Skills governance, and (d) evidence/assistant? Recommendation: sequence them; Work Hours and Skills each change runtime behavior and should not be hidden inside a UI-refresh release.
-2. **Authority:** Which concrete user roles can enroll executors, create/edit organizations, approve/reject jobs, resolve escalations, approve fan-out, publish/review skills, and alter schedules?
-3. **Skills:** Is custom-skill proposal review Founder-only pilot behavior, or a durable authorization model? Are the sample use cases/policy classes approved beyond the prototype?
-4. **Work Hours:** Is the three-tier schedule plus global eligibility gate the product policy to lock, and are routine-task authoring and escalation-hold/urgent override in or out of the first cutline?
-5. **Assistant:** Should the initial assistant remain read-oriented with canonical navigation/approval handoffs, as the screens say, or is a separate write-authority design desired?
-6. **Evidence:** What retention, export, privacy, and visibility rules govern audit, artifacts, assistant tool traces, usage, and dreams?
+1. Work Hours is implemented with its resolved three-tier configuration, organization gate/eligibility selection, wake-to-root-task behavior, and read-only routine authoring constraint.
+2. Skills already have a lifecycle ledger and source-gated web cutline; the prototype’s proposal-governance UI is not an implicit additional state machine.
+3. Browser actions use the founder-authenticated authority baseline. A prototype cannot imply generic operator roles, delegated approval, or web mutations outside existing routes.
+
+**Founder decision required:** Should the assistant remain read-oriented with founder-authenticated navigation/handoffs (current state), or should a separately designed and auditable assistant write-authority scope be authorized? No other Founder decision is required merely to restate the current contracts.
 
 ## Engineering consultation status
 
-Material feasibility/data-model/API questions were sent to the Engineering Manager in dedicated coordination thread **THR-141** on 2026-08-03. No response was available during this reconstruction session. None of the above unresolved items should be treated as engineering-confirmed until that thread records a response.
+The Engineering Manager’s factual contract corrections have been incorporated: Work Hours is shipped with current constraints; Skills has an existing lifecycle ledger and source-gated read-only web boundary; and founder-authenticated actions are the current authority baseline. This pack now defers only unsupported prototype fields, absent proposal records, and the assistant’s missing write authority.
 
 ## Evidence inventory — all rendered entry points
 
