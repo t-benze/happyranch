@@ -1347,34 +1347,6 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     ]
 
 
-def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
-    """System-injected doctrine: the managed skills tree is not yours to edit.
-
-    Skill entries under *skills_dir* (``.claude/skills`` or
-    ``.agents/skills``, per executor) are daemon-materialized from the
-    canonical skill store. On a properly isolated deployment the executor's
-    OS identity can't write through them even if an agent tried; this
-    section exists for deployments running in same-owner mode
-    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``, see
-    ``runtime/platform/isolation.py``) where that OS-level guarantee is
-    absent and this instruction is the only thing standing between an agent
-    and a corrupted skills tree.
-    """
-    return [
-        "## Skills Directory (do not edit)\n",
-        f"`{skills_dir}/` is materialized by the daemon from the canonical",
-        "skill store — never author, edit, move, or delete anything under",
-        "it, even if a task seems to call for it. Treat it as read-only,",
-        "regardless of what the filesystem permissions on this machine",
-        "happen to allow.\n",
-        "If a skill's content is wrong or a new skill is needed, propose the",
-        "change through the skill lifecycle instead of editing files directly:",
-        "```",
-        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
-        "```\n",
-    ]
-
-
 def _non_stop_command_warning_section() -> list[str]:
     """Persistent warning: never run a non-returning command synchronously.
 
@@ -1434,7 +1406,6 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Knowledge Base (shared across agents)",
     "Shared Artifacts (org-wide)",
     "Thread Dispatch is Self-Only",
-    "Skills Directory (do not edit)",
     "Long-running and non-stop commands",
     "Task Completion Format",
     "Task Recall",
@@ -1740,7 +1711,6 @@ class ClaudeWorkspaceAdapter:
                 "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
                 "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
-            skills_dir=".claude/skills",
         )
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
 
@@ -1754,7 +1724,6 @@ class ClaudeWorkspaceAdapter:
         repo_refresh_note: str,
         callback_note: str,
         workflow_section: list[str],
-        skills_dir: str,
     ) -> list[str]:
         sections = [
             f"# Agent: {agent_name}\n",
@@ -1794,7 +1763,6 @@ class ClaudeWorkspaceAdapter:
             callback_note + "\n",
             *_shared_artifacts_section(),
             *_thread_talk_dispatch_doctrine_section(),
-            *_skills_directory_readonly_section(skills_dir),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
             "## Task Recall\n",
@@ -1889,7 +1857,6 @@ class CodexWorkspaceAdapter:
                 "(in `.agents/skills/start-task/`) to parse parameters and report completion via",
                 "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
-            skills_dir=".agents/skills",
         )
         (workspace / "AGENTS.md").write_text("\n".join(sections))
 

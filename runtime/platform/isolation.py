@@ -12,24 +12,13 @@ fail closed with an explicit error.
   managed-skill-root entries.
 - Executor processes launch as a DISTINCT restricted macOS identity via
   ``sudo -n -u <executor>`` identity handoff (non-root daemon model).
-- Same-owner executor launch is REJECTED by default.
+- Same-owner executor launch is NEVER accepted.
 - Fail-closed: any isolation violation raises before subprocess launch.
-
-**Opt-in same-owner mode (explicit operator tradeoff):**
-Setting ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`` and leaving no restricted
-executor account provisioned makes the executor run under the SAME OS
-identity as the daemon instead of failing closed. This removes real OS-level
-isolation — an agent-controlled executor process can then read/write the
-canonical skill store and anything else the daemon account can reach. It
-exists for single-operator local setups that have decided not to provision
-a distinct ``_hrexec`` account; it is never the default and must be set
-explicitly per deployment.
 """
 
 from __future__ import annotations
 
 import grp
-import logging
 import os
 import pwd
 import stat
@@ -39,15 +28,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
-logger = logging.getLogger(__name__)
-
-_SAME_OWNER_ENV_VAR = "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"
-
-
-def _same_owner_mode_enabled() -> bool:
-    """True if the operator has explicitly opted into same-owner executors."""
-    return os.environ.get(_SAME_OWNER_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
 
 
 @dataclass(frozen=True)
@@ -314,24 +294,6 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         self._daemon_uid = os.getuid()
         self._daemon_gid = os.getgid()
         self._executor_identity = _probe_macos_executor_account()
-        self._same_owner_mode = False
-        if self._executor_identity is None and _same_owner_mode_enabled():
-            logger.warning(
-                "%s is set and no restricted executor account is "
-                "provisioned — agent executors will run under the SAME OS "
-                "identity as the daemon (uid=%d). This removes OS-level "
-                "isolation: an agent-controlled process can read/write the "
-                "canonical skill store and anything else this account can "
-                "reach. Accepted as an explicit operator tradeoff.",
-                _SAME_OWNER_ENV_VAR, self._daemon_uid,
-            )
-            self._executor_identity = PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=False,
-                is_restricted=True,
-            )
-            self._same_owner_mode = True
 
     def current_identity(self) -> PlatformIdentity:
         return PlatformIdentity(
@@ -354,12 +316,8 @@ class _MacOSPlatformIsolation(PlatformIsolation):
                 "executor_unprovisioned",
                 "No restricted macOS executor account provisioned. "
                 "Create '_hrexec' or 'happyranch-exec' system account "
-                "with a distinct uid/gid from the daemon, or set "
-                f"{_SAME_OWNER_ENV_VAR}=1 to explicitly accept running "
-                "the executor under the daemon's own identity.",
+                "with a distinct uid/gid from the daemon.",
             )
-        if self._same_owner_mode:
-            return
         if self._executor_identity.uid == self._daemon_uid:
             raise PlatformIsolationError(
                 "executor_same_owner",
@@ -556,10 +514,8 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         If provisioning, identity resolution, sudo authorization, command
         construction, or ACL capability is unavailable → fail closed.
 
-        Same-owner launch is REJECTED unless the operator has explicitly set
-        ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`` (see module docstring) —
-        in that mode the process launches directly under the daemon's own
-        identity, with no ``sudo`` handoff.
+        Same-owner launch is REJECTED — executor identity MUST differ from
+        daemon.
 
         The provided *env* is merged on top of the daemon's current
         environment so sudo itself always has at least PATH and HOME.
@@ -569,32 +525,15 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         self._assert_executor_distinct()
         assert self._executor_identity is not None  # narrow type for mypy
 
-        base_env = os.environ.copy()
-        base_env.update(env)
-
-        if self._same_owner_mode:
-            # No distinct identity to hand off to — launch directly.
-            try:
-                return subprocess.Popen(
-                    list(cmd),
-                    cwd=str(cwd),
-                    stdin=stdin,
-                    stdout=stdout,
-                    stderr=stderr,
-                    text=text,
-                    env=base_env,
-                )
-            except subprocess.SubprocessError as exc:
-                raise PlatformIsolationError(
-                    "executor_launch_failed",
-                    f"Failed to launch same-owner executor process: {exc}",
-                ) from exc
-
         # Resolve executor username and verify sudo access
         executor_user = self._resolve_executor_username_for_launch()
 
         # Build sudo invocation: sudo -n -u <executor_user> -- <cmd>
         sudo_cmd = ["sudo", "-n", "-u", executor_user, "--"] + list(cmd)
+
+        # Merge caller env on top of daemon env so sudo never starves.
+        base_env = os.environ.copy()
+        base_env.update(env)
 
         try:
             return subprocess.Popen(
