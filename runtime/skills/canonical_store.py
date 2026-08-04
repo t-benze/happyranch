@@ -480,8 +480,10 @@ class CanonicalSkillStore:
                         f"(expected {verify_source_hash[:16]}... "
                         f"got {actual_hash[:16] if actual_hash else '<error>'}). "
                         f"No automatic repair from same-UID local source. "
-                        f"Recovery: stop daemon, delete corrupted package, "
-                        f"restart daemon to rebuild from authoritative source.",
+                        f"Recovery: use `happyranch skills recover "
+                        f"{slug} {version} {content_hash}` to remove the "
+                        f"corrupted package, then next materialization "
+                        f"rebuilds from the ArtifactStore.",
                     )
                 else:
                     return pkg_path
@@ -504,8 +506,8 @@ class CanonicalSkillStore:
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
-                f"corrupted package, then restart the daemon to "
-                f"rebuild from the authoritative source.",
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
             )
 
         # Collect files from source
@@ -658,8 +660,8 @@ class CanonicalSkillStore:
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
-                f"corrupted package, then restart the daemon to "
-                f"rebuild from the authoritative source.",
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
             )
 
         # ── Detection: existing but invalid canonical package ────────
@@ -678,8 +680,8 @@ class CanonicalSkillStore:
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
-                f"corrupted package, then restart the daemon to "
-                f"rebuild from the authoritative source.",
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
             )
 
         members = manifest.get("members", [])

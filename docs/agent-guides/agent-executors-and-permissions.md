@@ -20,9 +20,12 @@
 > verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO automatic
 > repair from same-UID local source. A same-UID process may mutate, race
 > validation, and affect active/overlapping sessions. Manual recovery only:
-> (a) ``set-executor`` for broken links, (b) stop daemon + delete corrupted
-> package + restart daemon. No single-step ``happyranch`` re-sync/redeploy
-> command exists; an operator capability/authority decision is required.
+> (a) ``set-executor`` for broken links, (b) ``happyranch skills recover
+> <slug> <version> <content_hash>`` for corrupted canonical bytes. No
+> automatic repair from same-UID local source. Recovery requires that an
+> authoritative re-sync/redeploy of release or custom artifacts has occurred
+> outside the compromised same-owner local source before recovery can safely
+> materialize again.
 
 # Agent Executors And Permissions
 

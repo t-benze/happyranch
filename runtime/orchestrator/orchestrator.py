@@ -736,8 +736,8 @@ class Orchestrator:
                     "NOT recover corrupted bytes). "
                     "(b) For corrupted canonical bytes: "
                     "happyranch skills recover <slug> <version> "
-                    "<content_hash> (then restart daemon to rebuild "
-                    "from authoritative artifact source)."
+                    "<content_hash> (deletes the corrupted package; "
+                    "next materialization rebuilds from ArtifactStore)."
                 ),
                 status=TaskStatus.FAILED,
             )

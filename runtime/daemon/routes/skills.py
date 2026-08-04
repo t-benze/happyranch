@@ -11,7 +11,6 @@ Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-e
 from __future__ import annotations
 
 import hashlib
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +29,9 @@ from runtime.skills.models import PolicyClass, SkillEntry, SkillStatus
 from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+from runtime.orchestrator.workspace_adapters import (
+    parse_strict_sha256_hash,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -1049,8 +1051,6 @@ def skill_status(
 
 # ── Recovery request model ───────────────────────────────────────────────
 
-_SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
-
 
 class SkillRecoverRequest(BaseModel):
     """Operator-invoked recovery for a named corrupted canonical package.
@@ -1085,10 +1085,11 @@ class SkillRecoverRequest(BaseModel):
     @field_validator("content_hash")
     @classmethod
     def _content_hash_valid_sha256(cls, v: str) -> str:
+        import re as _re
         v = v.strip()
         if not v:
             raise ValueError("content_hash must not be empty")
-        if not _SHA256_HEX_RE.match(v):
+        if not _re.match(r"^[a-f0-9]{64}$", v):
             raise ValueError(
                 "content_hash must be exactly 64 lowercase hex characters "
                 "(raw SHA-256 hex digest)"
@@ -1168,6 +1169,7 @@ def skill_recover(
     # ── 2. Validate artifact store member hashes ──────────────────
     org_root = org.root
     artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+    manifest = None  # May be populated if content_artifact_key exists
 
     if pkg_match.content_artifact_key:
         try:
@@ -1221,21 +1223,14 @@ def skill_recover(
                     )
 
                 # Validate strict sha256:<64 lowercase hex> format
-                if not member_hash.startswith("sha256:"):
+                # Uses the single canonical validator shared with workspace_adapters
+                try:
+                    expected_hex = parse_strict_sha256_hash(member_hash)
+                except ValueError as exc:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=(
-                            f"Member {member_path} hash missing algorithm "
-                            f"prefix (expected sha256:<hex>)"
-                        ),
-                    )
-                expected_hex = member_hash[7:]
-                if not _SHA256_HEX_RE.match(expected_hex):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Member {member_path} hash invalid format "
-                            f"(expected sha256:<64 lowercase hex>)"
+                            f"Member {member_path} hash invalid: {exc}"
                         ),
                     )
 
@@ -1252,7 +1247,7 @@ def skill_recover(
                         ),
                     )
 
-    # ── 3. Locate and delete canonical package ────────────────────
+    # ── 3. Refuse recovery of valid (non-corrupted) targets ───────
     isolation = detect_platform_isolation()
     store = CanonicalSkillStore(settings=rt_settings, isolation=isolation)
     pkg_path = store.canonical_path(slug, version, content_hash)
@@ -1267,6 +1262,42 @@ def skill_recover(
             ),
         )
 
+    # Verify the target is actually corrupted — refuse valid targets.
+    # For manifest-based packages, validate each canonical member's
+    # SHA-256 against the manifest's declared hashes. If ALL match,
+    # the target is valid and recovery is refused.
+    if isinstance(manifest, dict) and "members" in manifest:
+        all_members_valid = True
+        for member in manifest["members"]:
+            member_path_str = member["path"]
+            member_file = pkg_path / member_path_str
+            if member_file.is_file():
+                try:
+                    expected_hex = parse_strict_sha256_hash(
+                        member["hash"])
+                except ValueError:
+                    all_members_valid = False
+                    break
+                actual_hex = hashlib.sha256(
+                    member_file.read_bytes()).hexdigest()
+                if actual_hex != expected_hex:
+                    all_members_valid = False
+                    break
+            else:
+                all_members_valid = False
+                break
+
+        if all_members_valid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Canonical package {slug}@{version} at {pkg_path} "
+                    f"is valid (all member hashes match ledger). "
+                    f"No recovery needed. Refusing to delete a valid "
+                    f"target."
+                ),
+            )
+
     # Delete the corrupted package
     try:
         # Make writable first (hardened packages are readonly)
@@ -1280,6 +1311,8 @@ def skill_recover(
         )
 
     # ── 4. Emit durable recovery event ────────────────────────────
+    # Persistence failure must fail closed — no success returned
+    # without a durable event.
     try:
         org.db.insert_skill_validation_event(
             skill_id=pkg_match.skill_id,
@@ -1297,14 +1330,16 @@ def skill_recover(
             reason_codes=["operator_recovery"],
         )
     except Exception as exc:
-        # Event persistence failed, but the package is already deleted.
-        # Log the failure but don't undo the delete — the recovery is
-        # still effective.
-        import logging
-        _logger = logging.getLogger(__name__)
-        _logger.error(
-            "Skill recovery: package deleted but event persistence failed: %s",
-            exc,
+        # Event persistence failed — fail closed.
+        # The package was already deleted, but without a durable audit
+        # record the operation is not complete. Report the failure.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Package deleted but recovery event persistence failed: {exc}. "
+                f"The canonical package was removed; retry recovery to "
+                f"record the event."
+            ),
         )
 
     return {

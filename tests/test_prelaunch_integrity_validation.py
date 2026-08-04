@@ -1640,3 +1640,542 @@ class TestProductionSeamLifecycleCorruptionRefusal:
             f"Expected 0 Popen calls for both-roots test, "
             f"got {len(popen_calls)}"
         )
+
+
+class TestStrictHashFormatValidation:
+    """Adversarial: parse_strict_sha256_hash rejects malformed inputs.
+
+    Proves the single canonical validator (workspace_adapters.
+    parse_strict_sha256_hash) accepts ONLY sha256:<64 lowercase hex>
+    and rejects bare digests, uppercase, wrong-length, non-hex,
+    and arbitrary prefixes.
+    """
+
+    @staticmethod
+    def _parse(v: str) -> str:
+        from runtime.orchestrator.workspace_adapters import (
+            parse_strict_sha256_hash,
+        )
+        return parse_strict_sha256_hash(v)
+
+    # ── VALID inputs ─────────────────────────────────────────────
+    def test_accepts_sha256_lowercase_hex(self):
+        digest = "a" * 64
+        result = self._parse(f"sha256:{digest}")
+        assert result == digest
+
+    def test_accepts_sha256_all_hex_chars(self):
+        digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        result = self._parse(f"sha256:{digest}")
+        assert result == digest
+
+    # ── INVALID: missing prefix ──────────────────────────────────
+    def test_rejects_bare_digest(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse("a" * 64)
+
+    def test_rejects_bare_hex_no_prefix(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+    # ── INVALID: wrong prefix ────────────────────────────────────
+    def test_rejects_md5_prefix(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse(f"md5:{'a' * 32}")
+
+    def test_rejects_sha512_prefix(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse(f"sha512:{'a' * 128}")
+
+    def test_rejects_arbitrary_prefix(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse(f"xyz256:{'a' * 64}")
+
+    # ── INVALID: uppercase hex ───────────────────────────────────
+    def test_rejects_uppercase_hex(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'A' * 64}")
+
+    def test_rejects_mixed_case_hex(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'a' * 32 + 'B' * 32}")
+
+    # ── INVALID: wrong length ────────────────────────────────────
+    def test_rejects_wrong_length_short(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'a' * 63}")
+
+    def test_rejects_wrong_length_long(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'a' * 65}")
+
+    def test_rejects_empty_hex(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse("sha256:")
+
+    # ── INVALID: non-hex characters ──────────────────────────────
+    def test_rejects_non_hex_chars(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'g' * 64}")
+
+    def test_rejects_special_chars(self):
+        with pytest.raises(ValueError, match="invalid format"):
+            self._parse(f"sha256:{'!' * 64}")
+
+    # ── INVALID: empty / whitespace ──────────────────────────────
+    def test_rejects_empty_string(self):
+        with pytest.raises(ValueError, match="missing algorithm prefix"):
+            self._parse("")
+
+
+class TestOperatorRecoveryBehavior:
+    """Behavioral tests for the operator recovery path.
+
+    Tests the real recover route logic (not through TestClient):
+    - Valid-target refusal (409)
+    - Malformed input rejection (hash format, path traversal)
+    - Ledger/artifact tamper detection
+    - Event persistence failure → fail closed
+    - Successful recovery of a truly corrupted target
+    """
+
+    @staticmethod
+    def _make_writable(pkg_path):
+        """Make all files in a hardened canonical package writable."""
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                f.chmod(0o644)
+
+    @staticmethod
+    def _create_published_package(tmp_path, slug, version, skill_md_bytes):
+        """Create a published lifecycle package with manifest artifacts.
+
+        Returns a dict with all the pieces needed to test recovery.
+        """
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.canonical_store import CanonicalSkillStore
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        org_root = tmp_path / "org"
+        org_paths = OrgPaths(org_root)
+        art_store = ArtifactStore(org_paths.artifacts_dir)
+
+        # Create artifacts
+        skill_key = f"skill-lifecycle/{slug}/{version}/SKILL.md"
+        ref_key = f"skill-lifecycle/{slug}/{version}/references/guide.md"
+        ref_bytes = b"# Reference Guide\n"
+
+        art_store.put(skill_key, skill_md_bytes)
+        art_store.put(ref_key, ref_bytes)
+
+        skill_hash = f"sha256:{hashlib.sha256(skill_md_bytes).hexdigest()}"
+        ref_hash = f"sha256:{hashlib.sha256(ref_bytes).hexdigest()}"
+
+        manifest = {
+            "slug": slug,
+            "version": version,
+            "members": [
+                {"path": "SKILL.md", "hash": skill_hash,
+                 "artifact_key": skill_key},
+                {"path": "references/guide.md", "hash": ref_hash,
+                 "artifact_key": ref_key},
+            ],
+        }
+        manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        manifest_key = (
+            f"skill-lifecycle/{slug}/{manifest_hash[:16]}/manifest.json"
+        )
+        art_store.put(manifest_key, manifest_bytes)
+
+        # Build canonical store
+        store = CanonicalSkillStore(root=tmp_path / "canonical")
+        store.build_from_manifest(slug, version, manifest_hash, manifest,
+                                   artifact_store=art_store)
+
+        # Seed lifecycle DB
+        db_path = org_paths.db_path
+        from runtime.infrastructure.database import Database
+        db = Database(db_path)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id=f"hr:{slug}",
+            slug=slug,
+            name=f"Test {slug}",
+            version=version,
+            content_hash=manifest_hash,
+            policy_class="standard_operational",
+            description=f"Test {slug}",
+            skill_md=f"# {slug}\n",
+            content_artifact_key=manifest_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        return {
+            "slug": slug,
+            "version": version,
+            "content_hash": manifest_hash,
+            "manifest": manifest,
+            "manifest_bytes": manifest_bytes,
+            "manifest_key": manifest_key,
+            "art_store": art_store,
+            "store": store,
+            "org_root": org_root,
+            "db": db,
+            "pkg_match": pkg,
+            "skill_md_bytes": skill_md_bytes,
+        }
+
+    # ── Valid-target refusal ─────────────────────────────────────
+    def test_recover_refuses_valid_target(self, tmp_path, monkeypatch):
+        """Recover must refuse an already-valid canonical target (409)."""
+        data = self._create_published_package(
+            tmp_path, "valid-skill", "1.0.0", b"# Valid Skill\n",
+        )
+        # Point canonical store root to the test's store
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        # Mock org dependency
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 409, (
+            f"Expected 409 Conflict for valid target, got {exc.value.status_code}"
+        )
+        assert "valid" in exc.value.detail.lower() or \
+            "no recovery needed" in exc.value.detail.lower(), (
+            f"Expected valid-target refusal message, got: {exc.value.detail}"
+        )
+
+    def test_recover_accepts_corrupted_target(self, tmp_path, monkeypatch):
+        """Recover must accept a truly corrupted canonical target after
+        provenance and hash validation succeed."""
+        data = self._create_published_package(
+            tmp_path, "corrupt-accept", "1.0.0", b"# Corrupt Accept\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        # Corrupt the canonical package (must make writable first —
+        # build_from_manifest hardens files to read-only)
+        pkg_path = data["store"].canonical_path(
+            data["slug"], data["version"], data["content_hash"],
+        )
+        self._make_writable(pkg_path)
+        (pkg_path / "SKILL.md").write_bytes(b"# CORRUPTED\n")
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from unittest.mock import MagicMock
+
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+        result = skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert result["ok"] is True
+        assert result["action"] == "recovered"
+        assert result["slug"] == data["slug"]
+        assert not pkg_path.exists(), (
+            f"Canonical package should be deleted after recovery"
+        )
+
+    # ── Malformed input rejection ────────────────────────────────
+    def test_recover_rejects_malformed_hash(self):
+        """SkillRecoverRequest rejects non-hex, uppercase, wrong-length hashes."""
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from pydantic import ValidationError
+
+        # Uppercase
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="test", version="1.0",
+                content_hash="A" * 64,
+            )
+
+        # Wrong length
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="test", version="1.0",
+                content_hash="a" * 63,
+            )
+
+        # Non-hex
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="test", version="1.0",
+                content_hash="g" * 64,
+            )
+
+    def test_recover_rejects_path_traversal_in_slug(self):
+        """SkillRecoverRequest rejects ../ and path separators in slug."""
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="../etc/passwd", version="1.0",
+                content_hash="a" * 64,
+            )
+
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="test/skill", version="1.0",
+                content_hash="a" * 64,
+            )
+
+    def test_recover_rejects_empty_slug(self):
+        """SkillRecoverRequest rejects empty slug."""
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SkillRecoverRequest(
+                slug="", version="1.0",
+                content_hash="a" * 64,
+            )
+
+    # ── Ledger tamper refusal ────────────────────────────────────
+    def test_recover_rejects_ledger_hash_mismatch(self, tmp_path, monkeypatch):
+        """Recover must refuse when content_hash doesn't match ledger."""
+        data = self._create_published_package(
+            tmp_path, "ledger-mismatch", "1.0.0", b"# Ledger Mismatch\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        # Corrupt first
+        pkg_path = data["store"].canonical_path(
+            data["slug"], data["version"], data["content_hash"],
+        )
+        self._make_writable(pkg_path)
+        (pkg_path / "SKILL.md").write_bytes(b"# CORRUPTED\n")
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        # Use a hash that doesn't match the ledger
+        wrong_hash = "b" * 64
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=wrong_hash,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 400, (
+            f"Expected 400 for hash mismatch, got {exc.value.status_code}"
+        )
+
+    def test_recover_rejects_nonexistent_package(self, tmp_path, monkeypatch):
+        """Recover must refuse when no published package matches."""
+        data = self._create_published_package(
+            tmp_path, "existing-pkg", "1.0.0", b"# Existing\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug="nonexistent-pkg",
+            version="9.9.9",
+            content_hash="a" * 64,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 404, (
+            f"Expected 404 for nonexistent package, got {exc.value.status_code}"
+        )
+
+    # ── Artifact tamper refusal ──────────────────────────────────
+    def test_recover_rejects_tampered_manifest_artifact(self, tmp_path, monkeypatch):
+        """Recover must refuse when manifest artifact hash mismatches
+        the ledger content_hash (artifact tampering)."""
+        data = self._create_published_package(
+            tmp_path, "art-tamper", "1.0.0", b"# Art Tamper\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        # Corrupt the manifest artifact in ArtifactStore
+        art_path = data["art_store"]._root / data["manifest_key"]
+        art_path.write_bytes(b"# TAMPERED MANIFEST\n")
+
+        # Also corrupt canonical so we don't hit the valid-target check
+        pkg_path = data["store"].canonical_path(
+            data["slug"], data["version"], data["content_hash"],
+        )
+        self._make_writable(pkg_path)
+        (pkg_path / "SKILL.md").write_bytes(b"# CORRUPTED\n")
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 400, (
+            f"Expected 400 for manifest tamper, got {exc.value.status_code}"
+        )
+
+    def test_recover_rejects_tampered_member_artifact(self, tmp_path, monkeypatch):
+        """Recover must refuse when a member artifact hash mismatches."""
+        data = self._create_published_package(
+            tmp_path, "member-tamper", "1.0.0", b"# Member Tamper\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        # Tamper a member artifact in ArtifactStore
+        for member in data["manifest"]["members"]:
+            art_path = data["art_store"]._root / member["artifact_key"]
+            art_path.write_bytes(b"# TAMPERED MEMBER\n")
+
+        # Corrupt canonical
+        pkg_path = data["store"].canonical_path(
+            data["slug"], data["version"], data["content_hash"],
+        )
+        self._make_writable(pkg_path)
+        (pkg_path / "SKILL.md").write_bytes(b"# CORRUPTED\n")
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        mock_org = MagicMock()
+        mock_org.db = data["db"]
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 400, (
+            f"Expected 400 for member tamper, got {exc.value.status_code}"
+        )
+
+    # ── Event persistence failure → fail closed ──────────────────
+    def test_recover_event_persistence_failure_fails_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        """When event persistence fails, recovery must fail closed
+        (500) — no success returned without a durable event, even
+        though the package was already deleted."""
+        data = self._create_published_package(
+            tmp_path, "event-fail-recover", "1.0.0",
+            b"# Event Fail Recover\n",
+        )
+        canonical_root = tmp_path / "canonical"
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+
+        # Corrupt canonical
+        pkg_path = data["store"].canonical_path(
+            data["slug"], data["version"], data["content_hash"],
+        )
+        self._make_writable(pkg_path)
+        (pkg_path / "SKILL.md").write_bytes(b"# CORRUPTED\n")
+
+        from runtime.daemon.routes.skills import skill_recover
+        from runtime.daemon.routes.skills import SkillRecoverRequest
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        # Use the real DB for list_catalog, but mock the event write
+        real_db = data["db"]
+        real_db.insert_skill_validation_event = MagicMock(
+            side_effect=RuntimeError("DB write failure"),
+        )
+        mock_org = MagicMock()
+        mock_org.db = real_db
+        mock_org.root = data["org_root"]
+
+        body = SkillRecoverRequest(
+            slug=data["slug"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            skill_recover(body=body, request=MagicMock(), org=mock_org)
+
+        assert exc.value.status_code == 500, (
+            f"Expected 500 for persistence failure, got {exc.value.status_code}"
+        )
+        assert "event persistence failed" in exc.value.detail.lower() or \
+            "persistence" in exc.value.detail.lower(), (
+            f"Expected persistence failure message, got: {exc.value.detail}"
+        )

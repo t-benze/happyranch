@@ -217,12 +217,15 @@ valid existing packages may be reused.
 
 **Manual recovery only:** (a) For broken links: ``happyranch set-executor
 <agent> --executor <current-executor>`` (re-materializes links only, NEVER
-recovers corrupted bytes). (b) For corrupted canonical bytes: stop daemon,
-delete the corrupted package under ``<daemon-home>/canonical-skills/``,
-restart daemon (next materialization rebuilds from authoritative artifact
-source). No automatic repair from same-UID local source. NOTE: no single
-``happyranch`` one-step re-sync/redeploy command exists; a new operator
-capability/authority decision is required to supply one.
+recovers corrupted bytes). (b) For corrupted canonical bytes:
+``happyranch skills recover <slug> <version> <content_hash>`` — the sole
+operator-invoked recovery path. Validates ledger provenance and every
+declared member SHA-256 hash against the ArtifactStore before deletion;
+refuses already-valid targets. The next materialization will rebuild the
+package from the ArtifactStore. No automatic repair from same-UID local
+source. Recovery requires that an authoritative re-sync/redeploy of the
+release or custom artifacts has occurred outside the compromised same-owner
+local source; otherwise the ArtifactStore itself may carry tampered bytes.
 
 **Ownership and provenance:**
 - Canonical packages are daemon/materializer-owned, content-addressed trees
@@ -237,14 +240,16 @@ shares the daemon's uid and can chmod files back to writable.
 
 **Integrity verification (both modes):**
 Before each executor launch, the daemon compares actual canonical package
-content against a separately retained expected manifest:
+content against the immutable ledger-declared member hashes:
 - System-contract packages: compared against the shipped source tree hash.
 - Lifecycle skills: each member's actual hash compared against the
   ArtifactStore manifest.
-On mismatch the daemon rebuilds from the trusted source when still available;
-if the trusted source is absent, the launch fails closed with a named
-actionable error — corrupted bytes are never silently accepted as valid.
-This is recovery for accidental corruption; it is NOT an
+On mismatch the daemon emits a durable integrity/operations event and
+refuses the session. Corrupted bytes are NEVER silently accepted as valid
+and NEVER automatically rebuilt, copied, or healed from same-UID local
+source. The ArtifactStore is NOT a trusted or immutable source in
+same-owner mode — a same-UID process may also tamper with artifact
+bytes. This is detection-only with fail-closed refusal; it is NOT an
 attacker-independent external attestation authority.
 
 **Isolation contract (macOS):**

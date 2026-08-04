@@ -18,6 +18,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── Canonical strict SHA-256 hash parser ────────────────────────────
+# Accepts ONLY "sha256:<64 lowercase hex>".
+# Used by lifecycle manifest materialization and the operator recovery
+# route. All callers that parse member hashes from the ledger must use
+# this single canonical validator — no competing parsers.
+
+_SHA256_HEX_RE = __import__("re").compile(r"^[a-f0-9]{64}$")
+
+
+def parse_strict_sha256_hash(hash_str: str) -> str:
+    """Parse a strictly-formatted sha256:<64-lowercase-hex> member hash.
+
+    Returns the 64-char hex digest (without prefix).
+    Raises ValueError for any malformed input.
+    """
+    if not hash_str.startswith("sha256:"):
+        raise ValueError(
+            f"Member hash missing algorithm prefix (expected sha256:<hex>): "
+            f"{hash_str[:80]}"
+        )
+    hex_digest = hash_str[7:]
+    if not _SHA256_HEX_RE.match(hex_digest):
+        raise ValueError(
+            f"Member hash invalid format (expected sha256:<64 lowercase hex>): "
+            f"{hash_str[:80]}"
+        )
+    return hex_digest
+
 
 # Test override: when set (via monkeypatch), takes precedence over the
 # settings-derived skills source. Production code leaves this ``None`` and
@@ -1256,20 +1284,18 @@ def validate_workspace_skills_integrity(
     #   corrupted canonical bytes).
     # - Corrupted canonical bytes (hash mismatch, tampered content) →
     #   set-executor CANNOT recover bytes — it only repairs links.
-    #   Recovery requires: (1) stop the daemon, (2) delete the
-    #   corrupted canonical package directory under
-    #   <daemon-home>/canonical-skills/<slug>/<version>/<content_hash>,
-    #   (3) restart the daemon so the next materialization rebuilds
-    #   from the authoritative release/custom artifact source.
+    #   Recovery is manual, operator-invoked: `happyranch skills
+    #   recover <slug> <version> <content_hash>`. Validates ledger
+    #   provenance and member hashes before deletion; refuses already-
+    #   valid targets. Next materialization rebuilds from ArtifactStore.
     #   There is NO trusted immutable same-UID repair source and
     #   NO automatic recovery from any local same-UID source.
     recovery = (
         "For broken/missing links: happyranch set-executor <agent> "
         "--executor <current-executor>. "
-        "For corrupted canonical bytes: stop daemon, remove corrupted "
-        "package under <daemon-home>/canonical-skills/<slug>/<version>/"
-        "<hash>, restart daemon (next materialization rebuilds from "
-        "authoritative release/custom artifact source). "
+        "For corrupted canonical bytes: happyranch skills recover "
+        "<slug> <version> <content_hash> (then restart daemon; next "
+        "materialization rebuilds from ArtifactStore). "
         "No automatic repair from same-UID local sources."
     )
 
@@ -1536,7 +1562,9 @@ def _materialize_lifecycle_skills(
                         )
 
                     # Validate member hash against stored bytes
-                    expected_hash_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+                    # Must be strict sha256:<64 lowercase hex> — no bare digests,
+                    # no arbitrary prefixes, no uppercase hex.
+                    expected_hash_hex = parse_strict_sha256_hash(member_hash)
                     actual_member_hash = hashlib.sha256(member_bytes).hexdigest()
                     if actual_member_hash != expected_hash_hex:
                         error_msg = (
