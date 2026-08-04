@@ -148,6 +148,9 @@ async def run_wake(
         )
         return
 
+    # Issue #568: forward AgentDef.model to executor.run for wake invocations.
+    model_name: str | None = agent_def.model
+
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
@@ -254,6 +257,7 @@ async def run_wake(
         timeout_seconds=settings.session_timeout_seconds,
         pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:

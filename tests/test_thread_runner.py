@@ -1356,3 +1356,180 @@ async def test_nudge_reinvoke_nonzero_rc_preserves_no_callback_classification(tm
         f"expected no_callback: rc=1, got: {after.decline_reason}"
     assert "no_callback_after_reprompt" not in (after.decline_reason or ""), \
         "must NOT tag nudge nonzero rc as no_callback_after_reprompt"
+
+
+# ── Issue #568: AgentDef.model forwarding to executor.run ──────────────
+
+class _CapturingFakeExec:
+    """Fake executor that captures run kwargs for assertion."""
+    def __init__(self, **kwargs):
+        pass
+
+    def run(self, **kwargs):
+        self.last_kwargs = kwargs
+        return FakeExecutorResult(success=True)
+
+
+@pytest.mark.asyncio
+async def test_thread_invocation_forwards_agent_model_to_executor_run(
+    tmp_path, monkeypatch,
+):
+    """When AgentDef.model is set, thread runner passes it to executor.run(model=...)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    # Create AgentDef with a model in org/agents/<name>.md
+    agent_dir = tmp_path / "org" / "agents"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "alice.md").write_text(
+        "---\nname: alice\nteam: engineering\nrole: worker\n"
+        "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
+        "You are a test agent.\n"
+    )
+
+    import runtime.daemon.thread_runner as runner_mod
+    fake_exec = _CapturingFakeExec()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake_exec,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    assert fake_exec.last_kwargs.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {fake_exec.last_kwargs.get('model')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_thread_invocation_no_model_preserves_default_behavior(
+    tmp_path, monkeypatch,
+):
+    """When AgentDef.model is absent, executor.run(model=...) is None (default)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    # AgentDef with NO model
+    agent_dir = tmp_path / "org" / "agents"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "alice.md").write_text(
+        "---\nname: alice\nteam: engineering\nrole: worker\n"
+        "executor: claude\n---\n\n"
+        "You are a test agent.\n"
+    )
+
+    import runtime.daemon.thread_runner as runner_mod
+    fake_exec = _CapturingFakeExec()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake_exec,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # model is either absent or None — existing default behavior
+    assert fake_exec.last_kwargs.get("model") in (None, ), (
+        f"model should be None when AgentDef has no model, "
+        f"got {fake_exec.last_kwargs.get('model')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_thread_invocation_session_not_found_fallback_forwards_model(
+    tmp_path, monkeypatch,
+):
+    """Session-not-found eviction fallback also passes model."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    agent_dir = tmp_path / "org" / "agents"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "alice.md").write_text(
+        "---\nname: alice\nteam: engineering\nrole: worker\n"
+        "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
+        "You are a test agent.\n"
+    )
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    # First call: simulate session-not-found so the fallback triggers.
+    call_count = [0]
+    all_model_kwargs = []
+
+    class _SessionNotFoundExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            call_count[0] += 1
+            all_model_kwargs.append(kwargs.get("model"))
+            if call_count[0] == 1:
+                # First invocation: resume attempt fails with session-not-found
+                result = FakeExecutorResult(success=False, error="No session found")
+                result.returncode = 1
+                return result
+            else:
+                return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _SessionNotFoundExec(),
+    )
+
+    # Stub thread_session so resume is attempted.
+    db.update_thread_session("THR-001", "alice", agent_session_id="stale-sid", last_resumed_seq=0)
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    assert call_count[0] == 2, f"expected 2 executor.run calls, got {call_count[0]}"
+    assert all_model_kwargs[0] == "gpt-5.6-terra", (
+        f"first call (resume): expected model='gpt-5.6-terra', got {all_model_kwargs[0]!r}"
+    )
+    assert all_model_kwargs[1] == "gpt-5.6-terra", (
+        f"second call (fallback): expected model='gpt-5.6-terra', got {all_model_kwargs[1]!r}"
+    )

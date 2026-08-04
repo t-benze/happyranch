@@ -708,3 +708,67 @@ async def test_run_dream_real_chain_error_unknown_certificate_raw_fallback(
     assert "transport_error" not in actions[-1]["payload"]["reason"], (
         f"dream_failed reason must not contain transport_error; got {actions[-1]['payload']['reason']!r}"
     )
+
+
+# ── Issue #568: AgentDef.model forwarding to executor.run ──────────────
+
+async def test_run_dream_forwards_model_to_executor_run(org_state):
+    """When AgentDef.model is set, dream runner passes it to executor.run(model=...)."""
+    workspace = _insert_pending_dream(org_state)
+    # Write AgentDef with model into org/agents/
+    agents_dir = org_state.root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "dev_agent.md").write_text(
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\n"
+        "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
+        "You are a test agent.\n"
+    )
+    captured_model = {}
+
+    class _CapturingFakeExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return FakeResult()
+
+    def factory(*_a, **_k):
+        return _CapturingFakeExec()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
+    )
+
+
+async def test_run_dream_no_model_preserves_default_behavior(org_state):
+    """When AgentDef.model is absent, dream runner passes model=None."""
+    workspace = _insert_pending_dream(org_state)
+    agents_dir = org_state.root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "dev_agent.md").write_text(
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\n"
+        "executor: claude\n---\n\n"
+        "You are a test agent.\n"
+    )
+    captured_model = {}
+
+    class _CapturingFakeExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return FakeResult()
+
+    def factory(*_a, **_k):
+        return _CapturingFakeExec()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") is None, (
+        f"model should be None when AgentDef has no model, "
+        f"got {captured_model.get('model')!r}"
+    )
