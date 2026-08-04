@@ -111,29 +111,6 @@ Prefer block-and-resume for any wait long enough to risk session timeout.
 
 For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
 
-### Bounded CI recovery gate
-
-Treat a CI failure as a diagnosis decision, not a rerun loop. For one pinned
-PR head SHA and one failure signature, permit **at most one** cancel/rerun.
-Before any rerun, capture the pinned head SHA, failed job URL, and a concise
-log excerpt. If the first rerun produces the same signature, do not rerun it
-again; classify it instead:
-
-- **Branch-caused and safely in scope:** repair only the explicitly authorized
-  source-edit scope, then create a new pinned CI wait for the new head.
-- **Reproducible on main or environmental drift:** block/escalate or create a
-  dedicated recovery task with a source-fix scope. A brief that forbids source
-  edits MUST NOT be re-dispatched unchanged after this result.
-- **Unclear:** create or route a diagnosis task with the captured evidence;
-  never submit another identical rerun.
-
-The first failed rerun is the stop signal, not evidence to keep re-queueing.
-This rule preserves the existing external-job completion contract: a
-CI-dependent task stays blocked on its bounded poll job and is not complete
-until the relevant pinned-head terminal verdict is known. See
-`protocol/00-completion-contract.md` and KB
-`ci-only-recovery-infinite-loop` for the rationale and evidence standard.
-
 **Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
 
 ```bash
