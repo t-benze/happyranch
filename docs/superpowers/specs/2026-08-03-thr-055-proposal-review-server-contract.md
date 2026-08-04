@@ -300,7 +300,12 @@ The following surfaces are **explicitly deferred** to later slices:
   affordances**
 - **Stale-refresh handling** for concurrent mutations (expected_event_id
   concurrency protection is server-only; UI surface deferred)
-- **Navigation links** from Skills page to Proposals section
+
+**Delivered (TASK-4267):** A "Proposal review" `SidebarNavItem` was added to
+ the Primary group of the AppShell Sidebar immediately adjacent to the
+ existing Skills/Catalog entry, targeting `/orgs/:slug/skills/proposals`.
+ The entry is visible to authenticated users per existing sidebar conventions;
+ Founder-only authorization is enforced server-side (no client-side role gating).
 
 ### 6.4 Fidelity Targets
 
