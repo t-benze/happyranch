@@ -55,3 +55,4 @@ web/node_modules
 
 # Screenshot evidence (keep in PRs + happyranch artifacts, never committed)
 **/docs/evidence/
+.worktree-guard.json

@@ -1336,7 +1336,8 @@ complete required set without the wholesale dump. The test asserts:
 - ``reflection`` is injected for ALL agents (org-wide universal).
 - ``manage-agent`` / ``manage-repo`` are exposed to eligible managers/operators
   only and hidden from non-eligible agents (eligibility gate).
-- ``dream`` is excluded from non-dream contexts.
+- ``dream`` is excluded from non-dream contexts for session guidance only;
+  its workspace link survives across all ordinary contexts.
 - ``make-worktree`` is repo-gated.
 
 **Session-path coverage.** ``inject_managed_skills`` is wired into all 6
@@ -1354,6 +1355,13 @@ session-creation callers via ``materialize_workspace_skills``:
 6. **Executor-switch / set-executor** — resolves team from ``agent_def``
    and builds a SINGLE full-expected-spec union from all six contexts
    before materialization (§4.6).
+
+**System-contract union rule (all 6 callers).** Every caller unions
+system-contract expectations across all ordinary session contexts before
+reconciling workspace links — a later single-context launch never
+withdraws a valid system-contract link belonging to another context.
+Release-managed and lifecycle links remain policy-reconciled and are
+withdrawn when the agent becomes ineligible or unassigned.
 
 **No config rollback gate.** The former ``_WHOLESALE_DUMP_ENABLED`` flag is
 absent from source — there is no "set to True" escape hatch. The executor

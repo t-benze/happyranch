@@ -717,7 +717,10 @@ class TestConcurrentMaterialization:
         import runtime.orchestrator.workspace_adapters as wa
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+        # All 5 system contracts must be present now that
+        # _materialize_unified_canonical unions across all ordinary
+        # contexts (dream is DREAM-only but still in the union).
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -848,7 +851,7 @@ class TestConcurrentMaterialization:
 
         # Create source skills so the adapter has something to copy
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread"]:
+        for sid in ["start-task", "jobs", "thread", "dream"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -943,7 +946,7 @@ class TestConcurrentMaterialization:
 
         # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")
@@ -1021,3 +1024,305 @@ class TestConcurrentMaterialization:
 
         # ── Assert no executor subprocess launch ──
         mock_executor.run.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Cross-context system-contract retention (TASK-4361)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestCrossContextSystemContractRetention:
+    """Production-seam tests: a single-context materialize_workspace_skills
+    call unions system contracts across ALL ordinary session contexts so
+    a later launch for a different context never withdraws a valid
+    system-contract link.
+
+    start-task is in task/wake/schedule but NOT thread.
+    thread is in task/thread/wake/schedule/bootstrap but NOT dream.
+    These distinct exposures let us prove cross-context preservation."""
+
+    def test_task_thread_task_preserves_start_task_across_both_roots(
+        self, tmp_path, monkeypatch,
+    ):
+        """task → thread → task: start-task survives the thread launch
+        in BOTH .claude/skills and .agents/skills."""
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+            validate_workspace_skills_integrity,
+        )
+
+        # ── Create all 5 system-contract source dirs ──
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+
+        # ── 1. Materialize for task context ──
+        specs_1 = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # start-task + jobs + make-worktree + thread should all be linked
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            for subd in [".claude/skills", ".agents/skills"]:
+                link = workspace / subd / sid / "SKILL.md"
+                assert link.exists(), (
+                    f"After task materialization, {subd}/{sid} must exist"
+                )
+                assert link.read_text() == f"# {sid}\ncontent for {sid}\n"
+
+        # ── 2. Materialize for thread context (start-task NOT in thread) ──
+        specs_2 = materialize_workspace_skills(
+            workspace, settings, slug="test", context="thread",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # start-task MUST survive — it's in the union even though
+        # thread context alone doesn't include it.
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            for subd in [".claude/skills", ".agents/skills"]:
+                link = workspace / subd / sid / "SKILL.md"
+                assert link.exists(), (
+                    f"After thread materialization, {subd}/{sid} must "
+                    f"survive (system-contract union)"
+                )
+
+        # ── 3. Materialize for task context again ──
+        specs_3 = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # All four contracts must still be present
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            for subd in [".claude/skills", ".agents/skills"]:
+                link = workspace / subd / sid / "SKILL.md"
+                assert link.exists(), (
+                    f"After 2nd task materialization, {subd}/{sid} must exist"
+                )
+
+        # ── 4. Pre-launch integrity validation passes ──
+        validate_workspace_skills_integrity(
+            workspace, specs_3, settings=settings,
+            agent_name="dev_agent", task_id="TASK-TEST",
+        )
+
+    def test_thread_task_preserves_thread_contract(self, tmp_path, monkeypatch):
+        """thread → task: thread contract survives the task launch."""
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+
+        # ── 1. Materialize for thread context ──
+        materialize_workspace_skills(
+            workspace, settings, slug="test", context="thread",
+            provider="codex", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # thread contract should be present
+        for subd in [".claude/skills", ".agents/skills"]:
+            link = workspace / subd / "thread" / "SKILL.md"
+            assert link.exists(), f"After thread, {subd}/thread must exist"
+
+        # ── 2. Materialize for task context ──
+        materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="codex", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # thread MUST survive (union preserves it)
+        for subd in [".claude/skills", ".agents/skills"]:
+            link = workspace / subd / "thread" / "SKILL.md"
+            assert link.exists(), (
+                f"After task, {subd}/thread must survive (system-contract union)"
+            )
+        # start-task must now also be linked
+        for subd in [".claude/skills", ".agents/skills"]:
+            link = workspace / subd / "start-task" / "SKILL.md"
+            assert link.exists(), f"After task, {subd}/start-task must exist"
+
+    def test_dream_only_contract_preserved_across_contexts(
+        self, tmp_path, monkeypatch,
+    ):
+        """dream contract (DREAM only) survives task+thread materialization."""
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+            validate_workspace_skills_integrity,
+        )
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+
+        # ── 1. Materialize for dream context (dream contract present) ──
+        materialize_workspace_skills(
+            workspace, settings, slug="test", context="dream",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        for subd in [".claude/skills", ".agents/skills"]:
+            assert (workspace / subd / "dream" / "SKILL.md").exists()
+            assert (workspace / subd / "jobs" / "SKILL.md").exists()
+
+        # ── 2. Materialize for task (dream NOT in task context) ──
+        specs = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=src,
+        )
+        # dream MUST survive because it's in the union
+        for subd in [".claude/skills", ".agents/skills"]:
+            link = workspace / subd / "dream" / "SKILL.md"
+            assert link.exists(), (
+                f"After task materialization, {subd}/dream must survive "
+                f"(dream is in the system-contract union)"
+            )
+
+        # ── 3. Integrity validation passes ──
+        validate_workspace_skills_integrity(
+            workspace, specs, settings=settings,
+            agent_name="dev_agent", task_id="TASK-TEST",
+        )
+
+    def test_managed_skill_withdrawal_preserves_system_contracts(
+        self, tmp_path, monkeypatch,
+    ):
+        """When a managed skill becomes ineligible and is withdrawn,
+        system-contract links survive."""
+        import yaml
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+
+        # ── System-contract source dirs (all 5 required for union) ──
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        # ── A managed skill in the skills_root ──
+        skills_root = tmp_path / "managed_skills"
+        (skills_root / "custom-tool").mkdir(parents=True)
+        (skills_root / "custom-tool" / "SKILL.md").write_text(
+            "# custom-tool\nDo things.\n"
+        )
+        (skills_root / "custom-tool" / "skill.yaml").write_text(
+            yaml.dump({
+                "id": "custom-tool",
+                "slug": "custom-tool",
+                "name": "Custom Tool",
+                "version": "1.0.0",
+                "description": "A test managed skill.",
+                "when_to_use": "Never.",
+                "owner": "engineering_manager",
+                "source": "managed_skills/custom-tool",
+                "policy_class": "standard_operational",
+                "status": "enabled",
+            })
+        )
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        # ── Org config makes custom-tool eligible to engineering team ──
+        # org_root is the PER-ORG ROOT (e.g. <runtime>/orgs/<slug>/);
+        # the code reads org_root / "org" / "config.yaml".
+        org_root = tmp_path / "org_root"
+        (org_root / "org").mkdir(parents=True)
+        config_path = org_root / "org" / "config.yaml"
+        config_path.write_text(yaml.dump({
+            "skills": {
+                "teams": {
+                    "engineering": {
+                        "allow": ["custom-tool"],
+                        "deny": [],
+                    },
+                },
+            },
+        }))
+
+        settings = Settings(project_root=tmp_path)
+
+        # ── 1. Materialize with eligible managed skill ──
+        materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=skills_root,
+            org_root=org_root,
+        )
+        # Both system contracts and managed skill should be linked
+        for subd in [".claude/skills", ".agents/skills"]:
+            assert (workspace / subd / "start-task" / "SKILL.md").exists()
+            assert (workspace / subd / "jobs" / "SKILL.md").exists()
+            assert (workspace / subd / "custom-tool" / "SKILL.md").exists()
+
+        # ── 2. Change eligibility: custom-tool now denied ──
+        config_path.write_text(yaml.dump({
+            "skills": {
+                "teams": {
+                    "engineering": {
+                        "allow": [],
+                        "deny": ["custom-tool"],
+                    },
+                },
+            },
+        }))
+
+        # ── 3. Re-materialize — managed skill should be withdrawn ──
+        materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=skills_root,
+            org_root=org_root,
+        )
+        # System contracts survive
+        for subd in [".claude/skills", ".agents/skills"]:
+            assert (workspace / subd / "start-task" / "SKILL.md").exists(), (
+                f"System contract start-task must survive in {subd}"
+            )
+            assert (workspace / subd / "jobs" / "SKILL.md").exists(), (
+                f"System contract jobs must survive in {subd}"
+            )
+        # Managed skill is withdrawn
+        for subd in [".claude/skills", ".agents/skills"]:
+            managed_path = workspace / subd / "custom-tool"
+            assert not managed_path.exists(), (
+                f"Managed skill custom-tool must be withdrawn in {subd}"
+            )

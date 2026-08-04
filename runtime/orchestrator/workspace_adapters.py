@@ -572,10 +572,17 @@ def _materialize_unified_canonical(
 ) -> list[dict]:
     """Derive one full expected set per provider root, reconcile once.
 
-    Unified expected set = system contracts + release-managed catalog +
-    PUBLISHED/active lifecycle-ledger skills. This single set is reconciled
-    via repair_workspace_skills ONCE, so system contracts are never withdrawn
-    by a later managed-only reconciliation (TASK-4001 Finding 2 fix).
+    Unified expected set = system contracts (union across ALL ordinary
+    session contexts) + release-managed catalog + PUBLISHED/active
+    lifecycle-ledger skills. This single set is reconciled via
+    repair_workspace_skills ONCE.
+
+    System contracts are unioned across all six ordinary SessionContext
+    values (task, thread, wake, dream, schedule, bootstrap) so a later
+    single-context materialization never withdraws a valid system-contract
+    link belonging to another ordinary context. The per-context resolver
+    remains authoritative for session guidance; the workspace is an
+    intentionally safe superset.
 
     Returns the exact expected_specs list used for reconciliation so
     callers can pass it to validate_workspace_skills_integrity.
@@ -595,16 +602,26 @@ def _materialize_unified_canonical(
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
 
-    # Resolve session context
-    try:
-        ctx = SessionContext(context)
-    except ValueError:
-        ctx = None
-
-    # ── 0. PREFLIGHT: collect ALL required system-contract ids ────
+    # ── 0. PREFLIGHT: union system-contract ids across ALL
+    #    ordinary session contexts (task, thread, wake, dream,
+    #    schedule, bootstrap).  This prevents cross-context
+    #    withdrawal where a later single-context materialization
+    #    removes a valid link belonging to another context.
+    #    The per-context resolver remains authoritative for
+    #    session guidance; the workspace is a safe superset.
+    _ORDINARY_CONTEXTS = (
+        "task", "thread", "wake", "dream", "schedule", "bootstrap"
+    )
     contract_ids: set[str] = set()
-    if ctx is not None:
+    contracts_by_id: dict[str, object] = {}  # SystemContract
+    for ctx_name in _ORDINARY_CONTEXTS:
+        try:
+            ctx = SessionContext(ctx_name)
+        except ValueError:
+            continue
         for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
+            if contract.id not in contracts_by_id:
+                contracts_by_id[contract.id] = contract
             contract_ids.add(contract.id)
 
     # Validate ALL sources before any build.
@@ -616,23 +633,22 @@ def _materialize_unified_canonical(
     # ── Build unified expected_specs ────────────────────────────
     expected_specs: list[dict] = []
 
-    # 1. System-contract skills (required session contracts)
-    if ctx is not None:
-        contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
-        for contract in contracts:
-            src_dir = src_root / contract.id
-            content_hash = _compute_dir_hash(src_dir)
-            store.build_from_source(
-                contract.id, "system", content_hash, src_dir,
-                verify_source_hash=content_hash,
-            )
-            # Org context is carried via session/task metadata, not
-            # literal {ORG_SLUG} substitution in canonical bytes.
-            expected_specs.append({
-                "slug": contract.id,
-                "version": "system",
-                "content_hash": content_hash,
-            })
+    # 1. System-contract skills (union across all ordinary contexts)
+    for contract_id in sorted(contracts_by_id):
+        contract = contracts_by_id[contract_id]
+        src_dir = src_root / contract.id
+        content_hash = _compute_dir_hash(src_dir)
+        store.build_from_source(
+            contract.id, "system", content_hash, src_dir,
+            verify_source_hash=content_hash,
+        )
+        # Org context is carried via session/task metadata, not
+        # literal {ORG_SLUG} substitution in canonical bytes.
+        expected_specs.append({
+            "slug": contract.id,
+            "version": "system",
+            "content_hash": content_hash,
+        })
 
     # 2. Release-managed catalog skills
     if skills_root.is_dir():

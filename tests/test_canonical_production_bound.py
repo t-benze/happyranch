@@ -373,7 +373,7 @@ class TestCutoverCompleteness:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 
@@ -493,7 +493,7 @@ class TestOrgSlugRemediation:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 
