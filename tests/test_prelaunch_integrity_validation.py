@@ -1641,6 +1641,210 @@ class TestProductionSeamLifecycleCorruptionRefusal:
             f"got {len(popen_calls)}"
         )
 
+    def test_run_command_pre_launch_validator_refuses_corruption(
+        self, tmp_path, monkeypatch,
+    ):
+        """Actual _run_command closure: executor.run calls pre_launch_validator
+        before every launch attempt. A corrupted package detected by the
+        validator prevents Popen through the REAL _run_command pipeline.
+
+        This exercises the production launch seam:
+        executor.run → _run_command → _launch → pre_launch_validator()
+        → validate_workspace_skills_integrity → WorkspaceIntegrityError
+        → 0 subprocess.Popen calls.
+        """
+        import hashlib
+        from unittest.mock import patch as mock_patch, MagicMock
+
+        skill_md_bytes = b"# RunCommand Test Skill\n"
+        mal_bytes = b"# MALICIOUS RUNCOMMAND\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "run-cmd", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "run-cmd", "1.0.0", manifest_hash,
+            "hr:run-cmd", manifest_key,
+        )
+
+        # Materialize and capture expected_specs
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        expected_specs = materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+        assert len(expected_specs) > 0, (
+            "expected_specs must be non-empty after materialization"
+        )
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "run-cmd",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # ── Build pre_launch_validator that checks integrity ──
+        from runtime.orchestrator.workspace_adapters import (
+            validate_workspace_skills_integrity,
+            WorkspaceIntegrityError,
+        )
+        def validator():
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=orch._settings,
+                db=db,
+                agent_name="dev_agent",
+                task_id="test-run-cmd",
+            )
+
+        # ── Build executor and call .run() ──
+        # Register a fake executor binary so _build_executor resolves.
+        # The actual binary is never invoked (Popen is intercepted).
+        monkeypatch.setattr(
+            "runtime.orchestrator.executors._resolve_binary",
+            lambda _profile_name: "/usr/bin/echo",
+        )
+        executor = orch._build_executor("claude")
+        # Monkeypatch readiness marker
+        (workspace / ".start-task-ready").touch()
+
+        # ── Intercept subprocess.Popen at the isolation module ──
+        popen_calls = []
+        def fake_popen(*args, **kwargs):
+            popen_calls.append(1)
+            return MagicMock(pid=99999, communicate=MagicMock(
+                return_value=("", "")), returncode=0)
+
+        with mock_patch(
+            "runtime.platform.isolation.subprocess.Popen",
+            side_effect=fake_popen, autospec=True,
+        ):
+            # The validator raises WorkspaceIntegrityError inside _run_command's
+            # _launch, which propagates through executor.run.
+            with pytest.raises(WorkspaceIntegrityError):
+                executor.run(
+                    workspace=workspace,
+                    prompt="test prompt",
+                    session_id="sess-test",
+                    timeout_seconds=30,
+                    pre_launch_validator=validator,
+                    org_slug="test-org",
+                )
+
+        assert len(popen_calls) == 0, (
+            f"Expected 0 Popen calls through executor.run pipeline, "
+            f"got {len(popen_calls)}"
+        )
+
+    def test_executor_switch_materialization_detects_corruption(
+        self, tmp_path, monkeypatch,
+    ):
+        """Actual executor-switch route materialization gate:
+        _executor_switch_materialize (called by the HTTP route) detects
+        corrupted lifecycle packages and refuses with errors — no launch.
+
+        Exercises: _executor_switch_materialize →
+        materialize_workspace_skills_union → _materialize_context_union →
+        _build_lifecycle_canonical_specs → detects corruption →
+        returns errors.
+
+        This is the actual gate called synchronously by
+        set_agent_executor before any bootstrap/config mutation.
+        """
+        import hashlib
+        from unittest.mock import MagicMock
+
+        skill_md_bytes = b"# Switch Route Skill\n"
+        mal_bytes = b"# MALICIOUS SWITCH ROUTE\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "switch-route", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "switch-route", "1.0.0", manifest_hash,
+            "hr:switch-route", manifest_key,
+        )
+
+        # Materialize first (so package exists in canonical store)
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "switch-route",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # Build minimal OrgState for the route handler's dep
+        from runtime.config import Settings
+        mock_org = MagicMock()
+        mock_org.settings = orch._settings
+        mock_org.slug = "test-org"
+        mock_org.root = org_root
+        mock_org.db = db
+
+        # System contracts source
+        protocol_skills = tmp_path / "protocol" / "skills"
+        protocol_skills.mkdir(parents=True, exist_ok=True)
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            d = protocol_skills / sid
+            d.mkdir(parents=True, exist_ok=True)
+
+        # ── Call _executor_switch_materialize (the route's gate) ──
+        from runtime.daemon.routes.agents import (
+            _executor_switch_materialize,
+        )
+        errors = _executor_switch_materialize(
+            workspace=workspace,
+            org=mock_org,
+            agent_name="dev_agent",
+            provider="codex",
+        )
+
+        # The gate returns errors because corruption is detected
+        # during materialization/validation.
+        assert len(errors) > 0, (
+            f"_executor_switch_materialize must return errors when "
+            f"corruption is detected, got {errors}"
+        )
+
+        # ── Prove canonical bytes unchanged (no auto-repair) ──
+        pkg_path = store.canonical_path(
+            "switch-route", "1.0.0", manifest_hash,
+        )
+        assert (pkg_path / "SKILL.md").read_bytes() == mal_bytes, (
+            "Corrupted bytes must persist — no auto-repair"
+        )
+
 
 class TestStrictHashFormatValidation:
     """Adversarial: parse_strict_sha256_hash rejects malformed inputs.
@@ -2132,8 +2336,11 @@ class TestOperatorRecoveryBehavior:
         self, tmp_path, monkeypatch,
     ):
         """When event persistence fails, recovery must fail closed
-        (500) — no success returned without a durable event, even
-        though the package was already deleted."""
+        (500) — no success returned without a durable event, and the
+        canonical package MUST remain intact (not deleted).
+
+        The event is persisted BEFORE deletion; persistence failure
+        leaves the canonical bytes unchanged."""
         data = self._create_published_package(
             tmp_path, "event-fail-recover", "1.0.0",
             b"# Event Fail Recover\n",
@@ -2175,7 +2382,17 @@ class TestOperatorRecoveryBehavior:
         assert exc.value.status_code == 500, (
             f"Expected 500 for persistence failure, got {exc.value.status_code}"
         )
-        assert "event persistence failed" in exc.value.detail.lower() or \
-            "persistence" in exc.value.detail.lower(), (
+        assert "persistence" in exc.value.detail.lower(), (
             f"Expected persistence failure message, got: {exc.value.detail}"
+        )
+
+        # ── Prove package was NOT deleted (fail-closed) ──────────
+        # The event is persisted BEFORE deletion; persistence failure
+        # must leave canonical bytes unchanged.
+        assert pkg_path.is_dir(), (
+            f"Canonical package MUST remain intact after persistence "
+            f"failure — it was NOT deleted, but {pkg_path} is missing"
+        )
+        assert (pkg_path / "SKILL.md").read_bytes() == b"# CORRUPTED\n", (
+            f"Canonical bytes MUST be unchanged after persistence failure"
         )

@@ -698,7 +698,8 @@ def cmd_skills_recover(args: argparse.Namespace) -> None:
     Validates identity/path inputs and ledger provenance, revalidates
     member SHA-256 hashes against the ArtifactStore, then deletes the
     corrupted canonical package. The next materialization will rebuild
-    from the authoritative source.
+    from the ArtifactStore (which must be verified against the release
+    source for same-owner deployments).
 
     Operator surface only — no automatic recovery from same-UID sources.
     """
@@ -754,7 +755,10 @@ def cmd_skills_recover(args: argparse.Namespace) -> None:
     print()
     print("This will DELETE the corrupted canonical package from disk.")
     print("The next daemon launch/materialization will rebuild from the")
-    print("authoritative ArtifactStore source.")
+    print(
+        "ArtifactStore (which must be verified against the release\n"
+        "source for same-owner deployments)."
+    )
     print()
 
     try:

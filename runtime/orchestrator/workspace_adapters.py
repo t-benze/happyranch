@@ -287,7 +287,7 @@ def materialize_workspace_skills(
     skills_root: Path,
     org_root: Path | None = None,
     db: "Database | None" = None,  # noqa: F821
-) -> None:
+) -> list[dict]:
     """Serialize the complete pre-spawn skill materialization transaction.
 
     All three materialization steps — system-contract injection,
@@ -298,6 +298,10 @@ def materialize_workspace_skills(
 
     Fail-closed: any error raises immediately. A failed materialization must
     not leave a partially-populated skills directory passing as complete.
+
+    Returns the exact expected_specs list used for reconciliation — callers
+    must pass it to validate_workspace_skills_integrity for pre-launch
+    integrity validation.
 
     This is the single helper boundary used by all pre-spawn paths. No
     caller may directly invoke ``refresh_session_skills``,
@@ -322,7 +326,7 @@ def materialize_workspace_skills(
         # reconcile once. This prevents the system-contract withdrawal
         # bug (TASK-4001 Finding 2) where managed-only expected_specs
         # caused repair_workspace_skills to withdraw system contracts.
-        _materialize_unified_canonical(
+        return _materialize_unified_canonical(
             workspace, settings,
             slug=slug, context=context, provider=provider,
             agent_name=agent_name, team=team,
@@ -342,7 +346,7 @@ def materialize_workspace_skills_union(
     skills_root: Path,
     org_root: Path | None = None,
     db=None,
-) -> None:
+) -> list[dict]:
     """Build a single full expected-spec union from MULTIPLE session contexts.
 
     Unlike ``materialize_workspace_skills`` which reconciles for a single
@@ -355,12 +359,16 @@ def materialize_workspace_skills_union(
     workspace must be ready for EVERY possible session context, not only
     the last one materialized.
 
+    Returns the exact expected_specs list used for reconciliation — callers
+    must pass it to validate_workspace_skills_integrity for pre-switch
+    integrity validation.
+
     Args:
         contexts: list of session context names to union (e.g.
             ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
     """
     with _workspace_skills_transaction(workspace):
-        _materialize_context_union(
+        return _materialize_context_union(
             workspace, settings,
             slug=slug, contexts=contexts, provider=provider,
             agent_name=agent_name, team=team,
@@ -411,13 +419,16 @@ def _materialize_context_union(
     skills_root: Path,
     org_root: Path | None = None,
     db=None,
-) -> None:
+) -> list[dict]:
     """Core union logic: build expected_specs from all contexts, repair once.
 
     Preflight: validates every mandatory system-contract source required by
     the full context union BEFORE building any canonical package or
     reconciling either workspace root. A missing required source raises
     SystemContractMaterializationError — never silently continues.
+
+    Returns the exact expected_specs list used for reconciliation so
+    callers can pass it to validate_workspace_skills_integrity.
     """
     from runtime.skills.system_contracts import (
         SessionContext,
@@ -543,6 +554,8 @@ def _materialize_context_union(
             expected_specs, workspace, subdir,
         )
 
+    return expected_specs
+
 
 def _materialize_unified_canonical(
     workspace: Path,
@@ -556,13 +569,16 @@ def _materialize_unified_canonical(
     skills_root: Path,
     org_root: Path | None = None,
     db=None,
-) -> None:
+) -> list[dict]:
     """Derive one full expected set per provider root, reconcile once.
 
     Unified expected set = system contracts + release-managed catalog +
     PUBLISHED/active lifecycle-ledger skills. This single set is reconciled
     via repair_workspace_skills ONCE, so system contracts are never withdrawn
     by a later managed-only reconciliation (TASK-4001 Finding 2 fix).
+
+    Returns the exact expected_specs list used for reconciliation so
+    callers can pass it to validate_workspace_skills_integrity.
 
     Fail-closed: any error raises immediately.
     """
@@ -699,6 +715,7 @@ def _materialize_unified_canonical(
             expected_specs, workspace, subdir,
         )
 
+    return expected_specs
 
 
 def _build_lifecycle_canonical_specs(

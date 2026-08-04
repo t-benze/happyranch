@@ -1142,7 +1142,8 @@ def skill_recover(
     Narrowly scoped: validates identity/path inputs, checks ledger provenance,
     revalidates member SHA-256 hashes against the ArtifactStore, then deletes
     ONLY the corrupted canonical package directory. The next materialization
-    will rebuild from the authoritative ArtifactStore source.
+    will rebuild from the ArtifactStore (which must be verified against
+    the release source for same-owner deployments).
 
     Fails closed without valid authority/provenance. Never automatic.
     set-executor only repairs links after byte integrity passes; this endpoint
@@ -1425,7 +1426,40 @@ def skill_recover(
                 ),
             )
 
-    # Delete the corrupted package
+    # ── 3. Emit durable recovery event BEFORE deletion ────────────
+    # Persistence must succeed before any destructive action.
+    # If the event write fails, the canonical package is left
+    # untouched (fail-closed) — the operator can retry.
+    try:
+        org.db.insert_skill_validation_event(
+            skill_id=pkg_match.skill_id,
+            slug=slug,
+            agent="operator",
+            source="operator_recovery",
+            severity="info",
+            ok=True,
+            version=version,
+            findings=[
+                f"Operator recovery: deleting corrupted canonical package "
+                f"{slug}@{version} (hash={content_hash[:16]}...) at {pkg_path}. "
+                f"Next materialization will rebuild from ArtifactStore."
+            ],
+            reason_codes=["operator_recovery"],
+        )
+    except Exception as exc:
+        # Event persistence failed — fail closed.
+        # Do NOT delete the package; canonical bytes stay unchanged.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Recovery event persistence failed: {exc}. "
+                f"The canonical package was NOT deleted — it remains "
+                f"intact on disk. Retry recovery after resolving the "
+                f"persistence issue."
+            ),
+        )
+
+    # ── 4. Delete the corrupted package (only after event persisted) ──
     try:
         # Make writable first (hardened packages are readonly)
         from runtime.skills.canonical_store import _make_writable_for_removal
@@ -1437,45 +1471,13 @@ def skill_recover(
             agent="operator", severity="error", ok=False,
             detail=(
                 f"Failed to delete corrupted package {slug}@{version} "
-                f"at {pkg_path}: {exc}"
+                f"at {pkg_path} (event was already persisted): {exc}"
             ),
             reason_codes=["deletion_failed"],
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete corrupted package: {exc}",
-        )
-
-    # ── 4. Emit durable recovery event ────────────────────────────
-    # Persistence failure must fail closed — no success returned
-    # without a durable event.
-    try:
-        org.db.insert_skill_validation_event(
-            skill_id=pkg_match.skill_id,
-            slug=slug,
-            agent="operator",
-            source="operator_recovery",
-            severity="info",
-            ok=True,
-            version=version,
-            findings=[
-                f"Operator recovery: deleted corrupted canonical package "
-                f"{slug}@{version} (hash={content_hash[:16]}...) at {pkg_path}. "
-                f"Next materialization will rebuild from ArtifactStore."
-            ],
-            reason_codes=["operator_recovery"],
-        )
-    except Exception as exc:
-        # Event persistence failed — fail closed.
-        # The package was already deleted, but without a durable audit
-        # record the operation is not complete. Report the failure.
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Package deleted but recovery event persistence failed: {exc}. "
-                f"The canonical package was removed; retry recovery to "
-                f"record the event."
-            ),
         )
 
     return {
@@ -1488,6 +1490,7 @@ def skill_recover(
         "message": (
             f"Corrupted canonical package {slug}@{version} deleted. "
             f"Restart daemon or trigger next launch to rebuild from "
-            f"authoritative ArtifactStore source."
+            f"the ArtifactStore (which must be verified against the "
+            f"release source for same-owner deployments)."
         ),
     }
