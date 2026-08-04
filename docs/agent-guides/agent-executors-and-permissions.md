@@ -1,25 +1,25 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4327):** Skill materialization now uses
 > the **canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. Two operating
-> modes exist: **strict distinct-identity** (default) with OS-enforced
-> ownership/permission isolation, and **same-owner** (explicit opt-in,
-> `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`) where integrity checks are
-> DETECTION-ONLY with FAIL-CLOSED refusal — no OS-level security boundary,
-> no automatic repair from same-UID local source.
+> (macOS-only). The legacy per-session copy model is REMOVED. The
+> executor always runs under the daemon's own OS identity — there is
+> NO OS-level isolation and no environment flag is required.
+> Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal — no
+> OS-level security boundary, no automatic repair from same-UID local
+> source.
 > See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
 > symlinks" for ownership, provenance, link validation, refusal/withdrawal/
-> retention semantics, macOS provisioning, integrity verification, and the
+> retention semantics, integrity verification, and the
 > compatibility-fallback boundary. Linux and Windows are NOT supported —
 > explicitly fail closed.
 >
-> **SAME-OWNER HONESTY NOTICE (TASK-4189):** In same-owner mode do NOT call
-> canonical targets immutable, protected, or claim write/chmod/ACL denial.
-> The prompt guard is operational guidance, not enforcement. Integrity
-> verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO automatic
-> repair from same-UID local source. A same-UID process may mutate, race
-> validation, and affect active/overlapping sessions. Manual recovery only:
+> **HONESTY NOTICE (TASK-4327):** Do NOT call canonical targets immutable,
+> protected, or claim write/chmod/ACL denial. The prompt guard is
+> operational guidance, not enforcement. Integrity verification is
+> DETECTION-ONLY with FAIL-CLOSED refusal — NO automatic repair from
+> same-UID local source. A same-UID process may mutate, race validation,
+> and affect active/overlapping sessions. Manual recovery only:
 > (a) ``set-executor`` for broken links, (b) ``happyranch skills recover
 > <slug> <version> <content_hash>`` for corrupted canonical bytes. No
 > automatic repair from same-UID local source. Recovery requires that an

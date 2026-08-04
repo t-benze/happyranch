@@ -39,11 +39,6 @@ class TestPreLaunchIntegrityValidation:
     the executor shares the daemon's UID.
     """
 
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        """Enable same-owner mode for all tests in this class."""
-        pass
-
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
     def _build_and_materialize(store, ws, slug, version, src_dir, subdirs):
@@ -640,10 +635,6 @@ class TestLifecycleManifestSelfRatificationPrevention:
     These tests require same-owner mode.
     """
 
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        pass
-
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
     def _create_lifecycle_package(tmp_path, slug, version, skill_content, ref_content=None):
@@ -1077,7 +1068,6 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         rt = RuntimeDir.init(tmp_path / "runtime-dir")
         org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
@@ -1633,10 +1623,9 @@ class TestProductionSeamLifecycleCorruptionRefusal:
         token = daemon_paths.ensure_token()
         auth_headers = {"Authorization": f"Bearer {token}"}
 
-        # ── Set up env for canonical store + same-owner mode ────────
+        # ── Set up env for canonical store ────────
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         # ── Set up protocol skills source ───────────────────────────
         protocol_skills = tmp_path / "protocol" / "skills"

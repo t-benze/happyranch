@@ -31,7 +31,6 @@ from runtime.platform.isolation import (
     PlatformIsolation,
     PlatformIsolationError,
     _MacOSPlatformIsolation,
-    _probe_macos_executor_account,
 )
 # Use module-attribute access so the conftest monkeypatch on
 # runtime.platform.isolation.detect_platform_isolation takes effect
@@ -1466,7 +1465,7 @@ class TestHardeningFailureAfterPublication:
         """Regression: an owner-writable 0644 member is rejected by
         verify_package() and is_built() in ALL isolation modes.
         Files must always be 0444 — the immutable file invariant
-        is enforced regardless of same-owner vs distinct-identity."""
+        is enforced regardless of isolation mode."""
         import hashlib
         import os as _os
 
@@ -2911,49 +2910,20 @@ class TestSameOwnerAdversarialLimits:
         assert ordinary_dir.is_dir()
         assert (ordinary_dir / "real-work.txt").read_text() == "real user work"
 
-    def test_mode_observability(
-        self, monkeypatch, tmp_path,
-    ):
-        """The selected mode (strict vs same-owner) is observable
-        via PlatformIsolation.is_same_owner_mode without auth/schema change."""
-        # Test isolation (from conftest) is same-owner by default
-        iso = isolation.detect_platform_isolation()
-        assert iso.is_same_owner_mode is True, (
-            "Test isolation must report same-owner mode"
-        )
+    # ── Production-faithful hardening + is_built ─────
 
-        # Verify the property is accessible on the abstract base
-        assert hasattr(PlatformIsolation, "is_same_owner_mode"), (
-            "Abstract base must define is_same_owner_mode property"
-        )
-
-    # ── Fix 1: Production-faithful same-owner hardening + is_built ─────
-
-    def test_same_owner_hardening_0755_dirs_is_built_true(
+    def test_hardening_0755_dirs_is_built_true(
         self, monkeypatch, tmp_path, skill_source_dir,
     ):
-        """The REAL macOS same-owner hardening produces 0755 directories.
+        """The canonical hardening produces 0755 directories.
 
         _verify_recursive_readonly must accept 0755/0444 canonical
-        packages in same-owner mode so is_built returns True and a
-        normal valid prelaunch start does not spuriously rebuild.
+        packages so is_built returns True and a normal valid prelaunch
+        start does not spuriously rebuild.
 
-        This test uses the actual _MacOSPlatformIsolation class, NOT
-        the conftest.py test double which creates 0555 directories.
+        Uses the actual _MacOSPlatformIsolation class directly.
         """
-        # Force same-owner mode on the real macOS isolation class.
-        # _probe_macos_executor_account may succeed on real machines,
-        # so monkeypatch it to return None to guarantee same-owner entry.
-        monkeypatch.setattr(
-            "runtime.platform.isolation._probe_macos_executor_account",
-            lambda: None,
-        )
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
-
         iso = _MacOSPlatformIsolation()
-        assert iso.is_same_owner_mode, (
-            "Must enter same-owner mode for this test"
-        )
 
         store = CanonicalSkillStore(
             root=tmp_path / "canonical",

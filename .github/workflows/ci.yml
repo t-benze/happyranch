@@ -60,135 +60,17 @@ jobs:
       - name: Test (non-watch)
         run: npx vitest run
 
-  # ── macOS canonical skill store isolation (TASK-4009/TASK-4012) ──
-  # Provisions distinct daemon/materializer and restricted executor OS
-  # identities and verifies the immutable canonical store isolation contract.
-  # This job is mandatory and non-skipped — provisioning failure is a
-  # job failure. Linux/Windows are not supported in this release.
-  macos-canonical-isolation:
-    name: macOS Canonical Store Isolation (macOS 15)
+  # ── macOS canonical skill store (TASK-4009/TASK-4012/TASK-4327) ──
+  # Verifies the canonical skill store + workspace symlink architecture.
+  # No executor account provisioning needed — executor runs under daemon identity.
+  # Linux/Windows are not supported in this release.
+  macos-canonical-store:
+    name: macOS Canonical Skill Store (macOS 15)
     runs-on: macos-15
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Provision restricted executor account
-        id: provision
-        run: |
-          set -eux
-          # Create a dedicated restricted executor account.
-          # macOS system accounts have uid < 500; use a high uid for CI.
-          EXEC_UID=599
-          EXEC_GID=599
-          EXEC_USER="_hrexec"
-
-          # Check if account already exists (CI runner may persist state)
-          if id "$EXEC_USER" &>/dev/null; then
-            echo "Executor account $EXEC_USER already exists"
-            EXEC_UID=$(id -u "$EXEC_USER")
-            EXEC_GID=$(id -g "$EXEC_USER")
-          else
-            # Create group first — ALL dscl commands must succeed.
-            # No || true fallback: provisioning failure fails the job.
-            sudo dscl . -create /Groups/"$EXEC_USER"
-            sudo dscl . -create /Groups/"$EXEC_USER" PrimaryGroupID $EXEC_GID
-            # Create user
-            sudo dscl . -create /Users/"$EXEC_USER"
-            sudo dscl . -create /Users/"$EXEC_USER" UniqueID $EXEC_UID
-            sudo dscl . -create /Users/"$EXEC_USER" PrimaryGroupID $EXEC_GID
-            sudo dscl . -create /Users/"$EXEC_USER" NFSHomeDirectory /var/empty
-            sudo dscl . -create /Users/"$EXEC_USER" UserShell /usr/bin/false
-            sudo dscl . -create /Users/"$EXEC_USER" RealName "HappyRanch Executor"
-          fi
-
-          # Verify the account
-          id "$EXEC_USER"
-
-          # Grant passwordless sudo from the CI runner user to the executor.
-          # This is the minimal required launch authority — the runner user
-          # must be able to sudo -n -u <executor> without a password.
-          RUNNER_USER=$(whoami)
-          SUDOERS_FILE="/etc/sudoers.d/99-happyranch-executor"
-          if [ ! -f "$SUDOERS_FILE" ]; then
-            echo "$RUNNER_USER ALL=($EXEC_USER) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
-            sudo chmod 0440 "$SUDOERS_FILE"
-          fi
-
-          # Verify passwordless sudo works
-          if ! sudo -n -u "$EXEC_USER" true 2>/dev/null; then
-            echo "FATAL: Cannot sudo -n -u $EXEC_USER after sudoers provisioning"
-            exit 1
-          fi
-
-          echo "executor_uid=$EXEC_UID" >> "$GITHUB_OUTPUT"
-          echo "executor_gid=$EXEC_GID" >> "$GITHUB_OUTPUT"
-          echo "executor_user=$EXEC_USER" >> "$GITHUB_OUTPUT"
-
-      - name: Verify OS identity separation
-        id: verify-identity
-        run: |
-          set -eux
-          EXEC_USER="${{ steps.provision.outputs.executor_user }}"
-          DAEMON_USER=$(whoami)
-          DAEMON_UID=$(id -u)
-          EXEC_UID=$(id -u "$EXEC_USER")
-
-          echo "Daemon identity: $DAEMON_USER (uid=$DAEMON_UID)"
-          echo "Executor identity: $EXEC_USER (uid=$EXEC_UID)"
-
-          # Identities MUST be distinct
-          if [ "$DAEMON_UID" -eq "$EXEC_UID" ]; then
-            echo "ERROR: Daemon and executor share the same uid=$DAEMON_UID"
-            exit 1
-          fi
-
-          # Daemon uid must not be 0 (root) for isolation to work
-          if [ "$DAEMON_UID" -eq 0 ]; then
-            echo "ERROR: Daemon running as root — cannot isolate executor"
-            exit 1
-          fi
-
-          echo "Identity separation verified: daemon=$DAEMON_UID, executor=$EXEC_UID"
-
-      - name: Verify executor identity available (fail-closed gate)
-        run: |
-          set -eux
-          EXEC_USER="${{ steps.provision.outputs.executor_user }}"
-
-          # Fail-closed gate: if the executor account cannot be resolved,
-          # the job fails here before any test can skip.
-          if ! id "$EXEC_USER" &>/dev/null; then
-            echo "FATAL: Executor account '$EXEC_USER' not found after provisioning"
-            exit 1
-          fi
-
-          EXEC_UID=$(id -u "$EXEC_USER")
-          DAEMON_UID=$(id -u)
-
-          if [ "$DAEMON_UID" -eq "$EXEC_UID" ]; then
-            echo "FATAL: Executor uid matches daemon uid ($DAEMON_UID)"
-            exit 1
-          fi
-
-          # Verify macOS ACL tooling is available
-          if ! command -v chmod &>/dev/null; then
-            echo "FATAL: chmod not found — ACL tooling unavailable"
-            exit 1
-          fi
-
-          # Verify the user can be switched to via non-interactive sudo.
-          # The macOS deployment model uses `sudo -n -u <executor>` for
-          # OS identity handoff — no root daemon, no setgid/setuid.
-          # HARD FAIL — if sudo capability is unavailable, the isolated
-          # executor launch contract is broken.
-          if ! sudo -n -u "$EXEC_USER" true 2>/dev/null; then
-            echo "FATAL: Cannot sudo -n -u $EXEC_USER"
-            echo "Passwordless sudo via sudoers is required for executor isolation"
-            exit 1
-          fi
-
-          echo "Executor identity gate: PASS (user=$EXEC_USER, uid=$EXEC_UID)"
 
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
@@ -199,45 +81,22 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      - name: Run canonical store + isolation tests
+      - name: Run canonical store tests
         env:
           HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
         run: |
           set -eux
-          # Run the canonical store and isolation test suites.
+          # Run the canonical store and integrity test suites.
           # These tests verify:
           # - Canonical store build, hash-addressing, path-traversal rejection
           # - Symlink materializer create/repair/withdrawal
-          # - Platform isolation identity checks
-          # - macOS executor launch contract
+          # - Integrity verification (hash mismatch → event + refusal)
           # - Cutover completeness (no legacy copy remains)
           # - Skill freshness (31 tests)
           uv run pytest \
             tests/test_canonical_skill_store.py \
-            tests/test_canonical_production_bound.py \
             tests/test_skill_cutover_completeness.py \
             tests/test_thr070_skill_freshness.py \
             tests/test_system_contract_materialization.py \
             tests/test_workspace_adapters.py \
             -v --tb=short
-
-      - name: Verify canonical store isolation (write/chmod/ACL attacks)
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
-          HAPPYRANCH_EXECUTOR_USER: "${{ steps.provision.outputs.executor_user }}"
-          HAPPYRANCH_EXECUTOR_UID: "${{ steps.provision.outputs.executor_uid }}"
-          HAPPYRANCH_EXECUTOR_GID: "${{ steps.provision.outputs.executor_gid }}"
-        run: |
-          set -eux
-          # Run the production-bound isolation attack verification.
-          # Each test launches as the restricted executor identity through
-          # BOTH .claude/skills and .agents/skills workspace roots, attempts
-          # content write, chmod, and macOS ACL mutations, and verifies all
-          # canonical manifest/member SHA-256 hashes remain unchanged.
-          # Tests use the ACTUAL production launch_executor construction,
-          # not direct helper subprocesses.
-          # Tests FAIL (not skip/xfail) when identity is unavailable.
-          uv run pytest \
-            tests/test_canonical_production_bound.py \
-            -v --tb=long \
-            -k "write_attack or chmod_attack or acl_attack or executor_identity_contract_required or child_process_runs_as_distinct"

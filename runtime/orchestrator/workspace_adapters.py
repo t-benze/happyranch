@@ -1832,26 +1832,25 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     canonical skill store. This section directs agents NOT to edit these
     managed links and to use the lifecycle/proposal workflow instead.
 
-    **IMPORTANT:** This is operational guidance, NOT enforcement. On
-    deployments running in same-owner mode
-    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``, see
-    ``runtime/platform/isolation.py``) there is NO security boundary —
-    the executor runs under the daemon's own OS identity and CAN write
-    through these symlinks. The daemon performs best-effort integrity
-    verification before each launch to detect and recover from accidental
-    corruption, but this is NOT an attacker-independent security guarantee.
+    **IMPORTANT:** This is operational guidance, NOT enforcement. The
+    executor runs under the daemon's own OS identity and CAN write
+    through these symlinks — there is NO OS-level isolation. The same
+    UID may mutate, race validation, and affect active/overlapping
+    sessions. The daemon performs best-effort integrity verification
+    before each launch to detect accidental corruption, but this is
+    NOT an attacker-independent security guarantee.
     """
     return [
         "## Skills Directory (do not edit)\n",
         f"`{skills_dir}/` is materialized by the daemon from the canonical",
         "skill store. DO NOT author, edit, move, or delete anything under",
         "it, even if a task seems to call for it. Treat it as read-only.\n",
-        "**Same-owner mode:** if ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``",
-        "is set on this deployment, the filesystem CAN be written through",
-        "these symlinks — there is no OS-enforced security boundary.",
-        "The daemon performs best-effort integrity checks before each",
-        "launch to detect and recover from accidental corruption, but",
-        "this is NOT a guarantee. Do not rely on it as a security control.\n",
+        "The executor runs under the daemon's own OS identity — the",
+        "filesystem CAN be written through these symlinks. There is NO",
+        "OS-enforced security boundary. The daemon performs best-effort",
+        "integrity checks before each launch to detect and recover from",
+        "accidental corruption, but this is NOT a guarantee. Do not rely",
+        "on it as a security control.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",

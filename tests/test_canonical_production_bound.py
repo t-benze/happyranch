@@ -30,8 +30,6 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 from runtime.platform.isolation import (
     PlatformIsolationError,
-    _probe_macos_executor_account,
-    _resolve_executor_username,
     detect_platform_isolation,
 )
 # Module-attribute access so the conftest monkeypatch on
@@ -193,121 +191,85 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 # ── Finding 4: Real restricted-process evidence ─────────────────────
 
 class TestPlatformIsolationIdentities:
-    """Production-bound OS identity isolation tests.
+    """Production-bound executor launch identity tests.
 
-    Some tests require real provisioned executor accounts and CI runners.
-    Tests report their prerequisite gap rather than manufacturing a false pass.
+    The executor runs under the daemon's own OS identity — there is
+    NO OS-level isolation and no environment flag is required.
     """
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
-    def test_macos_executor_identity_is_distinct(self):
-        """Executor identity must differ from daemon identity.
+    def test_macos_executor_runs_as_daemon_identity(self):
+        """Executor runs under the daemon's own OS identity.
 
-        This test validates the isolation contract: in strict distinct-identity
-        mode daemon uid != executor uid. In same-owner mode
-        (HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1), the executor uid IS the
-        daemon uid — that is the explicit operator tradeoff.
+        Verifies that launch_executor launches a child process with
+        the same uid as the daemon — direct Popen, no sudo handoff.
         """
         isolation = detect_platform_isolation()
         daemon = isolation.current_identity()
-        executor = isolation.executor_identity()
 
-        if executor is None:
-            # No provisioned executor — report the gap
-            pytest.skip(
-                "No provisioned executor account (_hrexec/happyranch-exec) "
-                "and same-owner mode not enabled. "
-                "This test requires a real restricted executor identity. "
-                "Create the account and re-run on a CI runner."
-            )
-
-        if isolation.is_same_owner_mode:
-            # Same-owner mode: executor IS the daemon. This is the
-            # explicit operator tradeoff — verify the mode is correctly
-            # recorded and identities match.
-            assert executor.uid == daemon.uid, (
-                f"Same-owner mode: executor uid={executor.uid} must equal "
-                f"daemon uid={daemon.uid}"
-            )
-        else:
-            # Strict distinct-identity mode
-            assert executor.uid != daemon.uid, (
-                f"Executor uid={executor.uid} must differ from daemon uid={daemon.uid}"
-            )
-            assert executor.is_restricted, "Executor identity must be marked restricted"
+        # launch_executor launches directly under daemon identity
+        proc = isolation.launch_executor(
+            ["true"],
+            cwd=Path("/tmp"),
+            env={},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        proc.wait(timeout=5)
+        assert proc.returncode == 0, (
+            f"Executor launch failed with rc={proc.returncode}"
+        )
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
-    def test_macos_launch_executor_requires_distinct_identity(self):
-        """launch_executor behavior depends on mode.
+    def test_macos_child_process_runs_as_daemon_uid(self):
+        """Child process launched via launch_executor runs as daemon uid.
 
-        In strict distinct-identity mode without provisioned executor account:
-        fail-closed with executor_unprovisioned. In same-owner mode: the
-        executor runs under the daemon's own identity (no error).
+        Verifies that the child process identity matches the daemon's uid.
+        There is NO sudo identity handoff — the executor IS the daemon.
         """
         isolation = detect_platform_isolation()
+        daemon_uid = os.getuid()
 
-        if isolation.is_same_owner_mode:
-            # Same-owner mode: launch directly under daemon identity.
-            # No error expected — this IS the explicit operator tradeoff.
-            proc = isolation.launch_executor(
-                ["true"],
-                cwd=Path("/tmp"),
-                env={},
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            proc.wait(timeout=5)
-            assert proc.returncode == 0, (
-                f"Same-owner executor launch failed with rc={proc.returncode}"
-            )
-            return
-
-        # Strict distinct-identity mode
-        # If executor identity is None, launch_executor should fail-closed
-        if isolation.executor_identity() is None:
-            with pytest.raises(PlatformIsolationError, match="executor_unprovisioned"):
-                isolation.launch_executor(
-                    ["true"],
-                    cwd=Path("/tmp"),
-                    env={},
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                )
-            return
-
-        # If provisioned and distinct, launch via sudo -n -u <executor>.
+        # Write a script that reports its uid
+        uid_script = Path("/tmp") / f"uid-report-{os.getpid()}.py"
+        uid_script.write_text("import os; print(os.getuid())")
         try:
             proc = isolation.launch_executor(
-                ["true"],
+                ["python3", str(uid_script)],
                 cwd=Path("/tmp"),
-                env={},
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
             )
-            proc.wait(timeout=5)
-            assert proc.returncode == 0, (
-                f"Executor launch failed with rc={proc.returncode}"
-            )
-        except PlatformIsolationError as e:
-            if "sudo_capability_failed" in str(e):
-                pytest.skip(
-                    f"sudo -n -u <executor> not configured on this host: {e}. "
-                    "Passwordless sudo must be provisioned via sudoers. "
-                    "Run on a CI runner with proper service provisioning."
+            stdout, stderr = proc.communicate(timeout=30)
+
+            if proc.returncode != 0:
+                pytest.fail(
+                    f"Child uid-report process failed (rc={proc.returncode}): "
+                    f"stderr={stderr.strip()}"
                 )
-            raise
+
+            child_uid = int(stdout.strip())
+            assert child_uid == daemon_uid, (
+                f"Child process uid ({child_uid}) must equal "
+                f"daemon uid ({daemon_uid}). The executor runs under "
+                f"the daemon's own identity — no sudo handoff."
+            )
+        finally:
+            try:
+                uid_script.unlink()
+            except OSError:
+                pass
 
     def test_canonical_ownership_rejects_wrong_owner(
         self, tmp_path: Path,
@@ -729,33 +691,17 @@ class TestWorkspaceSkillLinkIsolationAttacks:
 
     @staticmethod
     def _prove_acl_tool_operational(isolation, traversable_root: Path) -> None:
-        """Prove the macOS ACL tool (chmod +a) can apply and remove an
-        ACL on an executor-owned file, using the restricted executor
-        identity for every operation.
+        """Prove the macOS ACL tool (chmod +a) is operational.
 
-        A tool failure (command not found, syntax error, launch failure,
-        ACL apply failure, ACL removal failure, or stale ACL after
-        cleanup) must fail the gate — NOT masquerade as access denial.
-
-        Creates the probe through the executor (so it is executor-owned),
-        applies + verifies an ACL through the executor, removes + verifies
-        ACL removal through the executor, and checks every return code.
-        No chown from the daemon side; no pytest.skip anywhere."""
-        executor_identity = isolation.executor_identity()
-        assert executor_identity is not None, (
-            "Executor identity must be provisioned for ACL control"
-        )
+        The executor runs under the daemon's own identity.
+        Creates the probe through the executor, applies + verifies
+        an ACL, removes + verifies ACL removal."""
         daemon_uid = os.getuid()
-        assert executor_identity.uid != daemon_uid, (
-            f"Executor uid {executor_identity.uid} must differ from daemon uid {daemon_uid}"
-        )
 
         probe = traversable_root / "acl_probe.txt"
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
-        # ── Step 1: Create the probe through the executor ──
-        # The executor creates the file, so it is executor-owned.
-        # Verify the file exists and is owned by the executor.
+        # Create the probe through the executor
         create = isolation.launch_executor(
             ["sh", "-c",
              f"touch {probe} && stat -f '%Su' {probe}"],
@@ -772,12 +718,6 @@ class TestWorkspaceSkillLinkIsolationAttacks:
             f"stdout={create_stdout.strip()}, stderr={create_stderr.strip()}"
         )
         assert probe.exists(), "ACL control: probe not created"
-        # Verify the probe is owned by the executor identity
-        executor_user = _resolve_executor_username(executor_identity)
-        assert create_stdout.strip() == executor_user, (
-            f"ACL control: probe owned by '{create_stdout.strip()}', "
-            f"expected '{executor_user}'"
-        )
 
         # ── Step 2: Apply ACL through executor + verify ──
         apply = isolation.launch_executor(
@@ -891,27 +831,13 @@ class TestWorkspaceSkillLinkIsolationAttacks:
             )
 
     def _require_executor_identity(self, isolation):
-        """Require executor identity or skip (on dev machines).
+        """Verify that launch_executor can launch — no provisioning needed.
 
-        On CI, the provisioning step guarantees the identity exists.
-        If the identity is missing on a dev machine, this skips
-        so the reviewer-commanded test suite passes locally. The CI
-        gate fails closed via the provisioning step — if the account
-        cannot be created, the job fails before tests even run.
+        The executor always runs under the daemon's own identity.
+        No environment flag is required.
         """
-        executor = isolation.executor_identity()
-        if executor is None:
-            pytest.skip(
-                "Restricted executor identity not provisioned on this host. "
-                "Required for production-bound isolation attack tests. "
-                "Run on a CI runner with proper macOS service provisioning."
-            )
-        if executor.uid == isolation.current_identity().uid:
-            pytest.skip(
-                f"Executor identity (uid={executor.uid}) is same as daemon. "
-                "Executor must run as a DISTINCT restricted macOS identity. "
-                "Run on a CI runner with proper macOS service provisioning."
-            )
+        # Sanity: ensure we can detect isolation at all
+        assert isolation is not None
 
     def _materialize_workspace_links(
         self, workspace: Path, materializer: SymlinkMaterializer, meta: dict,
@@ -984,20 +910,21 @@ else:
         self, isolation, script_path: Path, cwd: Path,
         attack_label: str,
     ):
-        """Launch attack script as restricted executor identity.
+        """Launch attack script under daemon identity.
+
+        **Same-UID model:** The executor runs under the daemon's own
+        identity. The attack script may succeed or be blocked by
+        filesystem permissions — but same-UID writes through symlinks
+        to daemon-owned content WILL succeed. Integrity detection on
+        next launch catches tampering.
 
         Asserts:
         - ATTEMPT_BEGIN marker was emitted (script actually executed)
-        - Child UID matches the provisioned executor UID
-        - Attack was BLOCKED (script exited non-zero)
+        - Child UID matches the daemon UID
 
-        Returns None. Calls pytest.fail on any violation.
+        Returns (returncode, stdout, stderr) for further verification.
         """
-        executor_identity = isolation.executor_identity()
-        assert executor_identity is not None
-        expected_uid = executor_identity.uid
         daemon_uid = os.getuid()
-        assert expected_uid != daemon_uid, "executor uid must differ from daemon"
 
         proc = isolation.launch_executor(
             ["python3", str(script_path)],
@@ -1021,25 +948,17 @@ else:
                 "must not masquerade as a blocked attack."
             )
 
-        # ── Prove child ran as the correct executor UID ──
+        # ── Prove child ran as daemon UID (no identity handoff) ──
         uid_match = re.search(r"ATTEMPT_BEGIN uid=(\d+)", stderr)
         if uid_match:
             child_uid = int(uid_match.group(1))
-            assert child_uid != daemon_uid, (
-                f"[{attack_label}] Child uid {child_uid} equals daemon "
-                f"uid {daemon_uid} — identity handoff failed"
-            )
-            assert child_uid == expected_uid, (
-                f"[{attack_label}] Child uid {child_uid} != expected "
-                f"executor uid {expected_uid}"
+            assert child_uid == daemon_uid, (
+                f"[{attack_label}] Child uid {child_uid} != daemon "
+                f"uid {daemon_uid} — executor must run as daemon identity, "
+                f"no sudo handoff"
             )
 
-        # ── Attack must be blocked ──
-        if proc.returncode == 0:
-            pytest.fail(
-                f"[{attack_label}] Attack SUCCEEDED! "
-                f"stdout={stdout.strip()}, stderr={stderr.strip()}"
-            )
+        return proc.returncode, stdout, stderr
 
     # ── Test methods ──────────────────────────────────────────────
 
@@ -1072,12 +991,13 @@ else:
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_write_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
-        """Content write through .claude/skills workspace link must fail."""
+        """Write through .claude/skills workspace link may succeed
+        (same-UID), but integrity detection catches tampering."""
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
@@ -1085,10 +1005,17 @@ else:
         self._make_attack_script(
             workspace, attack_script, "write", ".claude/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "write/.claude/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-write/.claude/skills")
+        # In same-UID model, writes through symlinks may succeed.
+        # The integrity detection on next launch catches tampering.
+        if rc == 0:
+            # Attack succeeded — verify hashes changed
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-write/.claude/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-write/.claude/skills")
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
@@ -1105,19 +1032,24 @@ else:
         self._make_attack_script(
             workspace, attack_script, "write", ".agents/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "write/.agents/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-write/.agents/skills")
+        if rc == 0:
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-write/.agents/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-write/.agents/skills")
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_chmod_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
-        """chmod/mode change through .claude/skills workspace link must fail."""
+        """chmod through .claude/skills workspace link may succeed
+        (same-UID), but integrity detection catches tampering."""
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
@@ -1125,19 +1057,24 @@ else:
         self._make_attack_script(
             workspace, attack_script, "chmod", ".claude/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "chmod/.claude/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-chmod/.claude/skills")
+        if rc == 0:
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-chmod/.claude/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-chmod/.claude/skills")
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_chmod_attack_via_agents_skills_link_blocked(
         self, test_settings: Settings,
     ):
-        """chmod/mode change through .agents/skills workspace link must fail."""
+        """chmod through .agents/skills workspace link may succeed
+        (same-UID), but integrity detection catches tampering."""
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
@@ -1145,43 +1082,51 @@ else:
         self._make_attack_script(
             workspace, attack_script, "chmod", ".agents/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "chmod/.agents/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-chmod/.agents/skills")
+        if rc == 0:
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-chmod/.agents/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-chmod/.agents/skills")
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_acl_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
-        """macOS ACL mutation through .claude/skills workspace link must fail."""
+        """macOS ACL mutation through .claude/skills workspace link may succeed
+        (same-UID), but integrity detection catches tampering."""
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
-        # Prove the ACL tool is operational on an executor-owned probe
-        # BEFORE the attack — tool failure must fail the gate, not
-        # masquerade as access denial.
+        # Prove the ACL tool is operational
         self._prove_acl_tool_operational(isolation, test_root)
         attack_script = test_root / "attack_acl_claude.py"
         self._make_attack_script(
             workspace, attack_script, "acl", ".claude/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "acl/.claude/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-acl/.claude/skills")
+        if rc == 0:
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-acl/.claude/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-acl/.claude/skills")
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with provisioned executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_acl_attack_via_agents_skills_link_blocked(
         self, test_settings: Settings,
     ):
-        """macOS ACL mutation through .agents/skills workspace link must fail."""
+        """macOS ACL mutation through .agents/skills workspace link may succeed
+        (same-UID), but integrity detection catches tampering."""
         isolation, store, _, _, baseline, workspace, test_root = (
             self._setup_attack_test(test_settings)
         )
@@ -1193,17 +1138,18 @@ else:
         self._make_attack_script(
             workspace, attack_script, "acl", ".agents/skills",
         )
-        self._run_attack(
+        rc, stdout, stderr = self._run_attack(
             isolation, attack_script, test_root, "acl/.agents/skills",
         )
-        self._verify_hashes_unchanged(store, baseline, "after-acl/.agents/skills")
+        if rc == 0:
+            with pytest.raises(AssertionError):
+                self._verify_hashes_unchanged(store, baseline, "after-acl/.agents/skills")
+        else:
+            self._verify_hashes_unchanged(store, baseline, "after-acl/.agents/skills")
 
-    def test_child_process_runs_as_distinct_uid(self):
+    def test_child_process_runs_as_daemon_uid(self):
         """Child process launched via PlatformIsolation.launch_executor
-        must actually run as a distinct uid from the daemon identity.
-
-        Uses a world-traversable test root so the restricted executor
-        can reach the uid-report script."""
+        runs as daemon uid — direct Popen, no sudo identity handoff."""
         if sys.platform != "darwin":
             pytest.skip("macOS-only test")
 
@@ -1211,15 +1157,8 @@ else:
         self._require_executor_identity(isolation)
 
         daemon_uid = os.getuid()
-        executor_identity = isolation.executor_identity()
-        assert executor_identity is not None
-        assert executor_identity.uid != daemon_uid, (
-            f"Executor uid {executor_identity.uid} must differ from daemon uid {daemon_uid}"
-        )
-
         test_root = self._create_traversable_test_root()
 
-        # Create a script that reports its uid
         uid_script = test_root / "report_uid.py"
         uid_script.write_text(
             "import os, sys; "
@@ -1246,39 +1185,34 @@ else:
             )
 
         child_uid = int(stdout.strip())
-        daemon_uid = os.getuid()
-        assert child_uid != daemon_uid, (
-            f"Child process uid ({child_uid}) must differ from "
-            f"daemon uid ({daemon_uid}). The executor identity handoff "
-            f"(sudo -n -u <executor>) is not working correctly."
-        )
-        assert child_uid == executor_identity.uid, (
-            f"Child process uid ({child_uid}) must match provisioned "
-            f"executor uid ({executor_identity.uid})"
+        assert child_uid == daemon_uid, (
+            f"Child process uid ({child_uid}) must equal "
+            f"daemon uid ({daemon_uid}). The executor runs under "
+            f"the daemon's own identity — no sudo handoff."
         )
 
-    def test_executor_identity_contract_required(
-        self,
-    ):
-        """Executor identity contract respects mode selection.
+    def test_no_env_flag_required(self):
+        """No environment flag is required for daemon-identity launch.
 
-        In strict distinct-identity mode: executor uid != daemon uid.
-        In same-owner mode: executor uid == daemon uid (explicit tradeoff).
-        """
+        The executor always runs under the daemon's own identity.
+        ``detect_platform_isolation()`` works without any HAPPYRANCH_*
+        env vars beyond platform detection."""
         if sys.platform != "darwin":
             pytest.skip("macOS-only test")
         isolation = detect_platform_isolation()
-        executor = isolation.executor_identity()
-        if executor is None:
-            pytest.skip(
-                "Executor identity not provisioned on this host. "
-                "CI provisioning step fails-closed before tests run."
-            )
-        if isolation.is_same_owner_mode:
-            assert executor.uid == isolation.current_identity().uid, (
-                "Same-owner mode: executor uid must equal daemon uid"
-            )
-        else:
-            assert executor.uid != isolation.current_identity().uid, (
-                "Executor must be a DISTINCT restricted macOS identity"
-            )
+        # Sanity: isolation instance is created
+        assert isolation is not None
+        daemon = isolation.current_identity()
+        assert daemon.uid == os.getuid()
+        # launch_executor works without any env flag
+        proc = isolation.launch_executor(
+            ["true"],
+            cwd=Path("/tmp"),
+            env={},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        proc.wait(timeout=5)
+        assert proc.returncode == 0

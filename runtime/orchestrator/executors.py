@@ -668,9 +668,9 @@ def _run_command(
         # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
         # the process mid-session. stdin=PIPE unconditionally — Codex reads its
         # prompt from stdin; Claude ignores it when nothing is written.
-        # Launch as restricted executor identity via platform isolation.
-        # Raises PlatformIsolationError if executor is unprovisioned,
-        # same-owner, or unsupported — fail-closed before any subprocess.
+        # Launch executor subprocess via platform isolation.
+        # Raises PlatformIsolationError on unsupported platform
+        # or subprocess failure — fail-closed before any subprocess.
         isolation = detect_platform_isolation()
         try:
             proc = isolation.launch_executor(

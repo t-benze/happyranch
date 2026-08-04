@@ -51,14 +51,9 @@ def _verify_recursive_readonly(
     """Recursively verify the package root and every file and directory
     under *pkg_path* is NOT group-writable or other-writable.
 
-    When *same_owner* is False (strict distinct-identity mode), owner-writable
-    is also rejected — every entry must be fully read-only.
-
     When *same_owner* is True, directories MAY be owner-writable (0755) because
     the daemon owner must retain write to create new packages in
-    subdirectories.  This matches the shipping macOS same-owner hardening
-    behavior (``make_dir_readonly_executor`` produces 0755 directories).
-    ALL files must still be non-writable regardless of mode.
+    subdirectories. ALL files must still be non-writable regardless of mode.
 
     An insufficiently hardened package (hardening failed after os.replace)
     will fail these checks.  This prevents is_built() from returning True
@@ -99,40 +94,20 @@ def _check_directory_writability(
 ) -> None:
     """Check a directory's writability bits.
 
-    In strict mode (same_owner=False): ALL write bits are forbidden.
-    In same-owner mode (same_owner=True): owner-writable is permitted
-    (matching the shipping 0755 hardening), but group/other-writable
-    is still rejected.
+    Directories may be owner-writable (0755) because the daemon
+    owner must retain write to create new packages in subdirectories.
+    Group-writable and other-writable are always rejected.
     """
-    if same_owner:
-        # Same-owner mode: directories may be owner-writable (0755 expected)
-        if mode & stat.S_IWGRP:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is group-writable: {path}",
-            )
-        if mode & stat.S_IWOTH:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is world-writable: {path}",
-            )
-    else:
-        # Strict distinct-identity mode: NO write bits anywhere
-        if mode & stat.S_IWUSR:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is owner-writable: {path}",
-            )
-        if mode & stat.S_IWGRP:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is group-writable: {path}",
-            )
-        if mode & stat.S_IWOTH:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is world-writable: {path}",
-            )
+    if mode & stat.S_IWGRP:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"{label} is group-writable: {path}",
+        )
+    if mode & stat.S_IWOTH:
+        raise CanonicalStoreError(
+            "insufficient_hardening",
+            f"{label} is world-writable: {path}",
+        )
 
 
 def _check_file_writability(path: Path, mode: int) -> None:
@@ -426,11 +401,9 @@ class CanonicalSkillStore:
         """Check if a canonical package is already built and valid.
 
         Validates ownership at the root, non-emptiness, AND recursively
-        verifies that hardening has been applied. In strict distinct-identity
-        mode every file and directory must be fully non-writable. In
-        same-owner mode directories at 0755 (owner-writable) are permitted
-        — matching the shipping macOS same-owner hardening behavior — but
-        group/other-writable entries are still rejected.
+        verifies that hardening has been applied. Directories at 0755
+        (owner-writable) are permitted, but group/other-writable entries
+        are rejected.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -442,12 +415,11 @@ class CanonicalSkillStore:
             return False
         if not any(pkg_path.iterdir()):
             return False
-        # Recursively verify hardening. Strict mode rejects all write bits;
-        # same-owner mode permits owner-writable directories (0755) but
-        # rejects group/other writability and all writability on files.
+        # Recursively verify hardening. Permits owner-writable
+        # directories (0755) but rejects group/other writability
+        # and all writability on files.
         try:
-            same_owner = self._isolation.is_same_owner_mode
-            _verify_recursive_readonly(pkg_path, same_owner=same_owner)
+            _verify_recursive_readonly(pkg_path, same_owner=True)
         except CanonicalStoreError:
             return False
         return True
@@ -834,8 +806,7 @@ class CanonicalSkillStore:
         # Enforce the full immutable invariant at the materialization gate.
         # A package whose hardening failed after os.replace must never be
         # materialized into a workspace link.
-        same_owner = self._isolation.is_same_owner_mode
-        _verify_recursive_readonly(pkg_path, same_owner=same_owner)
+        _verify_recursive_readonly(pkg_path, same_owner=True)
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).

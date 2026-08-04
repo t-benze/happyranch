@@ -59,13 +59,6 @@ def _test_mode_platform_isolation(monkeypatch):
         def __init__(self) -> None:
             self._daemon_uid = os.getuid()
             self._daemon_gid = os.getgid()
-            # In test mode, executor IS the daemon (same user running tests)
-            self._executor_identity = PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=False,
-                is_restricted=True,  # Treat as restricted for contract conformance
-            )
 
         def current_identity(self) -> PlatformIdentity:
             return PlatformIdentity(
@@ -74,18 +67,6 @@ def _test_mode_platform_isolation(monkeypatch):
                 is_service=True,
                 is_restricted=False,
             )
-
-        def executor_identity(self):
-            return self._executor_identity
-
-        @property
-        def is_same_owner_mode(self) -> bool:
-            # Test mode IS same-owner (executor runs as the same user)
-            return True
-
-        def _assert_executor_distinct(self) -> None:
-            # Test mode: allow same-owner launches
-            pass
 
         def provision_canonical_store(self, path: Path) -> None:
             path.mkdir(parents=True, exist_ok=True)
@@ -225,23 +206,6 @@ def _test_mode_platform_isolation(monkeypatch):
     )
     yield
 
-
-@pytest.fixture
-def same_owner_mode():
-    """Fixture: request same-owner test isolation for this test.
-
-    Use this ON tests that need same-owner mode:
-    - Adversarial prelaunch integrity tests (mutation detection)
-    - Mutation feasibility proofs (technical possibility of chmod+write)
-    - Specific canonical store tests that exercise same-owner code paths
-
-    Without this fixture, the default test isolation models distinct-
-    identity, matching production behavior for provisioned deployments.
-    """
-    # In the merged test framework, same-owner is the default test mode
-    # (the test process IS both daemon and executor). This fixture exists
-    # as a documented marker the test explicitly requests.
-    yield
 
 
 @pytest.fixture
