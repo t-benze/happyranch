@@ -11,7 +11,7 @@
  */
 import { mkdir, readdir, readFile, writeFile, copyFile, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -112,7 +112,7 @@ async function main() {
   await exec(`touch -t ${touchTime(mtimeEpoch)} "${manifestPath}"`);
 
   // Build deterministic tar.gz: sorted names, fixed mtime, no gzip filename/timestamp.
-  const archivePath = join(OUT, archiveName);
+  const archivePath = resolve(OUT, archiveName);
   const sortedNames = [...files, 'MANIFEST.json'].sort().map((n) => `"${n}"`).join(' ');
   await exec(
     `cd "${staging}" && tar -cf - ${sortedNames} | gzip -n > "${archivePath}"`,
