@@ -1,12 +1,14 @@
 # Orchestrator: Routing, Permissions & State
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** The skill materialization model
-> described in §4.6–§4.10 has been superseded by the **immutable canonical skill
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4195):** The skill materialization model
+> described in §4.6–§4.10 has been superseded by the **canonical skill
 > store + workspace symlink architecture**. The legacy wholesale-copy model
 > (``_WHOLESALE_DUMP_ENABLED``, ``_copy_skills_tree``, ``refresh_session_skills``,
 > direct copy/injection helpers) is REMOVED as an executable path. See
 > ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
-> for the current canonical model. All skill delivery now routes through
+> for the current canonical model including same-owner opt-in mode
+> (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``) and pre-launch integrity
+> validation. All skill delivery now routes through
 > ``materialize_workspace_skills``, which creates validated relative symlinks to
 > daemon-owned immutable hash-addressed canonical packages. **macOS (darwin) only**;
 > Linux and Windows fail closed. The legacy sections below are preserved for

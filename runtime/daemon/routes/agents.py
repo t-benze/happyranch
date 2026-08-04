@@ -46,6 +46,7 @@ from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
     _workspace_skills_transaction,
     materialize_workspace_skills,
+    validate_workspace_skills_integrity,
 )
 
 router = APIRouter(dependencies=[require_token()])

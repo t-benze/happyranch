@@ -609,6 +609,7 @@ def _run_command(
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
+    pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
@@ -625,6 +626,13 @@ def _run_command(
 
     def _launch() -> ExecutorResult:
         start_time = time.monotonic()
+        # ── Pre-launch integrity validation ──────────────────────────
+        # Caller-provided validator runs BEFORE every Popen attempt,
+        # including throttle retries after rate-limited responses.
+        # Any exception here prevents the executor subprocess from
+        # launching — fail-closed.
+        if pre_launch_validator is not None:
+            pre_launch_validator()
         # Popen (not subprocess.run) because the daemon needs the pid handed to
         # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
         # the process mid-session. stdin=PIPE unconditionally — Codex reads its
@@ -863,6 +871,7 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
@@ -895,6 +904,7 @@ class ClaudeExecutor:
             provider="claude",
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
+            pre_launch_validator=pre_launch_validator,
         org_slug=org_slug,
         )
 
@@ -968,6 +978,7 @@ class CodexExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
@@ -982,6 +993,7 @@ class CodexExecutor:
             usage_parser=_parse_codex_usage,
             provider="codex",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
         org_slug=org_slug,
         )
 
@@ -1060,6 +1072,7 @@ class OpencodeExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
@@ -1078,6 +1091,7 @@ class OpencodeExecutor:
             usage_parser=_parse_opencode_usage,
             provider="opencode",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
         org_slug=org_slug,
         )
 
@@ -1146,6 +1160,7 @@ class PiExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
@@ -1159,6 +1174,7 @@ class PiExecutor:
             usage_parser=_parse_pi_usage,
             provider="pi",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
         org_slug=org_slug,
         )
 
@@ -1218,6 +1234,7 @@ class GenericCliExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         # model is accepted for signature parity but not used — custom
@@ -1253,6 +1270,7 @@ class GenericCliExecutor:
             provider=self._provider,
             on_throttle_event=on_throttle_event,
             strict_envelope_validator=strict_validator,
+            pre_launch_validator=pre_launch_validator,
         org_slug=org_slug,
         )
 
@@ -1348,6 +1366,7 @@ class CustomAdapterExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
@@ -1432,6 +1451,10 @@ class CustomAdapterExecutor:
 
         def _launch() -> ExecutorResult:
             start_time = time.monotonic()
+
+            # ── Pre-launch integrity validation ────────────────────────
+            if pre_launch_validator is not None:
+                pre_launch_validator()
 
             # ── D7B: Verify executable integrity at EVERY actual launch attempt ──
             # This MUST be inside _launch, not pre-throttle: ProviderThrottle

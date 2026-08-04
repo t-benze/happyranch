@@ -34,6 +34,8 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
+    validate_workspace_skills_integrity,
+    WorkspaceIntegrityError,
     SystemContractMaterializationError,
 )
 
@@ -561,7 +563,7 @@ async def run_invocation(
     # pass as complete (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        materialize_workspace_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
             context="thread",
@@ -571,6 +573,15 @@ async def run_invocation(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+        )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=inv.agent_name,
+            task_id=inv.thread_id,
         )
     except (SystemContractMaterializationError, Exception) as e:
         decline_reason = str(e)
@@ -659,10 +670,19 @@ async def run_invocation(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None):
+            def _pre_launch_validator():
+                validate_workspace_skills_integrity(
+                    workspace, expected_specs,
+                    settings=settings,
+                    db=org_state.db,
+                    agent_name=inv.agent_name,
+                    task_id=inv.thread_id,
+                )
             run_kwargs = dict(
                 workspace=Path(workspace), prompt=run_prompt,
                 session_id=None, timeout_seconds=timeout,
                 on_throttle_event=_on_throttle_event,
+                pre_launch_validator=_pre_launch_validator,
                 org_slug=org_state.slug,
             )
             if resume:

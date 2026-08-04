@@ -173,9 +173,9 @@ spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch)
 
 #### Canonical skill store + workspace symlinks (macOS-only)
 
-As of TASK-4009/TASK-4012, skill materialization uses a **daemon-owned immutable
+As of TASK-4009/TASK-4012/TASK-4195, skill materialization uses a **daemon-owned
 canonical skill store** outside executor workspaces. Skills are built once into
-hash-addressed read-only packages and workspace entries are **validated relative
+hash-addressed packages and workspace entries are **validated relative
 symlinks** to exact approved package versions under both `.claude/skills` and
 `.agents/skills` roots (including Codex, Opencode, Pi, and mapped custom profiles).
 
@@ -183,22 +183,49 @@ symlinks** to exact approved package versions under both `.claude/skills` and
 closed before launch/materialization with a named `PlatformIsolationError`.
 
 **Ownership and provenance:**
-- Canonical packages are daemon/materializer-owned, immutable, content-addressed
+- Canonical packages are daemon/materializer-owned, content-addressed
 trees from exact verified provenance/members for system, release-managed, and
 lifecycle version-pinned packages.
 - Owner/permission/ACL checks reject identity confusion and mutation.
-- Canonical targets are read-only (0444) after build; the executor cannot write,
-chmod, chown, or mutate canonical content through workspace symlinks.
+- Canonical targets are read-only (0444) after build.
 
-**Isolation contract (macOS):**
-- The daemon/materializer and executor MUST be distinct OS identities with
-different uid/gid.
-- Executor processes are launched via `sudo -n -u <executor>` identity handoff
-(non-root daemon model). Same-owner launch is REJECTED.
-- Canonical store ownership and permissions are verified before every launch.
-- Ordinary directories, malicious/broken/external/wrong-version links, unsafe
-targets, failed permission check, missing account, or repair errors fail closed
-and prevent launch. Never recursively delete or follow attacker nodes.
+**Isolation modes:**
+- **Distinct-identity (default):** The daemon/materializer and executor MUST be
+distinct OS identities with different uid/gid. Executor processes are launched
+via `sudo -n -u <executor>` identity handoff (non-root daemon model). Canonical
+store ownership and permissions are verified before every launch. Executors
+cannot write, chmod, chown, or mutate canonical content through workspace symlinks.
+
+- **Same-owner (opt-in):** When `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1` is
+set and no restricted executor account is provisioned, the executor runs under
+the daemon's own OS identity. This is an **explicit operator tradeoff** — it
+removes OS-level write barriers. A same-UID executor can mutate canonical targets
+through workspace links and can race checks; the injected 'do not edit'
+instruction is policy guidance only. This mode is NOT a preventive security
+boundary. Do not describe it as immutable-store isolation, daemon-owned
+isolation, protected trusted source, or OS-enforced restriction.
+
+**Pre-launch integrity validation (detective control):** At EVERY session
+start / EVERY actual executor launch attempt (including throttle retries),
+the runtime synchronously validates every resolved expected package and
+member hash against authoritative expected package/manifest data AND
+validates both workspace root (`.claude/skills` and `.agents/skills`) link
+targets. The gate is after final resolution and immediately before
+Popen/`executor.run` launch-capable action. On mismatch:
+- A durable `skill_validation_events` error row is written (source=`integrity_check`,
+  severity=`error`, ok=False).
+- Validation-event persistence failure also refuses the launch.
+- No executor Popen/run, no session-start success claim, and no auto-repair
+  from workspace/canonical/same-UID local sources.
+- Recovery is manual only: `happyranch set-executor <agent> --executor
+  <current-executor>` (re-materializes workspace links from canonical store),
+  then daemon restart if canonical store itself is corrupted.
+
+**Residual risk (same-owner mode):** A same-owner process can mutate canonical
+target bytes through the linked root between the integrity check and use
+(including already-active/overlapping sessions). The check is on-session-start,
+not continuous. Periodic scanning may be added only as supplemental detection
+and may never be the launch gate.
 
 **Link validation and repair:**
 - Materialized links are validated relative symlinks resolving inside the

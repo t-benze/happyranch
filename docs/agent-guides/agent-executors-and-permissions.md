@@ -1,11 +1,14 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
-> the **immutable canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. See
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4195):** Skill materialization now uses
+> the **canonical skill store + workspace symlink architecture**
+> (macOS-only) with two isolation modes: distinct-identity (default) and
+> same-owner opt-in (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``). The legacy
+> per-session copy model is REMOVED. See
 > ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
 > for ownership, provenance, link validation, repair/refusal/withdrawal/retention
-> semantics, macOS provisioning, and the compatibility-fallback boundary.
+> semantics, macOS provisioning, same-owner opt-in, pre-launch integrity validation,
+> and the compatibility-fallback boundary.
 > Linux and Windows are NOT supported — explicitly fail closed.
 
 # Agent Executors And Permissions

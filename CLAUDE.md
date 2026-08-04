@@ -19,11 +19,16 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 ## Architecture: Canonical Skill Store + Workspace Symlinks (macOS-only)
 
-Skill delivery uses an **immutable canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed.
+Skill delivery uses a **canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed.
 
 - **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
-- **Isolation:** Distinct daemon/materializer and restricted executor OS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate ACLs through workspace symlinks.
+- **Isolation modes:**
+  - **Distinct-identity (default):** Daemon/materializer and restricted executor run as distinct OS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate ACLs through workspace symlinks.
+  - **Same-owner (opt-in):** When `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1` is set and no restricted executor account is provisioned, the executor runs under the daemon's own OS identity. This is an **explicit operator tradeoff** — it removes OS-level write barriers. A same-UID executor can mutate canonical targets through workspace links. The integrity check at every session start (below) is a **detective** control, not a preventive security boundary.
 - **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/repair boundary before launch.
+- **Pre-launch integrity validation:** At EVERY session start / EVERY actual executor launch attempt (including throttle retries), the runtime synchronously validates every resolved expected package and member hash against authoritative expected package/manifest data and validates both workspace root (`.claude/skills` and `.agents/skills`) link targets. Mismatch → durable `skill_validation_events` error row + refuse launch. Validation-event persistence failure also refuses launch. No executor Popen/run, no session-start success claim, and no auto-repair from workspace/canonical/same-UID local sources.
+- **Recovery:** Manual only — `happyranch set-executor <agent> --executor <current-executor>` (re-materializes workspace links from canonical store), then daemon restart if canonical store itself is corrupted. Do not call the canonical source immutable under the same principal.
+- **Residual risk:** In same-owner mode, a same-owner process can mutate canonical target bytes through the linked root between the integrity check and use (including already-active/overlapping sessions). The check is on-session-start, not continuous.
 - **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
 - **Serving deployment** is independently verified after merge.
 

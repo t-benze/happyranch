@@ -22,6 +22,7 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
+    validate_workspace_skills_integrity,
     SystemContractMaterializationError,
 )
 
@@ -156,7 +157,7 @@ async def run_dream(
     # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        materialize_workspace_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
             context="dream",
@@ -166,6 +167,15 @@ async def run_dream(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+        )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=dream.agent_name,
+            task_id=dream_id,
         )
     except Exception as e:
         org_state.db.update_dream(
@@ -181,6 +191,16 @@ async def run_dream(
         return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
+    # ── Per-retry launch validator ───────────────────────────────
+    def _pre_launch_validator():
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=dream.agent_name,
+            task_id=dream_id,
+        )
 
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
@@ -211,6 +231,7 @@ async def run_dream(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,
     ))
 
