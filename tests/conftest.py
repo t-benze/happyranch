@@ -64,24 +64,7 @@ def _test_mode_platform_isolation(monkeypatch):
             return PlatformIdentity(
                 uid=self._daemon_uid,
                 gid=self._daemon_gid,
-                is_service=True,
-                is_restricted=False,
             )
-
-        def provision_canonical_store(self, path: Path) -> None:
-            path.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                         | stat.S_IROTH | stat.S_IXOTH)
-            except OSError:
-                pass
-
-        def verify_canonical_ownership(self, path: Path) -> None:
-            if not path.exists():
-                raise PlatformIsolationError(
-                    "canonical_missing",
-                    f"Canonical path does not exist: {path}",
-                )
 
         def create_relative_symlink(
             self, target: Path, link_path: Path,
@@ -135,16 +118,6 @@ def _test_mode_platform_isolation(monkeypatch):
                 return path.is_symlink()
             except OSError:
                 return False
-
-        def make_file_readonly(self, path: Path) -> None:
-            if path.exists():
-                os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-
-        def make_dir_readonly_executor(self, path: Path) -> None:
-            if path.exists() and path.is_dir():
-                os.chmod(path, stat.S_IRUSR | stat.S_IXUSR
-                         | stat.S_IRGRP | stat.S_IXGRP
-                         | stat.S_IROTH | stat.S_IXOTH)
 
         def launch_executor(
             self,

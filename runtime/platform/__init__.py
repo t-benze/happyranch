@@ -1,10 +1,9 @@
-"""Platform isolation primitives for macOS canonical store ownership.
+"""Platform isolation primitives for macOS.
 
 Provides macOS-only implementation for:
-- Service/daemon identity checks
-- Restricted executor identity provisioning
-- Filesystem ownership and permission enforcement
+- Daemon identity checks
 - Symlink creation and validation
+- Executor process launching under daemon identity
 
 Linux and Windows are NOT supported in this release — explicitly fail closed.
 """

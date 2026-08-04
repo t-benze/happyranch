@@ -271,34 +271,6 @@ class TestPlatformIsolationIdentities:
             except OSError:
                 pass
 
-    def test_canonical_ownership_rejects_wrong_owner(
-        self, tmp_path: Path,
-    ):
-        """verify_canonical_ownership raises if path owned by different user.
-
-        Creates a test directory, makes it owned by a different uid (if possible),
-        and verifies the check fails. macOS-only.
-        """
-        if sys.platform != "darwin":
-            pytest.skip("macOS-only test")
-        isolation = detect_platform_isolation()
-        test_dir = tmp_path / "test-owner"
-        test_dir.mkdir()
-
-        # On macOS, try to chown to a different user (nobody)
-        try:
-            import pwd
-            nobody = pwd.getpwnam("nobody")
-            os.chown(test_dir, nobody.pw_uid, nobody.pw_gid)
-            # Now verify_canonical_ownership should fail
-            with pytest.raises(PlatformIsolationError) as exc_info:
-                isolation.verify_canonical_ownership(test_dir)
-            assert "canonical_wrong_owner" in str(exc_info.value)
-        except (PermissionError, KeyError, OSError):
-            pytest.skip(
-                "Cannot chown test directory. Run on CI runner with "
-                "proper service account provisioning."
-            )
 
 
 # ── Finding 5: Cutover completeness ───────────────────────────────────

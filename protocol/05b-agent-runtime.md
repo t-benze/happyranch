@@ -223,11 +223,9 @@ recovery route validates against ArtifactStore, which may itself be
 corrupted if the same-UID executor previously tampered with it.
 
 **Ownership and provenance:**
-- Canonical packages are daemon/materializer-owned, content-addressed trees
-from exact verified provenance/members for system, release-managed, and
-lifecycle version-pinned packages.
-- The readonly hardening is cosmetic — the executor shares the daemon's uid
-and can chmod files back to writable. There is NO OS-level isolation.
+- Canonical packages are content-addressed trees from exact verified
+provenance/members for system, release-managed, and lifecycle
+version-pinned packages.
 
 **Integrity verification:**
 Before each executor launch and every retry, the daemon synchronously

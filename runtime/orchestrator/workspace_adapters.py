@@ -1827,18 +1827,19 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
 def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     """System-injected operational guidance: do not edit managed skill links.
 
-    Skill entries under *skills_dir* (``.claude/skills`` or
-    ``.agents/skills``, per executor) are daemon-materialized from the
-    canonical skill store. This section directs agents NOT to edit these
-    managed links and to use the lifecycle/proposal workflow instead.
+    Skill entries under ``.claude/skills`` and ``.agents/skills`` are
+    daemon-materialized from the canonical skill store. This section directs
+    agents NOT to edit these managed links and to use the lifecycle/proposal
+    workflow instead.
 
-    **IMPORTANT:** This is operational guidance, NOT enforcement. The
-    executor runs under the daemon's own OS identity and CAN write
-    through these symlinks — there is NO OS-level isolation. The same
-    UID may mutate, race validation, and affect active/overlapping
-    sessions. The daemon performs best-effort integrity verification
-    before each launch to detect accidental corruption, but this is
-    NOT an attacker-independent security guarantee.
+    **IMPORTANT:** This is managed guidance, NOT a technical security
+    boundary. The executor runs under the daemon's own OS identity and
+    CAN write through these symlinks — there is NO OS-level isolation.
+    The same UID may mutate, race validation, and affect
+    active/overlapping sessions. The daemon performs integrity
+    verification before each launch — a detected mismatch is recorded
+    as a durable integrity event and launch is refused, with no local
+    automatic recovery.
     """
     return [
         "## Skills Directory (do not edit)\n",
@@ -1846,11 +1847,11 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "skill store. DO NOT author, edit, move, or delete anything under",
         "it, even if a task seems to call for it. Treat it as read-only.\n",
         "The executor runs under the daemon's own OS identity — the",
-        "filesystem CAN be written through these symlinks. There is NO",
-        "OS-enforced security boundary. The daemon performs best-effort",
-        "integrity checks before each launch to detect and recover from",
-        "accidental corruption, but this is NOT a guarantee. Do not rely",
-        "on it as a security control.\n",
+        "filesystem CAN be written through these symlinks. These are",
+        "managed guidance, not a technical security boundary. The daemon",
+        "performs integrity verification before each launch — a detected",
+        "mismatch is recorded as a durable integrity event and launch is",
+        "refused, with no local automatic recovery.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",
