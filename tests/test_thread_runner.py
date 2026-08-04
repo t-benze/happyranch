@@ -984,7 +984,10 @@ class _ScriptedExec:
 @pytest.mark.asyncio
 async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monkeypatch):
     """rc==0 clean exit + unconsumed → exactly ONE re-invoke with nudge →
-    second pass consumes (CONSUMED) → session persisted, no auto-decline."""
+    second pass consumes (CONSUMED) → session persisted, no auto-decline.
+
+    Issue #568 regression: BOTH executor.run attempts (initial invocation +
+    nudge/reinvoke) receive the authoritative AgentDef.model value."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -999,6 +1002,14 @@ async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monk
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
+    # Authoritative AgentDef frontmatter with gpt-5.6-terra model.
+    agent_dir = tmp_path / "org" / "agents"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "alice.md").write_text(
+        "---\nname: alice\nteam: engineering\nrole: worker\n"
+        "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
+        "You are a test agent.\n"
+    )
 
     import runtime.daemon.thread_runner as runner_mod
 
@@ -1031,6 +1042,16 @@ async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monk
 
     # Exactly TWO invocations happened (first + one re-invoke).
     assert len(fake.calls) == 2, f"expected 2 invocations, got {len(fake.calls)}"
+
+    # ── Issue #568: BOTH calls must receive the authoritative model ─────
+    assert fake.calls[0].get("model") == "gpt-5.6-terra", (
+        f"initial invocation: expected model='gpt-5.6-terra', "
+        f"got {fake.calls[0].get('model')!r}"
+    )
+    assert fake.calls[1].get("model") == "gpt-5.6-terra", (
+        f"nudge re-invoke: expected model='gpt-5.6-terra', "
+        f"got {fake.calls[1].get('model')!r}"
+    )
 
     # Second prompt must be a nudge.
     nudge_prompt = fake.calls[1]["prompt"]
