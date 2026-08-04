@@ -1044,12 +1044,16 @@ class TestCrossContextSystemContractRetention:
         self, tmp_path, monkeypatch,
     ):
         """task → thread → task: start-task survives the thread launch
-        in BOTH .claude/skills and .agents/skills."""
+        in BOTH .claude/skills and .agents/skills as a symlink to the
+        correct canonical target."""
+        import os
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.workspace_adapters import (
             materialize_workspace_skills,
             validate_workspace_skills_integrity,
+            WorkspaceIntegrityError,
         )
+        from runtime.skills.canonical_store import CanonicalSkillStore
 
         # ── Create all 5 system-contract source dirs ──
         src = tmp_path / "protocol" / "skills"
@@ -1064,6 +1068,7 @@ class TestCrossContextSystemContractRetention:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
+        store = CanonicalSkillStore(settings=settings)
 
         # ── 1. Materialize for task context ──
         specs_1 = materialize_workspace_skills(
@@ -1071,13 +1076,24 @@ class TestCrossContextSystemContractRetention:
             provider="claude", agent_name="dev_agent",
             team="engineering", skills_root=src,
         )
-        # start-task + jobs + make-worktree + thread should all be linked
+        # start-task + jobs + make-worktree + thread should all be symlinks
         for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            # Determine expected content hash from specs_1
+            spec = next(s for s in specs_1 if s["slug"] == sid)
+            expected_target = store.canonical_path(
+                sid, spec["version"], spec["content_hash"],
+            )
             for subd in [".claude/skills", ".agents/skills"]:
-                link = workspace / subd / sid / "SKILL.md"
-                assert link.exists(), (
-                    f"After task materialization, {subd}/{sid} must exist"
+                link_dir = workspace / subd / sid
+                assert link_dir.is_symlink(), (
+                    f"After task materialization, {subd}/{sid} must be a symlink"
                 )
+                actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+                assert actual_target == expected_target.resolve(), (
+                    f"{subd}/{sid} symlink target mismatch: "
+                    f"{actual_target} != {expected_target.resolve()}"
+                )
+                link = link_dir / "SKILL.md"
                 assert link.read_text() == f"# {sid}\ncontent for {sid}\n"
 
         # ── 2. Materialize for thread context (start-task NOT in thread) ──
@@ -1089,11 +1105,20 @@ class TestCrossContextSystemContractRetention:
         # start-task MUST survive — it's in the union even though
         # thread context alone doesn't include it.
         for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            spec = next(s for s in specs_1 if s["slug"] == sid)
+            expected_target = store.canonical_path(
+                sid, spec["version"], spec["content_hash"],
+            )
             for subd in [".claude/skills", ".agents/skills"]:
-                link = workspace / subd / sid / "SKILL.md"
-                assert link.exists(), (
-                    f"After thread materialization, {subd}/{sid} must "
-                    f"survive (system-contract union)"
+                link_dir = workspace / subd / sid
+                assert link_dir.is_symlink(), (
+                    f"After thread materialization, {subd}/{sid} must be "
+                    f"a symlink (system-contract union)"
+                )
+                actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+                assert actual_target == expected_target.resolve(), (
+                    f"{subd}/{sid} symlink target changed after thread: "
+                    f"{actual_target} != {expected_target.resolve()}"
                 )
 
         # ── 3. Materialize for task context again ──
@@ -1102,12 +1127,22 @@ class TestCrossContextSystemContractRetention:
             provider="claude", agent_name="dev_agent",
             team="engineering", skills_root=src,
         )
-        # All four contracts must still be present
+        # All four contracts remain as correct symlinks
         for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            spec = next(s for s in specs_1 if s["slug"] == sid)
+            expected_target = store.canonical_path(
+                sid, spec["version"], spec["content_hash"],
+            )
             for subd in [".claude/skills", ".agents/skills"]:
-                link = workspace / subd / sid / "SKILL.md"
-                assert link.exists(), (
-                    f"After 2nd task materialization, {subd}/{sid} must exist"
+                link_dir = workspace / subd / sid
+                assert link_dir.is_symlink(), (
+                    f"After 2nd task materialization, {subd}/{sid} "
+                    f"must still be a symlink"
+                )
+                actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+                assert actual_target == expected_target.resolve(), (
+                    f"{subd}/{sid} symlink target mismatch after 2nd task: "
+                    f"{actual_target} != {expected_target.resolve()}"
                 )
 
         # ── 4. Pre-launch integrity validation passes ──
@@ -1116,12 +1151,33 @@ class TestCrossContextSystemContractRetention:
             agent_name="dev_agent", task_id="TASK-TEST",
         )
 
+        # ── 5. Negative: a non-symlink (ordinary dir) at the link
+        #    position must fail integrity validation ──
+        import shutil
+        # Replace the start-task symlink with an ordinary directory
+        for subd in [".claude/skills", ".agents/skills"]:
+            link_dir = workspace / subd / "start-task"
+            os.unlink(str(link_dir))
+            link_dir.mkdir()
+            (link_dir / "SKILL.md").write_text("# bogus\n")
+            break  # one root is enough
+        with pytest.raises(WorkspaceIntegrityError):
+            validate_workspace_skills_integrity(
+                workspace, specs_3, settings=settings,
+                agent_name="dev_agent", task_id="TASK-TEST",
+            )
+
     def test_thread_task_preserves_thread_contract(self, tmp_path, monkeypatch):
-        """thread → task: thread contract survives the task launch."""
+        """thread → task: thread contract survives the task launch as
+        a symlink to the correct canonical target in BOTH roots."""
+        import os
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.workspace_adapters import (
             materialize_workspace_skills,
+            validate_workspace_skills_integrity,
+            WorkspaceIntegrityError,
         )
+        from runtime.skills.canonical_store import CanonicalSkillStore
 
         src = tmp_path / "protocol" / "skills"
         for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
@@ -1135,34 +1191,83 @@ class TestCrossContextSystemContractRetention:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
+        store = CanonicalSkillStore(settings=settings)
 
         # ── 1. Materialize for thread context ──
-        materialize_workspace_skills(
+        specs_thread = materialize_workspace_skills(
             workspace, settings, slug="test", context="thread",
             provider="codex", agent_name="dev_agent",
             team="engineering", skills_root=src,
         )
-        # thread contract should be present
+        # thread contract should be a symlink to the correct target
+        thread_spec = next(s for s in specs_thread if s["slug"] == "thread")
+        expected_thread_target = store.canonical_path(
+            "thread", thread_spec["version"], thread_spec["content_hash"],
+        )
         for subd in [".claude/skills", ".agents/skills"]:
-            link = workspace / subd / "thread" / "SKILL.md"
-            assert link.exists(), f"After thread, {subd}/thread must exist"
+            link_dir = workspace / subd / "thread"
+            assert link_dir.is_symlink(), (
+                f"After thread, {subd}/thread must be a symlink"
+            )
+            actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+            assert actual_target == expected_thread_target.resolve(), (
+                f"{subd}/thread symlink target mismatch after thread: "
+                f"{actual_target} != {expected_thread_target.resolve()}"
+            )
 
         # ── 2. Materialize for task context ──
-        materialize_workspace_skills(
+        specs_task = materialize_workspace_skills(
             workspace, settings, slug="test", context="task",
             provider="codex", agent_name="dev_agent",
             team="engineering", skills_root=src,
         )
-        # thread MUST survive (union preserves it)
+        # thread MUST survive as the same symlink target
         for subd in [".claude/skills", ".agents/skills"]:
-            link = workspace / subd / "thread" / "SKILL.md"
-            assert link.exists(), (
-                f"After task, {subd}/thread must survive (system-contract union)"
+            link_dir = workspace / subd / "thread"
+            assert link_dir.is_symlink(), (
+                f"After task, {subd}/thread must still be a symlink"
             )
-        # start-task must now also be linked
+            actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+            assert actual_target == expected_thread_target.resolve(), (
+                f"{subd}/thread symlink target changed after task: "
+                f"{actual_target} != {expected_thread_target.resolve()}"
+            )
+        # start-task must now also be a symlink
+        start_spec = next(s for s in specs_task if s["slug"] == "start-task")
+        expected_start_target = store.canonical_path(
+            "start-task", start_spec["version"], start_spec["content_hash"],
+        )
         for subd in [".claude/skills", ".agents/skills"]:
-            link = workspace / subd / "start-task" / "SKILL.md"
-            assert link.exists(), f"After task, {subd}/start-task must exist"
+            link_dir = workspace / subd / "start-task"
+            assert link_dir.is_symlink(), (
+                f"After task, {subd}/start-task must be a symlink"
+            )
+            actual_target = (link_dir.parent / os.readlink(str(link_dir))).resolve()
+            assert actual_target == expected_start_target.resolve(), (
+                f"{subd}/start-task symlink target mismatch: "
+                f"{actual_target} != {expected_start_target.resolve()}"
+            )
+
+        # ── 3. Pre-launch integrity validation passes ──
+        validate_workspace_skills_integrity(
+            workspace, specs_task, settings=settings,
+            agent_name="dev_agent", task_id="TASK-TEST",
+        )
+
+        # ── 4. Negative: wrong symlink target fails integrity ──
+        # Replace thread symlink with one pointing to a wrong directory
+        wrong_target = tmp_path / "wrong-target"
+        wrong_target.mkdir()
+        for subd in [".claude/skills", ".agents/skills"]:
+            link_dir = workspace / subd / "thread"
+            os.unlink(str(link_dir))
+            os.symlink(str(wrong_target), str(link_dir))
+            break  # one root is enough
+        with pytest.raises(WorkspaceIntegrityError):
+            validate_workspace_skills_integrity(
+                workspace, specs_task, settings=settings,
+                agent_name="dev_agent", task_id="TASK-TEST",
+            )
 
     def test_dream_only_contract_preserved_across_contexts(
         self, tmp_path, monkeypatch,
@@ -1226,6 +1331,7 @@ class TestCrossContextSystemContractRetention:
         import runtime.orchestrator.workspace_adapters as wa
         from runtime.orchestrator.workspace_adapters import (
             materialize_workspace_skills,
+            validate_workspace_skills_integrity,
         )
 
         # ── System-contract source dirs (all 5 required for union) ──
@@ -1262,8 +1368,6 @@ class TestCrossContextSystemContractRetention:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         # ── Org config makes custom-tool eligible to engineering team ──
-        # org_root is the PER-ORG ROOT (e.g. <runtime>/orgs/<slug>/);
-        # the code reads org_root / "org" / "config.yaml".
         org_root = tmp_path / "org_root"
         (org_root / "org").mkdir(parents=True)
         config_path = org_root / "org" / "config.yaml"
@@ -1306,7 +1410,7 @@ class TestCrossContextSystemContractRetention:
         }))
 
         # ── 3. Re-materialize — managed skill should be withdrawn ──
-        materialize_workspace_skills(
+        specs = materialize_workspace_skills(
             workspace, settings, slug="test", context="task",
             provider="claude", agent_name="dev_agent",
             team="engineering", skills_root=skills_root,
@@ -1326,3 +1430,177 @@ class TestCrossContextSystemContractRetention:
             assert not managed_path.exists(), (
                 f"Managed skill custom-tool must be withdrawn in {subd}"
             )
+
+        # ── 4. Integrity validation passes with system contracts only ──
+        validate_workspace_skills_integrity(
+            workspace, specs, settings=settings,
+            agent_name="dev_agent", task_id="TASK-TEST",
+        )
+
+    def test_lifecycle_skill_withdrawal_preserves_system_contracts(
+        self, tmp_path, monkeypatch,
+    ):
+        """Lifecycle-ledger skill withdrawal: when a published lifecycle
+        skill assignment is deactivated (unassigned), BOTH
+        .claude/skills and .agents/skills withdraw ONLY that lifecycle
+        link while system-contract union links remain and validate."""
+        import json
+        import hashlib
+        import datetime
+        import os
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+            validate_workspace_skills_integrity,
+        )
+        from runtime.infrastructure.database import Database
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.canonical_store import CanonicalSkillStore
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+
+        # ── System-contract source dirs ──
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        # ── Setup: org_root, ArtifactStore, DB with lifecycle tables ──
+        org_root = tmp_path / "org_root"
+        org_paths = OrgPaths(root=org_root)
+        org_paths.root.mkdir(parents=True, exist_ok=True)
+        art_store = ArtifactStore(org_paths.artifacts_dir)
+        db = Database(org_paths.db_path)
+        db._conn.executescript(lifecycle_stores.CREATE_PACKAGE_VERSIONS)
+        db._conn.executescript(lifecycle_stores.CREATE_LIFECYCLE_EVENTS)
+        db._conn.executescript(lifecycle_stores.CREATE_ASSIGNMENTS)
+        db._conn.executescript(lifecycle_stores.CREATE_MATERIALIZATIONS)
+
+        # ── Create lifecycle package artifacts ──
+        skill_slug = "lifecycle-skill"
+        skill_id = f"hr:{skill_slug}"
+        version = "1.0.0"
+        skill_content = f"# {skill_slug}\nLifecycle skill body.\n".encode("utf-8")
+        ref_content = b"# Reference\nHelper.\n"
+
+        skill_key = f"skill-lifecycle/{skill_slug}/{version}/SKILL.md"
+        ref_key = f"skill-lifecycle/{skill_slug}/{version}/references/guide.md"
+        art_store.put(skill_key, skill_content)
+        art_store.put(ref_key, ref_content)
+
+        skill_hash = f"sha256:{hashlib.sha256(skill_content).hexdigest()}"
+        ref_hash = f"sha256:{hashlib.sha256(ref_content).hexdigest()}"
+
+        manifest = {
+            "slug": skill_slug,
+            "version": version,
+            "members": [
+                {"path": "SKILL.md", "hash": skill_hash,
+                 "artifact_key": skill_key},
+                {"path": "references/guide.md", "hash": ref_hash,
+                 "artifact_key": ref_key},
+            ],
+        }
+        manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        manifest_key = (
+            f"skill-lifecycle/{skill_slug}/{manifest_hash[:16]}/manifest.json"
+        )
+        art_store.put(manifest_key, manifest_bytes)
+
+        # ── Build canonical package ──
+        store = CanonicalSkillStore(settings=Settings(project_root=tmp_path))
+        store.build_from_manifest(
+            skill_slug, version, manifest_hash, manifest,
+            artifact_store=art_store,
+        )
+
+        # ── Seed lifecycle DB: PUBLISHED package + active assignment ──
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id=skill_id,
+            slug=skill_slug,
+            name=f"Test {skill_slug}",
+            version=version,
+            content_hash=manifest_hash,
+            policy_class="standard_operational",
+            description=f"Test lifecycle skill",
+            skill_md=f"# {skill_slug}\n",
+            content_artifact_key=manifest_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id=skill_id,
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version=version,
+            content_hash=manifest_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        settings = Settings(project_root=tmp_path)
+        skills_root = tmp_path / "managed_skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+
+        # ── 1. Materialize: lifecycle + system contracts both present ──
+        specs_1 = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=skills_root,
+            org_root=org_root, db=db,
+        )
+        for subd in [".claude/skills", ".agents/skills"]:
+            assert (workspace / subd / "start-task").is_symlink(), (
+                f"System contract start-task must be a symlink in {subd}"
+            )
+            assert (workspace / subd / "jobs").is_symlink(), (
+                f"System contract jobs must be a symlink in {subd}"
+            )
+            assert (workspace / subd / skill_slug).is_symlink(), (
+                f"Lifecycle skill {skill_slug} must be a symlink in {subd}"
+            )
+
+        # ── 2. Deactivate assignment (unassign → inactive) ──
+        lifecycle_stores.deactivate_assignment(
+            db, skill_id, "dev_agent", unassigned_by="founder",
+        )
+
+        # ── 3. Re-materialize: lifecycle withdrawn, system contracts survive ──
+        specs_2 = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=skills_root,
+            org_root=org_root, db=db,
+        )
+        # Lifecycle skill withdrawn in BOTH roots
+        for subd in [".claude/skills", ".agents/skills"]:
+            lifecycle_path = workspace / subd / skill_slug
+            assert not lifecycle_path.exists(), (
+                f"Lifecycle skill {skill_slug} must be withdrawn in {subd}"
+            )
+        # System contracts survive as symlinks in BOTH roots
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            for subd in [".claude/skills", ".agents/skills"]:
+                link_dir = workspace / subd / sid
+                assert link_dir.is_symlink(), (
+                    f"System contract {sid} must survive as symlink in "
+                    f"{subd} after lifecycle withdrawal"
+                )
+
+        # ── 4. Integrity validation passes with system contracts only ──
+        validate_workspace_skills_integrity(
+            workspace, specs_2, settings=settings,
+            agent_name="dev_agent", task_id="TASK-TEST",
+        )

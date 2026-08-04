@@ -349,11 +349,13 @@ def materialize_workspace_skills_union(
 ) -> list[dict]:
     """Build a single full expected-spec union from MULTIPLE session contexts.
 
-    Unlike ``materialize_workspace_skills`` which reconciles for a single
-    context (and therefore withdraws all links not in that context's expected
-    set), this function unions system-contract expectations from ALL named
-    contexts, computes release-managed and lifecycle specs once, and calls
-    ``repair_workspace_skills`` exactly once with the full union.
+    Like ``materialize_workspace_skills``, this function unions
+    system-contract expectations across the specified contexts.
+    ``materialize_workspace_skills`` preserves the ordinary-context
+    system-contract union on every regular launch; this function supports
+    the executor-switch path with an explicit context list.  In both cases,
+    release-managed and lifecycle links remain policy-reconciled and
+    withdrawable — only system contracts are union-preserved.
 
     This is the correct executor-switch materialization: the switched
     workspace must be ready for EVERY possible session context, not only
