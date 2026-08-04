@@ -105,7 +105,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
         </div>
         {showNextFire && (
           <div className="flex shrink-0 flex-col items-end">
-            <span className="text-fg-subtle text-xs leading-tight font-normal">
+            <span className="text-fg-subtle text-2xs leading-tight font-normal tracking-wider uppercase">
               {TODO_STRINGS.nextFireLabel}
             </span>
             <span className="text-fg text-sm leading-tight font-semibold tabular-nums">

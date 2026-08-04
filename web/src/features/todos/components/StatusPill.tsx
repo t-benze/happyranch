@@ -16,11 +16,11 @@ export function StatusPill({ status }: StatusPillProps): JSX.Element {
   const showLed = LED_STATUSES.has(status)
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs leading-snug font-semibold ${cls}`}
+      className={`text-overline inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 leading-snug font-semibold ${cls}`}
     >
       {showLed && (
         <span
-          className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70"
+          className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-80"
           aria-hidden="true"
         />
       )}

@@ -69,23 +69,25 @@ export function TodosPage(): JSX.Element {
   return (
     <ContentWrap>
       <div className="mb-5">
-        <p className="text-fg-subtle mb-1 font-mono text-xs font-medium tracking-wider uppercase">
+        <p className="text-fg-subtle text-overline mb-2 font-mono tracking-wider uppercase">
           {TODO_STRINGS.eyebrow}
         </p>
-        <h1 className="text-display text-fg">{TODO_STRINGS.pageTitle}</h1>
+        <h1 className="text-display font-display text-fg leading-tight">
+          {TODO_STRINGS.pageTitle}
+        </h1>
         <p className="text-fg-muted mt-2 text-base">{TODO_STRINGS.subtitle}</p>
         <p className="text-fg-subtle mt-1.5 text-sm">{TODO_STRINGS.trustLine}</p>
       </div>
 
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="bg-bg-subtle inline-flex rounded-lg p-0.5">
+        <div className="bg-bg-subtle inline-flex rounded-lg p-1">
           {FILTER_GROUPS.map((fg) => (
             <button
               key={fg.key}
               type="button"
               onClick={() => setActiveFilter(fg.key)}
               className={cn(
-                'rounded-md px-4 py-2 text-sm font-medium transition-colors',
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                 activeFilter === fg.key
                   ? 'bg-bg-raised text-fg shadow-sm'
                   : 'text-fg-muted hover:text-fg',
@@ -180,10 +182,17 @@ export function TodosPage(): JSX.Element {
         <div className="space-y-4">
           {sections.map((sec) => (
             <div key={sec.key}>
-              <div className="text-fg-subtle px-5 py-1 text-xs font-normal tracking-wider uppercase">
+              <div className="text-fg-subtle text-overline px-5 py-1 font-semibold tracking-wider uppercase">
                 {sec.label} · {sec.items.length}
               </div>
-              <div className="border-border bg-bg-raised overflow-hidden rounded-lg border">
+              <div
+                className={cn(
+                  'overflow-hidden rounded-lg border',
+                  sec.key === 'needs_attention'
+                    ? 'border-attention-soft bg-attention-soft/30'
+                    : 'border-border bg-bg-raised',
+                )}
+              >
                 {sec.items.map((schedule) => (
                   <TodoRow key={schedule.schedule_id} schedule={schedule} />
                 ))}

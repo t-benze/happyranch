@@ -1169,7 +1169,8 @@ describe('TodoDetailPage — back navigation', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    const backLink = screen.getByText('All Todos')
-    expect(backLink.closest('a')?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos`)
+    const backLinks = screen.getAllByRole('link', { name: /Todos/i })
+    const backLink = backLinks.find((el) => el.getAttribute('href') === `/orgs/${ORG_SLUG}/todos`)
+    expect(backLink).toBeDefined()
   })
 })

@@ -183,31 +183,29 @@ export function TodoDetailPage({
     <ContentWrap>
       <Link
         to={`/orgs/${org}/todos`}
-        className="text-fg-muted hover:text-fg mb-4 inline-flex items-center gap-1.5 text-sm transition-colors"
+        className="text-fg-muted hover:text-fg mb-6 inline-flex items-center gap-1.5 text-sm transition-colors"
       >
         <ArrowLeft size={16} />
-        All Todos
+        Todos
       </Link>
 
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div className="mb-2 flex items-center gap-3">
-            <StatusPill status={schedule.status} />
-            <span className="text-fg-subtle font-mono text-sm">
-              {schedule.schedule_id}
-            </span>
-          </div>
-          <h1 className="text-display text-fg leading-tight">
+          <h1 className="text-display font-display text-fg leading-tight">
             {schedule.normalized_brief}
           </h1>
-          <div className="text-fg-muted mt-2 flex items-center gap-1.5 text-sm">
+          <div className="text-fg-muted mt-3 flex flex-wrap items-center gap-3 text-sm">
+            <StatusPill status={schedule.status} />
             <span
               aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-4 shrink-0 items-center justify-center rounded text-xs font-semibold"
+              className="bg-tier-green-tint text-status-open inline-flex size-5 shrink-0 items-center justify-center rounded text-xs font-semibold"
             >
               {agentInitials(schedule.agent_name)}
             </span>
-            <span>{schedule.agent_name}</span>
+            <span className="text-fg">{schedule.agent_name}</span>
+            <span className="text-fg-subtle font-mono text-xs">
+              {schedule.schedule_id}
+            </span>
           </div>
         </div>
 
@@ -234,28 +232,37 @@ export function TodoDetailPage({
       {schedule.fire_at && (
         <div className="border-tier-green bg-tier-green-tint text-status-open mb-6 flex items-center justify-between rounded-lg border px-5 py-3">
           <div>
-            <span className="text-overline block tracking-wider uppercase">Next fire</span>
+            <span className="text-overline block font-semibold tracking-wider uppercase">
+              Next fire
+            </span>
             <span className="text-lg font-semibold tabular-nums">
               {fireAtDisplay(schedule)}
-              {tz && <span className="ml-1 font-normal opacity-80">{tz}</span>}
+              {tz && <span className="ml-1.5 font-normal opacity-80">{tz}</span>}
             </span>
           </div>
-          {schedule.kind === 'weekly' && (
-            <span className="text-overline tracking-wider uppercase">Weekly</span>
-          )}
+          <div className="text-right">
+            <span className="text-overline block font-semibold tracking-wider uppercase">
+              Recurrence
+            </span>
+            <span className="text-sm font-semibold">
+              {schedule.kind === 'weekly' ? 'Weekly' : 'One-shot'}
+            </span>
+          </div>
         </div>
       )}
 
       <div className="flex flex-col gap-6 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-5">
           <div className="border-border bg-bg-raised space-y-4 rounded-lg border p-5">
-            <h2 className="text-fg-subtle text-xs font-semibold tracking-wider uppercase">
+            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               Schedule
             </h2>
-            <p className="text-fg text-display">{describeSchedule(schedule)}</p>
-            <div className="grid grid-cols-3 gap-4 border-t border-border-subtle pt-4">
+            <p className="text-fg text-h1 font-display">
+              {describeSchedule(schedule)}
+            </p>
+            <div className="border-border-subtle grid grid-cols-3 gap-4 border-t pt-4">
               <div>
-                <span className="text-fg-subtle text-overline block tracking-wider uppercase">
+                <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
                   Recurrence
                 </span>
                 <span className="text-fg text-sm font-medium">
@@ -263,14 +270,14 @@ export function TodoDetailPage({
                 </span>
               </div>
               <div>
-                <span className="text-fg-subtle text-overline block tracking-wider uppercase">
+                <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
                   Timezone
                 </span>
                 <span className="text-fg text-sm font-medium">{tz}</span>
               </div>
               {schedule.kind === 'weekly' && !schedule.indefinite && schedule.expires_at && (
                 <div>
-                  <span className="text-fg-subtle text-overline block tracking-wider uppercase">
+                  <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
                     Review
                   </span>
                   <span className="text-fg text-sm font-medium">
@@ -284,23 +291,26 @@ export function TodoDetailPage({
               )}
               {Boolean(schedule.indefinite) && (
                 <div>
-                  <span className="text-fg-subtle text-overline block tracking-wider uppercase">
+                  <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
                     Review
                   </span>
                   <span className="text-fg text-sm font-medium">Indefinite</span>
                 </div>
               )}
             </div>
-            {schedule.kind === 'weekly' &&
-              !schedule.indefinite &&
-              schedule.expires_at &&
-              schedule.status !== 'expired' && (
-                <div className="border-attention-soft bg-attention-soft/30 text-attention-text rounded border px-3 py-2 text-sm">
-                  <Clock
-                    size={14}
-                    className="-mt-0.5 mr-1.5 inline-block"
-                    aria-hidden="true"
-                  />
+          </div>
+
+          {schedule.kind === 'weekly' &&
+            !schedule.indefinite &&
+            schedule.expires_at &&
+            schedule.status !== 'expired' && (
+              <div className="border-attention-soft bg-attention-soft/30 text-attention-text mb-5 flex items-start gap-2 rounded border px-3 py-2 text-sm">
+                <Clock
+                  size={14}
+                  className="mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>
                   Review due{' '}
                   {new Date(schedule.expires_at).toLocaleDateString('en-US', {
                     month: 'short',
@@ -309,19 +319,19 @@ export function TodoDetailPage({
                   })}.
                   This Todo will stop firing after that date unless it was created as
                   indefinite.
-                </div>
-              )}
-          </div>
+                </span>
+              </div>
+            )}
 
           <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
-            <h2 className="text-fg-subtle text-xs font-semibold tracking-wider uppercase">
+            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               Normalized commitment
             </h2>
             <p className="text-fg text-sm">{schedule.normalized_brief}</p>
           </div>
 
           <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
-            <h2 className="text-fg-subtle text-xs font-semibold tracking-wider uppercase">
+            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               Original instruction
             </h2>
             <blockquote className="border-border-subtle bg-bg-subtle text-fg-muted rounded-lg border-l-4 px-4 py-3 text-sm italic">
@@ -337,8 +347,8 @@ export function TodoDetailPage({
         </div>
 
         <div className="space-y-5">
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
-            <h2 className="text-fg-subtle text-xs font-semibold tracking-wider uppercase">
+          <div className="border-border bg-bg-raised space-y-3 rounded-lg border p-5">
+            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               Activity
             </h2>
             {schedule.fire_count > 0 && (
@@ -354,19 +364,16 @@ export function TodoDetailPage({
               </div>
             )}
             {schedule.spawned_task_ids && schedule.spawned_task_ids.length > 0 && (
-              <div className="space-y-1">
-                <span className="text-fg-subtle text-xs">Spawned tasks</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {schedule.spawned_task_ids.map((taskId) => (
-                    <Link
-                      key={taskId}
-                      to={`/orgs/${org}/tasks/${taskId}`}
-                      className="bg-bg-subtle text-fg-muted hover:text-fg inline-flex items-center rounded px-2 py-1 font-mono text-xs"
-                    >
-                      {taskId}
-                    </Link>
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-1.5">
+                {schedule.spawned_task_ids.map((taskId) => (
+                  <Link
+                    key={taskId}
+                    to={`/orgs/${org}/tasks/${taskId}`}
+                    className="bg-bg-subtle text-fg-muted hover:text-fg inline-flex items-center rounded px-2 py-1 font-mono text-xs"
+                  >
+                    {taskId}
+                  </Link>
+                ))}
               </div>
             )}
             <Link
@@ -376,21 +383,16 @@ export function TodoDetailPage({
               View related activity
               <ExternalLink size={12} aria-hidden="true" />
             </Link>
+            <span className="text-fg-subtle block font-mono text-xs">
+              task_id={schedule.schedule_id}
+            </span>
           </div>
 
           <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
-            <h2 className="text-fg-subtle mb-2 text-xs font-semibold tracking-wider uppercase">
+            <h2 className="text-fg-subtle text-overline mb-2 font-semibold tracking-wider uppercase">
               Record details
             </h2>
             <dl className="space-y-2 text-xs">
-              <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">Schedule ID</dt>
-                <dd className="text-fg-muted font-mono">{schedule.schedule_id}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">Team</dt>
-                <dd className="text-fg-muted">{schedule.team}</dd>
-              </div>
               <div className="flex justify-between gap-2">
                 <dt className="text-fg-subtle">Created</dt>
                 <dd className="text-fg-muted">{fmtDate(schedule.created_at)}</dd>
@@ -398,6 +400,14 @@ export function TodoDetailPage({
               <div className="flex justify-between gap-2">
                 <dt className="text-fg-subtle">Updated</dt>
                 <dd className="text-fg-muted">{fmtDate(schedule.updated_at)}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-fg-subtle">Team</dt>
+                <dd className="text-fg-muted">{schedule.team}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-fg-subtle">Schedule ID</dt>
+                <dd className="text-fg-muted font-mono">{schedule.schedule_id}</dd>
               </div>
             </dl>
           </div>
