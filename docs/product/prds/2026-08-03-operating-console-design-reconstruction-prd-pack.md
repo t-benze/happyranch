@@ -4,14 +4,14 @@
 | --- | --- |
 | Status | draft |
 | Owner | Product Lead |
-| Date | 2026-08-03 |
-| Source Links | THR-140; `artifact:thread-draft-20260803T143323Z-screens.zip`; feasibility consultation THR-141 |
+| Date | 2026-08-04 (reconciled against current web implementation) |
+| Source Links | THR-140; `artifact:thread-draft-20260803T143323Z-screens.zip`; feasibility consultation THR-141; TASK-4325 audit of current `origin/main` web routes, feature components, browser API clients, and daemon route contracts |
 | Commitment Boundary | analysis-only — no build, roadmap, or external delivery commitment |
 | Founder Decisions | Current baseline: founder-authenticated actions and existing read-only cutlines remain authoritative. Only a new assistant write-authority scope requires a Founder decision. |
 
 ## Purpose and evidence boundary
 
-This pack reconstructs the smallest honest set of PRDs implied by the founder-supplied prototype bundle. It is not a claim that every visible control is implemented, approved, or intended for v1.
+This pack reconstructs the smallest honest set of PRDs implied by the founder-supplied prototype bundle, then reconciles that evidence with the full current shipped web implementation. It is not a claim that every visible control is implemented, approved, or intended for v1.
 
 I downloaded and rendered all 34 HTML entry points in the bundle (31 product screens plus three print/state variants), reviewed their static UI text and interaction code, and used the provided `shell.js` and `workhours.js` as evidence. Screen labels and sample values are illustrative unless this document explicitly calls them out as a requirement. Several screens self-identify as a prototype or as needing new fields/routes; those disclosures override any stronger inference.
 
@@ -31,7 +31,7 @@ The observed product is a founder-facing, organization-scoped operating console 
 - configured, validated, and last-known-good state; and
 - source records and UI-derived projections.
 
-The bundle does **not** establish a commercial target market, pricing, service levels, nor a committed delivery sequence.
+The bundle does **not** establish a commercial target market, pricing, service levels, nor a committed delivery sequence. The reconciliation inventory below is a truthful shipped-baseline record, not a new roadmap or authorization to build missing prototype behavior.
 
 ## Pack-level no-list
 
@@ -170,10 +170,11 @@ The operator needs to govern reusable guidance given to agents without confusing
 - Source gates prevent system contracts from being edited/unassigned through the web, and assignment rejects a user-authored skill whose current version has not passed validation.
 - Skill content remains guidance-only and cannot expand platform permissions.
 
-## Deferred gaps — only functionality not in the current ledger
+## Deferred gaps — only functionality not in the current ledger or web cutline
 
-1. The prototype-only immutable proposal, claim/review, publication, and reviewer-rationale records are not part of the current skills ledger. They require new persisted fields and an explicit authorization design before they can be presented as a workflow.
-2. A richer rollback/history view and additional materialization/budget projections require backing records beyond the current validation and latest-materialization evidence.
+1. The current web now includes a founder-only proposal queue/detail and the bounded review actions claim, validate, submit for review, approve, and reject. It is a real lifecycle baseline, not prototype-only evidence. The detail deliberately excludes publish, assign, and rollback controls; those remain governed by their canonical lifecycle routes and are not implied by the prototype.
+2. Agent proposal submission is narrowly server-gated: only verified active sessions in the current agent-id × canonical-skill pilot may submit, and agents cannot view or mutate the human review workflow. System contracts and platform-managed skills remain read-only.
+3. A richer rollback/history view and additional materialization/budget projections require backing records beyond the current validation and latest-materialization evidence.
 
 ---
 
@@ -205,7 +206,7 @@ The operator needs credible, source-linked evidence about what the organization 
 3. Audit history shall be append-only; corrective events must add a new linked record rather than mutate prior event meaning.
 4. Usage shall distinguish fresh token categories from cache activity and shall not present currency/cost unless a real metering source exists.
 5. Dream and knowledge flows shall retain origin/proposer/status and require the authorized review action before a candidate becomes shared knowledge.
-6. Assistant responses that cite runtime facts shall show enough tool/source evidence for an operator to verify the answer. Until a new assistant write path is approved and built, founder-authenticated canonical task, job, thread, and configuration actions remain the only authority surfaces; the assistant may navigate or explain them but cannot approve, deny, or mutate on their behalf.
+6. Assistant responses that cite runtime facts shall show enough tool/source evidence for an operator to verify the answer. The browser has no direct canonical assistant approval/denial route: founder-authenticated task, job, thread, and configuration actions remain the governance surfaces. Assistant tool activity remains subject to the selected executor/runtime policy and cannot substitute for a separately designed, auditable governance-write contract.
 
 ## Acceptance signals
 
@@ -216,7 +217,7 @@ The operator needs credible, source-linked evidence about what the organization 
 
 ## Deferred gap — assistant authority
 
-The assistant currently has no canonical routed-action/approval write path. The sole Founder decision left by this pack is whether to retain the current read-oriented assistant with founder-authenticated handoffs, or authorize a separately designed, auditable assistant write-authority scope. Retention/privacy, metric, and Dream behavior remain governed by their existing runtime contracts; prototype labels do not reopen them here.
+The assistant currently has no canonical browser routed-action/approval write path. The sole Founder decision left by this pack is whether to retain the current founder-authenticated governance surfaces and executor-bounded assistant posture, or authorize a separately designed, auditable assistant governance-write scope. Retention/privacy, metric, and Dream behavior remain governed by their existing runtime contracts; prototype labels do not reopen them here.
 
 ---
 
@@ -244,7 +245,48 @@ The reviewed runtime establishes the following baseline and prevents this recons
 
 ## Engineering consultation status
 
-The Engineering Manager’s factual contract corrections have been incorporated: Work Hours is shipped with current constraints; Skills has an existing lifecycle ledger and source-gated read-only web boundary; and founder-authenticated actions are the current authority baseline. This pack now defers only unsupported prototype fields, absent proposal records, and the assistant’s missing write authority.
+The Engineering Manager’s factual contract corrections have been incorporated: Work Hours is shipped with current constraints; Skills has an existing lifecycle ledger and source-gated read-only web boundary; and founder-authenticated actions are the current authority baseline. This pack now defers only unsupported prototype fields, lifecycle actions beyond the bounded proposal-review slice, and the assistant’s missing governance-write authority.
+
+TASK-4325 extends that correction to the merged web implementation rather than treating `screens.zip` as the surface inventory. The source audit found two important additions to the former statement: the founder-only proposal review slice is now shipped, and the Todos surface is a separate, persisted schedule-management workflow. The detailed inventory and exact cutlines follow; they are the controlling record where the earlier prototype language conflicts.
+
+## Full current web implementation reconciliation — shipped baseline and exclusions
+
+**Audit basis.** This is a source-grounded inventory of the current merged SPA (`web/src/routes.tsx`), every route-mounted feature family, its `web/src/lib/api`/hook contract, and the corresponding `runtime/daemon/routes` contract. “Shipped baseline” means the route/component and backing browser contract exist in the current implementation; it does **not** say the prototype made a new product commitment. “Excluded” means intentionally outside this PRD pack and names the owner rather than hiding the gap.
+
+| Route or live component family | Supporting product/API contract | Disposition in this pack |
+| --- | --- | --- |
+| `/`, `/onboarding`, organization switcher and Add Organization dialog | `/auth/bootstrap` is localhost-only; organization list/create and executor-registration-token flows are bearer-authenticated. Executor registration and agent enrollment are distinct. | **Shipped baseline** in PRD 1. The onboarding requirement remains bounded by the real registration/organization contracts, not prototype labels. |
+| App shell: Sidebar, AppBar, responsive layout, command palette, help drawer, theme/density, global shortcuts, error boundary | Org-scoped routing, dashboard summary for shell context, and browser API client auth; no independent product record is created by chrome. | **Shipped baseline** as PRD 1 navigation/triage infrastructure. Reusable visual primitives and layout-only components are **excluded** from feature scope; Frontend Engineering owns their implementation quality. |
+| `/orgs/:slug/dashboard` | Read-only dashboard summary, task/escalation and token projections. | **Shipped baseline** in PRDs 1 and 4; displayed summaries must remain traceable to records/metrics. |
+| `/orgs/:slug/threads` and `threads/:thread_id` | Thread list/detail/messages/SSE tail plus founder-authenticated compose, send, invite, remove, extend, archive, resume, and abort-replies routes. | **Shipped baseline** in PRD 1. The UI is a record/action surface, not an inferred approval model. |
+| `/orgs/:slug/tasks` and `tasks/:task_id` | Root-task/list/detail/recall/events/attachments plus founder-authenticated create, resolve-escalation, revisit, and cancel routes; jobs are linked where recorded. | **Shipped baseline** in PRD 1. Root/child lineage, fan-out state, and canonical action provenance remain required. |
+| `/orgs/:slug/todos` and `todos/:scheduleId` | Persisted `SCHEDULE-*` records: list/show, pause, cancel, edit; one stored normalized brief spawns its target agent’s root task when fired. The browser does not invent schedules from prose. | **Shipped baseline** in PRD 1’s operating-console scope. This is distinct from Work Hours and replaces the prior omission from the screenshot-derived pack. Scheduling policy/new todo-authoring scope is **excluded**; Founder and Engineering own any change to the scheduling capability. |
+| `/orgs/:slug/agents` and `agents/:agent_name`, including roster/detail, enrollment and pending-enrollment components | Agent list/create/init/enrollment approval/rejection, executor/model/repository bindings, teams, and related task/thread/job projections. | **Shipped baseline** in PRD 1 and Settings. No autonomy toggle or new permission model is implied; those are **excluded** pending Founder scope. |
+| `/orgs/:slug/jobs` and `jobs/:job_id` | Persisted job list/detail/output/events/tail/wait plus explicit run, reject, and stop routes. | **Shipped baseline** in PRD 1. It must render only retained command/context facts; unsupported Thread/routed-via/kind/PR fields remain a genuine Engineering-owned data-model gap. |
+| `/orgs/:slug/work-hours`, `work-hours/:agent`, and `?view=wakes` | Work Hours status/list/detail, settings/teams, next-wakes, agents; org gate + eligibility + leaf-level tier resolution. | **Shipped baseline** in PRD 2. Routine Tasks remain markdown-authored/read-only in the web; unsupported timeline, holiday, urgent-override, print/export, and prototype fields stay excluded under Engineering ownership. |
+| `/orgs/:slug/schedule` | Compatibility redirect to Work Hours Wakes. No separate live Schedule surface exists. | **Shipped compatibility baseline** in PRD 2; the retired route is not a new workflow or scope commitment. |
+| `/orgs/:slug/skills`, `skills/new`, `skills/validation`, `skills/:skillId`, and `skills/:skillId/edit` | Catalog/lifecycle/status/event/validation/assignment API with source gates, versioned materialization, and guidance-only semantics. | **Shipped baseline** in PRD 3. System-contract and platform-managed skills are read-only; user-authored custom skills follow the bounded lifecycle. |
+| `/orgs/:slug/skills/proposals` and `skills/proposals/:versionId` | Founder-only proposal queue/detail; bounded claim, validate, submit-review, approve, and reject actions. Agent submission uses a verified session and narrow pilot policy; proposal data is withheld from non-founder sessions. | **Shipped baseline** in PRD 3. Publish, assign, and rollback controls are deliberately absent from this web detail surface; expanding authority requires Founder/Engineering decision, not prototype inference. |
+| `/orgs/:slug/kb` and KB compose/detail/candidate components | Search/get/stats plus founder-authenticated create/update/delete/reindex; Dreams candidate accept/dismiss is a separate review transition. | **Shipped baseline** in PRD 4. The browser cannot expose the CLI-only `--as-founder` impersonation delete path; that security boundary is **excluded** and owned by Engineering. |
+| `/orgs/:slug/artifacts` | Artifact list/tree/metadata/download and thread-attachment access backed by stored artifact provenance. | **Shipped baseline** in PRD 4. Diffs, review history, and content checks remain external/repository concerns unless persisted; Engineering owns any new record/route. |
+| `/orgs/:slug/audit` | Append-only audit query/filter/projection API. | **Shipped baseline** in PRD 4. The UI must add corrective events rather than rewrite event meaning. |
+| `/orgs/:slug/usage` and `/spend` redirect | Token usage query and agent context; `/spend` preserves bookmarks by redirecting to Usage. | **Shipped baseline** in PRD 4. No currency/cost claim is authorized without a metering source. |
+| `/orgs/:slug/dreams` | Dream status/list/detail and reviewed candidate accept/dismiss routes. | **Shipped baseline** in PRD 4. Reflection, learning, and KB promotion remain separate records and decisions. |
+| `/orgs/:slug/health` | Runtime metrics history/health projections. | **Shipped baseline** in PRD 4. Health status is evidence, not a promise of availability or service level. |
+| `/orgs/:slug/settings/*`: Assistant, System, Organization, Agents, Executors; executor binary/profile and adapter-management components | Settings/org/team patch routes; assistant init/register/repair; runtime executor profile/binary routes; adapter submission/bind/approve/reject contracts. Server-declared system values remain read-only where no write route exists. | **Shipped baseline** in PRD 1. It does not grant a browser a general runtime-admin or RBAC model. Adapter and executor lifecycle policy beyond exposed contracts is **excluded**; Engineering owns contract changes and Founder owns new authority scope. |
+| Global System Assistant dock and A-mode conversation switcher | Bearer-authenticated A-mode status/conversation create/activate/rename/delete plus authenticated WebSocket turns and transparent tool activity. | **Shipped baseline** in PRD 4. Conversation management is not a direct approval surface; any assistant-initiated consequential authority remains bounded by the selected executor/runtime policy. The requested new, auditable assistant governance write-authority scope is still the sole Founder decision in this pack. |
+| Not-found route, prototype routes, design-system showcase routes, mock providers, tests, scripts, and static assets | Prototype/design routes are build-gated; mock data and harnesses are non-authoritative developer support. | **Explicitly excluded** from product scope because they are not shipped founder workflows or authoritative runtime records. Frontend Engineering owns them; Product must not turn them into requirements without a new decision. |
+
+### Reconciliation rules for component completeness
+
+Every route-mounted page above includes its directly supporting dialogs, drawers, rows, detail panes, empty/error/loading states, and query/mutation hooks in the same disposition. Shared primitives, patterns, and layouts are covered only as the product-facing shell/reusable interaction infrastructure noted above; they do not create separate user workflows. This prevents a component appearing in the repository from being mislabeled as an uncommitted feature, while preserving a traceable owner for non-product or developer-only code.
+
+### Genuine unresolved gaps after the full audit
+
+1. `JobRecord` still lacks the prototype’s Thread, routed-via, kind, and PR-context fields. Do not render them as recorded facts; Engineering Manager owns any schema/route proposal.
+2. Work Hours does not back every prototype display or control (effective timezone/calendar projections, schedule-health metrics, holiday/blackout, urgent override, held escalation, print/export). These are exclusions, not stealth requirements; Engineering Manager owns feasibility if a later product decision asks for them.
+3. Proposal review is real but deliberately bounded: founder review exposes only claim/validate/submit-review/approve/reject, while agent submission is a narrow verified-session pilot. Any expansion of participant set, review actions, publication, assignment, rollback, or permission semantics requires an explicit Founder decision and Engineering authorization design.
+4. The assistant has live conversations and executor-mediated tool activity, but no separate product-level direct approval/denial route. Its authority must not be inferred from the dock; Founder must decide whether to authorize a bounded, auditable assistant governance-write scope.
 
 ## Evidence inventory — all rendered entry points
 
