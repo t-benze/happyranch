@@ -34,9 +34,12 @@ provision a distinct ``_hrexec`` account. In this mode:
 Before each executor launch the daemon compares actual canonical package
 content against the separately retained expected manifest (system source
 tree for system-contract skills, ArtifactStore manifest for lifecycle
-skills). On mismatch the daemon rebuilds from the trusted source when still
-available; if the trusted source is absent, the launch fails closed. This
-is recovery for accidental corruption — it is NOT an attacker-independent
+skills). On mismatch: a durable integrity/operations event is emitted and
+the session is REFUSED — the mismatched package is NEVER automatically
+rebuilt, repaired, or healed from any same-UID local source (including
+the ArtifactStore, source tree, or any local copy). Recovery is manual,
+operator-invoked only, through ``happyranch skills recover``. This is
+detection for accidental corruption — it is NOT an attacker-independent
 external attestation authority.
 
 **Fail-closed:** any isolation violation or integrity mismatch raises

@@ -18,35 +18,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Canonical strict SHA-256 hash parser ────────────────────────────
-# Accepts ONLY "sha256:<64 lowercase hex>".
-# Used by lifecycle manifest materialization and the operator recovery
-# route. All callers that parse member hashes from the ledger must use
-# this single canonical validator — no competing parsers.
-
-_SHA256_HEX_RE = __import__("re").compile(r"^[a-f0-9]{64}$")
-
-
-def parse_strict_sha256_hash(hash_str: str) -> str:
-    """Parse a strictly-formatted sha256:<64-lowercase-hex> member hash.
-
-    Returns the 64-char hex digest (without prefix).
-    Raises ValueError for any malformed input.
-    """
-    if not hash_str.startswith("sha256:"):
-        raise ValueError(
-            f"Member hash missing algorithm prefix (expected sha256:<hex>): "
-            f"{hash_str[:80]}"
-        )
-    hex_digest = hash_str[7:]
-    if not _SHA256_HEX_RE.match(hex_digest):
-        raise ValueError(
-            f"Member hash invalid format (expected sha256:<64 lowercase hex>): "
-            f"{hash_str[:80]}"
-        )
-    return hex_digest
-
-
 # Test override: when set (via monkeypatch), takes precedence over the
 # settings-derived skills source. Production code leaves this ``None`` and
 # adapters resolve the source via ``self._settings.get_protocol_dir() / "skills"``.
@@ -71,7 +42,7 @@ def _resolve_skills_src(settings: Settings) -> Path:
 # <daemon-home>/canonical-skills/ and workspace symlinks are atomically
 # created/repaired to point at the exact approved package version.
 
-from runtime.skills.canonical_store import CanonicalSkillStore
+from runtime.skills.canonical_store import CanonicalSkillStore, parse_strict_sha256_hash
 from runtime.skills.symlink_materializer import (
     SymlinkMaterializer,
     SymlinkMaterializationError,

@@ -29,11 +29,43 @@ from runtime.skills.models import PolicyClass, SkillEntry, SkillStatus
 from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.system_contracts import SYSTEM_CONTRACTS
-from runtime.orchestrator.workspace_adapters import (
-    parse_strict_sha256_hash,
-)
+from runtime.skills.canonical_store import parse_strict_sha256_hash
 
 router = APIRouter(dependencies=[require_token()])
+
+
+def _try_recover_audit_event(
+    db,
+    *,
+    slug: str,
+    agent: str = "operator",
+    severity: str = "error",
+    ok: bool = False,
+    detail: str,
+    reason_codes: list[str] | None = None,
+    skill_id: str | None = None,
+    version: str | None = None,
+) -> None:
+    """Best-effort audit event emission for operator recovery paths.
+
+    Failure to persist is logged but not re-raised from this helper —
+    callers decide whether to fail-closed when audit persistence matters.
+    """
+    try:
+        db.insert_skill_validation_event(  # type: ignore[union-attr]
+            skill_id=skill_id or f"hr:{slug}",
+            slug=slug,
+            agent=agent,
+            source="operator_recovery",
+            severity=severity,
+            ok=ok,
+            version=version,
+            findings=[detail],
+            reason_codes=reason_codes or [],
+        )
+    except Exception:
+        pass  # Best-effort; caller decides on fail-closed
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1135,6 +1167,13 @@ def skill_recover(
     try:
         pkgs = service.list_catalog(org.db)
     except Exception as exc:
+        # Emit durable failure event before refusing
+        _try_recover_audit_event(
+            org.db, slug=slug, agent="operator",
+            severity="error", ok=False,
+            detail=f"Ledger query failure for recover {slug}@{version}: {exc}",
+            reason_codes=["ledger_query_failure"],
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to query lifecycle ledger: {exc}",
@@ -1147,6 +1186,15 @@ def skill_recover(
             break
 
     if pkg_match is None:
+        _try_recover_audit_event(
+            org.db, slug=slug, agent="operator",
+            severity="error", ok=False,
+            detail=(
+                f"No PUBLISHED lifecycle package found for "
+                f"{slug}@{version}"
+            ),
+            reason_codes=["package_not_found"],
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
@@ -1158,6 +1206,15 @@ def skill_recover(
 
     # Validate content_hash matches ledger
     if pkg_match.content_hash != content_hash:
+        _try_recover_audit_event(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", severity="error", ok=False,
+            detail=(
+                f"content_hash mismatch: provided {content_hash[:16]}..., "
+                f"ledger has {pkg_match.content_hash[:16]}..."
+            ),
+            reason_codes=["hash_mismatch"],
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -1175,6 +1232,15 @@ def skill_recover(
         try:
             manifest_bytes = artifact_store.read(pkg_match.content_artifact_key)
         except Exception:
+            _try_recover_audit_event(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", severity="error", ok=False,
+                detail=(
+                    f"Manifest artifact not found: "
+                    f"{pkg_match.content_artifact_key}"
+                ),
+                reason_codes=["artifact_not_found"],
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
@@ -1186,6 +1252,16 @@ def skill_recover(
         # Verify manifest hash against ledger
         actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
         if actual_manifest_hash != content_hash:
+            _try_recover_audit_event(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", severity="error", ok=False,
+                detail=(
+                    f"Manifest artifact hash mismatch: "
+                    f"expected {content_hash[:16]}..., "
+                    f"got {actual_manifest_hash[:16]}..."
+                ),
+                reason_codes=["manifest_hash_mismatch"],
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -1200,6 +1276,12 @@ def skill_recover(
         try:
             manifest = _json.loads(manifest_bytes.decode("utf-8"))
         except Exception:
+            _try_recover_audit_event(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", severity="error", ok=False,
+                detail="Manifest artifact is not valid JSON",
+                reason_codes=["invalid_manifest"],
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Manifest artifact is not valid JSON",
@@ -1214,6 +1296,15 @@ def skill_recover(
                 try:
                     member_bytes = artifact_store.read(member_key)
                 except Exception:
+                    _try_recover_audit_event(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", severity="error", ok=False,
+                        detail=(
+                            f"Member artifact not found: {member_key}. "
+                            f"Recovery requires intact ArtifactStore."
+                        ),
+                        reason_codes=["member_artifact_not_found"],
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=(
@@ -1223,10 +1314,18 @@ def skill_recover(
                     )
 
                 # Validate strict sha256:<64 lowercase hex> format
-                # Uses the single canonical validator shared with workspace_adapters
+                # Uses the single canonical validator from canonical_store
                 try:
                     expected_hex = parse_strict_sha256_hash(member_hash)
                 except ValueError as exc:
+                    _try_recover_audit_event(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", severity="error", ok=False,
+                        detail=(
+                            f"Member {member_path} hash invalid: {exc}"
+                        ),
+                        reason_codes=["malformed_hash"],
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=(
@@ -1236,6 +1335,16 @@ def skill_recover(
 
                 actual_hex = hashlib.sha256(member_bytes).hexdigest()
                 if actual_hex != expected_hex:
+                    _try_recover_audit_event(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", severity="error", ok=False,
+                        detail=(
+                            f"Member {member_path} hash mismatch: "
+                            f"expected {expected_hex[:16]}..., "
+                            f"got {actual_hex[:16]}..."
+                        ),
+                        reason_codes=["member_hash_mismatch"],
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=(
@@ -1253,6 +1362,15 @@ def skill_recover(
     pkg_path = store.canonical_path(slug, version, content_hash)
 
     if not pkg_path.exists():
+        _try_recover_audit_event(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", severity="error", ok=False,
+            detail=(
+                f"Canonical package not found at {pkg_path}. "
+                f"Package will be rebuilt on next materialization."
+            ),
+            reason_codes=["package_not_found_on_disk"],
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
@@ -1288,6 +1406,15 @@ def skill_recover(
                 break
 
         if all_members_valid:
+            _try_recover_audit_event(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", severity="error", ok=False,
+                detail=(
+                    f"Recovery refused: canonical package {slug}@{version} "
+                    f"at {pkg_path} is valid (all member hashes match ledger)."
+                ),
+                reason_codes=["valid_target_refused"],
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -1305,6 +1432,15 @@ def skill_recover(
         _make_writable_for_removal(pkg_path)
         shutil.rmtree(pkg_path)
     except Exception as exc:
+        _try_recover_audit_event(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", severity="error", ok=False,
+            detail=(
+                f"Failed to delete corrupted package {slug}@{version} "
+                f"at {pkg_path}: {exc}"
+            ),
+            reason_codes=["deletion_failed"],
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete corrupted package: {exc}",

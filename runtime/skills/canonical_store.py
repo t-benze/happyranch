@@ -253,12 +253,39 @@ def _get_canonical_store_root(settings=None) -> Path:
     return Path.home() / ".happyranch" / "canonical-skills"
 
 
-_MEMBER_HASH_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+# ── Canonical strict SHA-256 hash parser ────────────────────────────
+# THE single authoritative validator for member-hash declarations.
+# Every caller — workspace adapters, recovery route, manifest materialization,
+# lifecycle spec construction — must use this parser. No competing parsers.
+# Accepts ONLY "sha256:<64 lowercase hex>".
+
+_SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+def parse_strict_sha256_hash(hash_str: str) -> str:
+    """Parse a strictly-formatted sha256:<64-lowercase-hex> member hash.
+
+    Returns the 64-char hex digest (without prefix).
+    Raises ValueError for any malformed input.
+    """
+    if not hash_str.startswith("sha256:"):
+        raise ValueError(
+            f"Member hash missing algorithm prefix (expected sha256:<hex>): "
+            f"{hash_str[:80]}"
+        )
+    hex_digest = hash_str[7:]
+    if not _SHA256_HEX_RE.match(hex_digest):
+        raise ValueError(
+            f"Member hash invalid format (expected sha256:<64 lowercase hex>): "
+            f"{hash_str[:80]}"
+        )
+    return hex_digest
 
 
 def _validate_member_hash(member_path: str, raw_hash: str) -> str:
     """Validate and extract the hex digest from a member hash declaration.
 
+    Delegates to the single canonical ``parse_strict_sha256_hash`` validator.
     Rejects missing/unknown algorithm prefixes, bad hex length,
     uppercase hex, non-hex characters, and malformed declarations.
     Returns the 64-char lowercase hex portion on success.
@@ -268,13 +295,14 @@ def _validate_member_hash(member_path: str, raw_hash: str) -> str:
             "malformed_hash",
             f"Missing hash declaration for member {member_path!r}",
         )
-    if not _MEMBER_HASH_RE.match(raw_hash):
+    try:
+        return parse_strict_sha256_hash(raw_hash)
+    except ValueError as exc:
         raise CanonicalStoreError(
             "malformed_hash",
             f"Hash declaration for member {member_path!r} must be "
             f"exactly sha256:<64 lowercase hex>; got {raw_hash!r}",
-        )
-    return raw_hash[7:]  # strip "sha256:" prefix
+        ) from exc
 
 
 def _compute_tree_hash_from_manifest_members(

@@ -223,9 +223,11 @@ operator-invoked recovery path. Validates ledger provenance and every
 declared member SHA-256 hash against the ArtifactStore before deletion;
 refuses already-valid targets. The next materialization will rebuild the
 package from the ArtifactStore. No automatic repair from same-UID local
-source. Recovery requires that an authoritative re-sync/redeploy of the
-release or custom artifacts has occurred outside the compromised same-owner
-local source; otherwise the ArtifactStore itself may carry tampered bytes.
+source. This command can ONLY be used after an authoritative external
+re-sync/redeploy of the release or custom artifacts has restored verified
+artifact bytes outside the compromised same-owner local source — the
+recovery route validates against ArtifactStore, which may itself be
+corrupted if the same-UID executor previously tampered with it.
 
 **Ownership and provenance:**
 - Canonical packages are daemon/materializer-owned, content-addressed trees
