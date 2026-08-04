@@ -143,7 +143,7 @@ export function AuditPage(): JSX.Element {
   }, [filteredEntries]);
 
   return (
-    <div className="bg-surface-canvas flex h-full flex-col">
+    <div className="bg-surface-canvas flex h-full flex-col min-w-0 overflow-hidden">
       {/* EM ruling (THR-099 audit): KEEP the bordered card header + the side
           event-legend; cap the inner content at the shared 1180 `max-w-content`
           centered in the main region beside the shell rail, with the same 26px
@@ -158,7 +158,7 @@ export function AuditPage(): JSX.Element {
       <ContentWrap className="flex h-full min-h-0 flex-col gap-4">
       {/* --- Top bar --- */}
       <header className="bg-surface border-border-default shrink-0 rounded-lg border p-4">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           {/* AUDIT-03: uppercase eyebrow + Newsreader serif title, matching the
               a-audit Direction-A reference and the Tasks/Agents surfaces. */}
           <div className="min-w-0 flex-1">
@@ -175,7 +175,7 @@ export function AuditPage(): JSX.Element {
         </div>
 
         {/* Time window chips */}
-        <div className="mt-3 flex items-center gap-2" role="radiogroup" aria-label="Time window">
+        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Time window">
           {SINCE_OPTIONS.map((opt) => {
             const active = (filters.since ?? 'all') === (opt.value ?? 'all');
             return (
@@ -199,8 +199,10 @@ export function AuditPage(): JSX.Element {
         </div>
       </header>
 
-      {/* Timeline (left) + Event-types legend-filter rail (right) */}
-      <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+      {/* Timeline (left) + Event-types legend-filter rail (right).
+          At narrow widths the rail stacks below the timeline so the fixed
+          side-by-side layout doesn't force horizontal overflow. */}
+      <div className="flex flex-col lg:flex-row min-h-0 flex-1 gap-4 overflow-hidden">
         {/* The timeline card MUST be a bounded-height flex COLUMN (`flex
             flex-col min-h-0`), not a plain block. AuditTimeline's TimelineBody
             is `flex-1 overflow-y-auto` and paginates via an IntersectionObserver
@@ -215,7 +217,7 @@ export function AuditPage(): JSX.Element {
         </div>
         {/* Right rail: event-type legend-filter, with the green "Clean record"
             panel stacked below it when the window has zero failures. */}
-        <div className="flex w-56 shrink-0 flex-col gap-4">
+        <div className="flex w-full lg:w-56 shrink-0 flex-col gap-4">
           <EventTypesRail
             legend={legend}
             activeClass={filters.eventClass}

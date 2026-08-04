@@ -187,8 +187,10 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
       </div>
 
       <div className="min-w-0 flex-1 py-2.5">
-        {/* Narrative sentence + dream pill + timestamp */}
-        <div className="flex items-baseline gap-3">
+        {/* Narrative sentence + dream pill + timestamp.
+            flex-wrap allows the pill + timestamp to stack below the detail
+            at narrow widths instead of forcing horizontal overflow. */}
+        <div className="flex flex-wrap items-baseline gap-3">
           <p className="text-text-secondary min-w-0 flex-1 leading-snug">
             {narrative.segments.map((seg, i) => (
               <Segment key={i} seg={seg} slug={slug} />
