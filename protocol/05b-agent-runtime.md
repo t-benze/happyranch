@@ -60,7 +60,12 @@ The stable v1 contract is defined by the Pydantic models at
 for external consumers** (candidates implementing adapter wrappers) is the
 versioned ``GET /api/v1/runtime/adapters/contract-reference`` endpoint
 (THR-107 seq184), which returns JSON Schemas generated from those models at
-runtime. The server-derived schema is canonical. Key invariants:
+runtime. **THR-107 seq339/340:** the contract-reference response also returns
+``canonical_directory`` and ``required_executable_path`` — the daemon-managed
+canonical adapter path (<daemon-home>/adapters/<canonical-id>, 0700). Scoped
+submissions must create the wrapper at exactly this path; the route and
+registration seam independently enforce canonical placement. The
+master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,

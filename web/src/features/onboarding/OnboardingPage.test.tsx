@@ -682,6 +682,28 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
   });
 
+  test('adapter-backed: prompt includes required_executable_path (seq339)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_SEQ339', expires_at: Date.now() / 1000 + 1800 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq339-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // seq339/340: prompt must include required_executable_path instruction
+    expect(promptText).toContain('required_executable_path');
+    expect(promptText).toContain('canonical');
+    // Must tell the candidate NOT to place in home dir or self-chosen path
+    expect(promptText).toContain('Do NOT place it');
+    expect(promptText).toContain('self-chosen path');
+    // Submit references the canonical path
+    expect(promptText).toContain('required_executable_path');
+  });
+
   test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')

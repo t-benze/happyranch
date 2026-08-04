@@ -83,7 +83,12 @@ subprocess with v1 ``AdapterInput`` JSON on stdin and parses v1
 Pydantic models at ``runtime/orchestrator/adapter_contract.py``; the **canonical
 contract surface for external consumers** is the versioned
 ``GET /api/v1/runtime/adapters/contract-reference`` endpoint (THR-107 seq184),
-which returns server-generated JSON Schemas. The normative prose is the signed
+which returns server-generated JSON Schemas. **THR-107 seq339/340:** the
+contract-reference response now also returns ``canonical_directory`` and
+``required_executable_path`` — the daemon-managed canonical adapter path.
+Scoped submissions (``POST /runtime/adapters/submit``) enforce that the
+wrapper is at exactly this path; the registration seam independently rechecks.
+The normative prose is the signed
 architecture §2. Key invariants: exact approved artifact SHA-256 verified at
 EVERY launch (including throttle retries — the check is inside the per-attempt
 launch closure); mandatory valid AdapterOutput; adapter version, contract

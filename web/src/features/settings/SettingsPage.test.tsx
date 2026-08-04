@@ -1354,6 +1354,39 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(promptText).toContain('Max output: 1 MB');
   });
 
+  test('seq339: prompt includes required_executable_path instruction', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ339',
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq339-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    // seq339/340: prompt must include required_executable_path instruction
+    expect(promptText).toContain('required_executable_path');
+    expect(promptText).toContain('canonical');
+    // Must tell the candidate NOT to place in home dir or self-chosen path
+    expect(promptText).toContain('Do NOT place it');
+    expect(promptText).toContain('self-chosen path');
+    // Must reference the contract-reference for the path
+    expect(promptText).toContain('contract-reference');
+    // Submit section references required_executable_path
+    expect(promptText).toContain('required_executable_path');
+  });
+
   test('seq184: prompt distinguishes emit_envelope from AdapterOutput', async () => {
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>

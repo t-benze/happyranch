@@ -2,6 +2,7 @@
 
 GET    /api/v1/runtime/adapters                     - list all adapters
 GET    /api/v1/runtime/adapters/{id}                - poll adapter status
+GET    /api/v1/runtime/adapters/contract-reference  - canonical v1 schemas + paths (seq184, seq339)
 POST   /api/v1/runtime/adapters/{id}/approve        - approve pending adapter (seq220)
 POST   /api/v1/runtime/adapters/{id}/reject          - reject/remove pending adapter (seq220)
 POST   /api/v1/runtime/adapters/{id}/bind-profile    - bind approved adapter to profile
@@ -226,3 +227,36 @@ export const rejectAdapter = (
     method: 'POST',
     body,
   });
+
+// ---------------------------------------------------------------------------
+// THR-107 seq184 / seq339/340: Contract reference
+// ---------------------------------------------------------------------------
+
+/** The canonical v1 AdapterInput/AdapterOutput contract reference response
+ *  (GET /api/v1/runtime/adapters/contract-reference).  Includes the
+ *  server-derived canonical adapter ID, JSON Schemas, output rules,
+ *  and — since seq339/340 — the daemon-managed canonical directory and
+ *  required executable path. */
+export interface ContractReferenceResponse {
+  contract_version: number;
+  canonical_adapter_id: string;
+  canonical_adapter_id_description: string;
+  adapter_input_schema: Record<string, unknown>;
+  adapter_output_schema: Record<string, unknown>;
+  rules: Record<string, unknown>;
+  submission: Record<string, unknown>;
+  dependency_manifest: Record<string, unknown>;
+  token_metering: Record<string, unknown>;
+  reapproval_rule: string;
+  probe: Record<string, unknown>;
+  /** seq339/340: absolute canonical path to the daemon-managed adapters dir. */
+  canonical_directory: string;
+  /** seq339/340: description of canonical_directory. */
+  canonical_directory_description: string;
+  /** seq339/340: exact absolute canonical path where the wrapper MUST be
+   *  created.  The filename is the canonical adapter ID itself (lowercase
+   *  alnum/hyphen only). */
+  required_executable_path: string;
+  /** seq339/340: description of required_executable_path. */
+  required_executable_path_description: string;
+}

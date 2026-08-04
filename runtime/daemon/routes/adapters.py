@@ -49,6 +49,7 @@ changes, or auth/bearer-flow changes.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -835,7 +836,50 @@ def submit_adapter(
             },
         )
 
-    # Reserve the token so concurrent submissions get single-winner
+    # 6. Validate body.executable matches the server-owned canonical path
+    #    (THR-107 seq339/340).  The scoped adapter wrapper MUST be at the
+    #    exact daemon-managed location — no foreign paths, no traversal
+    #    spellings, no alternate filenames, no symlink escape.
+    from runtime.orchestrator.custom_adapter_registry import (
+        compute_canonical_adapter_path,
+        generate_adapter_id as _gen_id,
+    )
+    scoped_adapter_id = _gen_id(f"{intended_profile}-adapter")
+    try:
+        _, required_path = compute_canonical_adapter_path(scoped_adapter_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_canonical_path",
+                "message": str(exc),
+            },
+        )
+
+    # Resolve the submitted executable (need absolute canonical for comparison)
+    submitted_path = Path(body.executable).resolve()
+
+    if str(submitted_path) != str(required_path):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_executable_path",
+                "message": (
+                    f"The scoped adapter wrapper executable must be at the "
+                    f"server-owned canonical path: {required_path}. "
+                    f"Received: {submitted_path}. "
+                    f"Create your adapter wrapper at exactly the required "
+                    f"executable path returned by GET /runtime/adapters/"
+                    f"contract-reference — no other location, symlink, or "
+                    f"alternate filename is accepted. Your token remains "
+                    f"valid and retryable."
+                ),
+                "required_executable_path": str(required_path),
+                "submitted_executable": str(submitted_path),
+            },
+        )
+
+    # 7. Reserve the token so concurrent submissions get single-winner
     if not store.reserve_runtime(raw_token):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -928,7 +972,11 @@ def get_contract_reference(request: Request) -> dict:
     # proceeding to conformance check-ins and submission.
 
     from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
-    from runtime.orchestrator.custom_adapter_registry import build_probe_input, generate_adapter_id
+    from runtime.orchestrator.custom_adapter_registry import (
+        build_probe_input,
+        compute_canonical_adapter_path,
+        generate_adapter_id,
+    )
 
     # Derive the canonical server-authoritative adapter ID from the token's
     # intended_profile_name — this is the same stable ID generation used at
@@ -936,6 +984,14 @@ def get_contract_reference(request: Request) -> dict:
     # adapter_metadata.adapter (provenance invariant).
     canonical_adapter_id = generate_adapter_id(
         f"{token_record.intended_profile_name}-adapter"
+    )
+
+    # Compute the daemon-managed canonical adapter path (THR-107 seq339/340).
+    # Ensures the adapters directory exists with 0o700; rejects symlinks.
+    # The candidate CLI must create its wrapper executable at exactly
+    # required_executable_path.
+    canonical_directory, required_executable_path = compute_canonical_adapter_path(
+        canonical_adapter_id
     )
 
     # Build a minimal self-test fixture from the real probe builder.
@@ -1141,6 +1197,23 @@ def get_contract_reference(request: Request) -> dict:
             "requires_success_true": True,
             "self_test_fixture": probe_fixture,
         },
+        "canonical_directory": str(canonical_directory),
+        "canonical_directory_description": (
+            f"The absolute canonical path to the daemon-managed adapters "
+            f"directory ({canonical_directory}). Created with restrictive "
+            f"user-only mode (0700) if newly created. Never a symlink."
+        ),
+        "required_executable_path": str(required_executable_path),
+        "required_executable_path_description": (
+            f"The exact absolute canonical path where the adapter wrapper "
+            f"executable MUST be created: {required_executable_path}. "
+            f"The filename is the canonical adapter ID itself (lowercase "
+            f"alnum/hyphen only). The candidate CLI must create a regular "
+            f"executable file at exactly this path — no other location, "
+            f"symlink, or alternate filename is accepted by the scoped "
+            f"submission route. The adapters directory is already prepared "
+            f"and ready for the file creation."
+        ),
     }
 
 

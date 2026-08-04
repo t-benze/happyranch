@@ -43,6 +43,140 @@ from runtime.orchestrator.adapter_store import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Canonical adapter daemon path (THR-107 seq339/340)
+# ---------------------------------------------------------------------------
+
+
+def compute_canonical_adapter_path(
+    canonical_adapter_id: str,
+    daemon_home_override: Path | None = None,
+) -> tuple[Path, Path]:
+    """Return the daemon-managed canonical adapter directory and required
+    executable path for a scoped adapter.
+
+    Derives the absolute canonical path from the daemon home and the
+    server-authoritative canonical adapter ID.  The canonical adapter ID
+    is generated from the intended profile name by ``generate_adapter_id``
+    and permits only lowercase alnum/hyphen — so the filename is safe.
+
+    Directory creation:
+      - Creates ``<daemon-home>/adapters/`` with mode 0o700 when it does
+        not yet exist (user-only, restrictive).
+      - Rejects the ``adapters/`` directory if it already exists as a
+        symlink (escape / race guard).
+      - Does NOT create or write the wrapper executable file — the
+        candidate CLI creates it.  The directory merely MUST exist so
+        the caller can create a regular file at the canonical path.
+      - GET contract-reference may call this to ensure the parent dir;
+        it MUST NOT consume or reserve the registration token.
+
+    Target rejection:
+      - If the wrapper path already exists as a symlink, raises ValueError.
+      - If the wrapper path already exists as a non-regular file, raises
+        ValueError.
+      - An existing regular file is NOT rejected at this level — it could
+        be a prior-scope-registration wrapper.  The submit route validates
+        the body.executable matches the exact canonical path.
+
+    Args:
+        canonical_adapter_id: The server-derived adapter ID (lowercase
+            alnum/hyphen only).
+        daemon_home_override: For testing only — overrides the daemon home
+            directory.  When ``None`` (normal operation), uses
+            ``runtime.runtime.daemon_home()`` which honors
+            ``HAPPYRANCH_DAEMON_HOME``.
+
+    Returns:
+        (canonical_directory, required_executable_path) — both absolute,
+        canonical (symlink-resolved) ``Path`` objects.
+    """
+    if not canonical_adapter_id or not isinstance(canonical_adapter_id, str):
+        raise ValueError(
+            f"canonical_adapter_id must be a non-empty string, got {canonical_adapter_id!r}"
+        )
+
+    # Derive the daemon home
+    if daemon_home_override is not None:
+        home = Path(daemon_home_override).resolve()
+    else:
+        from runtime.runtime import daemon_home
+        home = daemon_home().resolve()
+
+    adapters_dir = home / "adapters"
+
+    # ---- Symlink escape guard: the adapters directory itself must NOT be a
+    #      symlink (an attacker could substitute a symlink to a sensitive dir).
+    if adapters_dir.is_symlink():
+        raise ValueError(
+            f"adapters directory is a symlink: {adapters_dir}. "
+            f"The daemon-managed adapters directory must be a real directory, "
+            f"not a symlink. Remove the symlink and create a real directory at "
+            f"{adapters_dir}."
+        )
+
+    # Create the adapters directory with restrictive owner-only mode.
+    # os.makedirs with exist_ok handles the already-exists case, but we
+    # also need to set 0o700 when we are the creator.
+    if not adapters_dir.exists():
+        try:
+            adapters_dir.mkdir(mode=0o700, parents=True)
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot create adapters directory at {adapters_dir}: {exc}"
+            )
+    else:
+        # Directory already exists — verify it is a real directory (not a
+        # symlink, already checked above, but double-check after the
+        # exist-race window).
+        if adapters_dir.is_symlink():
+            raise ValueError(
+                f"adapters directory is a symlink: {adapters_dir}. "
+                f"Remove the symlink and create a real directory at "
+                f"{adapters_dir}."
+            )
+        if not adapters_dir.is_dir():
+            raise ValueError(
+                f"{adapters_dir} exists but is not a directory."
+            )
+        # Ensure 0o700 even when the directory already existed (correct
+        # a prior world-readable creation).
+        try:
+            adapters_dir.chmod(0o700)
+        except OSError:
+            pass  # best-effort
+
+    # The canonical executable path — check for symlink BEFORE resolving
+    wrapper_unresolved = adapters_dir / canonical_adapter_id
+
+    # ---- Symlink escape guard: the wrapper path must NOT be a symlink.
+    #      Check on the UNRESOLVED path so symlinks are detected even when
+    #      their target exists.  resolve() follows symlinks.
+    if wrapper_unresolved.is_symlink():
+        raise ValueError(
+            f"Wrapper path is a symlink: {wrapper_unresolved}. "
+            f"The scoped adapter wrapper must be a regular file at its "
+            f"canonical path, not a symlink."
+        )
+
+    # If the wrapper path already exists (pre-resolve), it must be a regular
+    # file (or not exist yet — the candidate CLI creates it).
+    if wrapper_unresolved.exists() and not wrapper_unresolved.is_file():
+        raise ValueError(
+            f"Wrapper path {wrapper_unresolved} exists but is not a regular file. "
+            f"The canonical adapter path must be a regular executable file."
+        )
+
+    # Now resolve to canonical form for the returned required path
+    wrapper_path = wrapper_unresolved.resolve()
+
+    # Also check the resolved adapters_dir for symlink (it was already checked
+    # above, but resolve it now for the return value)
+    resolved_dir = adapters_dir.resolve()
+
+    return (resolved_dir, wrapper_path)
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -760,6 +894,22 @@ def register_custom_adapter(
     if intended_profile_name is not None:
         adapter_id = generate_adapter_id(f"{intended_profile_name}-adapter")
         adapter_name = intended_profile_name
+
+        # Scoped-path enforcement (THR-107 seq339/340): the executable MUST
+        # be at the daemon-managed canonical location.  This is the
+        # registration-seam recheck — even if the route-layer check is
+        # somehow bypassed, this critical boundary rejects foreign paths.
+        _canonical_dir, _required_path = compute_canonical_adapter_path(adapter_id)
+        if str(executable_path) != str(_required_path):
+            raise ValueError(
+                f"Scoped adapter {adapter_id!r} requires the executable at the "
+                f"server-owned canonical path: {_required_path}. "
+                f"Received: {executable_path}. "
+                f"Create your adapter wrapper at exactly the required "
+                f"executable path returned by GET /runtime/adapters/"
+                f"contract-reference. The token was NOT consumed and "
+                f"remains retryable."
+            )
     else:
         adapter_name = Path(executable).name  # Use filename as default name
         adapter_id = generate_adapter_id(adapter_name)
