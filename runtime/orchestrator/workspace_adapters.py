@@ -767,7 +767,57 @@ def _build_lifecycle_canonical_specs(
             # Legacy single-SKILL.md artifact — treat as source dir
             pass
 
+        # ── Compute expected tree hash BEFORE building ─────────────
+        # This validates every member's artifact bytes against the
+        # immutable ledger-declared SHA-256.  If a member-artifact
+        # mismatch exists (ArtifactStore vs ledger), this fails closed
+        # BEFORE the canonical package build and BEFORE any session
+        # launch that might proceed unvalidated.
+        #
+        # Finding 1 fix: if this fails, emit a durable integrity/
+        # audit/operations failure event BEFORE propagating the error.
+        # If the event persistence itself fails, refuse the build.
         if isinstance(manifest, dict) and "members" in manifest:
+            try:
+                expected_tree_hash = _compute_manifest_tree_hash(
+                    manifest, artifact_store,
+                    skill_slug=skill_slug,
+                )
+            except LifecycleMaterializationError:
+                # ── Emit durable failure event (Finding 1) ──────────
+                if db is not None:
+                    try:
+                        db.insert_skill_validation_event(
+                            skill_id=pkg.skill_id,
+                            slug=skill_slug,
+                            agent=agent_name,
+                            source="integrity_check",
+                            severity="error",
+                            ok=False,
+                            version=pkg.version,
+                            findings=[
+                                f"Lifecycle manifest member-artifact hash mismatch "
+                                f"for {skill_slug}@{pkg.version} — "
+                                f"ArtifactStore bytes do not match ledger-declared "
+                                f"member hashes."
+                            ],
+                            reason_codes=["member_hash_mismatch"],
+                        )
+                    except Exception as audit_exc:
+                        # Event persistence failed — fail closed.
+                        # Do NOT re-raise the original error (which
+                        # would mask the audit failure).
+                        raise LifecycleMaterializationError(
+                            skill_slug=skill_slug,
+                            agent_name=agent_name,
+                            reason=(
+                                f"Integrity event persistence failed during "
+                                f"member-hash validation for {skill_slug}@{pkg.version}: "
+                                f"{audit_exc}"
+                            ),
+                        ) from audit_exc
+                raise  # Re-raise original error after audit write
+
             # Manifest-based: build via artifact store
             store.build_from_manifest(
                 skill_slug, pkg.version, pkg.content_hash,
@@ -775,11 +825,8 @@ def _build_lifecycle_canonical_specs(
             )
         else:
             # Legacy: single SKILL.md artifact
+            expected_tree_hash = _compute_legacy_tree_hash(manifest_bytes)
             # Build a temp source dir with just the SKILL.md.
-            # Derive the expected source tree hash from the already-verified
-            # manifest_bytes so build_from_source can verify the existing
-            # canonical package content before reuse — if a same-owner
-            # process tampered with it, the mismatch triggers a rebuild.
             import tempfile
             with tempfile.TemporaryDirectory() as tmpd:
                 tmp_path = Path(tmpd)
@@ -794,6 +841,7 @@ def _build_lifecycle_canonical_specs(
             "slug": skill_slug,
             "version": pkg.version,
             "content_hash": pkg.content_hash,
+            "tree_hash": expected_tree_hash,
         })
 
         # Record successful materialization — audit persistence is mandatory.
@@ -837,6 +885,331 @@ def _compute_dir_hash(src_dir: Path) -> str:
             h.update(fpath.read_bytes())
             h.update(b"\x00")
     return h.hexdigest()
+
+
+def _compute_manifest_tree_hash(
+    manifest: dict,
+    artifact_store,
+    *,
+    skill_slug: str,
+) -> str:
+    """Compute the expected canonical tree hash from the AUTHORITATIVE
+    manifest members, validating each member's artifact bytes against
+    its immutable ledger-declared SHA-256 BEFORE hashing.
+
+    Delegates to the canonical-store-level helper
+    ``_compute_tree_hash_from_manifest_members`` which performs the
+    identical validation.  Wraps ``CanonicalStoreError`` as
+    ``LifecycleMaterializationError`` for the caller's error domain.
+
+    This prevents lifecycle-ledger packages from self-ratifying:
+    see ``_compute_tree_hash_from_manifest_members`` for details.
+    """
+    from runtime.skills.canonical_store import (
+        _compute_tree_hash_from_manifest_members,
+        CanonicalStoreError,
+    )
+
+    try:
+        return _compute_tree_hash_from_manifest_members(
+            manifest, artifact_store,
+            skill_slug=skill_slug,
+        )
+    except CanonicalStoreError as exc:
+        raise LifecycleMaterializationError(
+            skill_slug=skill_slug,
+            agent_name="materializer",
+            reason=f"{exc.code}: {exc.detail}",
+        ) from exc
+
+
+def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
+    """Compute expected tree hash for legacy single-SKILL.md artifacts.
+
+    These packages have one member: SKILL.md, whose content IS the
+    manifest_bytes (the raw artifact content).
+    """
+    import hashlib
+    h = hashlib.sha256()
+    h.update(b"SKILL.md")
+    h.update(b"\x00")
+    h.update(manifest_bytes)
+    h.update(b"\x00")
+    return h.hexdigest()
+
+
+# ── Pre-launch integrity validation ────────────────────────────────
+# Before every executor launch, validate that workspace skill links
+# resolve to the expected canonical packages and that canonical package
+# integrity (ownership, permissions, member hashes for lifecycle
+# packages) is intact. This is a detective control — same-owner mode
+# removes OS-level write barriers, so an agent-controlled executor can
+# mutate canonical targets between checks. The only recovery is manual
+# operator re-sync/redeploy from approved release/custom artifact
+# sources.
+
+
+class WorkspaceIntegrityError(Exception):
+    """Raised when workspace skill integrity validation fails.
+
+    Terminal — no executor launch proceeds. Recovery requires
+    human/operator intervention (re-sync/redeploy from approved release
+    artifacts and daemon restart). Auto-repair from same-UID local
+    sources is never performed.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        findings: list[str] | None = None,
+        recovery_command: str | None = None,
+    ) -> None:
+        self.code = code
+        self.detail = detail
+        self.findings = findings or []
+        self.recovery_command = recovery_command
+        msg = f"[{code}] {detail}"
+        if self.recovery_command:
+            msg += f"\nRecovery: {self.recovery_command}"
+        if self.findings:
+            msg += f"\nFindings: {', '.join(self.findings)}"
+        super().__init__(msg)
+
+
+def validate_workspace_skills_integrity(
+    workspace: Path,
+    expected_specs: list[dict],
+    *,
+    settings: "Settings | None" = None,  # noqa: F821
+    db: "Database | None" = None,  # noqa: F821
+    agent_name: str | None = None,
+    task_id: str | None = None,
+) -> None:
+    """Validate workspace skill links and canonical package integrity.
+
+    For EVERY expected spec, validates:
+    - The canonical package exists and has correct ownership/permissions
+    - The canonical tree hash matches the expected value computed from
+      ledger-declared member hashes (lifecycle) or the source tree hash
+      (system contracts)
+    - Workspace symlinks at BOTH ``.claude/skills`` and ``.agents/skills``
+      point to the correct canonical target
+    - No ordinary directories at expected symlink positions (hostile state)
+    - No unexpected entries in either skills root
+
+    On ANY mismatch: emits a durable ``skill_validation_events`` row with
+    ``severity="error"``, ``source="integrity_check"``, ``ok=False``, then
+    raises ``WorkspaceIntegrityError``. If the audit write itself fails,
+    also raises (fail-closed — no launch proceeds unrecorded).
+
+    This is a DETECTIVE control, not a preventive security boundary.
+    In same-owner mode, an agent-controlled executor can mutate canonical
+    targets through workspace links between checks. The integrity check
+    detects tampering at the next launch attempt and refuses the session.
+    Recovery is manual only: operator re-sync/redeploy from approved
+    release/custom artifact sources.
+
+    Args:
+        workspace: Agent workspace root
+        expected_specs: List of {slug, version, content_hash, tree_hash}
+            dicts from materialization. Must be the SAME list that was
+            used to materialize — never a separately-derived list that
+            can drift.
+        settings: Project Settings (for canonical store construction)
+        db: Database handle for persisting audit events
+        agent_name: Agent name for audit attribution
+        task_id: Task ID for audit attribution
+
+    Raises:
+        WorkspaceIntegrityError: On any mismatch, missing package, broken
+            link, ordinary directory, unexpected entry, or audit-write failure.
+    """
+    from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError
+    from runtime.platform.isolation import (
+        detect_platform_isolation,
+        PlatformIsolationError,
+    )
+
+    isolation = detect_platform_isolation()
+    store = CanonicalSkillStore(
+        settings=settings,
+        isolation=isolation,
+    )
+
+    # No specs → nothing to validate (e.g., agent with no skills).
+    if not expected_specs:
+        return
+
+    findings: list[str] = []
+    skill_roots = [".claude/skills", ".agents/skills"]
+    expected_slugs = {spec["slug"] for spec in expected_specs}
+
+    # ── Validate each expected spec ────────────────────────────
+    for spec in expected_specs:
+        slug = spec["slug"]
+        version = spec["version"]
+        content_hash = spec["content_hash"]
+
+        # 1. Verify canonical package integrity (presence, ownership, mode)
+        try:
+            store.verify_package(slug, version, content_hash)
+        except CanonicalStoreError as exc:
+            findings.append(
+                f"Canonical package integrity failure for {slug}@{version}: {exc}"
+            )
+            continue
+
+        # 1b. Verify package tree hash matches the expected value.
+        #     In same-owner mode, the executor shares the daemon uid and can
+        #     chmod+mutate+restore canonical targets. The mode check above
+        #     allows owner-writable files in that mode, so we MUST also
+        #     validate actual content integrity via tree hash.
+        expected_tree_hash = spec.get("tree_hash", content_hash)
+        actual_tree_hash = store.compute_tree_hash(slug, version, content_hash)
+        if actual_tree_hash != expected_tree_hash:
+            findings.append(
+                f"Package tree hash mismatch for {slug}@{version}: "
+                f"expected {expected_tree_hash[:16]}..., "
+                f"got {actual_tree_hash[:16]}..."
+            )
+            continue
+
+        canonical_target = store.canonical_path(slug, version, content_hash)
+
+        # 2. Verify workspace symlinks in BOTH roots
+        for subdir in skill_roots:
+            link_path = workspace / subdir / slug
+            if not link_path.exists(follow_symlinks=False):
+                findings.append(
+                    f"Missing workspace link: {link_path} "
+                    f"(expected → {canonical_target})"
+                )
+                continue
+
+            if not link_path.is_symlink():
+                if link_path.is_dir():
+                    findings.append(
+                        f"Ordinary directory at symlink position: {link_path} "
+                        f"(expected symlink → {canonical_target}). "
+                        f"This is a potentially hostile state — refused."
+                    )
+                else:
+                    findings.append(
+                        f"Non-symlink at link position: {link_path} "
+                        f"(expected symlink → {canonical_target})"
+                    )
+                continue
+
+            if not isolation.verify_workspace_link(
+                link_path, canonical_target, store.root,
+            ):
+                try:
+                    actual_target = os.readlink(str(link_path))
+                except OSError:
+                    actual_target = "<unreadable>"
+                findings.append(
+                    f"Wrong/mismatched workspace link: {link_path} → "
+                    f"{actual_target} (expected → {canonical_target})"
+                )
+
+    # ── Check for unexpected entries in workspace skill dirs ──
+    for subdir in skill_roots:
+        skills_dir = workspace / subdir
+        if not skills_dir.is_dir():
+            continue
+        for entry in sorted(skills_dir.iterdir()):
+            if entry.name.startswith(".tmp."):
+                continue
+            if entry.name not in expected_slugs:
+                if entry.is_symlink():
+                    findings.append(
+                        f"Unexpected symlink in {subdir}: {entry.name} "
+                        f"→ {os.readlink(str(entry))}. "
+                        f"Not in expected skill set."
+                    )
+                elif entry.is_dir():
+                    findings.append(
+                        f"Unexpected ordinary directory in {subdir}: {entry.name}"
+                    )
+                else:
+                    findings.append(
+                        f"Unexpected entry in {subdir}: {entry.name}"
+                    )
+
+    # ── If no findings, validation passed ─────────────────────
+    if not findings:
+        logger.debug(
+            "Workspace skills integrity validation passed for %s "
+            "(%d expected specs, agent=%s)",
+            workspace, len(expected_specs), agent_name or "?",
+        )
+        return
+
+    # ── Emit durable audit event(s) ────────────────────────────
+    audit_failed = False
+    if db is not None:
+        for finding in findings:
+            try:
+                db.insert_skill_validation_event(
+                    skill_id="hr:workspace-integrity",
+                    slug="workspace-integrity",
+                    agent=agent_name,
+                    source="integrity_check",
+                    severity="error",
+                    ok=False,
+                    version=None,
+                    findings=[finding],
+                    reason_codes=["integrity_mismatch"],
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to persist integrity violation audit event: %s",
+                    exc,
+                )
+                audit_failed = True
+                findings.append(
+                    f"Audit persistence failure: {exc}. "
+                    f"Launch refused per fail-closed policy."
+                )
+                break
+
+    # ── Fail closed ────────────────────────────────────────────
+    # Recovery guidance (mode-qualified):
+    # - Broken/missing/wrong workspace links → re-materialize via
+    #   executor switch (happyranch set-executor) which rebuilds links
+    #   from the canonical store (links ONLY — does NOT recover
+    #   corrupted canonical bytes).
+    # - Corrupted canonical bytes (hash mismatch, tampered content) →
+    #   set-executor CANNOT recover bytes — it only repairs links.
+    #   Recovery requires: (1) stop the daemon, (2) delete the
+    #   corrupted canonical package directory under
+    #   <daemon-home>/canonical-skills/<slug>/<version>/<content_hash>,
+    #   (3) restart the daemon so the next materialization rebuilds
+    #   from the authoritative release/custom artifact source.
+    #   There is NO trusted immutable same-UID repair source and
+    #   NO automatic recovery from any local same-UID source.
+    recovery = (
+        "For broken/missing links: happyranch set-executor <agent> "
+        "--executor <current-executor>. "
+        "For corrupted canonical bytes: stop daemon, remove corrupted "
+        "package under <daemon-home>/canonical-skills/<slug>/<version>/"
+        "<hash>, restart daemon (next materialization rebuilds from "
+        "authoritative release/custom artifact source). "
+        "No automatic repair from same-UID local sources."
+    )
+
+    raise WorkspaceIntegrityError(
+        code="integrity_mismatch" if not audit_failed else "audit_write_failed",
+        detail=(
+            f"Workspace skills integrity validation failed for {workspace} "
+            f"(agent={agent_name or '?'}, "
+            f"expected_specs={len(expected_specs)}, "
+            f"findings={len(findings)})."
+        ),
+        findings=findings,
+        recovery_command=recovery,
+    )
 
 
 def inject_system_contracts(

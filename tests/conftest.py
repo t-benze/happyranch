@@ -227,6 +227,24 @@ def _test_mode_platform_isolation(monkeypatch):
 
 
 @pytest.fixture
+def same_owner_mode():
+    """Fixture: request same-owner test isolation for this test.
+
+    Use this ON tests that need same-owner mode:
+    - Adversarial prelaunch integrity tests (mutation detection)
+    - Mutation feasibility proofs (technical possibility of chmod+write)
+    - Specific canonical store tests that exercise same-owner code paths
+
+    Without this fixture, the default test isolation models distinct-
+    identity, matching production behavior for provisioned deployments.
+    """
+    # In the merged test framework, same-owner is the default test mode
+    # (the test process IS both daemon and executor). This fixture exists
+    # as a documented marker the test explicitly requests.
+    yield
+
+
+@pytest.fixture
 def tmp_dir(tmp_path: Path) -> Path:
     return tmp_path
 

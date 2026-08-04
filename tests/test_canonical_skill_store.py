@@ -1373,20 +1373,14 @@ class TestHardeningFailureAfterPublication:
         assert not store.is_built("test-skill", "1.0.0", content_hash), (
             "is_built() must return False when hardening + compensation fail"
         )
-        # verify_package is mode-aware: same-owner allows owner-writable
-        # (hash detection catches mutations); distinct-identity rejects.
-        _in_same_owner = os.environ.get(
-            "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-        ).strip().lower() in ("1", "true", "yes")
-        if _in_same_owner:
+        # verify_package enforces the immutable invariant strictly —
+        # files must be 0444 regardless of isolation mode.
+        with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
-        else:
-            with pytest.raises(CanonicalStoreError) as ve:
-                store.verify_package("test-skill", "1.0.0", content_hash)
-            assert ve.value.code in (
-                "insufficient_hardening", "ownership_violation"), (
-                f"verify_package must reject on readonly invariant, got {ve.value.code}"
-            )
+        assert ve.value.code in (
+            "insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, got {ve.value.code}"
+        )
 
     def test_manifest_hardening_and_compensation_failure_rejected_by_both_gates(
         self, temp_canonical_root, monkeypatch,
@@ -1445,27 +1439,21 @@ class TestHardeningFailureAfterPublication:
         assert not store.is_built("mf-skill", "1.0.0", content_hash), (
             "is_built() must return False when manifest hardening + compensation fail"
         )
-        # verify_package is mode-aware: same-owner allows owner-writable.
-        _in_same_owner = os.environ.get(
-            "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-        ).strip().lower() in ("1", "true", "yes")
-        if _in_same_owner:
+        # verify_package enforces the immutable invariant strictly.
+        with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("mf-skill", "1.0.0", content_hash)
-        else:
-            with pytest.raises(CanonicalStoreError) as ve:
-                store.verify_package("mf-skill", "1.0.0", content_hash)
-            assert ve.value.code in (
-                "insufficient_hardening", "ownership_violation"), (
-                f"verify_package must reject on readonly invariant, got {ve.value.code}"
-            )
+        assert ve.value.code in (
+            "insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, got {ve.value.code}"
+        )
 
     def test_owner_writable_member_rejected_at_materialization_gate(
         self, temp_canonical_root, skill_source_dir,
     ):
         """Regression: an owner-writable 0644 member is rejected by
-        verify_package() in distinct-identity mode. In same-owner mode,
-        verify_package allows owner-writable (relying on hash detection),
-        but is_built always enforces strict hardening regardless of mode."""
+        verify_package() and is_built() in ALL isolation modes.
+        Files must always be 0444 — the immutable file invariant
+        is enforced regardless of same-owner vs distinct-identity."""
         import hashlib
         import os as _os
 
@@ -1489,23 +1477,14 @@ class TestHardeningFailureAfterPublication:
             "is_built() must reject package with owner-writable member"
         )
 
-        # verify_package behavior depends on isolation mode
-        in_same_owner = _os.environ.get(
-            "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-        ).strip().lower() in ("1", "true", "yes")
-        if in_same_owner:
-            # Same-owner mode allows owner-writable files — hash
-            # detection in validate_workspace_skills_integrity
-            # handles integrity.
+        # Files must always be 0444 — the immutable invariant is enforced
+        # regardless of isolation mode.
+        with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
-        else:
-            # Distinct-identity mode rejects owner-writable files
-            with pytest.raises(CanonicalStoreError) as ve:
-                store.verify_package("test-skill", "1.0.0", content_hash)
-            assert ve.value.code == "insufficient_hardening", (
-                f"verify_package must reject on insufficient_hardening, got {ve.value.code}"
-            )
-            assert "owner-writable" in ve.value.detail
+        assert ve.value.code == "insufficient_hardening", (
+            f"verify_package must reject on insufficient_hardening, got {ve.value.code}"
+        )
+        assert "owner-writable" in ve.value.detail
 
     # ── Normal hardening functional checks ──────
 
@@ -1657,34 +1636,21 @@ class TestHardeningFailureAfterPublication:
             )
 
             # ── 8. Materialization pre-check gate: verify_package ──
-            # Mode-aware: same-owner allows owner-writable;
-            # distinct-identity rejects insufficiently hardened packages.
-            _in_same_owner = os.environ.get(
-                "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-            ).strip().lower() in ("1", "true", "yes")
-            if _in_same_owner:
+            # The immutable file invariant is enforced regardless of
+            # isolation mode.
+            with pytest.raises(CanonicalStoreError) as ve:
                 store.verify_package("test-skill", "1.0.0", content_hash)
-            else:
-                with pytest.raises(CanonicalStoreError) as ve:
-                    store.verify_package("test-skill", "1.0.0", content_hash)
-                assert ve.value.code in (
-                    "insufficient_hardening", "ownership_violation"), (
-                    f"verify_package must reject on readonly invariant, "
-                    f"got {ve.value.code}"
-                )
+            assert ve.value.code in (
+                "insufficient_hardening", "ownership_violation"), (
+                f"verify_package must reject on readonly invariant, "
+                f"got {ve.value.code}"
+            )
 
             # ── 9. Materialization boundary: BOTH provider roots ───
             skills_subdirs = [".claude/skills", ".agents/skills"]
             for subdir in skills_subdirs:
-                # In distinct-identity mode, materialization must fail.
-                # In same-owner mode, verify_package may pass but
-                # integrity validation catches the hash mismatch.
-                if _in_same_owner:
-                    # Same-owner: verify_package passes, but
-                    # materialization may still succeed. Hash
-                    # detection in validate_workspace_skills_integrity
-                    # provides the real integrity guarantee.
-                    continue
+                # verify_package always rejects — materialization follows
+                # the same immutable invariant.
                 # Attempt materialization → must raise (fail-closed)
                 with pytest.raises(
                     SymlinkMaterializationError, match="canonical_missing"
@@ -1872,29 +1838,22 @@ class TestHardeningFailureAfterPublication:
             )
 
             # ── 8. Materialization pre-check gate: verify_package ──
-            # Mode-aware: same-owner allows owner-writable;
-            # distinct-identity rejects insufficiently hardened packages.
-            _in_same_owner = os.environ.get(
-                "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-            ).strip().lower() in ("1", "true", "yes")
-            if _in_same_owner:
+            # The immutable file invariant is enforced regardless of
+            # isolation mode.
+            with pytest.raises(CanonicalStoreError) as ve:
                 store.verify_package(
                     "fail-mf", "1.0.0", failing_content_hash)
-            else:
-                with pytest.raises(CanonicalStoreError) as ve:
-                    store.verify_package(
-                        "fail-mf", "1.0.0", failing_content_hash)
-                assert ve.value.code in (
-                    "insufficient_hardening", "ownership_violation"), (
-                    f"verify_package must reject on readonly invariant, "
-                    f"got {ve.value.code}"
-                )
+            assert ve.value.code in (
+                "insufficient_hardening", "ownership_violation"), (
+                f"verify_package must reject on readonly invariant, "
+                f"got {ve.value.code}"
+            )
 
             # ── 9. Materialization boundary: BOTH provider roots ───
             skills_subdirs = [".claude/skills", ".agents/skills"]
             for subdir in skills_subdirs:
-                if _in_same_owner:
-                    continue
+                # verify_package always rejects — materialization follows
+                # the same immutable invariant.
                 # Attempt materialization → must raise (fail-closed)
                 with pytest.raises(
                     SymlinkMaterializationError, match="canonical_missing"
@@ -2246,36 +2205,20 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     "after dual failure"
                 )
 
-                # (b) verify_package: mode-aware — same-owner allows
-                #     owner-writable; distinct-identity rejects.
-                _in_same_owner = os.environ.get(
-                    "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-                ).strip().lower() in ("1", "true", "yes")
-                if _in_same_owner:
-                    # Same-owner mode: allow owner-writable. Package may
-                    # be missing for non-target skills.
-                    try:
-                        store.verify_package(sid, "system", content_h)
-                    except CanonicalStoreError as ve:
-                        if ve.code == "package_missing":
-                            pass  # non-target skill never built
-                        else:
-                            raise
-                else:
-                    with pytest.raises(CanonicalStoreError) as ve:
-                        store.verify_package(sid, "system", content_h)
-                    assert ve.value.code in (
-                        "insufficient_hardening", "ownership_violation",
-                        "not_found", "package_missing",
-                    ), (
-                        f"verify_package must reject {sid} on runner store, "
-                        f"got {ve.value.code}"
-                    )
+                # (b) verify_package enforces the immutable file invariant
+                #     regardless of isolation mode.
+                with pytest.raises(CanonicalStoreError) as ve:
+                    store.verify_package(sid, "system", content_h)
+                assert ve.value.code in (
+                    "insufficient_hardening", "ownership_violation",
+                    "not_found", "package_missing",
+                ), (
+                    f"verify_package must reject {sid} on runner store, "
+                    f"got {ve.value.code}"
+                )
 
                 # (c) SymlinkMaterializer rejects for BOTH roots
                 for subdir in [".claude/skills", ".agents/skills"]:
-                    if _in_same_owner:
-                        continue
                     with pytest.raises(
                         SymlinkMaterializationError, match="canonical_missing"
                     ):
@@ -2589,34 +2532,20 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     "after dual failure"
                 )
 
-                # (b) verify_package: mode-aware — same-owner allows
-                #     owner-writable; distinct-identity rejects.
-                _in_same_owner = os.environ.get(
-                    "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", ""
-                ).strip().lower() in ("1", "true", "yes")
-                if _in_same_owner:
-                    try:
-                        store.verify_package(sid, "system", content_h)
-                    except CanonicalStoreError as ve:
-                        if ve.code == "package_missing":
-                            pass
-                        else:
-                            raise
-                else:
-                    with pytest.raises(CanonicalStoreError) as ve:
-                        store.verify_package(sid, "system", content_h)
-                    assert ve.value.code in (
-                        "insufficient_hardening", "ownership_violation",
-                        "not_found", "package_missing",
-                    ), (
-                        f"verify_package must reject {sid} on runner store, "
-                        f"got {ve.value.code}"
-                    )
+                # (b) verify_package enforces the immutable file invariant
+                #     regardless of isolation mode.
+                with pytest.raises(CanonicalStoreError) as ve:
+                    store.verify_package(sid, "system", content_h)
+                assert ve.value.code in (
+                    "insufficient_hardening", "ownership_violation",
+                    "not_found", "package_missing",
+                ), (
+                    f"verify_package must reject {sid} on runner store, "
+                    f"got {ve.value.code}"
+                )
 
                 # (c) SymlinkMaterializer rejects for BOTH roots
                 for subdir in [".claude/skills", ".agents/skills"]:
-                    if _in_same_owner:
-                        continue
                     with pytest.raises(
                         SymlinkMaterializationError, match="canonical_missing"
                     ):

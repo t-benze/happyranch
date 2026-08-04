@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -177,6 +178,24 @@ def _apply_readonly_hardening(
     isolation.make_dir_readonly_executor(pkg_path)
 
 
+def _make_writable_for_removal(pkg_path: Path) -> None:
+    """Make all files and directories in *pkg_path* owner-writable
+    so they can be removed by shutil.rmtree.
+
+    Canonical packages have files at 0444 and directories at 0555.
+    Before rmtree can delete them, we must restore write permission.
+    """
+    for entry in pkg_path.rglob("*"):
+        try:
+            entry.chmod(entry.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+    try:
+        pkg_path.chmod(pkg_path.stat().st_mode | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def _safe_remove_published_package(
     pkg_path: Path, slug: str, version: str, content_hash: str,
 ) -> None:
@@ -198,6 +217,8 @@ def _safe_remove_published_package(
         # store root (defense-in-depth against path manipulation)
         if not pkg_path.is_dir():
             return
+        # Make writable first — canonical packages are read-only (0444)
+        _make_writable_for_removal(pkg_path)
         # Remove only the package directory tree
         shutil.rmtree(pkg_path)
         logger.warning(
@@ -230,6 +251,98 @@ def _get_canonical_store_root(settings=None) -> Path:
 
     # Fallback: ~/.happyranch/canonical-skills/
     return Path.home() / ".happyranch" / "canonical-skills"
+
+
+_MEMBER_HASH_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+
+def _validate_member_hash(member_path: str, raw_hash: str) -> str:
+    """Validate and extract the hex digest from a member hash declaration.
+
+    Rejects missing/unknown algorithm prefixes, bad hex length,
+    uppercase hex, non-hex characters, and malformed declarations.
+    Returns the 64-char lowercase hex portion on success.
+    """
+    if not raw_hash or not isinstance(raw_hash, str):
+        raise CanonicalStoreError(
+            "malformed_hash",
+            f"Missing hash declaration for member {member_path!r}",
+        )
+    if not _MEMBER_HASH_RE.match(raw_hash):
+        raise CanonicalStoreError(
+            "malformed_hash",
+            f"Hash declaration for member {member_path!r} must be "
+            f"exactly sha256:<64 lowercase hex>; got {raw_hash!r}",
+        )
+    return raw_hash[7:]  # strip "sha256:" prefix
+
+
+def _compute_tree_hash_from_manifest_members(
+    manifest: dict,
+    artifact_store,
+    *,
+    skill_slug: str,
+) -> str:
+    """Compute expected canonical tree hash from manifest members.
+
+    Validates each member's artifact-store bytes against the immutable
+    ledger-declared SHA-256 hash BEFORE computing the tree hash.
+    Used by both the pre-materialization spec builder
+    (``_compute_manifest_tree_hash`` in workspace_adapters) and the
+    ``build_from_manifest`` reuse verification path.
+
+    Raises CanonicalStoreError on hash mismatch, missing artifacts,
+    malformed hash declarations, or missing/non-hex declarations.
+    """
+    members = manifest.get("members", [])
+    if not members:
+        raise CanonicalStoreError(
+            "empty_manifest",
+            f"Manifest for {skill_slug} has no members — cannot compute tree hash",
+        )
+
+    sorted_members = sorted(members, key=lambda m: m.get("path", ""))
+
+    h = hashlib.sha256()
+    for member in sorted_members:
+        member_path = member.get("path", "")
+        member_artifact_key = member.get("artifact_key", "")
+        member_hash = member.get("hash", "")
+
+        if not member_path:
+            raise CanonicalStoreError(
+                "malformed_manifest",
+                f"Member in manifest for {skill_slug} missing 'path' field",
+            )
+
+        # Validate member hash declaration strictly (Finding 3 fix)
+        expected_hex = _validate_member_hash(member_path, member_hash)
+
+        # Load member bytes from artifact store
+        try:
+            member_bytes = artifact_store.read(member_artifact_key)
+        except Exception as exc:
+            raise CanonicalStoreError(
+                "artifact_load_failed",
+                f"Failed to load artifact {member_artifact_key}: {exc}",
+            ) from exc
+
+        # Validate bytes against immutable ledger-declared hash
+        actual_hex = hashlib.sha256(member_bytes).hexdigest()
+        if actual_hex != expected_hex:
+            raise CanonicalStoreError(
+                "member_hash_mismatch",
+                f"Member artifact hash mismatch for {member_path}: "
+                f"ledger declares {expected_hex[:16]}..., "
+                f"artifact store has {actual_hex[:16]}...",
+            )
+
+        h.update(member_path.encode())
+        h.update(b"\x00")
+        h.update(member_bytes)
+        h.update(b"\x00")
+
+    return h.hexdigest()
 
 
 class CanonicalSkillStore:
@@ -417,6 +530,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
@@ -563,8 +677,8 @@ class CanonicalSkillStore:
                         f"Failed to load artifact {member_artifact_key}: {exc}",
                     ) from exc
 
-                # Validate member hash
-                expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+                # Validate member hash strictly (Finding 3)
+                expected_hex = _validate_member_hash(member_path, member_hash)
                 actual_hash = hashlib.sha256(member_bytes).hexdigest()
                 if actual_hash != expected_hex:
                     raise CanonicalStoreError(
@@ -586,6 +700,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
@@ -695,9 +810,14 @@ class CanonicalSkillStore:
                 actual_files.add(str(fpath.relative_to(pkg_path)))
 
         for member in members:
-            member_path = member["path"]
+            member_path = member.get("path", "")
             member_hash = member.get("hash", "")
-            expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+
+            # Validate member hash declaration strictly
+            try:
+                expected_hex = _validate_member_hash(member_path, member_hash)
+            except CanonicalStoreError:
+                return False
 
             member_file = pkg_path / member_path
             if not member_file.is_file():

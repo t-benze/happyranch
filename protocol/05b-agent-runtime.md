@@ -281,12 +281,12 @@ retired, and legacy-quarantined content never reaches the workspace.
 **Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
 (`<org_root>/skills/`) is retired and quarantined. During migration, legacy
 SKILL.md content is copied to the org ArtifactStore under
-`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for immutable retention; the
+`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for retention; the
 ledger stores only the artifact reference key, never the mutable filesystem path.
 Quarantined content is never resolved by `inject_managed_skills`.
 
 **Content retention (task-artifact policy).** Lifecycle proposal content
-is stored in the org ArtifactStore under content-addressed immutable keys:
+is stored in the org ArtifactStore under content-addressed keys:
 - ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
 - ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
 - ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset

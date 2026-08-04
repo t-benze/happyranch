@@ -868,9 +868,9 @@ product-manager-prd). Proposals are immutable and task/session-provenanced with
 content excluded from catalog/effective resolution/materialization until
 founder publication.
 
-**Immutable artifact retention.** All package members (SKILL.md, each
+**Artifact retention.** All package members (SKILL.md, each
 reference file, each asset) are stored as independent content-addressed
-immutable artifacts in the org ArtifactStore. A canonical JSON manifest
+artifacts in the org ArtifactStore. A canonical JSON manifest
 lists every member with its normalized relative path, SHA-256 hash, artifact
 key, and size. The ``content_hash`` in the ledger is the SHA-256 of the
 manifest (binding full-package provenance, distinct from individual member

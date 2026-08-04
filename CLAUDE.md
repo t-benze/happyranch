@@ -19,7 +19,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 ## Architecture: Canonical Skill Store + Workspace Symlinks (macOS-only)
 
-Skill delivery uses an **immutable canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed.
+Skill delivery uses a **canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed. In distinct-identity mode targets are OS-enforced read-only (0444); in same-owner mode the executor shares the daemon uid and bytes are logically governed by ledger-declared hashes (detective, not preventive).
 
 - **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
 - **Two modes:**
