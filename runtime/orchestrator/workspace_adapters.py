@@ -773,15 +773,32 @@ def _build_lifecycle_canonical_specs(
             # Legacy single-SKILL.md artifact — treat as source dir
             pass
 
+        # ── Derive expected tree hash from AUTHORITATIVE resolved
+        #    artifact content BEFORE building into the canonical store.
+        #    Never compute it from an existing canonical target after
+        #    build_from_manifest/is_built reuse — same-owner mutation can
+        #    restore modes and otherwise self-ratify a corrupted package.
+        expected_tree_hash: str
         if isinstance(manifest, dict) and "members" in manifest:
-            # Manifest-based: build via artifact store
+            # Manifest-based: compute expected tree hash from the
+            # authoritative manifest member bytes (loaded from the
+            # artifact store), not from the canonical tree.
+            expected_tree_hash = _compute_manifest_tree_hash(
+                manifest, artifact_store,
+                skill_slug=skill_slug,
+            )
+            # Build into canonical store
             store.build_from_manifest(
                 skill_slug, pkg.version, pkg.content_hash,
                 manifest, artifact_store,
             )
         else:
-            # Legacy: single SKILL.md artifact
-            # Build a temp source dir with just the SKILL.md
+            # Legacy: single SKILL.md artifact.
+            # The only member is SKILL.md — its hash is derivable.
+            expected_tree_hash = _compute_legacy_tree_hash(
+                manifest_bytes,
+            )
+            # Build into canonical store
             import tempfile
             with tempfile.TemporaryDirectory() as tmpd:
                 tmp_path = Path(tmpd)
@@ -794,9 +811,7 @@ def _build_lifecycle_canonical_specs(
             "slug": skill_slug,
             "version": pkg.version,
             "content_hash": pkg.content_hash,
-            "tree_hash": store.compute_tree_hash(
-                skill_slug, pkg.version, pkg.content_hash,
-            ),
+            "tree_hash": expected_tree_hash,
         })
 
         # Record successful materialization — audit persistence is mandatory.
@@ -839,6 +854,69 @@ def _compute_dir_hash(src_dir: Path) -> str:
             h.update(b"\x00")
             h.update(fpath.read_bytes())
             h.update(b"\x00")
+    return h.hexdigest()
+
+
+def _compute_manifest_tree_hash(
+    manifest: dict,
+    artifact_store,
+    *,
+    skill_slug: str,
+) -> str:
+    """Compute the expected canonical tree hash from the AUTHORITATIVE
+    manifest members (loaded from the artifact store), NOT from the
+    canonical tree.
+
+    This prevents lifecycle-ledger packages from self-ratifying:
+    a same-owner executor that mutates a canonical package and restores
+    modes will NOT survive the next pre-launch integrity check because
+    the expected tree hash is derived from the immutable artifact-store
+    bytes — not from the potentially-corrupted canonical tree.
+
+    Members are sorted by path (deterministic order), matching the
+    canonical tree hash computation in CanonicalSkillStore.compute_tree_hash.
+    """
+    import hashlib
+    from runtime.infrastructure.artifact_store import ArtifactNotFound
+
+    members = manifest.get("members", [])
+    # Sort by path for deterministic ordering (matches canonical tree hash)
+    sorted_members = sorted(members, key=lambda m: m["path"])
+
+    h = hashlib.sha256()
+    for member in sorted_members:
+        member_path = member["path"]
+        member_artifact_key = member["artifact_key"]
+
+        try:
+            member_bytes = artifact_store.read(member_artifact_key)
+        except ArtifactNotFound:
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name="materializer",
+                reason=f"Member artifact not found for tree hash: {member_artifact_key}",
+            )
+
+        h.update(member_path.encode())
+        h.update(b"\x00")
+        h.update(member_bytes)
+        h.update(b"\x00")
+
+    return h.hexdigest()
+
+
+def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
+    """Compute expected tree hash for legacy single-SKILL.md artifacts.
+
+    These packages have one member: SKILL.md, whose content IS the
+    manifest_bytes (the raw artifact content).
+    """
+    import hashlib
+    h = hashlib.sha256()
+    h.update(b"SKILL.md")
+    h.update(b"\x00")
+    h.update(manifest_bytes)
+    h.update(b"\x00")
     return h.hexdigest()
 
 
@@ -1071,10 +1149,25 @@ def validate_workspace_skills_integrity(
                 break
 
     # ── Fail closed ────────────────────────────────────────────
+    # Recovery guidance (mode-qualified):
+    # - Broken/missing/wrong workspace links → re-materialize via
+    #   executor switch (happyranch set-executor) which rebuilds links
+    #   from the canonical store.
+    # - Corrupted canonical bytes (hash mismatch, tampered content) →
+    #   set-executor CANNOT recover bytes — it only repairs links.
+    #   Recovery requires: (1) stop the daemon, (2) delete the
+    #   corrupted canonical package directory under
+    #   <daemon-home>/canonical-skills/<slug>/<version>/<content_hash>,
+    #   (3) restart the daemon so the next materialization rebuilds
+    #   from the authoritative release/custom artifact source.
+    #   There is NO trusted immutable same-UID repair source and
+    #   NO automatic recovery from any local same-UID source.
     recovery = (
-        "happyranch set-executor <agent> --executor <current-executor> "
-        "(re-materializes workspace links from canonical store), "
-        "then daemon restart if canonical store itself is corrupted"
+        "For broken/missing links: happyranch set-executor <agent> --executor <current-executor>. "
+        "For corrupted canonical bytes: stop daemon, remove corrupted package under "
+        "<daemon-home>/canonical-skills/<slug>/<version>/<hash>, restart daemon "
+        "(next materialization rebuilds from authoritative release/custom artifact source). "
+        "No automatic repair from same-UID local sources."
     )
 
     raise WorkspaceIntegrityError(

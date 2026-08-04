@@ -32,7 +32,17 @@ from runtime.skills.symlink_materializer import SymlinkMaterializer
 
 class TestPreLaunchIntegrityValidation:
     """Adversarial: same-owner process mutates canonical targets;
-    next launch detects mismatch BEFORE executor; no auto-repair."""
+    next launch detects mismatch BEFORE executor; no auto-repair.
+
+    These tests require same-owner mode because they exercise the
+    chmod+mutate+restore attack pattern that is only relevant when
+    the executor shares the daemon's UID.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_same_owner(self, same_owner_mode):
+        """Enable same-owner mode for all tests in this class."""
+        pass
 
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod

@@ -188,7 +188,7 @@ async def run_wake(
             settings=settings,
             db=org_state.db,
             agent_name=record.agent_name,
-            task_id=record.work_hour_id,
+            task_id=work_hour_id,
         )
     except Exception as e:
         store.update(
@@ -211,7 +211,7 @@ async def run_wake(
             settings=settings,
             db=org_state.db,
             agent_name=record.agent_name,
-            task_id=record.work_hour_id,
+            task_id=work_hour_id,
         )
 
     prompt = build_wake_prompt(
