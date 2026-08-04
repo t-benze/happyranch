@@ -75,13 +75,13 @@ def _entry_manifest(entry) -> dict:
 def _make_conformant_adapter_script(tmp_path: Path, adapter_id: str) -> Path:
     """Create a minimal conformance-probe-passing executable adapter script
     at the daemon-managed canonical path (<daemon-home>/adapters/<adapter_id>).
-    
+
     THR-107 seq339/340: scoped submissions MUST use the canonical location."""
     from runtime.orchestrator.custom_adapter_registry import compute_canonical_adapter_path
     # The daemon home is already set via HAPPYRANCH_DAEMON_HOME by route_setup
     _, required_path = compute_canonical_adapter_path(adapter_id)
     required_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     script = required_path
     content = f'''#!/usr/bin/env python3
 import json, sys
@@ -2448,6 +2448,69 @@ class TestScopedCanonicalPathSubmit:
         # Token is NOT consumed — retryable
         assert store.validate_runtime(token) is not None
 
+    def test_submit_rejects_absolute_traversal_bypass(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects an absolute path containing '..' traversal.
+
+        This catches the normalization bypass where
+        ``<daemon-home>/adapters/../adapters/<canonical-id>`` would resolve
+        to the canonical path via Path.resolve() but the caller's original
+        lexical form contains traversal components.  The pre-resolve check
+        rejects this before any probe, reservation, hashing, or persistence.
+        """
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "abs-traversal-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Build an absolute path with traversal: <daemon-home>/adapters/../adapters/<id>
+        traversal_path = str(canonical_dir / ".." / "adapters" / adapter_id)
+        # Verify the traversal path is different from the required path lexically
+        assert traversal_path != str(required_path)
+        # Verify resolve() WOULD normalize it to the canonical form
+        from pathlib import Path
+        assert Path(traversal_path).resolve() == Path(str(required_path)).resolve(), (
+            f"Expected {traversal_path} to resolve to {required_path} — if this "
+            f"assertion fails the test isn't exercising the bypass correctly"
+        )
+
+        # Create a dummy for dependency validation
+        dummy = route_setup / "dummy-dep-bypass"
+        dummy.write_text("#!/bin/sh\necho ok")
+        dummy.chmod(0o755)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": traversal_path,
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(dummy),
+                     "sha256": compute_sha256(str(dummy))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert detail["code"] == "invalid_executable_path"
+        assert "traversal" in detail["message"].lower()
+        assert detail["required_executable_path"] == str(required_path)
+        # Token is NOT consumed — retryable
+        assert store.validate_runtime(token) is not None
+        # No adapter entry was created
+        from runtime.orchestrator.custom_adapter_registry import get_adapter
+        assert get_adapter(adapter_id) is None
+
     def test_submit_rejects_alternate_filename(self, app_and_client, route_setup, token_store):
         """Scoped submit rejects a file with a different name in the correct dir."""
         from runtime.orchestrator.custom_adapter_registry import (
@@ -2889,6 +2952,40 @@ print(json.dumps(out))
                 )
         finally:
             script_path.unlink(missing_ok=True)
+
+    def test_scoped_registration_rejects_absolute_traversal_at_seam(self, monkeypatch):
+        """register_custom_adapter with intended_profile_name rejects an
+        absolute path containing '..' traversal before any probe/resolve."""
+        import tempfile, stat
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+
+        profile_name = "seam-traversal"
+        adapter_id = f"{profile_name}-adapter"
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Build an absolute path with traversal: <daemon-home>/adapters/../adapters/<id>
+        traversal_path = str(canonical_dir / ".." / "adapters" / adapter_id)
+        assert traversal_path != str(required_path)
+        # Verify resolve() WOULD normalize it
+        from pathlib import Path
+        assert Path(traversal_path).resolve() == required_path.resolve()
+
+        from runtime.orchestrator.custom_adapter_registry import (
+            register_custom_adapter,
+        )
+        with pytest.raises(ValueError, match="traversal spelling"):
+            register_custom_adapter(
+                executable=traversal_path,
+                version="1.0.0",
+                capabilities=[],
+                workspace_adapter="pi",
+                registered_by="test",
+                intended_profile_name=profile_name,
+                dependency_manifest_version=1,
+                dependencies=[],
+            )
 
     def test_scoped_registration_at_canonical_path_succeeds(self, monkeypatch):
         """register_custom_adapter with intended_profile_name at canonical

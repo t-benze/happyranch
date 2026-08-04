@@ -274,7 +274,7 @@ export function AdapterConnect({
     return (
       <AdapterWaitingBody
         name={s.name}
-        prompt={buildAdapterConnectPrompt(s.name, s.token, origin)}
+        prompt={buildAdapterConnectPrompt(s.name, s.token, origin, s.requiredExecutablePath)}
         expired={s.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}

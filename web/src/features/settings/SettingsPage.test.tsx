@@ -66,6 +66,29 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
       HttpResponse.json(TOKENS_PAYLOAD),
     ),
+    // THR-107 seq339: the adapter-backed connect flow fetches the contract
+    // reference with the scoped token after minting.  Return a
+    // deterministic non-guessed path so tests can prove the literal
+    // server-returned value is rendered through the shared prompt builder.
+    http.get('/api/v1/runtime/adapters/contract-reference', () =>
+      HttpResponse.json({
+        contract_version: 1,
+        canonical_adapter_id: 'test-adapter',
+        canonical_adapter_id_description: '',
+        adapter_input_schema: {},
+        adapter_output_schema: {},
+        rules: {},
+        submission: {},
+        dependency_manifest: {},
+        token_metering: {},
+        reapproval_rule: '',
+        probe: {},
+        canonical_directory: '/tmp/happyranch-daemon/adapters',
+        canonical_directory_description: '',
+        required_executable_path: '/tmp/happyranch-daemon/adapters/test-cli-adapter',
+        required_executable_path_description: '',
+      }),
+    ),
   );
 }
 
@@ -1354,7 +1377,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(promptText).toContain('Max output: 1 MB');
   });
 
-  test('seq339: prompt includes required_executable_path instruction', async () => {
+  test('seq339: prompt includes literal server-returned required_executable_path', async () => {
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
@@ -1375,16 +1398,18 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await screen.findByLabelText(/waiting for adapter submission/i);
     const promptText = document.querySelector('pre')?.textContent || '';
 
-    // seq339/340: prompt must include required_executable_path instruction
-    expect(promptText).toContain('required_executable_path');
-    expect(promptText).toContain('canonical');
+    // The LITERAL server-returned path (from mocked contract-reference)
+    // must appear in the prompt, not a placeholder or guessed path.
+    const expectedPath = '/tmp/happyranch-daemon/adapters/test-cli-adapter';
+    expect(promptText).toContain(expectedPath);
+    // The path appears in the "create at exactly" instruction
+    expect(promptText).toContain('LITERAL server-authoritative path');
+    // Path also appears in the submit body (pre-filled)
+    expect(promptText).toContain(`"executable":"${expectedPath}"`);
     // Must tell the candidate NOT to place in home dir or self-chosen path
-    expect(promptText).toContain('Do NOT place it');
-    expect(promptText).toContain('self-chosen path');
-    // Must reference the contract-reference for the path
+    expect(promptText).toContain('Do NOT place');
+    // Must reference the contract-reference endpoint
     expect(promptText).toContain('contract-reference');
-    // Submit section references required_executable_path
-    expect(promptText).toContain('required_executable_path');
   });
 
   test('seq184: prompt distinguishes emit_envelope from AdapterOutput', async () => {

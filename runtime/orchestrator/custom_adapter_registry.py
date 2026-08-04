@@ -43,6 +43,26 @@ from runtime.orchestrator.adapter_store import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Traversal detection helper (shared with routes/adapters.py)
+# ---------------------------------------------------------------------------
+
+
+def _has_traversal_spelling_registry(raw_path: str) -> bool:
+    """Return True if the raw path string contains any traversal component.
+
+    Detects ``..`` directory components in the path before any normalization.
+    This catches absolute traversal bypasses such as
+    ``<daemon-home>/adapters/../adapters/<id>`` even when ``Path.resolve()``
+    would collapse them to the canonical form.
+
+    Only whole-segment ``..`` entries are flagged — a filename containing
+    ``..`` as a substring (e.g. ``foo..bar``) is NOT flagged.
+    """
+    parts = raw_path.split(os.sep)
+    return ".." in parts
+
+
+# ---------------------------------------------------------------------------
 # Canonical adapter daemon path (THR-107 seq339/340)
 # ---------------------------------------------------------------------------
 
@@ -867,6 +887,50 @@ def register_custom_adapter(
     Raises ``ValueError`` at the first validation failure — ZERO durable
     residue is left before the persistence step.
     """
+    # Step 0: Scoped-path enforcement (THR-107 seq339/340) — MUST happen
+    # BEFORE validate_executable_path (which calls resolve()) and before
+    # any conformance probe, hash computation, or durable persistence.
+    # Compare the RAW caller-provided string in its original lexical form
+    # to the server-derived canonical path.
+    if intended_profile_name is not None:
+        if not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
+            raise ValueError("intended_profile_name must be a non-empty string")
+        intended_profile_name = intended_profile_name.strip()
+
+        _scoped_id = generate_adapter_id(f"{intended_profile_name}-adapter")
+        _canonical_dir, _required_path = compute_canonical_adapter_path(_scoped_id)
+        _required_str = str(_required_path)
+
+        # Pre-resolve checks on the RAW caller-provided string.
+        if not executable or not os.path.isabs(executable):
+            raise ValueError(
+                f"executable must be an absolute path, got {executable!r}. "
+                f"The scoped adapter wrapper must be created at the exact "
+                f"canonical path: {_required_str}. The token was NOT consumed "
+                f"and remains retryable."
+            )
+
+        if _has_traversal_spelling_registry(executable):
+            raise ValueError(
+                f"executable path contains traversal spelling: "
+                f"{executable!r}. The scoped adapter wrapper must be "
+                f"created at exactly the canonical path: {_required_str}. "
+                f"No '..' components, symlinks, or alternate locations "
+                f"are accepted. The token was NOT consumed and remains "
+                f"retryable."
+            )
+
+        if executable != _required_str:
+            raise ValueError(
+                f"Scoped adapter {_scoped_id!r} requires the executable at the "
+                f"server-owned canonical path: {_required_str}. "
+                f"Received: {executable!r}. "
+                f"Create your adapter wrapper at exactly the required "
+                f"executable path returned by GET /runtime/adapters/"
+                f"contract-reference. The token was NOT consumed and "
+                f"remains retryable."
+            )
+
     # Step 1–4: Validate inputs (no side effects)
     executable_path = validate_executable_path(executable)
     version = validate_version(version)
@@ -875,11 +939,10 @@ def register_custom_adapter(
     capabilities = validate_capabilities(capabilities)
     workspace_adapter = validate_workspace_adapter(workspace_adapter)
 
-    # Validate intended_profile_name if provided
+    # Validate intended_profile_name (already validated above if set)
     if intended_profile_name is not None:
-        if not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
-            raise ValueError("intended_profile_name must be a non-empty string")
-        intended_profile_name = intended_profile_name.strip()
+        # already validated in Step 0 above
+        pass
 
     # Step 5: Validate dependency manifest (seq244 — before any durable work)
     dep_manifest_version, normalized_deps = validate_dependency_manifest(
@@ -895,10 +958,13 @@ def register_custom_adapter(
         adapter_id = generate_adapter_id(f"{intended_profile_name}-adapter")
         adapter_name = intended_profile_name
 
-        # Scoped-path enforcement (THR-107 seq339/340): the executable MUST
-        # be at the daemon-managed canonical location.  This is the
-        # registration-seam recheck — even if the route-layer check is
-        # somehow bypassed, this critical boundary rejects foreign paths.
+        # Scoped-path enforcement (THR-107 seq339/340) recheck: the
+        # executable MUST be at the daemon-managed canonical location.
+        # This is the registration-seam recheck — even if the route-layer
+        # check is somehow bypassed, this critical boundary rejects foreign
+        # paths.  The pre-resolve check (Step 0 above) already caught
+        # traversal and non-absolute forms; this post-resolve recheck
+        # guards against path-equivalence bypasses via validate_executable_path.
         _canonical_dir, _required_path = compute_canonical_adapter_path(adapter_id)
         if str(executable_path) != str(_required_path):
             raise ValueError(

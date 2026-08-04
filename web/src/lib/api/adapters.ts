@@ -236,7 +236,13 @@ export const rejectAdapter = (
  *  (GET /api/v1/runtime/adapters/contract-reference).  Includes the
  *  server-derived canonical adapter ID, JSON Schemas, output rules,
  *  and — since seq339/340 — the daemon-managed canonical directory and
- *  required executable path. */
+ *  required executable path.
+ *
+ *  Browser-consumer classification: the web Settings/Onboarding shared
+ *  connection flow fetches this endpoint with the scoped adapter-purpose
+ *  token after minting to obtain the literal ``required_executable_path``
+ *  for the prompt builder.  This is an INTENTIONAL browser consumer of a
+ *  scoped-token endpoint, not a CLI-only route. */
 export interface ContractReferenceResponse {
   contract_version: number;
   canonical_adapter_id: string;
@@ -260,3 +266,14 @@ export interface ContractReferenceResponse {
   /** seq339/340: description of required_executable_path. */
   required_executable_path_description: string;
 }
+
+/** Fetch the canonical contract reference using a scoped adapter-purpose token.
+ *  This is an INTENTIONAL browser consumer of the scoped-token endpoint.
+ *  The caller must supply the just-minted ``hrreg_`` token — the request
+ *  sends it as ``Authorization: Bearer <token>``, NOT the master bearer. */
+export const getContractReference = (
+  token: string,
+): Promise<ContractReferenceResponse> =>
+  request('/runtime/adapters/contract-reference', {
+    auth: { token },
+  });
