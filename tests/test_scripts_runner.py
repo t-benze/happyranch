@@ -120,3 +120,47 @@ def test_in_flight_registry_clears_after_run(tmp_paths):
         publish=lambda evt: None,
     ))
     assert "SR-T1" not in in_flight_job_ids()
+
+
+def test_run_job_strips_venv_from_child_environment(tmp_paths):
+    """The job subprocess must NOT inherit VIRTUAL_ENV or
+    UV_PROJECT_ENVIRONMENT from the daemon."""
+    from runtime.daemon.jobs_runner import run_job
+
+    tmp_paths["cwd"].mkdir()
+    # Script writes env vars to stdout for inspection.
+    script = (
+        "echo VIRTUAL_ENV=${VIRTUAL_ENV:-ABSENT};"
+        "echo UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT:-ABSENT};"
+        "echo PATH=${PATH:-ABSENT};"
+        "echo HAPPYRANCH_ORG_SLUG=${HAPPYRANCH_ORG_SLUG:-ABSENT}"
+    )
+
+    # Inject adversarial VIRTUAL_ENV into os.environ BEFORE the test.
+    # The _sanitize_child_env call inside run_job should strip it.
+    import os
+    os.environ["VIRTUAL_ENV"] = "/fake/canonical/.venv"
+    os.environ["UV_PROJECT_ENVIRONMENT"] = "/fake/project"
+    try:
+        result = asyncio.run(run_job(
+            script_text=script,
+            interpreter="bash",
+            cwd=str(tmp_paths["cwd"]),
+            stdout_path=str(tmp_paths["stdout"]),
+            stderr_path=str(tmp_paths["stderr"]),
+            max_runtime_seconds=10,
+            publish=lambda evt: None,
+        ))
+    finally:
+        del os.environ["VIRTUAL_ENV"]
+        del os.environ["UV_PROJECT_ENVIRONMENT"]
+
+    assert result.status == "completed"
+    assert result.exit_code == 0
+    out = tmp_paths["stdout"].read_text()
+    assert "VIRTUAL_ENV=ABSENT" in out, f"VIRTUAL_ENV should be ABSENT, got: {out}"
+    assert "UV_PROJECT_ENVIRONMENT=ABSENT" in out, f"UV_PROJECT_ENVIRONMENT should be ABSENT, got: {out}"
+    assert "PATH=ABSENT" not in out, "PATH must be present"
+    assert "HAPPYRANCH_ORG_SLUG=ABSENT" not in out or "HAPPYRANCH_ORG_SLUG=" in out, (
+        "HAPPYRANCH_ORG_SLUG must be passed through if set"
+    )

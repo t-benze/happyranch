@@ -531,6 +531,63 @@ Because `_callee_env()` copies `os.environ` for child subprocesses, every
 executor spawn inherits the normalized PATH with the bundled directory
 leading when frozen.
 
+### Spawn-Environment Invariant
+
+Every runtime-created child subprocess — agent executor sessions (through
+``_callee_env()`` in ``runtime/orchestrator/executors.py``), custom-adapter
+launches, and job-script subprocesses (through ``_sanitize_child_env()`` in
+``runtime/daemon/jobs_runner.py``) — inherits a sanitized copy of the daemon's
+environment that **strips** the following variables:
+
+- ``VIRTUAL_ENV`` — standard venv activation marker; its presence directs
+  ``pip``, ``uv``, and other Python tooling to install into the venv.
+- ``UV_PROJECT_ENVIRONMENT`` — uv project environment target override; can
+  redirect ``uv sync`` / ``uv pip install`` away from the default ``.venv``.
+
+These variables are stripped because the daemon process itself typically runs
+inside the shared canonical HappyRanch venv.  If an agent executor or job
+script inherits ``VIRTUAL_ENV``, a bare ``uv sync`` or ``uv pip install -e .``
+executed from a **disposable worktree** would rewrite the shared venv's
+editable-install ``.pth`` file to point at the worktree instead of the
+canonical source checkout.  When the worktree is removed, every agent using
+that venv loses the ability to import the ``cli`` and ``runtime`` packages.
+
+**Preserved variables:** ``PATH`` (including the daemon-normalized standard
+tool directories), ``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*``
+runtime variables.  No unrelated configuration is blanket-removed.
+
+#### Worktree Rule (hard)
+
+**Never run** ``pip install -e .``, ``uv pip install -e .``, or
+``uv sync --active`` from inside a per-task worktree when the inherited
+environment carries the shared canonical venv.  These commands rewrite the
+shared ``.pth`` entry and break every agent using that venv.
+
+Instead, create an **isolated worktree-local venv** before installing:
+
+```bash
+python3 -m venv .venv-local
+source .venv-local/bin/activate
+uv pip install -e .
+```
+
+#### Recovery (secondary)
+
+If a stale ``.pth`` has already broken the CLI, prefix every invocation with
+the canonical source checkout on ``PYTHONPATH``:
+
+```bash
+PYTHONPATH=/path/to/canonical/happyranch happyranch <args>
+```
+
+This is a non-destructive workaround — it does not modify the ``.pth`` file
+or run ``pip``/``uv``.  Use it for one-off recovery; the permanent fix is to
+restore the editable install from the canonical checkout.
+
+The ``happyranch doctor`` command (local, read-only, no daemon required) checks
+whether the editable-install pointer resolves to the canonical source and emits
+the exact repair command on failure.
+
 ---
 
 ## 2. Agent Memory Architecture

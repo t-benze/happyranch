@@ -1718,3 +1718,95 @@ def test_claude_executor_error_unknown_certificate_text_raw_fallback(
     # Raw stderr-first fallback preserved.
     assert "Workspace trust warning" in result.error
     assert "Command exited with code 1" in result.error
+
+
+# ── _sanitize_child_env and _callee_env sanitization ──────────────────
+
+
+class TestCalleeEnvSanitization:
+    """_sanitize_child_env strips VIRTUAL_ENV and UV_PROJECT_ENVIRONMENT;
+    _callee_env() preserves PATH and HAPPYRANCH_* runtime variables."""
+
+    def test_sanitize_strips_venv_and_uv_target(self, monkeypatch):
+        from runtime.orchestrator.executors import _sanitize_child_env
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "VIRTUAL_ENV": "/fake/canonical/.venv",
+            "UV_PROJECT_ENVIRONMENT": "/fake/project",
+            "HAPPYRANCH_ORG_SLUG": "testorg",
+            "HAPPYRANCH_DAEMON_HOME": "/tmp/hr",
+            "HOME": "/home/user",
+        }
+        cleaned = _sanitize_child_env(dict(env))
+
+        # Sensitive variables are stripped.
+        assert "VIRTUAL_ENV" not in cleaned
+        assert "UV_PROJECT_ENVIRONMENT" not in cleaned
+
+        # Required variables are preserved.
+        assert cleaned["PATH"] == "/usr/bin:/bin"
+        assert cleaned["HAPPYRANCH_ORG_SLUG"] == "testorg"
+        assert cleaned["HAPPYRANCH_DAEMON_HOME"] == "/tmp/hr"
+        assert cleaned["HOME"] == "/home/user"
+
+    def test_sanitize_is_idempotent(self):
+        from runtime.orchestrator.executors import _sanitize_child_env
+
+        env = {"PATH": "/bin", "HOME": "/home/user"}
+        once = _sanitize_child_env(dict(env))
+        twice = _sanitize_child_env(dict(once))
+        assert once == twice
+        assert "VIRTUAL_ENV" not in twice
+        assert "UV_PROJECT_ENVIRONMENT" not in twice
+
+    def test_callee_env_strips_venv_inherited_from_os_environ(self, monkeypatch):
+        """_callee_env() removes VIRTUAL_ENV inherited from os.environ."""
+        from runtime.orchestrator.executors import _callee_env
+
+        monkeypatch.setenv("PATH", "/fake/bin")
+        monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
+        monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+        monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
+        monkeypatch.setenv("HOME", "/home/user")
+
+        callee = _callee_env(org_slug="testorg")
+
+        assert "VIRTUAL_ENV" not in callee
+        assert "UV_PROJECT_ENVIRONMENT" not in callee
+        assert callee["HAPPYRANCH_ORG_SLUG"] == "testorg"
+        assert callee["PATH"] == "/fake/bin"
+        assert callee["HOME"] == "/home/user"
+
+    def test_callee_env_without_org_slug_still_sanitizes(self, monkeypatch):
+        """_callee_env() without org_slug still strips venv vars."""
+        from runtime.orchestrator.executors import _callee_env
+
+        monkeypatch.setenv("VIRTUAL_ENV", "/fake/shared/.venv")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        # Clear HAPPYRANCH_ORG_SLUG if set in the real env.
+        monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
+
+        callee = _callee_env()
+
+        assert "VIRTUAL_ENV" not in callee
+        assert "HAPPYRANCH_ORG_SLUG" not in callee
+        assert callee["PATH"] == "/usr/bin"
+
+    def test_sanitize_does_not_mutate_original(self):
+        """_sanitize_child_env returns the same dict but callers pass a fresh
+        copy — confirm we don't accidentally mutate the daemon's os.environ."""
+        from runtime.orchestrator.executors import _sanitize_child_env
+
+        original = {
+            "VIRTUAL_ENV": "/fake/.venv",
+            "UV_PROJECT_ENVIRONMENT": "/fake/proj",
+            "PATH": "/bin",
+        }
+        before = dict(original)
+        cleaned = _sanitize_child_env(dict(original))
+        # Original must be unmutated.
+        assert original == before
+        assert "VIRTUAL_ENV" in original
+        # Cleaned must be stripped.
+        assert "VIRTUAL_ENV" not in cleaned
