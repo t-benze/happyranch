@@ -309,11 +309,19 @@ def materialize_workspace_skills(
     outside this transaction — doing so would bypass the workspace lock
     and re-introduce the multi-writer race described in issue #536.
 
+    **Unknown-context no-op:** an unrecognised context string (one that is
+    not a valid ``SessionContext`` value) returns immediately without
+    creating, building, preflighting, or reconciling any system, managed, or
+    lifecycle links, and must not withdraw or mutate an existing valid
+    workspace state.
+
     Args:
         workspace: agent workspace root
         settings: project Settings
         slug: org slug for ``{ORG_SLUG}`` substitution
-        context: session context ("task", "thread", "wake", "dream")
+        context: session context — must be one of the six valid
+            ``SessionContext`` values ("task", "thread", "wake", "dream",
+            "schedule", "bootstrap").  An unknown context is a no-op.
         provider: executor provider name ("claude", "codex", "opencode", "pi")
         agent_name: agent to resolve eligibility for
         team: agent's team name
@@ -321,6 +329,18 @@ def materialize_workspace_skills(
         org_root: per-org root (optional; for lifecycle ledger resolution)
         db: optional DB handle for recording materialization events
     """
+    from runtime.skills.system_contracts import SessionContext
+
+    # ── Unknown-context no-op guard ───────────────────────────────
+    # An unrecognised context string must return immediately before
+    # any source preflight, canonical build, event write, or
+    # repair_workspace_skills call.  It must not withdraw or mutate
+    # an existing valid workspace state.
+    try:
+        SessionContext(context)
+    except ValueError:
+        return []
+
     with _workspace_skills_transaction(workspace):
         # Derive ONE unified expected set per provider root, then
         # reconcile once. This prevents the system-contract withdrawal

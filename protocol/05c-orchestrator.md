@@ -1356,12 +1356,16 @@ session-creation callers via ``materialize_workspace_skills``:
    and builds a SINGLE full-expected-spec union from all six contexts
    before materialization (§4.6).
 
-**System-contract union rule (all 6 callers).** Every caller unions
-system-contract expectations across all ordinary session contexts before
-reconciling workspace links — a later single-context launch never
-withdraws a valid system-contract link belonging to another context.
-Release-managed and lifecycle links remain policy-reconciled and are
-withdrawn when the agent becomes ineligible or unassigned.
+**System-contract union rule (all 6 callers).** For valid SessionContext
+values, every caller unions system-contract expectations across all
+ordinary session contexts before reconciling workspace links — a later
+single-context launch never withdraws a valid system-contract link
+belonging to another context.  An unrecognised context string is a no-op:
+the function returns immediately without creating, building, preflighting,
+or reconciling any links, and must not withdraw or mutate an existing
+valid workspace state.  Release-managed and lifecycle links remain
+policy-reconciled and are withdrawn when the agent becomes ineligible or
+unassigned.
 
 **No config rollback gate.** The former ``_WHOLESALE_DUMP_ENABLED`` flag is
 absent from source — there is no "set to True" escape hatch. The executor

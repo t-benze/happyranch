@@ -1604,3 +1604,228 @@ class TestCrossContextSystemContractRetention:
             workspace, specs_2, settings=settings,
             agent_name="dev_agent", task_id="TASK-TEST",
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Unknown-context no-op guard (TASK-4369)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestUnknownContextNoOp:
+    """The public materialize_workspace_skills production boundary must
+    return immediately (no-op) for an unrecognised context string without
+    creating, building, preflighting, or reconciling any system, managed,
+    or lifecycle links, and must not withdraw or mutate an existing valid
+    workspace state.
+
+    Contexts "nonexistent" and the empty string are the canonical invalid
+    values — they are NOT valid SessionContext members.  The six ordinary
+    SessionContext values (task, thread, wake, dream, schedule, bootstrap)
+    remain the valid union and must still materialize correctly."""
+
+    def test_unknown_context_no_op_on_fresh_workspace(
+        self, tmp_path, monkeypatch,
+    ):
+        """Calling materialize_workspace_skills with context='nonexistent'
+        on a fresh workspace must return without creating any directories
+        or links under .claude/skills or .agents/skills."""
+        import os
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+
+        # Call with unknown context
+        specs = materialize_workspace_skills(
+            workspace, settings, slug="test", context="nonexistent",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=tmp_path / "managed_skills",
+        )
+        # Must return empty list
+        assert specs == [], (
+            f"Unknown context must return empty list, got {specs!r}"
+        )
+
+        # Must NOT have created ANY links under either skills root
+        for subd in [".claude/skills", ".agents/skills"]:
+            skills_dir = workspace / subd
+            if skills_dir.exists():
+                entries = list(skills_dir.iterdir())
+                assert len(entries) == 0, (
+                    f"Unknown context must not create links in {subd}; "
+                    f"found: {[e.name for e in entries]}"
+                )
+
+    def test_unknown_context_empty_string_no_op(
+        self, tmp_path, monkeypatch,
+    ):
+        """Empty string context is not a valid SessionContext and must no-op."""
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+
+        specs = materialize_workspace_skills(
+            workspace, settings, slug="test", context="",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=tmp_path / "managed_skills",
+        )
+        assert specs == []
+        for subd in [".claude/skills", ".agents/skills"]:
+            skills_dir = workspace / subd
+            if skills_dir.exists():
+                assert len(list(skills_dir.iterdir())) == 0
+
+    def test_unknown_context_preserves_existing_valid_state(
+        self, tmp_path, monkeypatch,
+    ):
+        """Materialize with a valid task context, snapshot the workspace
+        links and targets, then call with context='nonexistent' and prove
+        no directories/links/targets/content changed — including no new
+        system links."""
+        import os
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        from runtime.skills.canonical_store import CanonicalSkillStore
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        settings = Settings(project_root=tmp_path)
+        store = CanonicalSkillStore(settings=settings)
+
+        # ── 1. Materialize with valid task context ──
+        specs_before = materialize_workspace_skills(
+            workspace, settings, slug="test", context="task",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=tmp_path / "managed_skills",
+        )
+        assert len(specs_before) >= 4  # at least 4 system contracts
+
+        # Snapshot: record (link_target, file_content) for every entry
+        def snapshot_workspace() -> dict[str, tuple[str, str]]:
+            snap: dict[str, tuple[str, str]] = {}
+            for subd in [".claude/skills", ".agents/skills"]:
+                skills_dir = workspace / subd
+                if not skills_dir.exists():
+                    continue
+                for entry in sorted(skills_dir.iterdir()):
+                    key = f"{subd}/{entry.name}"
+                    if entry.is_symlink():
+                        resolved = os.readlink(str(entry))
+                        target = (entry.parent / resolved).resolve()
+                        content = ""
+                        skill_md = entry / "SKILL.md"
+                        if skill_md.is_file():
+                            content = skill_md.read_text()
+                        snap[key] = (str(target), content)
+            return snap
+
+        snap_before = snapshot_workspace()
+        assert len(snap_before) >= 4, (
+            f"Expected at least 4 links, got {len(snap_before)}"
+        )
+
+        # ── 2. Call with unknown context ──
+        specs_after = materialize_workspace_skills(
+            workspace, settings, slug="test", context="nonexistent",
+            provider="claude", agent_name="dev_agent",
+            team="engineering", skills_root=tmp_path / "managed_skills",
+        )
+        # Must return empty list
+        assert specs_after == []
+
+        # ── 3. Snapshot must be IDENTICAL — no links added, removed,
+        #    or modified ──
+        snap_after = snapshot_workspace()
+        assert snap_after == snap_before, (
+            f"Unknown context must not mutate workspace.\n"
+            f"Before keys: {sorted(snap_before.keys())}\n"
+            f"After keys:  {sorted(snap_after.keys())}\n"
+            f"Only in before: {set(snap_before.keys()) - set(snap_after.keys())}\n"
+            f"Only in after:  {set(snap_after.keys()) - set(snap_before.keys())}"
+        )
+
+    def test_valid_contexts_still_materialize_correctly(
+        self, tmp_path, monkeypatch,
+    ):
+        """Regression: every valid ordinary SessionContext value must still
+        produce the complete ordinary union across both roots."""
+        import os
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+
+        src = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+            d = src / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", src)
+
+        settings = Settings(project_root=tmp_path)
+
+        valid_contexts = ["task", "thread", "wake", "dream", "schedule", "bootstrap"]
+        for ctx_name in valid_contexts:
+            workspace = tmp_path / f"workspace_{ctx_name}"
+            workspace.mkdir(parents=True)
+            (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+            specs = materialize_workspace_skills(
+                workspace, settings, slug="test", context=ctx_name,
+                provider="claude", agent_name="dev_agent",
+                team="engineering", skills_root=tmp_path / "managed_skills",
+            )
+            # Every valid context must produce the full union (at least
+            # start-task, jobs, make-worktree, thread, dream).
+            slugs = {s["slug"] for s in specs}
+            for expected in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+                assert expected in slugs, (
+                    f"Valid context {ctx_name!r} did not produce "
+                    f"system contract {expected!r}"
+                )
+            # Every link must exist as a symlink in both roots
+            for subd in [".claude/skills", ".agents/skills"]:
+                for expected in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+                    link_dir = workspace / subd / expected
+                    assert link_dir.is_symlink(), (
+                        f"Context {ctx_name!r}: {subd}/{expected} "
+                        f"must be a symlink"
+                    )
+                    skill_md = link_dir / "SKILL.md"
+                    assert skill_md.read_text() == f"# {expected}\ncontent for {expected}\n"

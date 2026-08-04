@@ -202,9 +202,13 @@ Skills — structured guidance packages that tell an agent how to perform specif
 operations — are materialized into the agent's workspace on every session spawn
 by `materialize_workspace_skills` (`workspace_adapters.py`). This runs on all
 spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch).
-System-contract links are unioned across all ordinary session contexts so a later
-single-context launch never withdraws a valid link belonging to another context;
-release-managed and lifecycle links remain policy-reconciled and withdrawable.
+An unrecognised context string — one that is not a valid ``SessionContext`` value
+— is a no-op: the function returns immediately without creating, building,
+preflighting, or reconciling any links, and must not withdraw or mutate an
+existing valid workspace state.  For valid contexts, system-contract links are
+unioned across all ordinary session contexts so a later single-context launch
+never withdraws a valid link belonging to another context; release-managed and
+lifecycle links remain policy-reconciled and withdrawable.
 
 #### Canonical skill store + workspace symlinks (macOS-only)
 

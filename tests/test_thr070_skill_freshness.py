@@ -679,7 +679,8 @@ class TestInjectSystemContracts:
     def test_unknown_context_is_noop(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """An unknown context string gracefully degrades to a no-op."""
+        """An unrecognised context string is a true no-op: no links or
+        directories are created under .claude/skills or .agents/skills."""
         skills_root = test_settings.get_protocol_dir() / "skills"
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (skills_root / name).mkdir(parents=True)
@@ -688,16 +689,17 @@ class TestInjectSystemContracts:
         ws = tmp_path / "ws"
         ws.mkdir()
 
-        # Union now materializes ALL system contracts regardless of context
         inject_system_contracts(ws, test_settings, slug="test", context="nonexistent")
 
-        # All system contracts materialized via the context union (except
-        # make-worktree which requires repos)
+        # No-op: neither skills root should exist after an unknown context call
         claude_skills = ws / ".claude" / "skills"
-        assert claude_skills.exists()
-        for name in ("start-task", "jobs", "thread", "dream"):
-            assert (claude_skills / name / "SKILL.md").exists()
-        assert not (claude_skills / "make-worktree" / "SKILL.md").exists()
+        agents_skills = ws / ".agents" / "skills"
+        assert not claude_skills.exists(), (
+            "Unknown context must not create .claude/skills"
+        )
+        assert not agents_skills.exists(), (
+            "Unknown context must not create .agents/skills"
+        )
 
     def test_idempotent_with_refresh_session_skills(
         self, test_settings: Settings, tmp_path: Path,
