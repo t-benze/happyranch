@@ -407,6 +407,50 @@ directly, and the generated prompt does **not** instruct the candidate
 to run `happyranch executors register --org` — the candidate drives the
 flow entirely via loopback HTTP calls to the runtime routes above.
 
+#### Built-in binary registration (THR-107 seq352)
+
+For **built-in** profiles (Claude Code, Codex, OpenCode, Pi), the SPA
+mints a ``purpose='binary'`` token and renders a **strictly sequential,
+copy-pasteable shell script** with no background or parallel commands.
+Every ``curl`` invocation uses ``--fail-with-body -sS`` so that HTTP
+errors abort the script while still printing the server error detail.
+
+The built-in prompt drives the candidate through:
+
+1. **Self-discovery** — the CLI uses ``command -v`` or ``which`` to
+   resolve its own absolute binary path and exits with a clear error if
+   the binary is not found or not executable.
+2. **Sequential conformance check-ins** — four independent ``curl``
+   commands POST ``workspace_access``, ``loopback_reachable``,
+   ``cli_callback``, and ``emit_envelope`` in order. Each response is
+   printed; a failed request stops the sequence.
+3. **Completion gate** — the fourth (``emit_envelope``) response is
+   captured and checked: the script reads the returned JSON and exits
+   unless ``"all_complete":true`` is present. This is a **mechanical
+   enforcement**, not an advisory comment — ``register-binary`` is
+   reachable only after this gate passes.
+4. **Registration** — the binary path is POSTed to
+   ``/api/v1/executors/runtime/register-binary``. The kind is carried
+   by the token (no ``kind`` field in the body).
+
+Error responses from ``register-binary`` are designed to be
+**actionable for an external CLI operator** without reading server
+source code:
+
+- **401 (invalid/expired/consumed/wrong-runtime token)** — tells the
+  candidate to regenerate the connect prompt and run the full sequence
+  again.
+- **400 (incomplete conformance)** — names the pending steps and
+  instructs the candidate to complete them sequentially and await
+  ``all_complete:true``.
+- **422 (bad path)** — reports whether the path is non-absolute,
+  non-existent, or non-executable so the candidate can correct it.
+- **500 (write failure)** — releases the token for retry and advises
+  checking daemon data-directory write access.
+
+Failed attempts do **not** consume the token and do **not** write the
+registry; the token remains retryable within its TTL.
+
 ### Registration ≠ enrollment
 
 A registered profile whose binary is currently launchable (`present: true`)

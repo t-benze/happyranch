@@ -1203,7 +1203,11 @@ def runtime_register_binary(
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+            detail=(
+                "Registration token is invalid, expired, consumed, or not a runtime "
+                "token. Regenerate the connect prompt from Settings > Executors or "
+                "onboarding and run the full sequence again."
+            ),
         )
 
     # 2. Assert purpose == 'binary'
@@ -1214,6 +1218,11 @@ def runtime_register_binary(
                 "code": "token_purpose_mismatch",
                 "expected": "binary",
                 "actual": record.purpose,
+                "hint": (
+                    "This token was minted for a different purpose. "
+                    "Built-in binary registration requires a purpose='binary' "
+                    "token — regenerate from the built-in executor dropdown."
+                ),
             },
         )
 
@@ -1224,7 +1233,13 @@ def runtime_register_binary(
         pending = store.get_pending_steps_runtime(token_value) or []
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Conformance incomplete. Pending steps: {pending}",
+            detail=(
+                f"Conformance incomplete — {len(pending)} step(s) remaining: "
+                f"{pending}. Each step must be completed sequentially and the "
+                f"emit_envelope (fourth) response must report "
+                f"\"all_complete\":true before calling register-binary. "
+                f"The token remains valid — retry after completing all steps."
+            ),
         )
 
     # 4. Validate the binary path BEFORE any side effects
@@ -1241,15 +1256,26 @@ def runtime_register_binary(
     if reserved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+            detail=(
+                "Registration token could not be reserved — it may have been "
+                "consumed by a concurrent request or expired. Regenerate the "
+                "connect prompt and run the sequence again."
+            ),
         )
 
     try:
         # 6. Write the binary path to the machine-local registry
         set_binary(kind, validated)
-    except BaseException:
+    except Exception:
         store.release_runtime(token_value)
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Failed to persist the binary path. The token has been released "
+                "and can be retried. If the problem persists, check that the "
+                "HappyRanch daemon has write access to its data directory."
+            ),
+        )
     else:
         # 7. COMMIT (permanent consume) ONLY on clean success
         store.commit_runtime(token_value)

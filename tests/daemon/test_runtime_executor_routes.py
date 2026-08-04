@@ -1179,6 +1179,215 @@ class TestRuntimeRegisterBinaryRoute:
         assert r.status_code == 422
 
 
+# ── THR-107 seq352: OpenCode race & error-detail tests ──────────────────
+
+
+class TestRuntimeRegisterBinaryRaceAndErrors:
+    """OpenCode-style race + actionable error regressions (THR-107 seq352)."""
+
+    # ── OpenCode race reproduction ─────────────────────────────────
+
+    def test_register_binary_fails_before_fourth_checkin_all_complete(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """OpenCode race: register-binary after 3 check-ins fails with 400,
+        no write, no consume. Then 4th check-in + register-binary succeeds."""
+        token, _ = store.mint_runtime("claude", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create a valid executable
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        exe_path = str(exe)
+
+        # Complete only the first 3 check-ins (NOT emit_envelope)
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        # Attempt register-binary — must fail (conformance incomplete)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "incomplete" in detail.lower()
+        assert "emit_envelope" in detail
+        assert "all_complete" in detail
+
+        # Token must NOT be consumed
+        assert store.validate_runtime(token) is not None
+
+        # No registry write
+        from runtime.orchestrator.executor_binary_registry import load_registry
+        registry = load_registry()
+        assert "claude" not in registry
+
+        # Now complete the fourth check-in (emit_envelope)
+        envelope = {
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        r4 = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": envelope},
+            headers=headers,
+        )
+        assert r4.status_code == 200
+        assert r4.json()["all_complete"] is True
+
+        # Now register-binary succeeds
+        r_reg = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r_reg.status_code == 200
+        assert r_reg.json()["valid"] is True
+
+    # ── Actionable error detail assertions ─────────────────────────
+
+    def test_conformance_incomplete_error_names_pending_steps(
+        self, client, store, tmp_path
+    ):
+        """Incomplete conformance → 400 naming pending steps + all_complete."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        exe = tmp_path / "bin" / "pi"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+
+        # No check-ins at all
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers=headers,
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "incomplete" in detail.lower()
+        assert "workspace_access" in detail
+        assert "all_complete" in detail
+
+    def test_non_absolute_path_error_is_actionable(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Non-absolute path → 422 with clear correction guidance."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        # Complete all conformance steps
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": "relative/path"},
+            headers=headers,
+        )
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "absolute" in detail.lower()
+
+    def test_nonexistent_path_error_is_clear(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Non-existent path → 422 telling the candidate the file doesn't exist."""
+        token, _ = store.mint_runtime("pi", purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": "/nonexistent/path/to/nowhere"},
+            headers=headers,
+        )
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert ("not exist" in detail.lower() or
+                "does not exist" in detail.lower())
+
+    def test_invalid_token_error_is_401(self, client, tmp_path):
+        """Invalid/unknown token → 401."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": "Bearer hrreg_fake_invalid_token"},
+        )
+        assert r.status_code == 401
+        assert "token" in r.json()["detail"].lower()
+
+    def test_token_purpose_mismatch_is_403(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Profile-purpose token → register-binary returns 403."""
+        token, _ = store.mint_runtime("claude", purpose="profile")
+        headers = {"Authorization": f"Bearer {token}"}
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+
+        # Complete conformance for the profile token
+        for step_id in ("workspace_access", "loopback_reachable", "cli_callback"):
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+        env = {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": env},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers=headers,
+        )
+        assert r.status_code in (401, 403)
+        detail = r.json()["detail"]
+        if isinstance(detail, dict):
+            assert detail.get("code") == "token_purpose_mismatch"
+
+
 # ── Runtime Profile Management Routes (THR-107 S4a) ─────────────────────
 
 

@@ -63,6 +63,11 @@ export const FIELD_CLASS =
  *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
 export type ConnectTarget = 'binary' | 'profile' | 'adapter';
 
+/** Escape a string for safe single-quoted shell use (single quotes -> '\''). */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 export function buildConnectPrompt(
   name: string,
   token: string,
@@ -70,18 +75,84 @@ export function buildConnectPrompt(
   target: ConnectTarget,
 ): string {
   const base = `${origin}/api/v1`;
+  if (target === 'binary') {
+    // THR-107 seq352: strictly sequential, copy-pasteable, failure-visible.
+    // Every curl uses --fail-with-body -sS so HTTP errors abort the script
+    // AND the server error detail is still printed for the operator.
+    const TOKEN = shQuote(token);
+    const BASE = shQuote(base);
+    const BIN_NAME = shQuote(name);
+    return [
+      `# Connect the built-in ${BIN_NAME} CLI to HappyRanch.`,
+      `# Copy this whole block and run it — each command runs sequentially.`,
+      `# The script stops immediately if any curl returns an HTTP error.`,
+      ``,
+      `TOKEN=${TOKEN}`,
+      `BASE=${BASE}`,
+      ``,
+      `# 1. Discover your own absolute binary path`,
+      `BIN=$(command -v ${BIN_NAME} 2>/dev/null || which ${BIN_NAME} 2>/dev/null)`,
+      `if [ -z "$BIN" ]; then`,
+      `  echo "ERROR: cannot find executable ${name} on PATH — install it first" >&2`,
+      `  exit 1`,
+      `fi`,
+      `if [ ! -x "$BIN" ]; then`,
+      `  echo "ERROR: $BIN exists but is not executable" >&2`,
+      `  exit 1`,
+      `fi`,
+      `echo "Found binary: $BIN"`,
+      ``,
+      `# 2. Conformance check-ins — POST each step id in order`,
+      `echo "--- workspace_access ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"workspace_access"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- loopback_reachable ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"loopback_reachable"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- cli_callback ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"cli_callback"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- emit_envelope (fourth check-in) ---"`,
+      `RESP=$(curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}')`,
+      `echo "$RESP"`,
+      ``,
+      `# 3. Gate: the fourth response MUST report all_complete:true`,
+      `if ! echo "$RESP" | grep -q '"all_complete":true'; then`,
+      `  echo "ERROR: conformance is not complete — see the emit_envelope response above" >&2`,
+      `  echo "Each step must be completed sequentially. Check that every curl returned" >&2`,
+      `  echo "a 200 response with arrived:true before retrying." >&2`,
+      `  exit 1`,
+      `fi`,
+      ``,
+      `# 4. Register the binary path (the kind is carried by the token)`,
+      `echo "--- register-binary ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/register-binary" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d "{\\"path\\":\\"$BIN\\"}"`,
+      `echo ""`,
+    ].join('\n');
+  }
+
+  // Profile and adapter targets — unchanged semantic behavior (THR-107 seq352).
   const intro =
-    target === 'binary'
+    target === 'profile'
       ? [
-          `# You're connecting the built-in "${name}" CLI to HappyRanch so it`,
-          `# can be launched from this machine. Do all of this in one run, then`,
-          `# stop. Send this header on every request:`,
-          `#   Authorization: Bearer ${token}`,
-          ``,
-          `# 1. Find your OWN absolute binary path — e.g. the output of`,
-          `#      command -v ${name}   (or)   which ${name}`,
-        ]
-      : [
           `# You're being connected to HappyRanch as an executor named "${name}".`,
           `# Do all of this in one run, then stop. Send this header on every request:`,
           `#   Authorization: Bearer ${token}`,
@@ -89,22 +160,18 @@ export function buildConnectPrompt(
           `# 1. Introduce yourself: work out the exact command that runs you`,
           `#    headless / single-shot, using these placeholders:`,
           `#      {prompt}  {timeout_seconds}  {workspace}`,
-        ];
-  const registerStep =
-    target === 'binary'
-      ? [
-          `# 3. Register your binary path — POST to`,
-          `#    ${base}/executors/runtime/register-binary`,
-          `#    body {"path":"<your absolute binary path>"}`,
-          `#    (the CLI kind is carried by the token — do NOT send it in the body)`,
         ]
-      : [
+      : [];
+  const registerStep =
+    target === 'profile'
+      ? [
           `# 3. Register — POST to`,
           `#    ${base}/executors/runtime/register`,
           `#    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}`,
           `#    Note: 'command' is the declared executable; argv_template[0]`,
           `#    must be the SAME executable (the one GenericCliExecutor launches).`,
-        ];
+        ]
+      : [];
   return [
     ...intro,
     ``,
@@ -113,7 +180,7 @@ export function buildConnectPrompt(
     `#    body {"step_id":"<id>"} for each of:`,
     `#      workspace_access   loopback_reachable   cli_callback`,
     `#    then post emit_envelope with a sample envelope:`,
-    `#    body {"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}`,
+    `#    body {"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}}`,
     ``,
     ...registerStep,
     ``,
