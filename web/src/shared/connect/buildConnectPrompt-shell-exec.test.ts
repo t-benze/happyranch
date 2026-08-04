@@ -8,20 +8,27 @@
  *
  * @vitest-environment node
  */
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildConnectPrompt } from './useRuntimeConnect';
 
 // Node environment polyfill: the global vitest setup references sessionStorage.
-(globalThis as any).sessionStorage = {
+interface SessionStorageMock {
+  _store: Map<string, string>;
+  getItem(k: string): string | null;
+  setItem(k: string, v: string): void;
+  removeItem(k: string): void;
+  clear(): void;
+}
+(globalThis as unknown as { sessionStorage: SessionStorageMock }).sessionStorage = {
   _store: new Map<string, string>(),
-  getItem(k: string) { return (this._store as Map<string, string>).get(k) ?? null; },
-  setItem(k: string, v: string) { (this._store as Map<string, string>).set(k, v); },
-  removeItem(k: string) { (this._store as Map<string, string>).delete(k); },
-  clear() { (this._store as Map<string, string>).clear(); },
+  getItem(k: string) { return this._store.get(k) ?? null; },
+  setItem(k: string, v: string) { this._store.set(k, v); },
+  removeItem(k: string) { this._store.delete(k); },
+  clear() { this._store.clear(); },
 };
 
 /* ------------------------------------------------------------------ */
@@ -84,9 +91,10 @@ function runScript(script: string, env: NodeJS.ProcessEnv, cwd: string, label: s
   let exitCode = 0;
   try {
     output = execSync(`bash "${scriptPath}"`, { env, cwd, timeout: 15_000, encoding: 'utf-8', stdio: 'pipe' });
-  } catch (e: any) {
-    output = (e.stdout ?? '') + (e.stderr ?? '');
-    exitCode = e.status ?? 1;
+  } catch (e: unknown) {
+    const err = e as { stdout?: string; stderr?: string; status?: number };
+    output = (err.stdout ?? '') + (err.stderr ?? '');
+    exitCode = err.status ?? 1;
   }
   return { output, exitCode };
 }
@@ -278,19 +286,8 @@ describe('buildConnectPrompt binary script — source-bound shell execution', ()
 
     const script = buildScript();
     const env = mockPath(mockDir);
-    const { stdout, exitCode } = runScript(script, env, cwd);
 
-    // Register-binary should run (curl exits 0 so set -e won't stop it,
-    // but the mock curl will actually fail on the 5th call since it only
-    // handles 4 states). The key assertion is that it REACHES the
-    // register-binary section.
-    //
-    // With the mock curl that only handles 4 states, the 5th call (register-binary)
-    // will actually increment past 4 and exit 0 with arrived:true. That's fine —
-    // the assertion is that we reach the register-binary section.
-    // Let's adjust the mock to handle the register-binary call too.
-    //
-    // Actually, let me redo the mock: handle call 5 (register-binary) as well
+    // Rewrite the mock to handle the register-binary call (5th curl) as well
     // by always returning arrived:true for calls >= 5.
     rmSync(curlPath);
     writeFileSync(curlPath, [
