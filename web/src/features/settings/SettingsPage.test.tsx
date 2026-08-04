@@ -66,6 +66,29 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
       HttpResponse.json(TOKENS_PAYLOAD),
     ),
+    // THR-107 seq339: the adapter-backed connect flow fetches the contract
+    // reference with the scoped token after minting.  Return a
+    // deterministic non-guessed path so tests can prove the literal
+    // server-returned value is rendered through the shared prompt builder.
+    http.get('/api/v1/runtime/adapters/contract-reference', () =>
+      HttpResponse.json({
+        contract_version: 1,
+        canonical_adapter_id: 'test-adapter',
+        canonical_adapter_id_description: '',
+        adapter_input_schema: {},
+        adapter_output_schema: {},
+        rules: {},
+        submission: {},
+        dependency_manifest: {},
+        token_metering: {},
+        reapproval_rule: '',
+        probe: {},
+        canonical_directory: '/tmp/happyranch-daemon/adapters',
+        canonical_directory_description: '',
+        required_executable_path: '/tmp/happyranch-daemon/adapters/test-cli-adapter',
+        required_executable_path_description: '',
+      }),
+    ),
   );
 }
 
@@ -1352,6 +1375,41 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
     expect(promptText).toContain('stderr for all diagnostics');
     expect(promptText).toContain('Max output: 1 MB');
+  });
+
+  test('seq339: prompt includes literal server-returned required_executable_path', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ339',
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq339-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    // The LITERAL server-returned path (from mocked contract-reference)
+    // must appear in the prompt, not a placeholder or guessed path.
+    const expectedPath = '/tmp/happyranch-daemon/adapters/test-cli-adapter';
+    expect(promptText).toContain(expectedPath);
+    // The path appears in the "create at exactly" instruction
+    expect(promptText).toContain('LITERAL server-authoritative path');
+    // Path also appears in the submit body (pre-filled)
+    expect(promptText).toContain(`"executable":"${expectedPath}"`);
+    // Must tell the candidate NOT to place in home dir or self-chosen path
+    expect(promptText).toContain('Do NOT place');
+    // Must reference the contract-reference endpoint
+    expect(promptText).toContain('contract-reference');
   });
 
   test('seq184: prompt distinguishes emit_envelope from AdapterOutput', async () => {
