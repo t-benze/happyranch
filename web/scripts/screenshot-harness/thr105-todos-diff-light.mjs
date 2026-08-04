@@ -1,5 +1,5 @@
 /**
- * Deterministic numeric LIGHT pixel-diff for THR-105 Todos — TASK-4223.
+ * Deterministic numeric LIGHT pixel-diff for THR-105 Todos — TASK-4230.
  *
  * Compares the two approved reference states (list and weekly-armed detail)
  * against the current built captures using the browser's canvas API via
