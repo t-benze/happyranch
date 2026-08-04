@@ -3325,12 +3325,19 @@ class TestSameOwnerAdversarialLimits:
         # must never be reached.
         import runtime.skills.canonical_store as cs_mod
 
+        # Capture the original before patching — the tracker must invoke
+        # the saved callable, not the module attribute that is about to
+        # be replaced by the mock.
+        _original_hardening = cs_mod._apply_readonly_hardening
+
         rebuild_calls: list[str] = []
 
         def _track_rebuild(isolation, pkg_path_arg):
             rebuild_calls.append(str(pkg_path_arg))
-            # Still call through so the test exercises the full path.
-            return cs_mod._apply_readonly_hardening(isolation, pkg_path_arg)
+            # Call the saved original so the test exercises the full
+            # rebuild path. Using cs_mod._apply_readonly_hardening here
+            # would recurse because that name is already mocked.
+            return _original_hardening(isolation, pkg_path_arg)
 
         with patch.object(
             cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
@@ -3358,4 +3365,137 @@ class TestSameOwnerAdversarialLimits:
         )
         assert store.is_built("test-valid", "1.0.0", raw_artifact_sha), (
             "is_built must return True for intact package after valid reuse"
+        )
+
+    def test_legacy_lifecycle_branch_controlled_rebuild_positive(
+        self, store, tmp_path, db,
+    ):
+        """Red-side control: a deliberately corrupted canonical package
+        triggers a genuine rebuild through the saved original hardening
+        primitive, proving the zero-call assertion in the intact test
+        would catch a needless rebuild.
+
+        This test corrupts the canonical SKILL.md after the first
+        build, then verifies that the second lifecycle materialization
+        detects the mismatch, rebuilds (calling _apply_readonly_hardening),
+        and restores correct content.
+        """
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-corrupt/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-corrupt",
+            slug="test-corrupt",
+            name="Test Corrupt Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A skill to test rebuild on corruption",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-corrupt",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 2. First build through real production branch ──
+        specs1 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs1) == 1
+        pkg_path = store.canonical_path("test-corrupt", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 3. Corrupt the canonical package in place ──
+        # Same-owner can write through symlinks; this simulates an
+        # accidental or adversarial mutation that the lifecycle
+        # materialization must detect and repair.
+        corrupted = b"# Corrupted Content\n\nThis should trigger a rebuild.\n"
+        # Make package and file writable, overwrite, then restore. The
+        # canonical directory is 0555 after hardening — same-owner can
+        # chmod it back, just like the file.
+        pkg_path.chmod(0o755)
+        (pkg_path / "SKILL.md").chmod(0o644)
+        (pkg_path / "SKILL.md").write_bytes(corrupted)
+        (pkg_path / "SKILL.md").chmod(0o444)
+        pkg_path.chmod(0o555)
+        assert (pkg_path / "SKILL.md").read_bytes() == corrupted, (
+            "Corruption must be in place before second materialization"
+        )
+
+        # ── 4. Make package writable so build_from_source can rmtree ──
+        # During the forced rebuild, build_from_source must rmtree the
+        # existing hardened package.  Same-owner can chmod it back.
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+
+        # ── 5. Intercept the rebuild primitive with saved-original ──
+        import runtime.skills.canonical_store as cs_mod
+        _original_hardening = cs_mod._apply_readonly_hardening
+
+        rebuild_calls: list[str] = []
+
+        def _track_rebuild(isolation, pkg_path_arg):
+            rebuild_calls.append(str(pkg_path_arg))
+            return _original_hardening(isolation, pkg_path_arg)
+
+        with patch.object(
+            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
+        ):
+            specs2 = _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+
+        # ── 6. Assert rebuild DID occur (positive control) ──
+        assert len(rebuild_calls) == 1, (
+            f"Expected exactly 1 rebuild after corrupting canonical package, "
+            f"got {len(rebuild_calls)}. rebuild_calls={rebuild_calls}"
+        )
+        assert len(specs2) == 1
+        assert specs2[0] == specs1[0], (
+            "Specs must be identical after repair — same ledger record"
+        )
+        assert store.is_built("test-corrupt", "1.0.0", raw_artifact_sha), (
+            "is_built must return True after rebuild repairs the corrupted package"
+        )
+        # ── 7. Verify post-repair content is correct ──
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8"), (
+            "SKILL.md content must be restored to the original artifact bytes "
+            "after rebuild"
         )
