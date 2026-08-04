@@ -7,6 +7,7 @@ Tests:
 """
 from __future__ import annotations
 
+import shlex
 import time
 
 import pytest
@@ -1185,6 +1186,39 @@ class TestRuntimeRegisterBinaryRoute:
 class TestRuntimeRegisterBinaryRaceAndErrors:
     """OpenCode-style race + actionable error regressions (THR-107 seq352)."""
 
+    def _mint_binary_token_and_complete_conformance(
+        self, client, store, monkeypatch, kind="claude"
+    ):
+        """Mint a binary-purpose runtime token and complete all conformance steps."""
+        token, _ = store.mint_runtime(kind, purpose="binary")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json=payload,
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        return token, headers
+
+    def _create_valid_executable(self, tmp_path):
+        """Create a valid executable binary for testing."""
+        exe = tmp_path / "bin" / "myexecutor"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        return str(exe)
+
     # ── OpenCode race reproduction ─────────────────────────────────
 
     def test_register_binary_fails_before_fourth_checkin_all_complete(
@@ -1338,8 +1372,8 @@ class TestRuntimeRegisterBinaryRaceAndErrors:
         assert ("not exist" in detail.lower() or
                 "does not exist" in detail.lower())
 
-    def test_invalid_token_error_is_401(self, client, tmp_path):
-        """Invalid/unknown token → 401."""
+    def test_invalid_token_error_is_401_and_actionable(self, client, tmp_path):
+        """Invalid/unknown token → 401 with regenerate guidance (THR-107 seq352)."""
         exe = tmp_path / "bin" / "claude"
         exe.parent.mkdir(parents=True, exist_ok=True)
         exe.touch(mode=0o755)
@@ -1349,7 +1383,171 @@ class TestRuntimeRegisterBinaryRaceAndErrors:
             headers={"Authorization": "Bearer hrreg_fake_invalid_token"},
         )
         assert r.status_code == 401
-        assert "token" in r.json()["detail"].lower()
+        detail = r.json()["detail"]
+        assert "token" in detail.lower()
+        assert "regenerate" in detail.lower()
+
+    def test_consumed_token_error_mentions_regenerate(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Consumed (already-used) token → 401 with regenerate guidance."""
+        exe_path = self._create_valid_executable(tmp_path)
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        # First use: succeeds and consumes the token
+        r1 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r1.status_code == 200
+        # Token is now consumed
+        assert store.validate_runtime(token) is None
+
+        # Second use with consumed token → 401
+        r2 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r2.status_code == 401
+        detail = r2.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_master_bearer_error_mentions_regenerate(self, client, monkeypatch, tmp_path):
+        """Master bearer token on registration route → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": f"Bearer {paths_mod.read_token()}"},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_non_hrreg_token_error_mentions_regenerate(self, client, tmp_path):
+        """Non-hrreg_ token → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+            headers={"Authorization": "Bearer not_a_registration_token_12345"},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_missing_bearer_error_mentions_regenerate(self, client, tmp_path):
+        """No bearer token → 401 with regenerate guidance."""
+        exe = tmp_path / "bin" / "claude"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.touch(mode=0o755)
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(exe)},
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+    def test_reserve_race_token_error_mentions_regenerate(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Reserve race: after an external reserve, register-binary → 401
+        with regenerate guidance."""
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        exe_path = self._create_valid_executable(tmp_path)
+
+        # Simulate a concurrent reservation
+        reserved = store.reserve_runtime(token)
+        assert reserved is not None, "Reserve must succeed for the race test"
+
+        # Now try register-binary with the externally reserved token
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 401
+        detail = r.json()["detail"]
+        assert "regenerate" in detail.lower()
+
+        # Token remains reserved (not consumed, not released by our route)
+        # Clean up
+        store.release_runtime(token)
+
+    # ── Fault injection: set_binary write failure ──────────────────
+
+    def test_set_binary_write_failure_safe_500(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """set_binary raises Exception → 500 with safe detail, token
+        released/not consumed, no durable write, retry succeeds (THR-107 seq352)."""
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+        exe_path = self._create_valid_executable(tmp_path)
+
+        # Monkeypatch set_binary in the routes module where it's imported
+        from runtime.daemon.routes import executors as executors_routes
+        original_set_binary = executors_routes.set_binary
+        call_count = [0]
+
+        def _failing_set_binary(kind, path):
+            call_count[0] += 1
+            raise OSError("Simulated disk write failure")
+
+        monkeypatch.setattr(
+            executors_routes, "set_binary", _failing_set_binary
+        )
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r.status_code == 500
+        detail = r.json()["detail"]
+        # Safe detail: no raw traceback, no internal paths, no secret
+        assert "traceback" not in detail.lower()
+        assert "oserror" not in detail.lower()
+        assert "simulated" not in detail.lower()
+        assert "persist" in detail.lower() or "fail" in detail.lower()
+
+        # Token released (not consumed)
+        assert store.validate_runtime(token) is not None
+
+        # No durable write (registry has no "claude" entry)
+        from runtime.orchestrator.executor_binary_registry import load_registry
+        registry = load_registry()
+        assert "claude" not in registry
+
+        # Restore set_binary and retry with same token → succeeds
+        monkeypatch.setattr(
+            executors_routes, "set_binary", original_set_binary
+        )
+        r2 = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": exe_path},
+            headers=headers,
+        )
+        assert r2.status_code == 200
+        assert r2.json()["valid"] is True
+
+        # Now token IS consumed
+        assert store.validate_runtime(token) is None
+
+        # Registry now has the entry
+        registry2 = load_registry()
+        assert "claude" in registry2
 
     def test_token_purpose_mismatch_is_403(
         self, client, store, monkeypatch, tmp_path
@@ -1386,6 +1584,190 @@ class TestRuntimeRegisterBinaryRaceAndErrors:
         detail = r.json()["detail"]
         if isinstance(detail, dict):
             assert detail.get("code") == "token_purpose_mismatch"
+
+    # ── Shell execution regression: fail-closed script ────────────
+
+    def test_fail_closed_shell_script_no_register_binary_on_curl_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """Execution-level regression: the emitted binary script must NOT
+        invoke register-binary when any conformance curl fails (THR-107 seq352).
+
+        Creates a mock curl that fails on the second check-in and proves
+        register-binary is never reached."""
+        import subprocess
+        import stat
+        import os
+
+        # Create a mock curl that succeeds on first call, fails on second
+        mock_curl_dir = tmp_path / "mock_bin"
+        mock_curl_dir.mkdir()
+        # State file to track which call we're on
+        state_file = tmp_path / "mock_curl_state"
+        state_file.write_text("0")
+
+        mock_curl_script = mock_curl_dir / "curl"
+        mock_curl_script.write_text(
+            '#!/bin/bash\n'
+            'COUNT=$(cat "' + str(state_file) + '")\n'
+            'NEXT=$((COUNT + 1))\n'
+            'echo "$NEXT" > "' + str(state_file) + '"\n'
+            'if [ "$NEXT" -eq 2 ]; then\n'
+            '  echo "{\\"error\\":\\"mock failure\\"}" >&2\n'
+            '  exit 22\n'
+            'fi\n'
+            'echo "{\\"arrived\\":true,\\"all_complete\\":true}"\n'
+            'exit 0\n'
+        )
+        os.chmod(mock_curl_script, 0o755)
+
+        # Build a shell script mirroring the binary connect prompt
+        # (set -e, || exit 1 on command substitution, all_complete gate)
+        test_script = tmp_path / "test_connect.sh"
+        BIN_NAME = "testexecutor"
+        TOKEN = "hrreg_fake_token"
+        BASE = "http://localhost:9999/api/v1"
+        # Create a mock binary
+        mock_bin = tmp_path / "bin" / BIN_NAME
+        mock_bin.parent.mkdir(parents=True, exist_ok=True)
+        mock_bin.touch(mode=0o755)
+
+        test_script.write_text(
+            '#!/bin/bash\n'
+            'set -e\n'
+            'TOKEN=hrreg_fake_token\n'
+            'BASE=http://localhost:9999/api/v1\n'
+            'BIN=' + shlex.quote(str(mock_bin)) + '\n'
+            'echo "Found binary: $BIN"\n'
+            'echo "--- workspace_access ---"\n'
+            'curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"workspace_access"}\'\n'
+            'echo ""\n'
+            'echo "--- loopback_reachable ---"\n'
+            '# This call will fail (mock curl exits 22 on second invocation)\n'
+            'curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"loopback_reachable"}\'\n'
+            'echo ""\n'
+            '# Should NEVER reach this point\n'
+            'echo "SHOULD_NOT_APPEAR_cli_callback"\n'
+            'echo "--- register-binary ---"\n'
+            'echo "REGISTER_BINARY_WAS_CALLED"\n'
+        )
+        os.chmod(test_script, 0o755)
+
+        # Run with the mock curl on PATH
+        env = os.environ.copy()
+        env["PATH"] = str(mock_curl_dir) + os.pathsep + env.get("PATH", "")
+        env.pop("HAPPYRANCH_DAEMON_HOME", None)  # Don't interfere
+
+        result = subprocess.run(
+            [str(test_script)],
+            capture_output=True, text=True,
+            env=env, cwd=str(tmp_path),
+            timeout=10,
+        )
+        # Script must fail (non-zero exit) due to curl failure + set -e
+        assert result.returncode != 0, (
+            f"Expected non-zero exit from fail-closed script, "
+            f"got {result.returncode}. stdout: {result.stdout}"
+        )
+        # register-binary must NOT have been invoked
+        assert "REGISTER_BINARY_WAS_CALLED" not in result.stdout, (
+            "register-binary was invoked despite a failed conformance curl — "
+            "fail-closed invariant violated"
+        )
+        assert "SHOULD_NOT_APPEAR" not in result.stdout, (
+            "Script continued past a failed curl — set -e or failure "
+            "handling is not working"
+        )
+
+    def test_fourth_curl_command_substitution_failure_stops_before_register(
+        self, tmp_path
+    ):
+        """The fourth (emit_envelope) command-substitution failure must also
+        stop before register-binary can execute (|| exit 1 gate)."""
+        import subprocess
+        import os
+
+        # Mock curl that fails on the fourth call
+        mock_curl_dir = tmp_path / "mock_bin2"
+        mock_curl_dir.mkdir()
+        state_file = tmp_path / "mock_curl_state2"
+        state_file.write_text("0")
+
+        mock_curl_script = mock_curl_dir / "curl"
+        mock_curl_script.write_text(
+            '#!/bin/bash\n'
+            'COUNT=$(cat "' + str(state_file) + '")\n'
+            'NEXT=$((COUNT + 1))\n'
+            'echo "$NEXT" > "' + str(state_file) + '"\n'
+            'if [ "$NEXT" -eq 4 ]; then\n'
+            '  echo "{\\"error\\":\\"command substitution failure\\"}" >&2\n'
+            '  exit 22\n'
+            'fi\n'
+            'echo "{\\"arrived\\":true}"\n'
+            'exit 0\n'
+        )
+        os.chmod(mock_curl_script, 0o755)
+
+        test_script = tmp_path / "test_fourth_fail.sh"
+        mock_bin = tmp_path / "bin" / "testexecutor2"
+        mock_bin.parent.mkdir(parents=True, exist_ok=True)
+        mock_bin.touch(mode=0o755)
+
+        test_script.write_text(
+            '#!/bin/bash\n'
+            'set -e\n'
+            'TOKEN=hrreg_fake_token\n'
+            'BASE=http://localhost:9999/api/v1\n'
+            'BIN=' + shlex.quote(str(mock_bin)) + '\n'
+            '# First three should succeed\n'
+            'curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"workspace_access"}\' > /dev/null\n'
+            'curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"loopback_reachable"}\' > /dev/null\n'
+            'curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"cli_callback"}\' > /dev/null\n'
+            '# Fourth: command substitution + || exit 1 must stop the script\n'
+            'echo "--- emit_envelope (fourth check-in) ---"\n'
+            'RESP=$(curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\\n'
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}\') || exit 1\n'
+            'echo "$RESP"\n'
+            '# Should NEVER reach this point\n'
+            'echo "REGISTER_BINARY_WAS_CALLED"\n'
+        )
+        os.chmod(test_script, 0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = str(mock_curl_dir) + os.pathsep + env.get("PATH", "")
+        env.pop("HAPPYRANCH_DAEMON_HOME", None)
+
+        result = subprocess.run(
+            [str(test_script)],
+            capture_output=True, text=True,
+            env=env, cwd=str(tmp_path),
+            timeout=10,
+        )
+        assert result.returncode != 0, (
+            f"Expected non-zero exit when fourth curl fails in command "
+            f"substitution, got {result.returncode}"
+        )
+        assert "REGISTER_BINARY_WAS_CALLED" not in result.stdout, (
+            "register-binary was reached despite fourth command-substitution "
+            "curl failing — || exit 1 gate not working"
+        )
 
 
 # ── Runtime Profile Management Routes (THR-107 S4a) ─────────────────────

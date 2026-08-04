@@ -412,8 +412,11 @@ flow entirely via loopback HTTP calls to the runtime routes above.
 For **built-in** profiles (Claude Code, Codex, OpenCode, Pi), the SPA
 mints a ``purpose='binary'`` token and renders a **strictly sequential,
 copy-pasteable shell script** with no background or parallel commands.
-Every ``curl`` invocation uses ``--fail-with-body -sS`` so that HTTP
-errors abort the script while still printing the server error detail.
+The script opens with ``set -e`` so any ``curl`` HTTP error (signaled by
+``--fail-with-body -sS``) stops execution immediately while still
+printing the server error detail for debugging. The fourth check-in
+(``emit_envelope``) uses an explicit ``|| exit 1`` guard because
+command-substitution failures are not caught by ``set -e`` alone.
 
 The built-in prompt drives the candidate through:
 
@@ -438,8 +441,11 @@ Error responses from ``register-binary`` are designed to be
 source code:
 
 - **401 (invalid/expired/consumed/wrong-runtime token)** — tells the
-  candidate to regenerate the connect prompt and run the full sequence
-  again.
+  candidate to regenerate the connect prompt from Settings > Executors or
+  onboarding and run the full sequence again. This applies to both
+  pre-handler rejection (``_check_registration_token`` — invalid,
+  expired, consumed, or non-registration-form token) and post-handler
+  validation (``validate_runtime`` — consumed mid-flight).
 - **400 (incomplete conformance)** — names the pending steps and
   instructs the candidate to complete them sequentially and await
   ``all_complete:true``.

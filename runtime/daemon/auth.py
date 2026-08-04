@@ -54,7 +54,11 @@ def _check_registration_token(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing bearer token",
+            detail=(
+                "Missing bearer token. Regenerate the connect prompt from "
+                "Settings > Executors or onboarding and run the full "
+                "sequence again."
+            ),
         )
 
     token_value = authorization.removeprefix("Bearer ").strip()
@@ -64,14 +68,22 @@ def _check_registration_token(
     if master is not None and token_value == master:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="master bearer not accepted on registration route",
+            detail=(
+                "Master bearer not accepted on registration route. "
+                "Regenerate the connect prompt from Settings > Executors "
+                "or onboarding to get a valid registration token."
+            ),
         )
 
     # Reject tokens that don't carry the registration prefix.
     if not token_value.startswith(REGISTRATION_TOKEN_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="not a registration token",
+            detail=(
+                "Not a registration token. Regenerate the connect prompt "
+                "from Settings > Executors or onboarding and run the full "
+                "sequence again."
+            ),
         )
 
     # Validate through the in-memory token store (org-agnostic — the
@@ -81,7 +93,11 @@ def _check_registration_token(
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or expired registration token",
+            detail=(
+                "Registration token is invalid, expired, or already consumed. "
+                "Regenerate the connect prompt from Settings > Executors or "
+                "onboarding and run the full sequence again."
+            ),
         )
 
 
