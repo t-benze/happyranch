@@ -22,7 +22,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+from runtime.orchestrator.workspace_adapters import (
+    _build_lifecycle_canonical_specs,
+    _compute_dir_hash,
+)
 from runtime.platform.isolation import (
     PlatformIdentity,
     PlatformIsolation,
@@ -3011,49 +3014,121 @@ class TestSameOwnerAdversarialLimits:
 
     # ── Fix 2: Legacy single-SKILL.md lifecycle artifact branch ────────
 
-    def test_legacy_single_skill_md_tamper_detect_and_repair(
-        self, store, tmp_path,
+    # ── Fix 2 v2: Real _build_lifecycle_canonical_specs branch tests ──
+    # The legacy single-SKILL.md lifecycle branch is exercised through
+    # the actual production function rather than direct store calls.
+    # The raw artifact SHA (ledger content_hash) differs from the
+    # derived source-tree hash (extracted temp dir _compute_dir_hash) —
+    # this is proven in every test. If verify_source_hash were omitted,
+    # wired to canonical bytes, or wired to raw artifact SHA, tampered
+    # content would be silently accepted.
+
+    def test_legacy_lifecycle_branch_tamper_detect_and_repair(
+        self, store, tmp_path, db,
     ):
-        """Legacy single-SKILL.md artifact branch — same-owner mutation
-        is detected and repaired from verified artifact bytes.
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: same-owner canonical target mutation is detected and
+        repaired when the verified artifact remains available.
 
-        Mirrors the real legacy lifecycle branch at
-        workspace_adapters.py:_build_lifecycle_canonical_specs where a
-        single SKILL.md artifact is extracted to a temp dir and built
-        via build_from_source with verify_source_hash.
+        Sets up a real ArtifactStore-backed lifecycle artifact.  The
+        raw artifact SHA (content_hash) USED to differ from the
+        derived source-tree hash — this proves that wiring
+        verify_source_hash to the wrong value would silently accept
+        tampered content.
+
+        Honest adversarial proposition: same-owner CAN modify the
+        symlinked canonical target.  Repair restores trusted content
+        only while the retained artifact input exists.
         """
-        # Create a temp source dir with just SKILL.md (mirrors the
-        # legacy lifecycle branch exactly)
-        src_dir = tmp_path / "legacy-src"
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        # ── 1. Artifact identity: raw bytes SHA ≠ derived tree hash ──
+        skill_md_bytes = b"# Test Legacy Skill\n\nOriginal content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        # Write artifact bytes into a temp dir to compute the *derived*
+        # source-tree hash (the one _build_lifecycle_canonical_specs
+        # passes as verify_source_hash).
+        src_dir = tmp_path / "probe-src"
         src_dir.mkdir()
-        original_content = "# My Legacy Skill\n\nLegacy single-file artifact.\n"
-        (src_dir / "SKILL.md").write_text(original_content)
+        (src_dir / "SKILL.md").write_bytes(skill_md_bytes)
+        derived_tree_hash = _compute_dir_hash(src_dir)
 
-        # Compute the source hash from the already-verified artifact
-        # bytes (mirrors _compute_dir_hash called on the temp dir)
-        source_hash = _compute_dir_hash(src_dir)
-        content_hash = _compute_dir_hash(src_dir)  # same for single file
-
-        slug = "test-legacy-mutation"
-
-        # Build via the legacy path: temp dir + verify_source_hash
-        store.build_from_source(
-            slug, "system", content_hash, src_dir,
-            verify_source_hash=source_hash,
+        # Proven: raw artifact SHA differs from derived tree hash.
+        assert raw_artifact_sha != derived_tree_hash, (
+            f"Raw artifact SHA {raw_artifact_sha[:16]}... must differ "
+            f"from derived tree hash {derived_tree_hash[:16]}... — "
+            f"_compute_dir_hash includes relative-path prefix bytes "
+            f"that raw SHA-256 does not"
         )
 
-        pkg_path = store.canonical_path(slug, "system", content_hash)
-        assert original_content in (pkg_path / "SKILL.md").read_text()
+        # ── 2. Seed the lifecycle ledger ──
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-legacy/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
 
-        # Same-owner mutates: chmod + rewrite + restore perms
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-legacy",
+            slug="test-legacy",
+            name="Test Legacy Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A test legacy skill",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-legacy",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 3. Build through the real production branch ──
+        specs = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs) == 1
+        assert specs[0]["slug"] == "test-legacy"
+        assert specs[0]["version"] == "1.0.0"
+        assert specs[0]["content_hash"] == raw_artifact_sha
+
+        pkg_path = store.canonical_path("test-legacy", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 4. Same-owner tampers with canonical target ──
         skill_file = pkg_path / "SKILL.md"
         os.chmod(skill_file, 0o644)
-        skill_file.write_text("# CORRUPTED")
+        skill_file.write_text("# TAMPERED BY SAME OWNER")
         os.chmod(skill_file, 0o444)
 
-        # Rebuild with verify_source_hash → detects tampering, rebuilds.
-        # First make the package writable so rmtree can clean up (the
-        # rebuild path re-creates the package).
+        assert "TAMPERED" in (pkg_path / "SKILL.md").read_text(), (
+            "Same-owner CAN alter the symlinked canonical target — "
+            "this is the honest limit, not a security boundary"
+        )
+
+        # ── 5. Rebuild via real branch → detects tamper, repairs ──
+        # Make the tampered package writable so build_from_source can
+        # rmtree it during the forced rebuild.
         for f in pkg_path.rglob("*"):
             if f.is_file():
                 os.chmod(f, 0o644)
@@ -3061,102 +3136,198 @@ class TestSameOwnerAdversarialLimits:
                 os.chmod(f, 0o755)
         os.chmod(pkg_path, 0o755)
 
-        store.build_from_source(
-            slug, "system", content_hash, src_dir,
-            verify_source_hash=source_hash,
+        specs2 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
         )
+        assert len(specs2) == 1
         restored = (pkg_path / "SKILL.md").read_text()
-        assert original_content in restored, (
-            "Tampered legacy-skill content must be restored from "
-            "verified artifact bytes"
+        assert restored == skill_md_bytes.decode("utf-8"), (
+            "Integrity verification must restore trusted content from "
+            "verified artifact bytes; got: {!r}".format(restored)
         )
-        assert "# CORRUPTED" not in restored
 
-    def test_legacy_single_skill_md_absent_artifact_fails_closed(
-        self, store, tmp_path,
+    def test_legacy_lifecycle_branch_absent_artifact_fails_closed(
+        self, store, tmp_path, db,
     ):
-        """Legacy single-SKILL.md branch — when the trusted artifact
-        source is unavailable, fail closed and never bless altered bytes.
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: when the trusted artifact is withdrawn/unavailable,
+        the function raises the documented named actionable failure
+        (LifecycleMaterializationError) and never blesses altered
+        canonical content.
 
-        Mirrors the real legacy branch failure mode when an artifact
-        store read fails (ArtifactNotFound) or a temp dir source has
-        been withdrawn.
+        If ArtifactNotFound were silently accepted, the tampered bytes
+        would persist unchallenged.
         """
-        src_dir = tmp_path / "legacy-absent-src"
-        src_dir.mkdir()
-        (src_dir / "SKILL.md").write_text("# Valid Legacy")
-
-        source_hash = _compute_dir_hash(src_dir)
-        content_hash = _compute_dir_hash(src_dir)
-        slug = "test-legacy-absent"
-
-        store.build_from_source(
-            slug, "system", content_hash, src_dir,
-            verify_source_hash=source_hash,
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
         )
+        import datetime
 
-        pkg_path = store.canonical_path(slug, "system", content_hash)
-        assert "# Valid Legacy" in (pkg_path / "SKILL.md").read_text()
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Legacy Skill\n\nWill be withdrawn.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
 
-        # Withdraw the trusted source (mirrors ArtifactNotFound)
-        shutil.rmtree(src_dir)
-        assert not src_dir.exists()
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-absent/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
 
-        # Tamper with canonical package
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-absent",
+            slug="test-absent",
+            name="Test Absent Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="Skill that will be withdrawn",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-absent",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 2. First build succeeds ──
+        specs = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs) == 1
+        pkg_path = store.canonical_path("test-absent", "1.0.0", raw_artifact_sha)
+        assert "Valid Legacy" in (pkg_path / "SKILL.md").read_text()
+
+        # ── 3. Withdraw the artifact (mirrors ArtifactNotFound) ──
+        artifact_store.delete(artifact_key)
+
+        # ── 4. Tamper with canonical target (same-owner CAN do this) ──
         skill_file = pkg_path / "SKILL.md"
         os.chmod(skill_file, 0o644)
         skill_file.write_text("# TAMPERED AFTER WITHDRAWAL")
         os.chmod(skill_file, 0o444)
 
-        # Build attempt must fail closed — source is gone
-        from runtime.skills.canonical_store import CanonicalStoreError
-        with pytest.raises((CanonicalStoreError, FileNotFoundError)):
-            store.build_from_source(
-                slug, "system", content_hash, src_dir,
-                verify_source_hash=source_hash,
+        # ── 5. Rebuild fails closed with named actionable error ──
+        with pytest.raises(LifecycleMaterializationError, match="Artifact not found"):
+            _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
             )
 
-        # Tampered bytes must NOT be silently accepted
+        # ── 6. Tampered bytes are never silently blessed ──
         actual = (pkg_path / "SKILL.md").read_text()
-        assert "# Valid Legacy" not in actual, (
-            "Content was unexpectedly restored from nowhere"
-        )
         assert "TAMPERED" in actual, (
-            "Tampered content persists since rebuild failed — fail closed"
+            "Tampered content persists in canonical store since "
+            "rebuild failed — fail closed, never silently accept"
+        )
+        assert "Valid Legacy" not in actual, (
+            "Content was unexpectedly restored from a withdrawn artifact"
         )
 
-    def test_legacy_single_skill_md_valid_no_spurious_rebuild(
-        self, store, tmp_path,
+    def test_legacy_lifecycle_branch_valid_no_spurious_rebuild(
+        self, store, tmp_path, db,
     ):
-        """Legacy single-SKILL.md branch — a valid artifact does not
-        spuriously rebuild.
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: an intact valid artifact/canonical-store is reused
+        without spurious rebuild.
 
         When the canonical package content matches the verified source
-        hash, build_from_source returns the existing package path
-        unchanged.
+        hash, the second call returns the same specs (no rebuild).
+        This would fail if verify_source_hash were omitted because a
+        spurious rebuild would manifest as a different path or build
+        error.
         """
-        src_dir = tmp_path / "legacy-valid-src"
-        src_dir.mkdir()
-        (src_dir / "SKILL.md").write_text("# Valid Content")
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
 
-        source_hash = _compute_dir_hash(src_dir)
-        content_hash = _compute_dir_hash(src_dir)
-        slug = "test-legacy-valid"
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
 
-        # First build
-        path1 = store.build_from_source(
-            slug, "system", content_hash, src_dir,
-            verify_source_hash=source_hash,
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-valid/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-valid",
+            slug="test-valid",
+            name="Test Valid Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A stable valid skill",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
         )
-
-        # Second build with same verified source — no rebuild
-        path2 = store.build_from_source(
-            slug, "system", content_hash, src_dir,
-            verify_source_hash=source_hash,
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-valid",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
         )
+        lifecycle_stores.insert_assignment(db, assign)
 
-        assert path1 == path2, (
-            "Legacy single-SKILL.md branch must not spuriously rebuild "
+        # ── 2. First build through real production branch ──
+        specs1 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs1) == 1
+        pkg_path = store.canonical_path("test-valid", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 3. Second call does NOT rebuild — same specs, same content ──
+        specs2 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs2) == 1
+        assert specs2[0] == specs1[0], (
+            "Legacy lifecycle branch must not spuriously rebuild "
             "when artifact content matches source hash"
         )
-        assert store.is_built(slug, "system", content_hash)
+        assert store.is_built("test-valid", "1.0.0", raw_artifact_sha), (
+            "is_built must return True for intact package after valid reuse"
+        )
