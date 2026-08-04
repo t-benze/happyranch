@@ -30,26 +30,29 @@ from runtime.orchestrator.workspace_adapters import (
 
 
 class TestRefreshSessionSkills:
-    """Prove refresh_session_skills re-copies from source on every call.
+    """Prove refresh_session_skills refreshes skills via the canonical
+    store + symlink architecture.
 
-    The Phase 4 cutover gates the wholesale dump behind _WHOLESALE_DUMP_ENABLED
-    (default OFF). These tests re-enable it via monkeypatch so they continue
-    to verify the wholesale-dump path independently of the cutover."""
+    The wholesale dump has been permanently removed; all skill materialization
+    uses the unified canonical boundary (canonical store + workspace symlinks).
+    refresh_session_skills is a forwarder to materialize_workspace_skills."""
 
-    @pytest.fixture(autouse=True)
-    def _enable_wholesale_dump(self, monkeypatch) -> None:
-        """Re-enable the wholesale dump for these refresh_session_skills tests."""
-        monkeypatch.setattr(
-            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
-            True,
-        )
+    @staticmethod
+    def _make_task_contracts(settings: Settings) -> None:
+        """Create ALL system contracts required for task context.
+        Without repos, task context requires: start-task, jobs, thread."""
+        skills_root = settings.get_protocol_dir() / "skills"
+        for sid in ("start-task", "jobs", "thread"):
+            (skills_root / sid).mkdir(parents=True, exist_ok=True)
+            if not (skills_root / sid / "SKILL.md").exists():
+                (skills_root / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
     def test_refresh_copies_skills_to_both_targets(
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Skills land in both .claude/skills/ and .agents/skills/."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
         workspace = tmp_path / "workspace"
@@ -67,8 +70,8 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """ACCEPTANCE #1: Edit bundled skill → refresh → workspace reflects edit."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("VERSION 1\n")
 
         workspace = tmp_path / "workspace"
@@ -89,61 +92,57 @@ class TestRefreshSessionSkills:
     def test_refresh_overwrites_existing_in_dst(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Skills in source are always copied; existing workspace files are replaced."""
+        """Skills in source are always materialized; system contracts only."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("skill v1\n")
-        (skills_root / "other").mkdir(parents=True)
-        (skills_root / "other" / "SKILL.md").write_text("other v1\n")
 
         workspace = tmp_path / "workspace"
         refresh_session_skills(workspace, test_settings, slug="test")
 
-        # Both skills copied
+        # System contract skill materialized
         assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
-        assert (workspace / ".claude" / "skills" / "other" / "SKILL.md").exists()
 
-        # Update other skill in source
-        (skills_root / "other" / "SKILL.md").write_text("other v2 - updated\n")
+        # Update skill in source
+        (skills_root / "start-task" / "SKILL.md").write_text("skill v2 - updated\n")
 
         refresh_session_skills(workspace, test_settings, slug="test")
 
-        # Updated skill reflects new content
+        # Updated skill reflects new content (via symlink to updated canonical)
         content = (
-            workspace / ".claude" / "skills" / "other" / "SKILL.md"
+            workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         ).read_text()
-        assert content == "other v2 - updated\n"
+        assert content == "skill v2 - updated\n"
 
     def test_refresh_replaces_existing_skill_content(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """Existing skill files are fully replaced (not merged)."""
+        """Existing stale symlink is repaired (replaced with fresh target)."""
+        self._make_task_contracts(test_settings)
+        import os as _os
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text("BUNDLED\n")
         (skills_root / "start-task" / "helper.md").write_text("helper\n")
 
         workspace = tmp_path / "workspace"
-        # Pre-seed with stale content
-        (workspace / ".claude" / "skills" / "start-task").mkdir(parents=True)
-        (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").write_text("STALE\n")
-        (workspace / ".claude" / "skills" / "start-task" / "extra.md").write_text("extra\n")
+        # Pre-seed with a stale symlink pointing to nowhere
+        link_dir = workspace / ".claude" / "skills"
+        link_dir.mkdir(parents=True)
+        _os.symlink(str(tmp_path / "nonexistent"), str(link_dir / "start-task"))
 
         refresh_session_skills(workspace, test_settings, slug="test")
 
+        # Verify symlink now points to canonical store
         skill_path = workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         assert skill_path.read_text() == "BUNDLED\n"
-        # extra.md from stale workspace is gone (dir is rmtree'd before copy)
-        assert not (workspace / ".claude" / "skills" / "start-task" / "extra.md").exists()
-        # helper.md from bundle is present
         assert (workspace / ".claude" / "skills" / "start-task" / "helper.md").exists()
 
     def test_refresh_substitutes_org_slug(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """{ORG_SLUG} placeholder is substituted in skill .md files."""
+        """{ORG_SLUG} placeholder is preserved in canonical content."""
+        self._make_task_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
         (skills_root / "start-task" / "SKILL.md").write_text(
             "Run: happyranch --org {ORG_SLUG} do-thing\n"
         )
@@ -153,27 +152,31 @@ class TestRefreshSessionSkills:
 
         for d in [".claude", ".agents"]:
             content = (workspace / d / "skills" / "start-task" / "SKILL.md").read_text()
-            assert "{ORG_SLUG}" not in content
-            assert "--org my-org" in content
+            # Canonical bytes are unsubstituted; org context is via env var
+            assert "{ORG_SLUG}" in content
 
     def test_refresh_idempotent_on_missing_source(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """No-op when source directory doesn't exist."""
+        """Fail-closed when source directory doesn't exist.
+        With the source-existence check, missing protocol/skills/ raises
+        SystemContractMaterializationError."""
         # Don't create the skills dir
         workspace = tmp_path / "workspace"
-        refresh_session_skills(workspace, test_settings, slug="test")
-        # Should not crash; destination dirs may or may not exist
-        assert not (workspace / ".claude" / "skills").exists()
-        assert not (workspace / ".agents" / "skills").exists()
+        from runtime.orchestrator.workspace_adapters import (
+            SystemContractMaterializationError,
+        )
+        with pytest.raises(SystemContractMaterializationError):
+            refresh_session_skills(workspace, test_settings, slug="test")
 
     def test_refresh_uses_test_override(
         self, test_settings: Settings, tmp_path: Path,
     ):
         """_SKILLS_SRC override takes precedence over settings-derived path."""
         fake_src = tmp_path / "fake-skills"
-        (fake_src / "start-task").mkdir(parents=True)
-        (fake_src / "start-task" / "SKILL.md").write_text("FAKE\n")
+        for sid in ("start-task", "jobs", "thread"):
+            (fake_src / sid).mkdir(parents=True)
+            (fake_src / sid / "SKILL.md").write_text(f"# {sid}\n\nFAKE\n")
 
         workspace = tmp_path / "workspace"
         with pytest.MonkeyPatch.context() as mp:
@@ -186,7 +189,7 @@ class TestRefreshSessionSkills:
         content = (
             workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         ).read_text()
-        assert content == "FAKE\n"
+        assert "FAKE" in content
 
 
 # ── PART B: resolve_protocol_doc_manifest ──────────────────────────────
@@ -538,15 +541,7 @@ class TestProtocolDocManifestInPrompts:
 
 class TestInjectSystemContracts:
     """Prove inject_system_contracts correctly injects context-appropriate
-    system contracts alongside the wholesale refresh_session_skills dump."""
-
-    @pytest.fixture(autouse=True)
-    def _enable_wholesale_dump(self, monkeypatch) -> None:
-        """Re-enable the wholesale dump for idempotent test with refresh_session_skills."""
-        monkeypatch.setattr(
-            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
-            True,
-        )
+    system contracts via the canonical store + symlink architecture."""
 
     def test_task_context_injects_correct_contracts(
         self, test_settings: Settings, tmp_path: Path,

@@ -33,9 +33,9 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    inject_system_contracts,
     materialize_workspace_skills,
 )
+from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
@@ -172,7 +172,7 @@ async def run_schedule(
         materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
-            context="wake",
+            context=SessionContext.SCHEDULE,
             provider=_prov,
             agent_name=record.agent_name,
             team=agent_def.team,
@@ -234,6 +234,7 @@ async def run_schedule(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        org_slug=org_state.slug,
     ))
 
     if getattr(result, "token_usage", None) is not None:

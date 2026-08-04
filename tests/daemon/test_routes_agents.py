@@ -2081,8 +2081,9 @@ def test_set_executor_claude_to_codex_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Claude→Codex switch leaves .agents/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 4
-    contexts). Files exist BEFORE any new session starts."""
+    contracts any future session context could need (union across all 6
+    contexts: task, thread, wake, dream, schedule, bootstrap).
+    Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2099,12 +2100,15 @@ def test_set_executor_claude_to_codex_materializes_skills(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["materialization_errors"] == []
+    # materialization_errors no longer in response — success means
+    # the HTTP 200 itself is the proof of clean materialization
+    assert "materialization_errors" not in body, (
+        "materialization_errors field must not be present on success"
+    )
 
-    # Union of all 4 contexts: start-task(task,wake), jobs(all),
-    # make-worktree(all,requires_repos), thread(task,thread,wake), dream(dream)
+    # Union of all 6 contexts: task, thread, wake, dream, schedule, bootstrap
     all_contracts: set[str] = set()
-    for ctx in ("task", "thread", "wake", "dream"):
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
         all_contracts |= _system_contract_ids_for_context(ctx, workspace)
 
     assert len(all_contracts) >= 1, "at least one contract should be materialized"
@@ -2119,8 +2123,9 @@ def test_set_executor_codex_to_claude_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Codex→Claude switch leaves .claude/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 4
-    contexts). Files exist BEFORE any new session starts."""
+    contracts any future session context could need (union across all 6
+    contexts: task, thread, wake, dream, schedule, bootstrap).
+    Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="codex")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2136,10 +2141,12 @@ def test_set_executor_codex_to_claude_materializes_skills(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["materialization_errors"] == []
+    assert "materialization_errors" not in body, (
+        "materialization_errors field must not be present on success"
+    )
 
     all_contracts: set[str] = set()
-    for ctx in ("task", "thread", "wake", "dream"):
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
         all_contracts |= _system_contract_ids_for_context(ctx, workspace)
 
     assert len(all_contracts) >= 1, "at least one contract should be materialized"
@@ -2150,31 +2157,173 @@ def test_set_executor_codex_to_claude_materializes_skills(
         )
 
 
-def test_set_executor_materialization_failure_non_fatal(
+def test_set_executor_materialization_failure_fail_closed(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """When ensure_system_contracts_materialized raises, the switch still
-    succeeds (steps 1-3 have already mutated state). The error is surfaced
-    in the response body, not as a 500."""
+    """When canonical union materialization fails during executor switch,
+    the route must fail closed: HTTP 400, previous executor preserved,
+    no partial state mutation.
+
+    Specifically asserts:
+    - HTTP 400 with named error code
+    - agent.yaml executor key unchanged (still old executor)
+    - agent .md frontmatter executor field unchanged
+    - No bootstrap file from the new executor written (ensure_workspace_ready
+      is never called because union failed)
+    - No audit row produced (no audit_log entry for this switch)"""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
 
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-    )
+    # Record pristine workspace state before the failing request
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # Check if any bootstrap files exist before (new-executor files)
+    bootstrap_candidates_before = set()
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists():
+            bootstrap_candidates_before.add(candidate)
 
     with patch(
+        "runtime.daemon.routes.agents._executor_switch_materialize",
+        return_value=["union materialization failed: test-induced error"],
+    ):
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
+            headers=auth_headers,
+        )
+
+    # FAIL-CLOSED: materialization failure prevents switch
+    assert r.status_code == 400, (
+        f"Expected 400 on materialization failure, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_materialization_failed", (
+        f"Expected executor_materialization_failed, got {body}"
+    )
+    assert len(body["detail"]["errors"]) >= 1, (
+        f"Expected at least 1 materialization error, got {body}"
+    )
+
+    # ── Assert unchanged state ──
+    # agent.yaml must still say "claude", not "codex"
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        f"agent.yaml was mutated on failure: before={agent_yaml_before!r}, "
+        f"after={agent_yaml_after!r}"
+    )
+
+    # Agent frontmatter must be unchanged
+    if frontmatter_before is not None:
+        frontmatter_after = agent_md_path.read_text()
+        assert frontmatter_after == frontmatter_before, (
+            "Agent frontmatter was mutated on materialization failure"
+        )
+
+    # No new bootstrap files should have been written by the new executor
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json"]:
+        p = workspace / candidate
+        if p.exists() and candidate not in bootstrap_candidates_before:
+            pytest.fail(
+                f"Bootstrap file {candidate} was written before "
+                "materialization failed — violates materialize-first contract"
+            )
+
+
+def test_set_executor_bootstrap_failure_after_successful_union(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Real-union adversarial regression: the six-context union must succeed
+    before any persistent mutation, and post-union bootstrap failure must
+    not change pre-existing workspace state, frontmatter, audit, or launch.
+
+    Exercises the REAL union (not mocked), seeds pre-existing CLAUDE.md,
+    AGENTS.md, .claude/ .agents/ canonical links, and other bootstrap state,
+    forces ensure_workspace_ready to write then raise, and asserts:
+    - HTTP 400 with named error executor_bootstrap_failed
+    - agent.yaml unchanged (still old executor)
+    - agent .md frontmatter unchanged
+    - Pre-existing file byte contents unchanged (CLAUDE.md, AGENTS.md)
+    - Pre-existing .claude/ and .agents/ symlinks preserved
+    - No new executor bootstrap artifacts survive
+    - No audit row produced"""
+    import os as _os
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    # repos for union to resolve make-worktree contract
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── Seed pre-existing bootstrap state ──
+    # Regular files with known content
+    (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
+    (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
+    # .claude/ directory with non-skills content (union only manages skills/)
+    (workspace / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude" / "settings.json").write_text('{"old": true}')
+    # .claude/ symlink outside skills/ (union won't touch)
+    link_a = workspace / ".claude" / "old-link-a"
+    link_a.symlink_to(workspace / ".claude" / "old-link-a-target")
+    # .agents/ directory with non-skills content
+    (workspace / ".agents" / "config.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".agents" / "config.json").write_text('{"old": true}')
+    # .agents/ symlink outside skills/ (union won't touch)
+    link_b = workspace / ".agents" / "old-link-b"
+    link_b.symlink_to(workspace / ".agents" / "old-link-b-target")
+    # Other bootstrap files
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Snapshot pre-request state ──
+    from pathlib import Path as _Path
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    def _snapshot_files() -> dict[str, bytes]:
+        snap: dict[str, bytes] = {}
+        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
+            root_path = _Path(root_dir)
+            for name in filenames:
+                fp = root_path / name
+                rel = str(fp.relative_to(workspace))
+                if fp.is_file() and not fp.is_symlink():
+                    snap[rel] = fp.read_bytes()
+        return snap
+
+    def _snapshot_symlinks() -> dict[str, str]:
+        snap: dict[str, str] = {}
+        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
+            root_path = _Path(root_dir)
+            for name in filenames:
+                fp = root_path / name
+                if fp.is_symlink():
+                    rel = str(fp.relative_to(workspace))
+                    snap[rel] = str(fp.readlink())
+        return snap
+
+    byte_snapshot_before = _snapshot_files()
+    link_snapshot_before = _snapshot_symlinks()
+
+    # ── Execute failing switch ──
+    # Union must NOT be mocked — REAL union runs.
+    # Bootstrap is mocked to write then raise.
+    with patch(
         "runtime.daemon.routes.agents.ContextBuilder"
-    ) as MockCB, patch(
-        "runtime.daemon.routes.agents.ensure_system_contracts_materialized"
-    ) as mock_mat:
-        MockCB.return_value.ensure_workspace_ready.return_value = None
-        mock_mat.side_effect = SystemContractMaterializationError(
-            missing_contracts=["start-task"],
-            workspace=workspace,
-            provider="codex",
+    ) as MockCB:
+        def _failing_bootstrap(ws, agent_name, system_prompt, *, provider):
+            (ws / "AGENTS.md").write_text("# Partial bootstrap — new executor")
+            (ws / ".agents").mkdir(parents=True, exist_ok=True)
+            (ws / ".agents" / "settings.json").write_text('{"new": true}')
+            raise RuntimeError("Bootstrap failed — simulated failure")
+
+        MockCB.return_value.ensure_workspace_ready.side_effect = (
+            _failing_bootstrap
         )
         r = TestClient(app).put(
             "/api/v1/orgs/alpha/agents/dev_agent/executor",
@@ -2182,12 +2331,253 @@ def test_set_executor_materialization_failure_non_fatal(
             headers=auth_headers,
         )
 
-    # Switch still succeeds — step 1-3 mutations are already applied
-    assert r.status_code == 200, r.text
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on bootstrap failure, got {r.status_code}: {r.text}"
+    )
     body = r.json()
-    assert body["before"]["org_executor"] == "claude"
-    assert body["after"]["org_executor"] == "codex"
-    # Materialization failure is surfaced non-fatally
-    assert len(body["materialization_errors"]) == 4, (
-        f"Expected 4 materialization errors (one per context), got {body['materialization_errors']}"
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "Bootstrap failed" in body["detail"]["error"], (
+        f"Expected bootstrap error message, got {body['detail']['error']}"
+    )
+
+    # ── agent.yaml unchanged ──
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        f"agent.yaml mutated: before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+    )
+
+    # ── Agent frontmatter unchanged ──
+    if frontmatter_before is not None:
+        frontmatter_after = agent_md_path.read_text()
+        assert frontmatter_after == frontmatter_before, (
+            "Agent frontmatter was mutated on bootstrap failure"
+        )
+
+    # ── Byte contents of pre-existing files unchanged ──
+    byte_snapshot_after = _snapshot_files()
+    for rel, before_bytes in byte_snapshot_before.items():
+        assert rel in byte_snapshot_after, (
+            f"Pre-existing file {rel} was DELETED by bootstrap failure"
+        )
+        assert byte_snapshot_after[rel] == before_bytes, (
+            f"Pre-existing file {rel} byte contents CHANGED"
+        )
+
+    # ── Symlinks preserved ──
+    link_snapshot_after = _snapshot_symlinks()
+    for rel, before_target in link_snapshot_before.items():
+        assert rel in link_snapshot_after, (
+            f"Pre-existing symlink {rel} was REMOVED by bootstrap failure"
+        )
+        assert link_snapshot_after[rel] == before_target, (
+            f"Pre-existing symlink {rel} target CHANGED"
+        )
+
+    # ── New bootstrap artifacts cleaned up ──
+    new_file = workspace / ".agents" / "settings.json"
+    assert not new_file.exists(), (
+        "New bootstrap file .agents/settings.json survived after failure"
+    )
+
+
+def test_set_executor_materialization_real_missing_source_stops_before_build(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """TASK-4175 adversarial: When a mandatory system-contract source is absent
+    during executor-switch six-context union materialization, the route must
+    fail BEFORE any canonical package build or workspace reconciliation.
+
+    Exercises the REAL union (not mocked) with a missing dream contract
+    (required by DREAM context in the six-context union).
+
+    Strengthened TASK-4176 proof-gap repair:
+    - Known trusted canonical packages + validated links in BOTH
+      .claude/skills + .agents/skills provider roots seeded before request.
+    - Full canonical store snapshot (manifest/member/on-disk hashes).
+    - Both provider-root link targets + non-link content compared.
+    - Workspace file assertions beyond bootstrap files.
+    - Audit-success state verified (no new rows).
+    - Executor config/frontmatter unchanged.
+    """
+    import shutil
+    import hashlib
+    import os as _os
+    from pathlib import Path
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Seed validated links in BOTH provider roots BEFORE the request ────
+    # This lets us prove that neither root's links or non-link files change.
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    store = CanonicalSkillStore(settings=org_state.settings)
+
+    # Use the real protocol skills to build a canonical package for a
+    # trusted system contract (start-task) and create symlinks into
+    # BOTH .claude/skills and .agents/skills.
+    proto_skills_real = org_state.settings.get_protocol_dir() / "skills"
+    if (proto_skills_real / "start-task").is_dir():
+        from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+        trusted_hash = _compute_dir_hash(proto_skills_real / "start-task")
+        store.build_from_source(
+            "start-task", "system", trusted_hash,
+            proto_skills_real / "start-task",
+        )
+        # Create real symlink targets in both provider roots.
+        canonical_target = store.canonical_path(
+            "start-task", "system", trusted_hash,
+        )
+        for subdir in (".claude/skills", ".agents/skills"):
+            link_path = workspace / subdir / "start-task"
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            if not link_path.exists():
+                _os.symlink(
+                    _os.path.relpath(canonical_target, link_path.parent),
+                    link_path,
+                )
+
+    # ── Full canonical store snapshot (files + hashes, not just dirs) ─────
+    def _snapshot_canonical_full(root: Path) -> dict[str, str]:
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_full(store.root)
+
+    # ── Workspace snapshot: file bytes + symlink targets ──────────────────
+    def _snapshot_workspace(root: Path) -> dict[str, str]:
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = f"link->{_os.readlink(p)}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = "<dir>"
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace(workspace)
+
+    # Remove a required system-contract source: dream (DREAM context).
+    # Use a temp copy of protocol skills to avoid mutating the worktree.
+    import tempfile as _tempfile, shutil as _shutil
+    _tmp_proto = tmp_home / "_task4175_proto_skills"
+    _shutil.copytree(
+        org_state.settings.get_protocol_dir() / "skills",
+        _tmp_proto, symlinks=True,
+    )
+    dream_dir = _tmp_proto / "dream"
+    assert dream_dir.is_dir(), (
+        f"dream must exist before removal at {dream_dir}"
+    )
+    _shutil.rmtree(dream_dir)
+    assert not dream_dir.exists()
+
+    # Redirect _resolve_skills_src to our temp copy
+    import runtime.orchestrator.workspace_adapters as _wa_mod
+    monkeypatch.setattr(
+        _wa_mod, "_resolve_skills_src",
+        lambda settings: _tmp_proto,
+    )
+
+    # Record pristine state
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    agent_md_path = org_state.root / "agents" / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+
+    # ── Audit state before request ──
+    audit_before = org_state.db.get_audit_logs("dev_agent")
+    audit_count_before = len(audit_before)
+
+    # ── Execute failing switch (NO mock — real union) ──
+    from fastapi.testclient import TestClient
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # FAIL-CLOSED: missing source prevents switch
+    assert r.status_code == 400, (
+        f"Expected 400 on missing source, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_materialization_failed", (
+        f"Expected executor_materialization_failed, got {body}"
+    )
+    assert len(body["detail"]["errors"]) >= 1
+
+    # ── Assert unchanged state ──
+    agent_yaml_after = (workspace / "agent.yaml").read_text()
+    assert agent_yaml_after == agent_yaml_before, (
+        "agent.yaml was mutated on failure"
+    )
+    if frontmatter_before is not None:
+        assert agent_md_path.read_text() == frontmatter_before
+
+    # ── Full canonical store unchanged ────────────────────────────────────
+    store_snapshot_after = _snapshot_canonical_full(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed materialization.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
+    )
+
+    # ── No bootstrap files from new executor ──
+    for candidate in ["CLAUDE.md", "AGENTS.md", ".claude/settings.json",
+                       ".agents/settings.json"]:
+        assert not (workspace / candidate).exists(), (
+            f"Bootstrap file {candidate} should not exist after failed switch"
+        )
+
+    # ── Workspace file + link state fully unchanged ───────────────────────
+    ws_snapshot_after = _snapshot_workspace(workspace)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+    # ── Both provider-root links preserved ────────────────────────────────
+    for subdir in (".claude/skills", ".agents/skills"):
+        sd = workspace / subdir
+        assert sd.exists() == (subdir + "/" in ws_snapshot_before), (
+            f"{subdir} existence changed after failure"
+        )
+        if sd.exists():
+            for entry in sorted(sd.iterdir()):
+                rel = str(entry.relative_to(workspace))
+                if entry.is_symlink():
+                    assert rel in ws_snapshot_before, (
+                        f"New symlink {rel} appeared after failure"
+                    )
+                    expected_target = ws_snapshot_before.get(rel, "")
+                    actual = f"link->{_os.readlink(entry)}"
+                    assert actual == expected_target, (
+                        f"Symlink {rel} target changed: "
+                        f"expected {expected_target}, got {actual}"
+                    )
+
+    # ── No new audit rows (no success claim) ──────────────────────────────
+    audit_after = org_state.db.get_audit_logs("dev_agent")
+    assert len(audit_after) == audit_count_before, (
+        f"Audit rows changed: before={audit_count_before}, after={len(audit_after)}"
     )

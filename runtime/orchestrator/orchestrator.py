@@ -41,7 +41,6 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    inject_system_contracts,
     materialize_workspace_skills,
     refresh_workspace_repos,
 )
@@ -834,6 +833,7 @@ class Orchestrator:
             on_started=_on_started,
             on_throttle_event=_on_throttle_event,
             model=model_name,
+            org_slug=self._slug,
         )
         self._audit.log_session_end(
             task_id=task_id,

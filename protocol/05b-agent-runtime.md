@@ -168,8 +168,56 @@ Claude workspaces have a `.claude/settings.json` that configures Claude Code's a
 
 Skills — structured guidance packages that tell an agent how to perform specific
 operations — are materialized into the agent's workspace on every session spawn
-by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
-contexts (task, thread, wake, dream).
+by `materialize_workspace_skills` (`workspace_adapters.py`). This runs on all
+spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch).
+
+#### Canonical skill store + workspace symlinks (macOS-only)
+
+As of TASK-4009/TASK-4012, skill materialization uses a **daemon-owned immutable
+canonical skill store** outside executor workspaces. Skills are built once into
+hash-addressed read-only packages and workspace entries are **validated relative
+symlinks** to exact approved package versions under both `.claude/skills` and
+`.agents/skills` roots (including Codex, Opencode, Pi, and mapped custom profiles).
+
+**Supported platform:** macOS (darwin) only. Linux and Windows explicitly fail
+closed before launch/materialization with a named `PlatformIsolationError`.
+
+**Ownership and provenance:**
+- Canonical packages are daemon/materializer-owned, immutable, content-addressed
+trees from exact verified provenance/members for system, release-managed, and
+lifecycle version-pinned packages.
+- Owner/permission/ACL checks reject identity confusion and mutation.
+- Canonical targets are read-only (0444) after build; the executor cannot write,
+chmod, chown, or mutate canonical content through workspace symlinks.
+
+**Isolation contract (macOS):**
+- The daemon/materializer and executor MUST be distinct OS identities with
+different uid/gid.
+- Executor processes are launched via `sudo -n -u <executor>` identity handoff
+(non-root daemon model). Same-owner launch is REJECTED.
+- Canonical store ownership and permissions are verified before every launch.
+- Ordinary directories, malicious/broken/external/wrong-version links, unsafe
+targets, failed permission check, missing account, or repair errors fail closed
+and prevent launch. Never recursively delete or follow attacker nodes.
+
+**Link validation and repair:**
+- Materialized links are validated relative symlinks resolving inside the
+canonical store. Stale, broken, wrong-version, non-symlink, external, or
+mismatched-hash entries are atomically repaired.
+- Withdrawal removes only owned validated links, retains canonical packages.
+- The full expected union is derived once per provider root so system contracts
+are never withdrawn by managed/lifecycle-only reconciliation.
+
+**Legacy compatibility fallback:** The legacy per-session copy model
+(``_copy_skills_tree``, ``refresh_session_skills``, and the former
+``_WHOLESALE_DUMP_ENABLED`` flag) is removed as an executable path. No
+catch-and-copy or silent fallback survives. The canonical store + symlink
+model is the sole production materialization path.
+
+**Org context:** `{ORG_SLUG}` placeholders in canonical skill bodies are NOT
+substituted. The org slug is passed to the child process via
+`HAPPYRANCH_ORG_SLUG` environment variable from the authorized session/task
+metadata. Existing multi-org commands receive a real existing-org slug.
 
 **Release-shipped managed-catalog skills.** Bundled skills ship inside the
 repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
@@ -289,21 +337,21 @@ materialization error in any spawn path blocks the agent launch, never silently
 skipped.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
-materialization for a given agent workspace — wholesale refresh (when
-``_WHOLESALE_DUMP_ENABLED`` is enabled), system-contract injection +
-on-disk verification, and managed-skill injection — runs inside a single
-unified transaction (``materialize_workspace_skills``) protected by a
-process-local ``threading.RLock`` (re-entrant lock) keyed by the canonical
-(resolved) workspace path. Concurrent task, thread, wake, dream, schedule,
-and executor-switch/bootstrap callers targeting the same workspace serialize
-their complete pre-spawn materialization so they never overlap inside
-``_copy_skills_tree``'s predictable ``.tmp.<name>`` cleanup/write/replace
-window. The three executor adapter ``_copy_skills`` methods (Claude, Codex,
-Opencode) and the set-executor route's all-context materialization also
-participate in this lock boundary. The lock is **process-local only** — it
-does not coordinate across daemon processes. Cross-process protection for the
-same agent workspace relies on the daemon's per-agent concurrency ceiling
-(at most one ``run_step`` session plus one thread invocation per agent).
+materialization for a given agent workspace — system-contract injection +
+on-disk verification, managed-skill injection, and lifecycle-ledger injection
+— runs inside a single unified transaction (``materialize_workspace_skills``)
+protected by a process-local ``threading.RLock`` (re-entrant lock) keyed by
+the canonical (resolved) workspace path. The legacy wholesale copy
+(``_WHOLESALE_DUMP_ENABLED`` / ``refresh_session_skills``) is permanently
+removed. Concurrent task, thread, wake, dream, schedule, and
+executor-switch/bootstrap callers targeting the same workspace serialize
+their complete pre-spawn materialization. The three executor adapter
+``_copy_skills`` methods (Claude, Codex, Opencode) and the set-executor
+route's all-context materialization also participate in this lock boundary.
+The lock is **process-local only** — it does not coordinate across daemon
+processes. Cross-process protection for the same agent workspace relies on
+the daemon's per-agent concurrency ceiling (at most one ``run_step`` session
+plus one thread invocation per agent).
 
 The RLock allows safe re-entrant use: when the executor-switch route
 acquires the lock and calls ``ensure_workspace_ready``, the adapter's

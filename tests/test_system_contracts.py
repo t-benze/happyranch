@@ -57,18 +57,22 @@ def workspace_empty_repos(tmp_path: Path) -> Path:
 
 
 class TestSessionContext:
-    def test_four_contexts_exist(self):
-        assert len(SessionContext) == 4
+    def test_six_contexts_exist(self):
+        assert len(SessionContext) == 6
         assert SessionContext.TASK == "task"
         assert SessionContext.THREAD == "thread"
         assert SessionContext.WAKE == "wake"
         assert SessionContext.DREAM == "dream"
+        assert SessionContext.SCHEDULE == "schedule"
+        assert SessionContext.BOOTSTRAP == "bootstrap"
 
     def test_from_string(self):
         assert SessionContext("task") == SessionContext.TASK
         assert SessionContext("thread") == SessionContext.THREAD
         assert SessionContext("wake") == SessionContext.WAKE
         assert SessionContext("dream") == SessionContext.DREAM
+        assert SessionContext("schedule") == SessionContext.SCHEDULE
+        assert SessionContext("bootstrap") == SessionContext.BOOTSTRAP
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
@@ -117,9 +121,10 @@ class TestSystemContractsTuple:
 
     def test_start_task_contexts(self):
         sc = _get("start-task")
-        assert set(sc.contexts) == {SessionContext.TASK, SessionContext.WAKE}
+        assert set(sc.contexts) == {SessionContext.TASK, SessionContext.WAKE, SessionContext.SCHEDULE}
         assert SessionContext.THREAD not in sc.contexts
         assert SessionContext.DREAM not in sc.contexts
+        assert SessionContext.BOOTSTRAP not in sc.contexts
 
     def test_jobs_contexts(self):
         sc = _get("jobs")
@@ -128,6 +133,8 @@ class TestSystemContractsTuple:
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
         }
 
     def test_make_worktree_contexts(self):
@@ -137,6 +144,8 @@ class TestSystemContractsTuple:
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
         }
 
     def test_thread_contexts(self):
@@ -145,6 +154,8 @@ class TestSystemContractsTuple:
             SessionContext.TASK,
             SessionContext.THREAD,
             SessionContext.WAKE,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
         }
         assert SessionContext.DREAM not in sc.contexts
 
@@ -358,6 +369,94 @@ class TestResolveSystemContracts:
         )
         ids = {sc.id for sc in result}
         assert ids == {"jobs", "dream"}
+
+    # -- SCHEDULE context --
+
+    def test_schedule_context_gets_start_task(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "start-task" in ids
+
+    def test_schedule_context_gets_jobs(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "jobs" in ids
+
+    def test_schedule_context_gets_thread(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "thread" in ids
+
+    def test_schedule_context_no_dream(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "dream" not in ids
+
+    def test_schedule_context_with_repos_exact_ids(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread"}
+
+    def test_schedule_context_without_repos_exact_ids(self, workspace_without_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_without_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert ids == {"start-task", "jobs", "thread"}
+
+    # -- BOOTSTRAP context --
+
+    def test_bootstrap_context_no_start_task(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "start-task" not in ids
+
+    def test_bootstrap_context_gets_jobs(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "jobs" in ids
+
+    def test_bootstrap_context_gets_thread(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "thread" in ids
+
+    def test_bootstrap_context_no_dream(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "dream" not in ids
+
+    def test_bootstrap_context_with_repos_exact_ids(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert ids == {"jobs", "make-worktree", "thread"}
+
+    def test_bootstrap_context_without_repos_exact_ids(self, workspace_without_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_without_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert ids == {"jobs", "thread"}
 
 
 # ── Repo detection ────────────────────────────────────────────────────

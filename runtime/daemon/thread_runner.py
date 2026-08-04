@@ -33,7 +33,6 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    inject_system_contracts,
     materialize_workspace_skills,
     SystemContractMaterializationError,
 )
@@ -664,6 +663,7 @@ async def run_invocation(
                 workspace=Path(workspace), prompt=run_prompt,
                 session_id=None, timeout_seconds=timeout,
                 on_throttle_event=_on_throttle_event,
+                org_slug=org_state.slug,
             )
             if resume:
                 run_kwargs["resume_session_id"] = resume
