@@ -38,11 +38,13 @@ class TestRefreshSessionSkills:
     refresh_session_skills is a forwarder to materialize_workspace_skills."""
 
     @staticmethod
-    def _make_task_contracts(settings: Settings) -> None:
-        """Create ALL system contracts required for task context.
-        Without repos, task context requires: start-task, jobs, thread."""
+    def _make_all_contracts(settings: Settings) -> None:
+        """Create ALL system contracts required for the context union.
+        Since materialize_workspace_skills now unions all six ordinary
+        SessionContext values, the preflight requires every system contract
+        source directory to exist on disk."""
         skills_root = settings.get_protocol_dir() / "skills"
-        for sid in ("start-task", "jobs", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (skills_root / sid).mkdir(parents=True, exist_ok=True)
             if not (skills_root / sid / "SKILL.md").exists():
                 (skills_root / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
@@ -51,7 +53,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Skills land in both .claude/skills/ and .agents/skills/."""
-        self._make_task_contracts(test_settings)
+        self._make_all_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
@@ -70,7 +72,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """ACCEPTANCE #1: Edit bundled skill → refresh → workspace reflects edit."""
-        self._make_task_contracts(test_settings)
+        self._make_all_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task" / "SKILL.md").write_text("VERSION 1\n")
 
@@ -93,7 +95,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Skills in source are always materialized; system contracts only."""
-        self._make_task_contracts(test_settings)
+        self._make_all_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task" / "SKILL.md").write_text("skill v1\n")
 
@@ -118,7 +120,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Existing stale symlink is repaired (replaced with fresh target)."""
-        self._make_task_contracts(test_settings)
+        self._make_all_contracts(test_settings)
         import os as _os
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task" / "SKILL.md").write_text("BUNDLED\n")
@@ -141,7 +143,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """{ORG_SLUG} placeholder is preserved in canonical content."""
-        self._make_task_contracts(test_settings)
+        self._make_all_contracts(test_settings)
         skills_root = test_settings.get_protocol_dir() / "skills"
         (skills_root / "start-task" / "SKILL.md").write_text(
             "Run: happyranch --org {ORG_SLUG} do-thing\n"
@@ -174,7 +176,7 @@ class TestRefreshSessionSkills:
     ):
         """_SKILLS_SRC override takes precedence over settings-derived path."""
         fake_src = tmp_path / "fake-skills"
-        for sid in ("start-task", "jobs", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (fake_src / sid).mkdir(parents=True)
             (fake_src / sid / "SKILL.md").write_text(f"# {sid}\n\nFAKE\n")
 
@@ -578,8 +580,10 @@ class TestInjectSystemContracts:
         assert (agents_skills / "thread" / "SKILL.md").exists()
 
         # dream NOT injected
-        assert not (claude_skills / "dream" / "SKILL.md").exists()
-        assert not (agents_skills / "dream" / "SKILL.md").exists()
+        # dream is now expected in all contexts because materialize_workspace_skills
+        # unions system contracts across all six ordinary SessionContext values
+        assert (claude_skills / "dream" / "SKILL.md").exists()
+        assert (agents_skills / "dream" / "SKILL.md").exists()
 
     def test_task_without_repos_omits_make_worktree(
         self, test_settings: Settings, tmp_path: Path,
@@ -601,7 +605,7 @@ class TestInjectSystemContracts:
         assert (claude_skills / "jobs" / "SKILL.md").exists()
         assert not (claude_skills / "make-worktree" / "SKILL.md").exists()
         assert (claude_skills / "thread" / "SKILL.md").exists()
-        assert not (claude_skills / "dream" / "SKILL.md").exists()
+        assert (claude_skills / "dream" / "SKILL.md").exists()
 
     def test_dream_context_injects_dream_not_start_task(
         self, test_settings: Settings, tmp_path: Path,
@@ -619,10 +623,11 @@ class TestInjectSystemContracts:
 
         claude_skills = ws / ".claude" / "skills"
 
-        assert not (claude_skills / "start-task" / "SKILL.md").exists()
+        # Union preserves start-task + thread from other contexts
+        assert (claude_skills / "start-task" / "SKILL.md").exists()
         assert (claude_skills / "jobs" / "SKILL.md").exists()
         assert (claude_skills / "make-worktree" / "SKILL.md").exists()
-        assert not (claude_skills / "thread" / "SKILL.md").exists()
+        assert (claude_skills / "thread" / "SKILL.md").exists()
         assert (claude_skills / "dream" / "SKILL.md").exists()
 
     def test_thread_context_injects_thread_not_dream(
@@ -641,11 +646,12 @@ class TestInjectSystemContracts:
 
         claude_skills = ws / ".claude" / "skills"
 
-        assert not (claude_skills / "start-task" / "SKILL.md").exists()
+        # Union preserves start-task (from task/wake/schedule) and dream (from dream)
+        assert (claude_skills / "start-task" / "SKILL.md").exists()
         assert (claude_skills / "jobs" / "SKILL.md").exists()
         assert (claude_skills / "make-worktree" / "SKILL.md").exists()
         assert (claude_skills / "thread" / "SKILL.md").exists()
-        assert not (claude_skills / "dream" / "SKILL.md").exists()
+        assert (claude_skills / "dream" / "SKILL.md").exists()
 
     def test_wake_context_same_as_task(
         self, test_settings: Settings, tmp_path: Path,
@@ -667,24 +673,33 @@ class TestInjectSystemContracts:
         assert (claude_skills / "jobs" / "SKILL.md").exists()
         assert (claude_skills / "make-worktree" / "SKILL.md").exists()
         assert (claude_skills / "thread" / "SKILL.md").exists()
-        assert not (claude_skills / "dream" / "SKILL.md").exists()
+        # Union preserves dream from dream context
+        assert (claude_skills / "dream" / "SKILL.md").exists()
 
     def test_unknown_context_is_noop(
         self, test_settings: Settings, tmp_path: Path,
     ):
-        """An unknown context string gracefully degrades to a no-op."""
+        """An unrecognised context string is a true no-op: no links or
+        directories are created under .claude/skills or .agents/skills."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        (skills_root / "start-task").mkdir(parents=True)
-        (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
         ws = tmp_path / "ws"
         ws.mkdir()
 
-        # Should not raise, just do nothing
         inject_system_contracts(ws, test_settings, slug="test", context="nonexistent")
 
-        # No skills directory created at all since no contracts resolved
-        assert not (ws / ".claude" / "skills").exists()
+        # No-op: neither skills root should exist after an unknown context call
+        claude_skills = ws / ".claude" / "skills"
+        agents_skills = ws / ".agents" / "skills"
+        assert not claude_skills.exists(), (
+            "Unknown context must not create .claude/skills"
+        )
+        assert not agents_skills.exists(), (
+            "Unknown context must not create .agents/skills"
+        )
 
     def test_idempotent_with_refresh_session_skills(
         self, test_settings: Settings, tmp_path: Path,
@@ -699,8 +714,12 @@ class TestInjectSystemContracts:
         ws = tmp_path / "ws"
         (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
 
-        # First: wholesale dump
+        # First: materialize via unified canonical boundary
         refresh_session_skills(ws, test_settings, slug="test")
+
+        # All 5 system contracts present (union across all contexts)
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            assert (ws / ".claude" / "skills" / name / "SKILL.md").exists()
 
         # Edit a source skill
         (skills_root / "start-task" / "SKILL.md").write_text("# start-task v2\n")

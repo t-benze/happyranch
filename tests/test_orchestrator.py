@@ -37,7 +37,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in protocol/skills/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -300,7 +300,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # Create source skill dirs in protocol/skills/ for the project_root temp.
     proto_skills = test_settings.get_protocol_dir() / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
-    for sid in ("start-task", "jobs", "make-worktree", "thread"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
         (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 

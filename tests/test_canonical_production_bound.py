@@ -168,10 +168,11 @@ class TestUnifiedMaterializationPreservesSystemContracts:
             "start-task system contract missing from .claude/skills"
         )
 
-    def test_unknown_context_still_materializes_managed(
+    def test_bootstrap_context_is_valid_ordinary_union(
         self, tmp_path: Path, test_settings: Settings,
     ):
-        """Unknown context skips system contracts but still materializes managed skills."""
+        """Bootstrap context is a valid SessionContext and must
+        materialize the full ordinary union without crashing."""
         workspace = tmp_path / "ws"
         workspace.mkdir()
         (workspace / "repos").mkdir()
@@ -180,14 +181,14 @@ class TestUnifiedMaterializationPreservesSystemContracts:
         materialize_workspace_skills(
             workspace, test_settings,
             slug="test",
-            context="bootstrap",  # bootstrap may not have task contracts
+            context="bootstrap",  # valid ordinary SessionContext
             provider="claude",
             agent_name="dev_agent",
             team="engineering",
             skills_root=skills_root,
         )
 
-        # Should not crash — graceful handling of unknown context
+        # Should not crash — bootstrap is a valid ordinary context
 
 
 # ── Finding 4: Real restricted-process evidence ─────────────────────
@@ -373,7 +374,7 @@ class TestCutoverCompleteness:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 
@@ -493,7 +494,7 @@ class TestOrgSlugRemediation:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 

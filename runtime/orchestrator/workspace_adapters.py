@@ -309,11 +309,19 @@ def materialize_workspace_skills(
     outside this transaction — doing so would bypass the workspace lock
     and re-introduce the multi-writer race described in issue #536.
 
+    **Unknown-context no-op:** an unrecognised context string (one that is
+    not a valid ``SessionContext`` value) returns immediately without
+    creating, building, preflighting, or reconciling any system, managed, or
+    lifecycle links, and must not withdraw or mutate an existing valid
+    workspace state.
+
     Args:
         workspace: agent workspace root
         settings: project Settings
         slug: org slug for ``{ORG_SLUG}`` substitution
-        context: session context ("task", "thread", "wake", "dream")
+        context: session context — must be one of the six valid
+            ``SessionContext`` values ("task", "thread", "wake", "dream",
+            "schedule", "bootstrap").  An unknown context is a no-op.
         provider: executor provider name ("claude", "codex", "opencode", "pi")
         agent_name: agent to resolve eligibility for
         team: agent's team name
@@ -321,6 +329,18 @@ def materialize_workspace_skills(
         org_root: per-org root (optional; for lifecycle ledger resolution)
         db: optional DB handle for recording materialization events
     """
+    from runtime.skills.system_contracts import SessionContext
+
+    # ── Unknown-context no-op guard ───────────────────────────────
+    # An unrecognised context string must return immediately before
+    # any source preflight, canonical build, event write, or
+    # repair_workspace_skills call.  It must not withdraw or mutate
+    # an existing valid workspace state.
+    try:
+        SessionContext(context)
+    except ValueError:
+        return []
+
     with _workspace_skills_transaction(workspace):
         # Derive ONE unified expected set per provider root, then
         # reconcile once. This prevents the system-contract withdrawal
@@ -349,11 +369,13 @@ def materialize_workspace_skills_union(
 ) -> list[dict]:
     """Build a single full expected-spec union from MULTIPLE session contexts.
 
-    Unlike ``materialize_workspace_skills`` which reconciles for a single
-    context (and therefore withdraws all links not in that context's expected
-    set), this function unions system-contract expectations from ALL named
-    contexts, computes release-managed and lifecycle specs once, and calls
-    ``repair_workspace_skills`` exactly once with the full union.
+    Like ``materialize_workspace_skills``, this function unions
+    system-contract expectations across the specified contexts.
+    ``materialize_workspace_skills`` preserves the ordinary-context
+    system-contract union on every regular launch; this function supports
+    the executor-switch path with an explicit context list.  In both cases,
+    release-managed and lifecycle links remain policy-reconciled and
+    withdrawable — only system contracts are union-preserved.
 
     This is the correct executor-switch materialization: the switched
     workspace must be ready for EVERY possible session context, not only
@@ -572,10 +594,17 @@ def _materialize_unified_canonical(
 ) -> list[dict]:
     """Derive one full expected set per provider root, reconcile once.
 
-    Unified expected set = system contracts + release-managed catalog +
-    PUBLISHED/active lifecycle-ledger skills. This single set is reconciled
-    via repair_workspace_skills ONCE, so system contracts are never withdrawn
-    by a later managed-only reconciliation (TASK-4001 Finding 2 fix).
+    Unified expected set = system contracts (union across ALL ordinary
+    session contexts) + release-managed catalog + PUBLISHED/active
+    lifecycle-ledger skills. This single set is reconciled via
+    repair_workspace_skills ONCE.
+
+    System contracts are unioned across all six ordinary SessionContext
+    values (task, thread, wake, dream, schedule, bootstrap) so a later
+    single-context materialization never withdraws a valid system-contract
+    link belonging to another ordinary context. The per-context resolver
+    remains authoritative for session guidance; the workspace is an
+    intentionally safe superset.
 
     Returns the exact expected_specs list used for reconciliation so
     callers can pass it to validate_workspace_skills_integrity.
@@ -595,16 +624,26 @@ def _materialize_unified_canonical(
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
 
-    # Resolve session context
-    try:
-        ctx = SessionContext(context)
-    except ValueError:
-        ctx = None
-
-    # ── 0. PREFLIGHT: collect ALL required system-contract ids ────
+    # ── 0. PREFLIGHT: union system-contract ids across ALL
+    #    ordinary session contexts (task, thread, wake, dream,
+    #    schedule, bootstrap).  This prevents cross-context
+    #    withdrawal where a later single-context materialization
+    #    removes a valid link belonging to another context.
+    #    The per-context resolver remains authoritative for
+    #    session guidance; the workspace is a safe superset.
+    _ORDINARY_CONTEXTS = (
+        "task", "thread", "wake", "dream", "schedule", "bootstrap"
+    )
     contract_ids: set[str] = set()
-    if ctx is not None:
+    contracts_by_id: dict[str, object] = {}  # SystemContract
+    for ctx_name in _ORDINARY_CONTEXTS:
+        try:
+            ctx = SessionContext(ctx_name)
+        except ValueError:
+            continue
         for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
+            if contract.id not in contracts_by_id:
+                contracts_by_id[contract.id] = contract
             contract_ids.add(contract.id)
 
     # Validate ALL sources before any build.
@@ -616,23 +655,22 @@ def _materialize_unified_canonical(
     # ── Build unified expected_specs ────────────────────────────
     expected_specs: list[dict] = []
 
-    # 1. System-contract skills (required session contracts)
-    if ctx is not None:
-        contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
-        for contract in contracts:
-            src_dir = src_root / contract.id
-            content_hash = _compute_dir_hash(src_dir)
-            store.build_from_source(
-                contract.id, "system", content_hash, src_dir,
-                verify_source_hash=content_hash,
-            )
-            # Org context is carried via session/task metadata, not
-            # literal {ORG_SLUG} substitution in canonical bytes.
-            expected_specs.append({
-                "slug": contract.id,
-                "version": "system",
-                "content_hash": content_hash,
-            })
+    # 1. System-contract skills (union across all ordinary contexts)
+    for contract_id in sorted(contracts_by_id):
+        contract = contracts_by_id[contract_id]
+        src_dir = src_root / contract.id
+        content_hash = _compute_dir_hash(src_dir)
+        store.build_from_source(
+            contract.id, "system", content_hash, src_dir,
+            verify_source_hash=content_hash,
+        )
+        # Org context is carried via session/task metadata, not
+        # literal {ORG_SLUG} substitution in canonical bytes.
+        expected_specs.append({
+            "slug": contract.id,
+            "version": "system",
+            "content_hash": content_hash,
+        })
 
     # 2. Release-managed catalog skills
     if skills_root.is_dir():
