@@ -604,9 +604,9 @@ function chipRole(name: string): 'worker' | 'founder' {
 /** One label/value row inside the property rail card. */
 function RailRow({ label, children }: { label: string; children: ReactNode }): JSX.Element {
   return (
-    <div className="flex items-baseline gap-3">
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
-      <dd className="min-w-0 flex-1">{children}</dd>
+      <dd className="min-w-0 min-w-max flex-1">{children}</dd>
     </div>
   );
 }
@@ -639,7 +639,9 @@ function PropertyRail({
       <div className="border-border-default bg-surface-raised rounded-xl border p-4">
         <dl className="space-y-3 text-sm">
           <RailRow label="Status">
-            <StatusBadge status={task.status} blockKind={task.block_kind} />
+            <span className="whitespace-nowrap">
+              <StatusBadge status={task.status} blockKind={task.block_kind} />
+            </span>
           </RailRow>
           {task.block_kind && (
             <RailRow label="Block kind">

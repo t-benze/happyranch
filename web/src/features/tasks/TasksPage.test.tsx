@@ -1476,17 +1476,17 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     created_at: '2026-05-18T10:00:00Z',
   } as TaskRecord;
 
-  function stubHandlers(jobs: JobRecord[]) {
+  function stubHandlers(jobs: JobRecord[], task: TaskRecord = DETAIL_TASK) {
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
-        HttpResponse.json({ tasks: [DETAIL_TASK] }),
+        HttpResponse.json({ tasks: [task] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${task.task_id}`, () =>
         HttpResponse.json({
-          task: DETAIL_TASK,
+          task,
           results: [],
           audit_log: [],
           revisit_chain: [],
@@ -1496,12 +1496,12 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
           blocked_on_jobs: null,
         }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}/recall`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${task.task_id}/recall`, () =>
         HttpResponse.json({
-          task_id: DETAIL_TASK.task_id,
-          assigned_agent: 'content_writer',
-          brief: DETAIL_TASK.brief,
-          status: DETAIL_TASK.status,
+          task_id: task.task_id,
+          assigned_agent: task.assigned_agent,
+          brief: task.brief,
+          status: task.status,
           output_summary: null,
           children: [],
         }),
@@ -1548,6 +1548,32 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     expect(within(rail).queryByText('Executor')).toBeNull();
     expect(within(rail).queryByText('Churn')).toBeNull();
     expect(within(rail).queryByText('Priority')).toBeNull();
+  });
+
+  // THR-137: a long in_progress + delegated status badge must stay readable in
+  // the narrow property rail. jsdom cannot prove geometry, so the test asserts
+  // the responsive layout contract (wrap-capable row, min-content value cell,
+  // no-wrap badge wrapper) plus the visible qualifier text.
+  test('keeps a long in_progress + delegated status badge readable in the narrow rail (THR-137)', async () => {
+    const WAITING_TASK = {
+      ...DETAIL_TASK,
+      status: 'in_progress',
+      block_kind: 'delegated',
+    } as TaskRecord;
+    stubHandlers([], WAITING_TASK);
+    const rail = await mountAndGetRail();
+
+    // The waiting qualifier is rendered and readable inside the rail.
+    const qualifier = within(rail).getByText('· waiting on subtasks');
+    expect(qualifier).toBeInTheDocument();
+
+    // Responsive layout contract: the row can wrap so the value is not squeezed.
+    const statusRow = within(rail).getByText('Status').closest('div') as HTMLElement;
+    expect(statusRow).toHaveClass('flex-wrap');
+    const value = qualifier.closest('dd') as HTMLElement;
+    expect(value).toHaveClass('min-w-max');
+    // The badge is wrapped in a no-wrap span so its text stays on one line.
+    expect(value.querySelector('span.whitespace-nowrap')).not.toBeNull();
   });
 
   test('omits the Thread and Job rows when those fields are absent', async () => {
