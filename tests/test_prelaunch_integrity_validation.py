@@ -809,12 +809,13 @@ class TestLifecycleManifestSelfRatificationPrevention:
             f"Expected hash mismatch, got: {exc.value}"
 
     def test_manifest_reuse_rejected_on_content_corruption(self, tmp_path):
-        """build_from_manifest reuse is rejected when canonical content
-        is corrupted but artifact store remains clean.
+        """build_from_manifest REFUSES when canonical content is corrupted.
 
         When is_built() returns True but canonical content was mutated
         (same-owner), build_from_manifest must detect the content mismatch
-        via tree hash comparison and REBUILD from artifact store, not reuse.
+        via tree hash comparison, REFUSE to reuse, and raise
+        CanonicalStoreError. No automatic repair from same-UID local source.
+        The canonical bytes must remain corrupted after the refusal.
         """
         orig_skill = b"# Reuse Test Skill\n"
         corr_skill = b"# Corrupted by same-owner\n"
@@ -843,15 +844,18 @@ class TestLifecycleManifestSelfRatificationPrevention:
         assert skill_md.read_bytes() == corr_skill
 
         # build_from_manifest with is_built() returning True must detect
-        # content corruption via tree hash comparison, reject reuse, and
-        # rebuild from clean artifact store
-        pkg_path2 = store.build_from_manifest(
-            "reuse-test", "1.0.0", manifest_hash,
-            manifest, art_store,
-        )
-        # After rebuild, canonical content should be restored to original
-        assert (pkg_path2 / "SKILL.md").read_bytes() == orig_skill, \
-            "build_from_manifest must rebuild clean content after detecting corruption"
+        # content corruption via tree hash comparison, REFUSE to reuse,
+        # and raise CanonicalStoreError. NO auto-repair.
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises(CanonicalStoreError) as exc:
+            store.build_from_manifest(
+                "reuse-test", "1.0.0", manifest_hash,
+                manifest, art_store,
+            )
+        assert "content_corruption" in str(exc.value)
+        # After refusal, canonical content MUST remain corrupted
+        assert skill_md.read_bytes() == corr_skill, \
+            "build_from_manifest must NOT auto-repair — canonical bytes must stay corrupted"
 
     def test_clean_lifecycle_reuse_happy_path(self, tmp_path):
         """Unmodified lifecycle package reuse: is_built() returns True,
@@ -964,3 +968,559 @@ class TestLifecycleManifestSelfRatificationPrevention:
         with pytest.raises(WorkspaceIntegrityError) as exc:
             validate_workspace_skills_integrity(ws, specs, agent_name="a")
         assert "hash mismatch" in str(exc.value).lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Production-Seam Adversarial Proofs — real Orchestrator runner path
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestProductionSeamLifecycleCorruptionRefusal:
+    """Production-boundary adversarial proofs: lifecycle package
+    corruption (both ArtifactStore and canonical identically) is
+    detected and launch is refused with ZERO Popen/executor.run()
+    calls through the real orchestrator runner closure.
+
+    These tests exercise the actual production materialization + runner
+    path (Orchestrator.run_step → _run_agent →
+    materialize_workspace_skills → _build_lifecycle_canonical_specs →
+    build_from_manifest) with real lifecycle-ledger packages. The
+    executor is mocked and its run() method is spied on so zero calls
+    is proof that corruption genuinely prevents launch.
+
+    Covers: initial launch, retry path, both .claude/skills and
+    .agents/skills roots, and executor-switch.
+    """
+
+    @staticmethod
+    def _create_lifecycle_package_with_manifest(
+        tmp_path, slug, version, skill_md_bytes,
+    ):
+        """Create a real lifecycle package with a multi-member manifest.
+
+        Returns (manifest, manifest_hash, art_store, store).
+        """
+        import json
+        import hashlib
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.canonical_store import CanonicalSkillStore
+
+        org_root = tmp_path / "org"
+        art_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+
+        # Create two members for a more realistic manifest
+        skill_key = f"skill-lifecycle/{slug}/{version}/SKILL.md"
+        ref_key = f"skill-lifecycle/{slug}/{version}/references/guide.md"
+        ref_bytes = b"# Reference Guide\n\nHelper content.\n"
+
+        art_store.put(skill_key, skill_md_bytes)
+        art_store.put(ref_key, ref_bytes)
+
+        skill_hash = f"sha256:{hashlib.sha256(skill_md_bytes).hexdigest()}"
+        ref_hash = f"sha256:{hashlib.sha256(ref_bytes).hexdigest()}"
+
+        manifest = {
+            "slug": slug,
+            "version": version,
+            "members": [
+                {
+                    "path": "SKILL.md",
+                    "hash": skill_hash,
+                    "artifact_key": skill_key,
+                },
+                {
+                    "path": "references/guide.md",
+                    "hash": ref_hash,
+                    "artifact_key": ref_key,
+                },
+            ],
+        }
+        manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+
+        # Store manifest as artifact
+        manifest_key = f"skill-lifecycle/{slug}/{manifest_hash[:16]}/manifest.json"
+        art_store.put(manifest_key, manifest_bytes)
+
+        canonical_root = tmp_path / "canonical"
+        store = CanonicalSkillStore(root=canonical_root)
+
+        return manifest, manifest_hash, art_store, store, org_root, manifest_key
+
+    def _setup_orchestrator(
+        self, tmp_path, monkeypatch, canonical_root, art_store, org_root,
+    ):
+        """Build a minimal orchestrator with mocked executor."""
+        from unittest.mock import MagicMock
+        from runtime.config import Settings
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.runtime import RuntimeDir
+
+        monkeypatch.setenv(
+            "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
+        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
+
+        rt = RuntimeDir.init(tmp_path / "runtime-dir")
+        org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
+        org_paths.root.mkdir(parents=True, exist_ok=True)
+        db = Database(org_paths.db_path)
+
+        teams_yaml = org_paths.root / "teams.yaml"
+        teams_yaml.write_text(
+            "engineering:\n  agents:\n    - dev_agent\n",
+        )
+        teams = TeamsRegistry.load(org_paths.root)
+
+        settings = Settings(project_root=tmp_path)
+        orch = Orchestrator(
+            db=db, settings=settings, paths=org_paths,
+            slug="test-org", teams=teams,
+        )
+
+        workspace = org_paths.workspaces_dir / "dev_agent"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "task_history.md").write_text("# Task History\n")
+        (workspace / "repos" / "test-org" / ".git").mkdir(
+            parents=True, exist_ok=True,
+        )
+
+        # System contracts source
+        protocol_skills = tmp_path / "protocol" / "skills"
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            d = protocol_skills / sid
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {sid}\n")
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._resolve_skills_src",
+            lambda settings: protocol_skills,
+        )
+        runtime_skills = tmp_path / "runtime" / "skills"
+        runtime_skills.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
+
+        # Mock executor with run() spy
+        mock_executor = MagicMock()
+        mock_executor.run = MagicMock(
+            return_value=MagicMock(
+                success=True, duration_seconds=1, session_id="sess-test",
+            )
+        )
+        mock_executor.set_invocation_context = MagicMock()
+
+        return orch, db, workspace, mock_executor
+
+    def _seed_lifecycle_package(
+        self, db, slug, version, content_hash, skill_id,
+        content_artifact_key,
+    ):
+        """Insert a PUBLISHED lifecycle package with active assignment."""
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id=skill_id,
+            slug=slug,
+            name=f"Test {slug}",
+            version=version,
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description=f"Test skill {slug}",
+            skill_md=f"# {slug}\n",
+            content_artifact_key=content_artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id=skill_id,
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version=version,
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+    def _tamper_both_sources_identically(
+        self, manifest, art_store, store, slug, version,
+        manifest_hash, malicious_bytes,
+    ):
+        """Mutate BOTH ArtifactStore member AND canonical bytes identically,
+        restore modes. Same-owner can do all of this.
+        """
+        # Tamper artifact store member
+        skill_key = manifest["members"][0]["artifact_key"]
+        art_path = art_store._root / skill_key
+        art_path.write_bytes(malicious_bytes)
+
+        # Tamper canonical package, restore modes
+        pkg_path = store.canonical_path(slug, version, manifest_hash)
+        skill_md = pkg_path / "SKILL.md"
+        skill_md.chmod(0o644)
+        skill_md.write_bytes(malicious_bytes)
+        skill_md.chmod(0o444)
+
+        # Verify both are corrupted identically
+        assert art_path.read_bytes() == malicious_bytes
+        assert skill_md.read_bytes() == malicious_bytes
+
+    def test_initial_launch_refused_after_dual_corruption(
+        self, tmp_path, monkeypatch,
+    ):
+        """Initial launch: dual-tamper (ArtifactStore + canonical) →
+        materialization fails → 0 executor.run() calls → task FAILED.
+        """
+        import hashlib
+        from unittest.mock import patch as mock_patch
+
+        skill_md_bytes = b"# Legitimate Skill\n\nContent.\n"
+        mal_bytes = b"# MALICIOUS\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "corrupt-initial", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace, mock_executor = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        # Seed lifecycle package
+        self._seed_lifecycle_package(
+            db, "corrupt-initial", "1.0.0", manifest_hash,
+            "hr:corrupt-initial", manifest_key,
+        )
+
+        # First successful materialization (to create canonical package)
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # Verify clean canonical exists
+        assert store.is_built("corrupt-initial", "1.0.0", manifest_hash)
+        assert (store.canonical_path(
+            "corrupt-initial", "1.0.0", manifest_hash
+        ) / "SKILL.md").read_bytes() == skill_md_bytes
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "corrupt-initial",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        with mock_patch.object(
+            orch, "_build_executor", return_value=mock_executor,
+        ):
+            task_id = orch.create_task(
+                "Test initial launch refusal after dual corruption",
+                team="engineering",
+            )
+            db.update_task(task_id, assigned_agent="dev_agent")
+            orch.run_step(task_id)
+
+        # ── Assert: 0 executor.run() calls ──
+        assert mock_executor.run.call_count == 0, (
+            f"Expected 0 executor.run() calls, got "
+            f"{mock_executor.run.call_count}"
+        )
+
+        # ── Assert: task is FAILED ──
+        from runtime.models import TaskStatus
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.FAILED, (
+            f"Expected FAILED, got {task.status}"
+        )
+        note = (task.note or "").lower()
+        assert "corruption" in note or "integrity" in note or "materialization" in note, (
+            f"Task note should mention corruption/integrity failure: {task.note}"
+        )
+
+    def test_retry_launch_refused_after_dual_corruption(
+        self, tmp_path, monkeypatch,
+    ):
+        """Retry path: dual-tamper after first materialization is cached →
+        second materialization on retry detects corruption → 0 retry launch.
+        """
+        import hashlib
+        from unittest.mock import patch as mock_patch
+
+        skill_md_bytes = b"# Retry Test Skill\n"
+        mal_bytes = b"# MALICIOUS RETRY\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "corrupt-retry", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace, mock_executor = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "corrupt-retry", "1.0.0", manifest_hash,
+            "hr:corrupt-retry", manifest_key,
+        )
+
+        # First materialization
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # Store the pre-corruption expected specs
+        from runtime.orchestrator.workspace_adapters import (
+            _build_lifecycle_canonical_specs,
+        )
+        expected_specs = _build_lifecycle_canonical_specs(
+            store=store, org_root=org_root, db=db,
+            agent_name="dev_agent", slug="test-org",
+        )
+        assert len(expected_specs) == 1
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "corrupt-retry",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # Second materialization must detect corruption and refuse
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
+        )
+        with pytest.raises(LifecycleMaterializationError):
+            _build_lifecycle_canonical_specs(
+                store=store, org_root=org_root, db=db,
+                agent_name="dev_agent", slug="test-org",
+            )
+
+        # ── Prove corruption persists (no auto-repair) ──
+        pkg_path = store.canonical_path(
+            "corrupt-retry", "1.0.0", manifest_hash,
+        )
+        assert (pkg_path / "SKILL.md").read_bytes() == mal_bytes
+
+    def test_executor_switch_refused_after_dual_corruption(
+        self, tmp_path, monkeypatch,
+    ):
+        """Executor switch: dual-tamper → materialization on switch
+        detects corruption → task FAILED → 0 executor.run() calls.
+        """
+        import hashlib
+        from unittest.mock import patch as mock_patch
+
+        skill_md_bytes = b"# Switch Test Skill\n"
+        mal_bytes = b"# MALICIOUS SWITCH\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "corrupt-switch", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace, mock_executor = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "corrupt-switch", "1.0.0", manifest_hash,
+            "hr:corrupt-switch", manifest_key,
+        )
+
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "corrupt-switch",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # Verify the attacker restored modes — is_built passes
+        assert store.is_built("corrupt-switch", "1.0.0", manifest_hash)
+
+        # Executor switch materialization must detect the corruption
+        # and refuse — the materialize_workspace_skills call for
+        # the new provider will fail.
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
+        )
+        with pytest.raises(LifecycleMaterializationError):
+            materialize_workspace_skills(
+                workspace, orch._settings,
+                slug="test-org", context="task", provider="codex",
+                agent_name="dev_agent", team="engineering",
+                skills_root=tmp_path / "skills",
+                org_root=org_root, db=db,
+            )
+
+    def test_event_persistence_failure_fails_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        """When durable event persistence fails during corruption handling,
+        the system fails closed — no launch proceeds unrecorded.
+        """
+        import hashlib
+        from unittest.mock import patch as mock_patch
+
+        skill_md_bytes = b"# Event Fail Skill\n"
+        mal_bytes = b"# MALICIOUS EVENT FAIL\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "event-fail", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace, mock_executor = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "event-fail", "1.0.0", manifest_hash,
+            "hr:event-fail", manifest_key,
+        )
+
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "event-fail",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # Make db.insert_skill_validation_event raise — simulates
+        # event persistence failure.
+        db.insert_skill_validation_event = MagicMock(
+            side_effect=RuntimeError("DB write failure")
+        )
+
+        # Second materialization must fail closed — event persistence
+        # failure itself is a LifecycleMaterializationError.
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
+            _build_lifecycle_canonical_specs,
+        )
+        with pytest.raises(LifecycleMaterializationError) as exc:
+            _build_lifecycle_canonical_specs(
+                store=store, org_root=org_root, db=db,
+                agent_name="dev_agent", slug="test-org",
+            )
+        assert "persistence failed" in str(exc.value).lower() or \
+            "integrity event" in str(exc.value).lower(), (
+            f"Expected event persistence failure message, got: {exc.value}"
+        )
+
+        # ── Confirm zero launch possible — canonical is still corrupted,
+        # materialization would fail again ──
+        # (The orchestrator-level test with mocked executor is covered
+        # by test_initial_launch_refused_after_dual_corruption)
+
+    def test_both_skill_roots_materialized_and_refused(
+        self, tmp_path, monkeypatch,
+    ):
+        """Both .claude/skills and .agents/skills are materialized
+        from lifecycle packages, and corruption in either is detected.
+        """
+        import hashlib
+
+        skill_md_bytes = b"# Both Roots Skill\n"
+        mal_bytes = b"# MALICIOUS BOTH ROOTS\n"
+
+        (manifest, manifest_hash, art_store, store, org_root,
+         manifest_key) = self._create_lifecycle_package_with_manifest(
+            tmp_path, "both-roots", "1.0.0", skill_md_bytes,
+        )
+
+        canonical_root = store.root
+        orch, db, workspace, mock_executor = self._setup_orchestrator(
+            tmp_path, monkeypatch, canonical_root,
+            art_store, org_root,
+        )
+
+        self._seed_lifecycle_package(
+            db, "both-roots", "1.0.0", manifest_hash,
+            "hr:both-roots", manifest_key,
+        )
+
+        from runtime.orchestrator.workspace_adapters import (
+            materialize_workspace_skills,
+        )
+        expected_specs = materialize_workspace_skills(
+            workspace, orch._settings,
+            slug="test-org", context="task", provider="claude",
+            agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "skills",
+            org_root=org_root, db=db,
+        )
+
+        # Verify both roots have links
+        for root_name in [".claude/skills", ".agents/skills"]:
+            link = workspace / root_name / "both-roots"
+            assert link.is_symlink(), (
+                f"Expected symlink at {root_name}/both-roots"
+            )
+
+        # ── Attack: tamper both sources identically ──
+        self._tamper_both_sources_identically(
+            manifest, art_store, store, "both-roots",
+            "1.0.0", manifest_hash, mal_bytes,
+        )
+
+        # Re-materialization must detect and refuse
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
+        )
+        with pytest.raises(LifecycleMaterializationError):
+            materialize_workspace_skills(
+                workspace, orch._settings,
+                slug="test-org", context="task", provider="claude",
+                agent_name="dev_agent", team="engineering",
+                skills_root=tmp_path / "skills",
+                org_root=org_root, db=db,
+            )

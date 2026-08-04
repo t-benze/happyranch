@@ -2585,9 +2585,10 @@ class TestSameOwnerAdversarialLimits:
     1. A same-owner process CAN write/alter canonical packages via
        workspace symlinks — no permission denial occurs.
     2. The daemon's integrity verification detects the alteration
-       and rebuilds from the trusted source when available.
-    3. When the trusted source is absent, the mismatch fails closed
-       and never blesses corrupted bytes as valid.
+       and REFUSES the session — NO automatic repair from same-UID
+       local source.
+    3. When a mismatch is detected, it fails closed and never blesses
+       corrupted bytes as valid.
     4. Link tampering and policy withdrawal behave as documented.
     """
 
@@ -2661,18 +2662,18 @@ class TestSameOwnerAdversarialLimits:
         pkg_path = store.canonical_path(slug, "system", content_hash)
         assert (pkg_path / "SKILL.md").read_text() == tampered_content
 
-    def test_integrity_verification_detects_and_repairs(
+    def test_integrity_verification_detects_and_refuses(
         self, store, materializer, skill_source_dir, workspace_dir,
     ):
         """Integrity verification detects tampered canonical package
-        and rebuilds from trusted source when still available.
+        and REFUSES to rebuild — no automatic repair from same-UID source.
 
         After a same-owner process tampers with canonical content,
         calling build_from_source with verify_source_hash detects
-        the mismatch and forces a rebuild from the source tree.
+        the mismatch and raises CanonicalStoreError instead of rebuilding.
         """
         content_hash = _compute_dir_hash(skill_source_dir)
-        slug = "test-integrity-repair"
+        slug = "test-integrity-refuse"
 
         # First build — creates trusted canonical package
         store.build_from_source(slug, "system", content_hash, skill_source_dir)
@@ -2694,28 +2695,22 @@ class TestSameOwnerAdversarialLimits:
             "bytes are tampered (no content verification in is_built)"
         )
 
-        # ── Integrity verification: rebuild from source ──
+        # ── Integrity verification: REFUSE, not rebuild ──
         # build_from_source with verify_source_hash detects mismatch
-        # and forcibly rebuilds from skill_source_dir.
-        # First make the package dir writable so rmtree can clean up.
-        for f in pkg_path.rglob("*"):
-            if f.is_file():
-                os.chmod(f, 0o644)
-            elif f.is_dir():
-                os.chmod(f, 0o755)
-        os.chmod(pkg_path, 0o755)
-        rebuilt_path = store.build_from_source(
-            slug, "system", content_hash, skill_source_dir,
-            verify_source_hash=content_hash,
-        )
-        assert rebuilt_path == pkg_path
+        # and raises CanonicalStoreError. No automatic repair.
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises(CanonicalStoreError) as exc:
+            store.build_from_source(
+                slug, "system", content_hash, skill_source_dir,
+                verify_source_hash=content_hash,
+            )
+        assert "content_corruption" in str(exc.value)
 
-        # Content should be restored to original
-        restored = (pkg_path / "SKILL.md").read_text()
-        assert restored == original, (
-            "Package content must be restored from trusted source"
+        # Content should remain tampered (no auto-repair)
+        tampered = (pkg_path / "SKILL.md").read_text()
+        assert tampered == "# TAMPERED", (
+            "Package content must remain tampered — no auto-repair"
         )
-        assert "# TAMPERED" not in restored
 
     def test_absent_trusted_source_fails_closed(
         self, store, tmp_path,
@@ -3014,14 +3009,19 @@ class TestSameOwnerAdversarialLimits:
             "bytes are tampered but hardening bits match"
         )
 
-        # Integrity reconciliation restores trusted content
-        store.build_from_source(
-            slug, "system", content_hash, skill_source_dir,
-            verify_source_hash=content_hash,
-        )
-        restored = (pkg_path / "SKILL.md").read_text()
-        assert "# TAMPERED" not in restored, (
-            "Integrity verification must restore trusted content"
+        # Integrity verification REFUSES automatic repair
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises(CanonicalStoreError) as exc:
+            store.build_from_source(
+                slug, "system", content_hash, skill_source_dir,
+                verify_source_hash=content_hash,
+            )
+        assert "content_corruption" in str(exc.value)
+        # Canonical bytes must remain tampered — no auto-repair
+        still_tampered = (pkg_path / "SKILL.md").read_text()
+        assert "# TAMPERED" in still_tampered, (
+            "Integrity verification must refuse auto-repair — "
+            "canonical bytes stay corrupted"
         )
 
     # ── Fix 2: Legacy single-SKILL.md lifecycle artifact branch ────────
@@ -3035,12 +3035,12 @@ class TestSameOwnerAdversarialLimits:
     # wired to canonical bytes, or wired to raw artifact SHA, tampered
     # content would be silently accepted.
 
-    def test_legacy_lifecycle_branch_tamper_detect_and_repair(
+    def test_legacy_lifecycle_branch_tamper_detect_and_refuse(
         self, store, tmp_path, db,
     ):
         """Through the real _build_lifecycle_canonical_specs production
         branch: same-owner canonical target mutation is detected and
-        repaired when the verified artifact remains available.
+        REFUSED — no automatic repair from same-UID local source.
 
         Sets up a real ArtifactStore-backed lifecycle artifact.  The
         raw artifact SHA (content_hash) USED to differ from the
@@ -3049,8 +3049,8 @@ class TestSameOwnerAdversarialLimits:
         tampered content.
 
         Honest adversarial proposition: same-owner CAN modify the
-        symlinked canonical target.  Repair restores trusted content
-        only while the retained artifact input exists.
+        symlinked canonical target.  Detection refuses the session
+        and leaves canonical bytes corrupted.
         """
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
@@ -3138,28 +3138,27 @@ class TestSameOwnerAdversarialLimits:
             "this is the honest limit, not a security boundary"
         )
 
-        # ── 5. Rebuild via real branch → detects tamper, repairs ──
-        # Make the tampered package writable so build_from_source can
-        # rmtree it during the forced rebuild.
-        for f in pkg_path.rglob("*"):
-            if f.is_file():
-                os.chmod(f, 0o644)
-            elif f.is_dir():
-                os.chmod(f, 0o755)
-        os.chmod(pkg_path, 0o755)
-
-        specs2 = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
+        # ── 5. Detect tamper, REFUSE to rebuild ──
+        # The second _build_lifecycle_canonical_specs call must detect
+        # content corruption and raise LifecycleMaterializationError.
+        # No automatic repair from same-UID local source.
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
         )
-        assert len(specs2) == 1
-        restored = (pkg_path / "SKILL.md").read_text()
-        assert restored == skill_md_bytes.decode("utf-8"), (
-            "Integrity verification must restore trusted content from "
-            "verified artifact bytes; got: {!r}".format(restored)
+        with pytest.raises(LifecycleMaterializationError) as exc:
+            _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+        assert "content_corruption" in str(exc.value).lower()
+        # Canonical bytes must remain corrupted — no auto-repair
+        still_tampered = (pkg_path / "SKILL.md").read_text()
+        assert "TAMPERED" in still_tampered, (
+            "Integrity verification must refuse auto-repair — "
+            "canonical bytes stay corrupted; got: {!r}".format(still_tampered)
         )
 
     def test_legacy_lifecycle_branch_absent_artifact_fails_closed(
@@ -3383,19 +3382,19 @@ class TestSameOwnerAdversarialLimits:
         self, store, tmp_path, db,
     ):
         """Red-side control: a deliberately corrupted canonical package
-        triggers a genuine rebuild through the saved original hardening
-        primitive, proving the zero-call assertion in the intact test
-        would catch a needless rebuild.
+        triggers a REFUSAL (NOT a rebuild), proving the detection-only
+        contract. Corrupted canonical bytes remain corrupted after refusal.
 
         This test corrupts the canonical SKILL.md after the first
         build, then verifies that the second lifecycle materialization
-        detects the mismatch, rebuilds (calling _apply_readonly_hardening),
-        and restores correct content.
+        detects the mismatch, REFUSES (raises LifecycleMaterializationError),
+        and leaves canonical bytes unchanged (no auto-repair).
         """
         from runtime.infrastructure.artifact_store import ArtifactStore
         from runtime.orchestrator._paths import OrgPaths
         from runtime.skills.lifecycle import stores as lifecycle_stores
         from runtime.skills.lifecycle.models import LifecycleStatus
+        from runtime.orchestrator.workspace_adapters import LifecycleMaterializationError
         import datetime
 
         # ── 1. Seed artifact + lifecycle package ──
@@ -3414,7 +3413,7 @@ class TestSameOwnerAdversarialLimits:
             version="1.0.0",
             content_hash=raw_artifact_sha,
             policy_class="standard_operational",
-            description="A skill to test rebuild on corruption",
+            description="A skill to test refusal on corruption",
             skill_md=skill_md_bytes.decode("utf-8"),
             content_artifact_key=artifact_key,
             status=LifecycleStatus.PUBLISHED,
@@ -3448,12 +3447,8 @@ class TestSameOwnerAdversarialLimits:
 
         # ── 3. Corrupt the canonical package in place ──
         # Same-owner can write through symlinks; this simulates an
-        # accidental or adversarial mutation that the lifecycle
-        # materialization must detect and repair.
-        corrupted = b"# Corrupted Content\n\nThis should trigger a rebuild.\n"
-        # Make package and file writable, overwrite, then restore. The
-        # canonical directory is 0555 after hardening — same-owner can
-        # chmod it back, just like the file.
+        # accidental or adversarial mutation.
+        corrupted = b"# Corrupted Content\n\nThis should trigger refusal.\n"
         pkg_path.chmod(0o755)
         (pkg_path / "SKILL.md").chmod(0o644)
         (pkg_path / "SKILL.md").write_bytes(corrupted)
@@ -3463,51 +3458,20 @@ class TestSameOwnerAdversarialLimits:
             "Corruption must be in place before second materialization"
         )
 
-        # ── 4. Make package writable so build_from_source can rmtree ──
-        # During the forced rebuild, build_from_source must rmtree the
-        # existing hardened package.  Same-owner can chmod it back.
-        for f in pkg_path.rglob("*"):
-            if f.is_file():
-                os.chmod(f, 0o644)
-            elif f.is_dir():
-                os.chmod(f, 0o755)
-        os.chmod(pkg_path, 0o755)
-
-        # ── 5. Intercept the rebuild primitive with saved-original ──
+        # ── 4. Second materialization must REFUSE (no rebuild) ──
         import runtime.skills.canonical_store as cs_mod
-        _original_hardening = cs_mod._apply_readonly_hardening
 
-        rebuild_calls: list[str] = []
-
-        def _track_rebuild(isolation, pkg_path_arg):
-            rebuild_calls.append(str(pkg_path_arg))
-            return _original_hardening(isolation, pkg_path_arg)
-
-        with patch.object(
-            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
-        ):
-            specs2 = _build_lifecycle_canonical_specs(
+        with pytest.raises(LifecycleMaterializationError) as exc:
+            _build_lifecycle_canonical_specs(
                 store=store,
                 org_root=org_root,
                 db=db,
                 agent_name="test-agent",
                 slug="test-org",
             )
+        assert "content_corruption" in str(exc.value).lower()
 
-        # ── 6. Assert rebuild DID occur (positive control) ──
-        assert len(rebuild_calls) == 1, (
-            f"Expected exactly 1 rebuild after corrupting canonical package, "
-            f"got {len(rebuild_calls)}. rebuild_calls={rebuild_calls}"
-        )
-        assert len(specs2) == 1
-        assert specs2[0] == specs1[0], (
-            "Specs must be identical after repair — same ledger record"
-        )
-        assert store.is_built("test-corrupt", "1.0.0", raw_artifact_sha), (
-            "is_built must return True after rebuild repairs the corrupted package"
-        )
-        # ── 7. Verify post-repair content is correct ──
-        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8"), (
-            "SKILL.md content must be restored to the original artifact bytes "
-            "after rebuild"
+        # ── 5. Canonical bytes must remain corrupted ──
+        assert (pkg_path / "SKILL.md").read_bytes() == corrupted, (
+            "Canonical SKILL.md must remain corrupted — no auto-repair"
         )

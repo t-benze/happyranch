@@ -719,6 +719,7 @@ def _build_lifecycle_canonical_specs(
     from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
     from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
     from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalStoreError
 
     service = SkillLifecycleService()
     pkgs = service.get_effective_skills(db, agent_name)
@@ -819,10 +820,46 @@ def _build_lifecycle_canonical_specs(
                 raise  # Re-raise original error after audit write
 
             # Manifest-based: build via artifact store
-            store.build_from_manifest(
-                skill_slug, pkg.version, pkg.content_hash,
-                manifest, artifact_store,
-            )
+            try:
+                store.build_from_manifest(
+                    skill_slug, pkg.version, pkg.content_hash,
+                    manifest, artifact_store,
+                )
+            except CanonicalStoreError as build_exc:
+                # build_from_manifest detected existing corrupted package —
+                # emit durable event and refuse. No automatic repair.
+                if db is not None:
+                    try:
+                        db.insert_skill_validation_event(
+                            skill_id=pkg.skill_id,
+                            slug=skill_slug,
+                            agent=agent_name,
+                            source="integrity_check",
+                            severity="error",
+                            ok=False,
+                            version=pkg.version,
+                            findings=[
+                                f"Canonical package {skill_slug}@{pkg.version} "
+                                f"content corruption detected: {build_exc}. "
+                                f"No automatic repair from same-UID local source."
+                            ],
+                            reason_codes=["content_corruption"],
+                        )
+                    except Exception as audit_exc:
+                        raise LifecycleMaterializationError(
+                            skill_slug=skill_slug,
+                            agent_name=agent_name,
+                            reason=(
+                                f"Integrity event persistence failed during "
+                                f"content-corruption handling for {skill_slug}@{pkg.version}: "
+                                f"{audit_exc}"
+                            ),
+                        ) from audit_exc
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=str(build_exc),
+                ) from build_exc
         else:
             # Legacy: single SKILL.md artifact
             expected_tree_hash = _compute_legacy_tree_hash(manifest_bytes)
@@ -832,10 +869,44 @@ def _build_lifecycle_canonical_specs(
                 tmp_path = Path(tmpd)
                 (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
                 source_hash = _compute_dir_hash(tmp_path)
-                store.build_from_source(
-                    skill_slug, pkg.version, pkg.content_hash, tmp_path,
-                    verify_source_hash=source_hash,
-                )
+                try:
+                    store.build_from_source(
+                        skill_slug, pkg.version, pkg.content_hash, tmp_path,
+                        verify_source_hash=source_hash,
+                    )
+                except CanonicalStoreError as build_exc:
+                    if db is not None:
+                        try:
+                            db.insert_skill_validation_event(
+                                skill_id=pkg.skill_id,
+                                slug=skill_slug,
+                                agent=agent_name,
+                                source="integrity_check",
+                                severity="error",
+                                ok=False,
+                                version=pkg.version,
+                                findings=[
+                                    f"Canonical package {skill_slug}@{pkg.version} "
+                                    f"content corruption detected: {build_exc}. "
+                                    f"No automatic repair from same-UID local source."
+                                ],
+                                reason_codes=["content_corruption"],
+                            )
+                        except Exception as audit_exc:
+                            raise LifecycleMaterializationError(
+                                skill_slug=skill_slug,
+                                agent_name=agent_name,
+                                reason=(
+                                    f"Integrity event persistence failed during "
+                                    f"content-corruption handling for {skill_slug}@{pkg.version}: "
+                                    f"{audit_exc}"
+                                ),
+                            ) from audit_exc
+                    raise LifecycleMaterializationError(
+                        skill_slug=skill_slug,
+                        agent_name=agent_name,
+                        reason=str(build_exc),
+                    ) from build_exc
 
         specs.append({
             "slug": skill_slug,

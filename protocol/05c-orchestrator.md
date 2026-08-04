@@ -10,11 +10,12 @@
 > (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``) and pre-launch integrity
 > validation. All skill delivery now routes through
 > ``materialize_workspace_skills``, which creates validated relative symlinks to
-> daemon-owned hash-addressed canonical packages with validated relative symlinks.
-> In distinct-identity mode, packages are read-only (0444) for the distinct executor
-> uid. In same-owner mode (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``), canonical
-> directories are 0755 and a same-UID executor can mutate targets — integrity is
-> enforced by synchronous pre-launch hash detection, not OS-level immutability.
+> hash-addressed canonical packages. In distinct-identity mode, packages are
+> read-only (0444) for the distinct executor uid. In same-owner mode
+> (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``), a same-UID executor CAN mutate
+> targets — integrity is enforced by synchronous pre-launch hash detection
+> against ledger-declared member hashes with DETECTION-ONLY, FAIL-CLOSED refusal
+> (no automatic repair from same-UID local source).
 > **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections below
 > are preserved for historical reference.
 

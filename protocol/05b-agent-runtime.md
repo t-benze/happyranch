@@ -201,10 +201,28 @@ For single-operator setups that have decided not to provision a distinct
 `_hrexec` account. In this mode the executor runs under the SAME OS identity
 as the daemon — there is NO OS-level isolation. An agent-controlled executor
 process can read, write, chmod, or chown the canonical skill store and
-anything else the daemon account can reach. Workspace symlinks, prompt
-guidance, hashes, verification, and repair are BEST-EFFORT corruption
-detection/recovery only. Do NOT call the target immutable, protected, or
-claim write/chmod/ACL denial, a security boundary, or cross-agent isolation.
+anything else the daemon account can reach. A same UID may mutate, race
+validation, and affect active/overlapping sessions. This is DETECTION-ONLY,
+FAIL-CLOSED behavior, not prevention. Do NOT call the target immutable,
+protected, trusted source, or claim write/chmod/ACL denial, a security
+boundary, or cross-agent isolation.
+
+**Detection and refusal:** Before every executor launch, every resolved
+package member's artifact bytes are validated against the immutable
+ledger-declared SHA-256 hashes. A mismatched existing canonical package is
+NEVER automatically rebuilt, copied, replaced, or healed from same-UID local
+source. The durable integrity/operations event is emitted and the session is
+refused. First-ever materialization of an absent package remains allowed;
+valid existing packages may be reused.
+
+**Manual recovery only:** (a) For broken links: ``happyranch set-executor
+<agent> --executor <current-executor>`` (re-materializes links only, NEVER
+recovers corrupted bytes). (b) For corrupted canonical bytes: stop daemon,
+delete the corrupted package under ``<daemon-home>/canonical-skills/``,
+restart daemon (next materialization rebuilds from authoritative artifact
+source). No automatic repair from same-UID local source. NOTE: no single
+``happyranch`` one-step re-sync/redeploy command exists; a new operator
+capability/authority decision is required to supply one.
 
 **Ownership and provenance:**
 - Canonical packages are daemon/materializer-owned, content-addressed trees

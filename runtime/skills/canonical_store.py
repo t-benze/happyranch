@@ -442,10 +442,11 @@ class CanonicalSkillStore:
         When *verify_source_hash* is provided and the package already exists
         (``is_built``), the actual content of the canonical package is
         compared against the expected source hash. If the content has been
-        altered (e.g. by a same-owner executor), the package is forcibly
-        rebuilt from *source_dir*. This is best-effort corruption detection
-        and recovery for same-owner deployments — it is NOT an
-        attacker-independent security guarantee.
+        altered (e.g. by a same-owner executor), a ``CanonicalStoreError`` is
+        raised — NO automatic rebuild from same-UID local source occurs.
+        First-ever materialization of an absent package remains allowed;
+        a valid existing package may be reused. But a corrupted existing
+        package is never silently repaired.
 
         Args:
             slug: Skill slug
@@ -454,13 +455,14 @@ class CanonicalSkillStore:
             source_dir: Directory containing skill files (SKILL.md, references/, assets/)
             verify_source_hash: If set, verify existing package content
                 against this hash (source tree hash) before reusing. Mismatch
-                triggers rebuild from *source_dir*.
+                raises CanonicalStoreError instead of rebuilding.
 
         Returns:
             Path to the built canonical package directory.
 
         Raises:
-            CanonicalStoreError: on hash mismatch, path traversal, write failure.
+            CanonicalStoreError: on hash mismatch, path traversal, write failure,
+                or content corruption of an existing package.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
@@ -472,14 +474,14 @@ class CanonicalSkillStore:
                 except CanonicalStoreError:
                     actual_hash = ""
                 if actual_hash != verify_source_hash:
-                    logger.warning(
-                        "Canonical package %s@%s content mismatch "
-                        "(expected %s... got %s...) — forcibly rebuilding "
-                        "from source. This indicates possible tampering or "
-                        "accidental corruption; in same-owner mode this is "
-                        "best-effort detection only, not a security guarantee.",
-                        slug, version,
-                        verify_source_hash[:16], actual_hash[:16] if actual_hash else "<error>",
+                    raise CanonicalStoreError(
+                        "content_corruption",
+                        f"Canonical package {slug}@{version} content mismatch "
+                        f"(expected {verify_source_hash[:16]}... "
+                        f"got {actual_hash[:16] if actual_hash else '<error>'}). "
+                        f"No automatic repair from same-UID local source. "
+                        f"Recovery: stop daemon, delete corrupted package, "
+                        f"restart daemon to rebuild from authoritative source.",
                     )
                 else:
                     return pkg_path
@@ -628,18 +630,18 @@ class CanonicalSkillStore:
 
         # If already built, verify content integrity before reusing.
         # In same-owner mode an executor could tamper with the package
-        # bytes; this check detects that and forces a rebuild from the
-        # trusted ArtifactStore source.
+        # bytes; this check detects that and REFUSES reuse — NO automatic
+        # rebuild from same-UID ArtifactStore source.
         if self.is_built(slug, version, content_hash):
             if self._manifest_content_matches(pkg_path, manifest):
                 return pkg_path
-            logger.warning(
-                "Canonical package %s@%s content mismatch detected — "
-                "forcibly rebuilding from ArtifactStore manifest. "
-                "This indicates possible tampering or accidental "
-                "corruption; in same-owner mode this is best-effort "
-                "detection only, not a security guarantee.",
-                slug, version,
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} content mismatch "
+                f"detected — existing corrupted package present. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: stop daemon, delete corrupted package, "
+                f"restart daemon to rebuild from authoritative source.",
             )
 
         members = manifest.get("members", [])
