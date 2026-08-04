@@ -1,5 +1,9 @@
 /**
  * StatusPill — schedule-status badge for the Todos surface.
+ *
+ * Uses Todos-local exact-color matches to the approved THR-105 reference
+ * (web/scripts/screenshot-harness/reference/reference-todos-list-light.png)
+ * without mutating shared design-system tokens.
  */
 import type { ScheduleStatus } from '@/lib/api/types'
 import { statusLabel, statusPillClass } from '../strings'

@@ -1089,15 +1089,19 @@ describe('strings — status labels and grouping', () => {
     expect(mod.statusLabel('timeout')).toBe('Timed out')
   })
 
-  it('statusPillClass returns correct token classes', async () => {
+  it('statusPillClass returns Todos-local reference colors', async () => {
     const mod = await import('./strings')
-    expect(mod.statusPillClass('armed')).toContain('text-status-open')
-    expect(mod.statusPillClass('firing')).toContain('text-status-open')
-    expect(mod.statusPillClass('failed')).toContain('text-attention-text')
-    expect(mod.statusPillClass('timeout')).toContain('text-attention-text')
-    expect(mod.statusPillClass('fired')).toContain('text-accent-text')
-    expect(mod.statusPillClass('paused')).toContain('text-status-archived')
-    expect(mod.statusPillClass('cancelled')).toContain('text-status-archived')
+    expect(mod.statusPillClass('armed')).toContain('text-[#2b5c3a]')
+    expect(mod.statusPillClass('armed')).toContain('bg-[#e3efe5]')
+    expect(mod.statusPillClass('firing')).toContain('text-[#2b5c3a]')
+    expect(mod.statusPillClass('fired')).toContain('text-[#2b5c3a]')
+    expect(mod.statusPillClass('failed')).toContain('text-[#575249]')
+    expect(mod.statusPillClass('failed')).toContain('bg-[#f3e8d6]')
+    expect(mod.statusPillClass('timeout')).toContain('bg-[#f3e8d6]')
+    expect(mod.statusPillClass('paused')).toContain('text-[#575249]')
+    expect(mod.statusPillClass('paused')).toContain('bg-[#efece2]')
+    expect(mod.statusPillClass('cancelled')).toContain('bg-[#efece2]')
+    expect(mod.statusPillClass('expired')).toContain('bg-[#efece2]')
   })
 
   it('SECTION_ORDER covers all statuses', async () => {
