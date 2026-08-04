@@ -1083,44 +1083,57 @@ class TestHardeningFailureAfterPublication:
     def test_source_hardening_failure_subsequent_build_refuses_reuse(
         self, temp_canonical_root, skill_source_dir,
     ):
-        """After a hardening failure in a prior build_from_source call,
-        a subsequent build_from_source must rebuild from scratch, not
-        silently return the insufficiently hardened package."""
+        """A corrupted canonical package (is_built=False, pkg exists)
+        must trigger REFUSAL — NOT automatic rebuild.
+
+        Simulates a same-owner tamper that changes directory permissions
+        so that is_built() returns False but the directory remains on
+        disk. Detection-only contract: build_from_source must raise
+        content_corruption, never delete-and-rebuild.
+        """
         import hashlib
+        from runtime.skills.canonical_store import CanonicalStoreError
 
         store = CanonicalSkillStore(root=temp_canonical_root)
         content_hash = hashlib.sha256(b"src-reuse-refusal").hexdigest()
 
-        # First call: inject hardening failure AFTER os.replace
-        original_make_dir = store._isolation.make_dir_readonly_executor
-        store._isolation.make_dir_readonly_executor = lambda path: (
-            (_ for _ in ()).throw(
-                OSError("Injected hardening failure"))
+        # First call: build a clean package
+        pkg_path1 = store.build_from_source(
+            "test-skill", "1.0.0", content_hash, skill_source_dir,
+        )
+        assert store.is_built("test-skill", "1.0.0", content_hash)
+        assert "# Test Skill" in (
+            pkg_path1 / "SKILL.md").read_text()
+
+        # ── Same-owner corrupts: adds group-write to the root dir ──
+        # This makes is_built() return False (hardening check fails)
+        # while the directory still exists with valid content.
+        pkg_path = store.canonical_path(
+            "test-skill", "1.0.0", content_hash)
+        root_mode = pkg_path.stat().st_mode
+        pkg_path.chmod(root_mode | stat.S_IWGRP)
+
+        # Now is_built() returns False — directory exists but permissions
+        # are wrong. This is NOT a first-build scenario.
+        assert not store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must return False after permissions corruption"
+        )
+        assert pkg_path.exists(), (
+            "Package directory must still exist — only permissions changed"
         )
 
-        with pytest.raises((CanonicalStoreError, OSError)):
+        # Second call: content_corruption refusal, NOT rebuild
+        with pytest.raises(CanonicalStoreError) as exc:
             store.build_from_source(
                 "test-skill", "1.0.0", content_hash, skill_source_dir,
             )
-        store._isolation.make_dir_readonly_executor = original_make_dir
-
-        # The insufficiently hardened package must not be considered built
-        assert not store.is_built("test-skill", "1.0.0", content_hash), (
-            "Package on disk must not pass is_built() after hardening failure"
+        assert "content_corruption" in str(exc.value)
+        assert "is_built=False" in str(exc.value)
+        # Content must remain intact (no auto-delete)
+        assert "# Test Skill" in (
+            pkg_path / "SKILL.md").read_text(), (
+            "Package content must not be deleted — no auto-repair"
         )
-
-        # Second call: without injection, must rebuild from scratch.
-        pkg_path2 = store.build_from_source(
-            "test-skill", "1.0.0", content_hash, skill_source_dir,
-        )
-        assert pkg_path2.is_dir()
-        # Files must be present and correct
-        assert (pkg_path2 / "SKILL.md").is_file()
-        assert "# Test Skill" in (pkg_path2 / "SKILL.md").read_text()
-        # Now must be properly hardened
-        mode = stat.S_IMODE(pkg_path2.stat().st_mode)
-        assert mode & stat.S_IWGRP == 0
-        assert mode & stat.S_IWOTH == 0
 
     def test_manifest_hardening_failure_after_publish_not_built(
         self, temp_canonical_root,

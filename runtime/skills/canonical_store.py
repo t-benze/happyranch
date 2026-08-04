@@ -488,6 +488,26 @@ class CanonicalSkillStore:
             else:
                 return pkg_path
 
+        # ── Detection: existing but invalid canonical package ────────
+        # If the canonical directory exists but is_built() is False,
+        # the package is CORRUPTED (wrong modes/ownership, partial
+        # hardening failure, etc.) — NOT an absent first-build scenario.
+        # Refuse with content_corruption instead of deleting and
+        # rebuilding from same-UID local source.
+        if pkg_path.exists():
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} exists at {pkg_path} "
+                f"but integrity check failed (is_built=False). "
+                f"Package may have wrong permissions/ownership or be "
+                f"incompletely hardened. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then restart the daemon to "
+                f"rebuild from the authoritative source.",
+            )
+
         # Collect files from source
         members: list[tuple[str, bytes]] = []
         for fpath in sorted(source_dir.rglob("*")):
@@ -519,10 +539,6 @@ class CanonicalSkillStore:
                 dest = tmp / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
-
-            # Verify tree hash (optional: can be validated by caller)
-            # The content_hash in the ledger is manifest-based, not tree-based.
-            # We preserve the member hashes separately.
 
             # Provision ownership on temp before atomic replace.
             # (Do NOT make readonly yet — on macOS, rename() requires
@@ -640,8 +656,30 @@ class CanonicalSkillStore:
                 f"Canonical package {slug}@{version} content mismatch "
                 f"detected — existing corrupted package present. "
                 f"No automatic repair from same-UID local source. "
-                f"Recovery: stop daemon, delete corrupted package, "
-                f"restart daemon to rebuild from authoritative source.",
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then restart the daemon to "
+                f"rebuild from the authoritative source.",
+            )
+
+        # ── Detection: existing but invalid canonical package ────────
+        # If the canonical directory exists but is_built() is False,
+        # the package is CORRUPTED (wrong modes/ownership, partial
+        # hardening failure, etc.) — NOT an absent first-build scenario.
+        # Refuse with content_corruption instead of deleting and
+        # rebuilding from same-UID local source.
+        if pkg_path.exists():
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} exists at {pkg_path} "
+                f"but integrity check failed (is_built=False). "
+                f"Package may have wrong permissions/ownership or be "
+                f"incompletely hardened. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then restart the daemon to "
+                f"rebuild from the authoritative source.",
             )
 
         members = manifest.get("members", [])

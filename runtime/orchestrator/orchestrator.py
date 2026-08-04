@@ -724,7 +724,6 @@ class Orchestrator:
             )
         except _IntegrityError:
             # Integrity failure is terminal — no executor launch.
-            # Recovery is manual; no single-step happyranch command exists.
             self._db.update_task(
                 task_id,
                 note=(
@@ -735,13 +734,10 @@ class Orchestrator:
                     "happyranch set-executor <agent> --executor "
                     "<current-executor> (re-materializes links, does "
                     "NOT recover corrupted bytes). "
-                    "(b) For corrupted canonical bytes: stop daemon, "
-                    "delete corrupted package under <daemon-home>/"
-                    "canonical-skills/<slug>/<version>/<hash>, restart "
-                    "daemon (next materialization rebuilds from "
-                    "authoritative artifact source). "
-                    "Note: no single-step happyranch re-sync/redeploy "
-                    "command exists; operator capability decision required."
+                    "(b) For corrupted canonical bytes: "
+                    "happyranch skills recover <slug> <version> "
+                    "<content_hash> (then restart daemon to rebuild "
+                    "from authoritative artifact source)."
                 ),
                 status=TaskStatus.FAILED,
             )

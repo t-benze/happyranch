@@ -688,6 +688,118 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: skills recover <slug> <version> <content_hash>
+# ---------------------------------------------------------------------------
+
+
+def cmd_skills_recover(args: argparse.Namespace) -> None:
+    """Operator-invoked one-step recovery for a corrupted canonical package.
+
+    Validates identity/path inputs and ledger provenance, revalidates
+    member SHA-256 hashes against the ArtifactStore, then deletes the
+    corrupted canonical package. The next materialization will rebuild
+    from the authoritative source.
+
+    Operator surface only — no automatic recovery from same-UID sources.
+    """
+    import httpx
+    from cli.client.client import port_file
+
+    port_path = port_file()
+    if not port_path.exists():
+        print("error: daemon not running — start it with scripts/daemon.sh start",
+              file=sys.stderr)
+        sys.exit(1)
+    port = port_path.read_text().strip()
+
+    org = getattr(args, 'org', None)
+
+    # Resolve org slug
+    from cli._shared import resolve_org_slug
+    try:
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{port}",
+            timeout=10.0,
+        ) as client:
+            r = client.get("/api/v1/orgs")
+            available = [o["slug"] for o in r.json().get("orgs", [])] \
+                if r.status_code == 200 else []
+    except Exception:
+        available = []
+    org = resolve_org_slug(args_org=org, available=available)
+
+    # Validate local inputs before calling the daemon
+    slug = args.slug.strip()
+    version = args.version.strip()
+    content_hash = args.content_hash.strip()
+
+    if not slug or not version or not content_hash:
+        print("error: slug, version, and content_hash must all be non-empty",
+              file=sys.stderr)
+        sys.exit(1)
+
+    import re
+    if not re.match(r"^[a-f0-9]{64}$", content_hash):
+        print(
+            "error: content_hash must be exactly 64 lowercase hex characters",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Confirm with operator before deletion
+    print(f"Recovery target:")
+    print(f"  slug:         {slug}")
+    print(f"  version:      {version}")
+    print(f"  content_hash: {content_hash[:16]}...")
+    print()
+    print("This will DELETE the corrupted canonical package from disk.")
+    print("The next daemon launch/materialization will rebuild from the")
+    print("authoritative ArtifactStore source.")
+    print()
+
+    try:
+        response = input("Proceed? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        response = "n"
+
+    if response not in ("y", "yes"):
+        print("Aborted.")
+        sys.exit(0)
+
+    # Call the daemon recovery endpoint
+    token_path = port_path.parent / "daemon.token"
+    if not token_path.exists():
+        print("error: daemon auth token not found", file=sys.stderr)
+        sys.exit(1)
+    token = token_path.read_text().strip()
+
+    with httpx.Client(
+        base_url=f"http://127.0.0.1:{port}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-HappyRanch-Surface": "cli",
+        },
+        timeout=30.0,
+    ) as client:
+        resp = client.post(
+            f"/api/v1/orgs/{org}/skills/recover",
+            json={
+                "slug": slug,
+                "version": version,
+                "content_hash": content_hash,
+            },
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            print(f"✓ {result['message']}")
+        else:
+            detail = resp.json().get("detail", resp.text)
+            print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
+            sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Register subcommands
 # ---------------------------------------------------------------------------
 
@@ -756,3 +868,18 @@ def register(sub) -> None:
     )
     p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
     p_propose.set_defaults(func=cmd_skills_propose)
+
+    # --- skills recover <slug> <version> <content_hash> ---
+    p_recover = skills_sub.add_parser(
+        "recover",
+        help="Operator recovery: delete a corrupted canonical package "
+             "(next materialization rebuilds from ArtifactStore)",
+    )
+    p_recover.add_argument("slug", help="Skill slug (e.g., hr:test-skill)")
+    p_recover.add_argument("version", help="Package version (e.g., 1.0.0)")
+    p_recover.add_argument(
+        "content_hash",
+        help="Content hash from lifecycle ledger (64 lowercase hex chars)",
+    )
+    p_recover.add_argument("--org", help="Org slug (default: auto-detect)")
+    p_recover.set_defaults(func=cmd_skills_recover)

@@ -1015,18 +1015,20 @@ def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
 # integrity (ownership, permissions, member hashes for lifecycle
 # packages) is intact. This is a detective control — same-owner mode
 # removes OS-level write barriers, so an agent-controlled executor can
-# mutate canonical targets between checks. The only recovery is manual
-# operator re-sync/redeploy from approved release/custom artifact
-# sources.
+# mutate canonical targets between checks. Detection-only: no automatic
+# repair from same-UID local sources. Recovery for corrupted canonical
+# bytes is manual: `happyranch skills recover <slug> <version>
+# <content_hash>` then restart the daemon. Link-only faults may be
+# repaired non-destructively via `happyranch set-executor`.
 
 
 class WorkspaceIntegrityError(Exception):
     """Raised when workspace skill integrity validation fails.
 
     Terminal — no executor launch proceeds. Recovery requires
-    human/operator intervention (re-sync/redeploy from approved release
-    artifacts and daemon restart). Auto-repair from same-UID local
-    sources is never performed.
+    human/operator intervention: `happyranch skills recover <slug>
+    <version> <content_hash>` then restart daemon.
+    Auto-repair from same-UID local sources is never performed.
     """
 
     def __init__(
@@ -1078,8 +1080,9 @@ def validate_workspace_skills_integrity(
     In same-owner mode, an agent-controlled executor can mutate canonical
     targets through workspace links between checks. The integrity check
     detects tampering at the next launch attempt and refuses the session.
-    Recovery is manual only: operator re-sync/redeploy from approved
-    release/custom artifact sources.
+    Recovery for corrupted canonical bytes: `happyranch skills recover
+    <slug> <version> <content_hash>` then restart daemon. Link-only
+    faults: `happyranch set-executor` (never repairs bytes).
 
     Args:
         workspace: Agent workspace root
