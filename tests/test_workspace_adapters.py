@@ -1365,3 +1365,213 @@ class TestUserAuthoredSkillMaterialization:
                 session_id="sess-001",
                 proposer_agent="dev_agent",
             )
+
+
+# ── Production document rendering regression tests ────────────────────
+#
+# These tests exercise the ACTUAL production rendering paths —
+# ClaudeWorkspaceAdapter.write_claude_md and
+# CodexWorkspaceAdapter.write_agents_md — and assert each resulting
+# rendered document (CLAUDE.md / AGENTS.md) carries the complete
+# same-owner linked-skill delivery contract.
+#
+# The private _skills_directory_readonly_section unit test above is NOT
+# sufficient on its own — a rendering-path gap (e.g., a missing section
+# invocation) would let a stale document reach an agent session while
+# the private-helper test passes.
+
+
+class TestProductionDocumentRendering:
+    """Verify the complete same-owner contract in rendered agent documents.
+
+    Each test writes a real bootstrap document through the production
+    adapter path and asserts the full contract is present.
+    """
+
+    def test_claude_md_rendered_document_contains_same_owner_contract(
+        self, test_settings, tmp_dir, runtime,
+    ):
+        """write_claude_md produces CLAUDE.md with the full same-owner contract.
+
+        The rendered document (CLAUDE.md at workspace root) must name
+        BOTH .claude/skills and .agents/skills, state the
+        detection/durable-event/refusal/no-local-autoheal contract,
+        assert manual external re-sync/redeploy recovery, and lack
+        stale strict-OS-account, ACL, immutable, or automatic-recovery
+        claims.
+
+        Production artifact: workspace/CLAUDE.md (written by
+        ClaudeWorkspaceAdapter.write_claude_md).
+        """
+        workspace = tmp_dir / "workspaces" / "dev_agent"
+        workspace.mkdir(parents=True)
+
+        adapter = ClaudeWorkspaceAdapter(test_settings, runtime, slug="test")
+        adapter.write_claude_md(
+            workspace=workspace,
+            agent_name="dev_agent",
+            system_prompt="You are the Dev Agent.",
+        )
+
+        claude_md_path = workspace / "CLAUDE.md"
+        assert claude_md_path.exists(), (
+            "write_claude_md must produce CLAUDE.md"
+        )
+        text = claude_md_path.read_text()
+
+        # Production artifact identity
+        assert "## Skills Directory (do not edit)" in text, (
+            "CLAUDE.md must contain the Skills Directory section"
+        )
+
+        # BOTH managed roots must be named (not merely the
+        # provider-selected root)
+        assert ".claude/skills" in text, (
+            "CLAUDE.md must name .claude/skills root"
+        )
+        assert ".agents/skills" in text, (
+            "CLAUDE.md must name .agents/skills root"
+        )
+
+        # Detection/refusal: same-owner residency + no local autoheal
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Durable event + refusal
+        assert "durable visible integrity" in text, (
+            "must reference durable visible integrity event"
+        )
+        assert "refuses launch" in text, (
+            "must assert launch refusal on mismatch"
+        )
+
+        # Manual external re-sync/redeploy recovery
+        # (may span multiple lines in the joined output)
+        assert "manual authoritative" in text, (
+            "must assert manual authoritative recovery"
+        )
+        assert "external re-sync/redeploy" in text, (
+            "must assert external re-sync/redeploy recovery"
+        )
+
+        # Must NOT claim OS-enforced or immutable or ACL protection
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+        # Must not claim immutable targets
+        assert "immutable" not in (
+            text.split("## Skills Directory (do not edit)")[1]
+            .split("## ")[0] if "## Skills Directory (do not edit)" in text
+            and text.count("## ", text.index("## Skills Directory (do not edit)") + 1) > 0
+            else text
+        ), (
+            "rendered Skills Directory section must not claim immutable"
+        )
+
+        # Must not claim ACL denial or distinct OS account
+        skills_section = text.split("## Skills Directory (do not edit)")[1]
+        next_section_idx = skills_section.find("\n## ")
+        if next_section_idx != -1:
+            skills_section = skills_section[:next_section_idx]
+        assert "ACL" not in skills_section, (
+            "CLAUDE.md Skills Directory section must not claim ACL enforcement"
+        )
+        assert "distinct" not in skills_section.lower(), (
+            "CLAUDE.md Skills Directory section must not claim distinct identity"
+        )
+
+    def test_agents_md_rendered_document_contains_same_owner_contract(
+        self, test_settings, tmp_dir, runtime,
+    ):
+        """write_agents_md produces AGENTS.md with the full same-owner contract.
+
+        The rendered document (AGENTS.md at workspace root) must name
+        BOTH .claude/skills and .agents/skills, state the
+        detection/durable-event/refusal/no-local-autoheal contract,
+        assert manual external re-sync/redeploy recovery, and lack
+        stale strict-OS-account, ACL, immutable, or automatic-recovery
+        claims.
+
+        Production artifact: workspace/AGENTS.md (written by
+        CodexWorkspaceAdapter.write_agents_md).
+        """
+        workspace = tmp_dir / "workspaces" / "dev_agent"
+        workspace.mkdir(parents=True)
+
+        adapter = CodexWorkspaceAdapter(test_settings, runtime, slug="test")
+        adapter.write_agents_md(
+            workspace=workspace,
+            agent_name="dev_agent",
+            system_prompt="You are the Dev Agent.",
+        )
+
+        agents_md_path = workspace / "AGENTS.md"
+        assert agents_md_path.exists(), (
+            "write_agents_md must produce AGENTS.md"
+        )
+        text = agents_md_path.read_text()
+
+        # Production artifact identity
+        assert "## Skills Directory (do not edit)" in text, (
+            "AGENTS.md must contain the Skills Directory section"
+        )
+
+        # BOTH managed roots must be named (not merely the
+        # provider-selected root)
+        assert ".claude/skills" in text, (
+            "AGENTS.md must name .claude/skills root"
+        )
+        assert ".agents/skills" in text, (
+            "AGENTS.md must name .agents/skills root"
+        )
+
+        # Detection/refusal: same-owner residency + no local autoheal
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Durable event + refusal
+        assert "durable visible integrity" in text, (
+            "must reference durable visible integrity event"
+        )
+        assert "refuses launch" in text, (
+            "must assert launch refusal on mismatch"
+        )
+
+        # Manual external re-sync/redeploy recovery
+        # (may span multiple lines in the joined output)
+        assert "manual authoritative" in text, (
+            "must assert manual authoritative recovery"
+        )
+        assert "external re-sync/redeploy" in text, (
+            "must assert external re-sync/redeploy recovery"
+        )
+
+        # Must NOT claim OS-enforced or immutable or ACL protection
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+
+        # Isolate the Skills Directory section
+        skills_section = text.split("## Skills Directory (do not edit)")[1]
+        next_section_idx = skills_section.find("\n## ")
+        if next_section_idx != -1:
+            skills_section = skills_section[:next_section_idx]
+
+        # Must not claim immutable targets or ACL denial
+        assert "immutable" not in skills_section, (
+            "AGENTS.md Skills Directory section must not claim immutable"
+        )
+        assert "ACL" not in skills_section, (
+            "AGENTS.md Skills Directory section must not claim ACL enforcement"
+        )
+        assert "distinct" not in skills_section.lower(), (
+            "AGENTS.md Skills Directory section must not claim distinct identity"
+        )

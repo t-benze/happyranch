@@ -227,15 +227,17 @@ class PlatformIsolation(ABC):
         stderr=subprocess.PIPE,
         text: bool = True,
     ) -> subprocess.Popen:
-        """Launch a subprocess as the restricted executor identity.
+        """Launch a subprocess as the executor identity.
 
-        On macOS this is achieved via ``sudo -n -u <executor>`` identity
-        handoff (non-root daemon model) when a distinct executor account
-        is available. When no distinct account is configured, launches
-        directly under the daemon's identity.
+        On macOS this uses ``sudo -n -u <executor>`` identity
+        handoff when a distinct executor account is available.
+        When no distinct account is configured, launches directly
+        under the daemon's identity (same-owner mode — no OS-level
+        isolation).
 
         Raises PlatformIsolationError if:
         - sudo capability or authorization is unavailable
+        - executor identity is unprovisioned
         """
         ...
 
@@ -246,8 +248,7 @@ class PlatformIsolation(ABC):
 def _resolve_executor_username(identity: PlatformIdentity) -> str:
     """Resolve the executor username from the available account.
 
-    Looks up the username for the given uid. The account
-    must exist.
+    Looks up the username for the given uid. The account must exist.
 
     Raises PlatformIsolationError if the account cannot be resolved.
     """
@@ -258,7 +259,7 @@ def _resolve_executor_username(identity: PlatformIdentity) -> str:
         raise PlatformIsolationError(
             "executor_username_unresolvable",
             f"Cannot resolve username for executor uid={identity.uid}. "
-            "Ensure the provisioned executor account exists.",
+            "Ensure the configured executor account exists.",
         )
 
 
@@ -333,14 +334,14 @@ def _drop_privileges_macos(uid: int, gid: int) -> None:
 class _MacOSPlatformIsolation(PlatformIsolation):
     """macOS platform isolation using POSIX ownership + permissions.
 
-    **When a distinct executor account is available:**
-    - Daemon uid/gid must differ from executor uid/gid.
-    - Same-owner launch is handled via the same-owner mode guard.
-    - Canonical store permissions are verified before each launch.
-
-    **Same-owner mode** (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``):
-    - Executor runs under daemon identity — no OS-level isolation.
+    The executor and daemon share the same OS identity (same-owner mode).
     - Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal.
+    - Do NOT claim OS-level isolation, immutable, or protected targets.
+    - A same-UID process may mutate, race validation, and affect
+      active/overlapping sessions.
+    - When a distinct executor account IS available, the daemon uid/gid
+      must differ from executor uid/gid (the account identity is verified).
+    - Canonical store permissions are verified before each launch.
     """
 
     def __init__(self) -> None:
@@ -350,8 +351,8 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         self._same_owner_mode = False
         if self._executor_identity is None and _same_owner_mode_enabled():
             logger.warning(
-                "%s is set and no restricted executor account is "
-                "provisioned — agent executors will run under the SAME OS "
+                "%s is set and no executor account is "
+                "configured — agent executors will run under the SAME OS "
                 "identity as the daemon (uid=%d). This removes OS-level "
                 "isolation: an agent-controlled process can read/write the "
                 "canonical skill store and anything else this account can "
@@ -394,8 +395,8 @@ class _MacOSPlatformIsolation(PlatformIsolation):
     def _assert_executor_distinct(self) -> None:
         """Verify executor identity is available and distinct from daemon.
 
-        Raises PlatformIsolationError if same-owner with no account or
-        unprovisioned without same-owner guard.
+        Raises PlatformIsolationError if executor account is not configured
+        and same-owner mode guard is not active.
         """
         if self._executor_identity is None:
             raise PlatformIsolationError(

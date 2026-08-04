@@ -8,8 +8,8 @@ Addresses TASK-4001 findings:
 - Finding 7: Lifecycle manifest provenance + canonical integration
 
 Tests in this file represent the production-bound expectation. Some tests
-require real OS-level executor identity provisioning and will report
-their prerequisite gap rather than manufacturing a false pass.
+require real OS-level same-owner mode validation (macOS only) and will
+report their prerequisite gap rather than manufacturing a false pass.
 """
 
 from __future__ import annotations
@@ -193,35 +193,34 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 # ── Finding 4: Real restricted-process evidence ─────────────────────
 
 class TestPlatformIsolationIdentities:
-    """Production-bound OS identity isolation tests.
+    """Production-bound platform identity tests.
 
-    Some tests require real distinct executor accounts and CI runners.
+    Tests verify same-owner mode detection and identity resolution.
     Tests report their prerequisite gap rather than manufacturing a false pass.
     """
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with distinct executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_macos_executor_identity_is_distinct(self):
-        """Executor identity must differ from daemon identity.
+        """Executor identity resolution in same-owner mode.
 
-        This test validates the isolation contract: when a distinct executor
-        account is available, daemon uid != executor uid. In same-owner mode
-        (HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1), the executor uid IS the
-        daemon uid — that is the explicit operator tradeoff.
+        Validates the platform isolation contract: when a distinct executor
+        account is configured, daemon uid != executor uid. In same-owner
+        mode the executor uid IS the daemon uid — that is the delivery model.
         """
         isolation = detect_platform_isolation()
         daemon = isolation.current_identity()
         executor = isolation.executor_identity()
 
         if executor is None:
-            # No distinct executor — report the gap
+            # No distinct executor account — report the gap
             pytest.skip(
-                "No distinct executor account (_hrexec/happyranch-exec) "
+                "No executor account (_hrexec/happyranch-exec) configured "
                 "and same-owner mode not enabled. "
-                "This test requires a real restricted executor identity. "
-                "Create the account and re-run on a CI runner."
+                "This test requires a real executor identity. "
+                "Configure the account and re-run on a CI runner."
             )
 
         if isolation.is_same_owner_mode:
@@ -241,12 +240,12 @@ class TestPlatformIsolationIdentities:
 
     @pytest.mark.skipif(
         sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner with distinct executor account",
+        reason="macOS-only; requires macOS CI runner",
     )
     def test_macos_launch_executor_requires_distinct_identity(self):
         """launch_executor behavior depends on mode.
 
-        When no distinct executor account is configured: fail-closed with
+        When no executor account is configured: fail-closed with
         executor_unprovisioned. In same-owner mode: the executor runs under
         the daemon's own identity (no error).
         """
@@ -305,7 +304,7 @@ class TestPlatformIsolationIdentities:
                 pytest.skip(
                     f"sudo -n -u <executor> not configured on this host: {e}. "
                     "Passwordless sudo must be configured via sudoers. "
-                    "Run on a CI runner with proper service provisioning."
+                    "Run on a CI runner with proper sudo configuration."
                 )
             raise
 
@@ -335,7 +334,7 @@ class TestPlatformIsolationIdentities:
         except (PermissionError, KeyError, OSError):
             pytest.skip(
                 "Cannot chown test directory. Run on CI runner with "
-                "proper service account provisioning."
+                "proper sudo configuration."
             )
 
 
@@ -706,9 +705,9 @@ class TestWorkspaceSkillLinkIsolationAttacks:
     asserts the child UID matches when a distinct executor account
     is available.
 
-    Tests FAIL (never skip/xfail) when executor identity, ACL tooling, or
-    ownership contract is unavailable — the required CI runner must have
-    a distinct executor account configured.
+    Tests FAIL (never skip/xfail) when executor identity or ACL tooling
+    is unavailable — the required CI runner must have the appropriate
+    executor account and sudo configuration.
     """
 
     @staticmethod
@@ -894,24 +893,24 @@ class TestWorkspaceSkillLinkIsolationAttacks:
     def _require_executor_identity(self, isolation):
         """Require executor identity or skip (on dev machines).
 
-        On CI, the provisioning step guarantees the identity exists.
+        On CI, the sudo configuration step guarantees the identity exists.
         If the identity is missing on a dev machine, this skips
         so the reviewer-commanded test suite passes locally. The CI
-        gate fails closed via the provisioning step — if the account
+        gate fails closed via the sudo setup step — if the account
         cannot be created, the job fails before tests even run.
         """
         executor = isolation.executor_identity()
         if executor is None:
             pytest.skip(
-                "Restricted executor identity not available on this host. "
+                "Executor identity not available on this host. "
                 "Required for production-bound isolation attack tests. "
-                "Run on a CI runner with proper macOS service provisioning."
+                "Run on a CI runner with proper sudo configuration."
             )
         if executor.uid == isolation.current_identity().uid:
             pytest.skip(
                 f"Executor identity (uid={executor.uid}) is same as daemon. "
-                "Executor must run as a DISTINCT restricted macOS identity. "
-                "Run on a CI runner with proper macOS service provisioning."
+                "Executor must run as a distinct restricted macOS identity. "
+                "Run on a CI runner with proper sudo configuration."
             )
 
     def _materialize_workspace_links(
@@ -1265,7 +1264,7 @@ else:
 
         When a distinct executor account is available: executor uid !=
         daemon uid. In same-owner mode: executor uid == daemon uid
-        (explicit tradeoff).
+        (the delivery model).
         """
         if sys.platform != "darwin":
             pytest.skip("macOS-only test")
@@ -1274,7 +1273,7 @@ else:
         if executor is None:
             pytest.skip(
                 "Executor identity not available on this host. "
-                "CI provisioning step fails-closed before tests run."
+                "CI sudo setup step fails-closed before tests run."
             )
         if isolation.is_same_owner_mode:
             assert executor.uid == isolation.current_identity().uid, (

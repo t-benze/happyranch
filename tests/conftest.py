@@ -206,8 +206,8 @@ def _test_mode_platform_isolation(monkeypatch):
     # detect_platform_isolation reference that still points at the
     # original (_real_detect) and patch each one.  We deliberately
     # exclude tests.* — test_canonical_production_bound needs the real
-    # detector for OS-provisioned-isolation tests (those are macOS-only
-    # and already skip on non-darwin).
+    # detector for production-bound same-owner mode isolation tests (those
+    # are macOS-only and already skip on non-darwin).
     for _mod_name, _mod in list(sys.modules.items()):
         if not _mod_name.startswith("runtime."):
             continue
