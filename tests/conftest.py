@@ -78,6 +78,11 @@ def _test_mode_platform_isolation(monkeypatch):
         def executor_identity(self):
             return self._executor_identity
 
+        @property
+        def is_same_owner_mode(self) -> bool:
+            # Test mode IS same-owner (executor runs as the same user)
+            return True
+
         def _assert_executor_distinct(self) -> None:
             # Test mode: allow same-owner launches
             pass

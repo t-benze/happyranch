@@ -22,11 +22,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+from runtime.orchestrator.workspace_adapters import (
+    _build_lifecycle_canonical_specs,
+    _compute_dir_hash,
+)
 from runtime.platform.isolation import (
     PlatformIdentity,
     PlatformIsolation,
     PlatformIsolationError,
+    _MacOSPlatformIsolation,
+    _probe_macos_executor_account,
 )
 # Use module-attribute access so the conftest monkeypatch on
 # runtime.platform.isolation.detect_platform_isolation takes effect
@@ -2553,3 +2558,944 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                             f"Link must NOT exist at {link_path} "
                             "after materialization failure"
                         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Same-Owner Mode: Honest-Adversarial Tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSameOwnerAdversarialLimits:
+    """Tests demonstrating the honest limits of same-owner mode.
+
+    In same-owner mode the executor runs under the daemon's own OS
+    identity. These tests prove that:
+    1. A same-owner process CAN write/alter canonical packages via
+       workspace symlinks — no permission denial occurs.
+    2. The daemon's integrity verification detects the alteration
+       and rebuilds from the trusted source when available.
+    3. When the trusted source is absent, the mismatch fails closed
+       and never blesses corrupted bytes as valid.
+    4. Link tampering and policy withdrawal behave as documented.
+    """
+
+    def test_same_owner_can_write_canonical_through_symlink(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """A same-owner process CAN alter canonical package content
+        through workspace symlinks.
+
+        This test PROVES the honest limit: there is NO os-level
+        write/chmod barrier in same-owner mode. The process running
+        as the daemon's identity writes through the symlink and the
+        canonical package content changes. The test expects the
+        write to SUCCEED — if it raised PermissionError, that would
+        falsely claim a security boundary.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-same-owner"
+
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        subdir = ".claude/skills"
+        materializer.materialize_skill(
+            slug, "system", content_hash, workspace_dir, subdir,
+        )
+
+        # Workspace symlink exists and is functional
+        link_path = workspace_dir / subdir / slug
+        assert link_path.is_symlink(), "Symlink must exist in workspace"
+
+        # Read original content through symlink
+        original = (link_path / "SKILL.md").read_text()
+        assert "# Test Skill" in original
+
+        # ── Adversarial write: alter canonical content through symlink ──
+        # In same-owner mode the daemon sets files read-only (0444), but
+        # since the executor is the same uid, it can simply chmod them
+        # back to writable first. This is the honest limit: readonly
+        # hardening is cosmetic when the attacker shares the daemon's uid.
+        tampered_content = "# TAMPERED SKILL\n\nCorrupted by same-owner process."
+        skill_file = link_path / "SKILL.md"
+
+        # Step 1: chmod to writable (same-owner process CAN do this)
+        try:
+            os.chmod(skill_file, 0o644)
+        except PermissionError:
+            pytest.fail(
+                "Same-owner process was denied chmod on canonical "
+                "package file. In same-owner mode this should succeed."
+            )
+
+        # Step 2: write tampered content
+        try:
+            skill_file.write_text(tampered_content)
+        except PermissionError:
+            pytest.fail(
+                "Same-owner process was denied write access to "
+                "canonical package via workspace symlink. This "
+                "should NOT happen — same-owner mode means no "
+                "OS-level isolation exists."
+            )
+
+        # ── Verify the canonical package bytes actually changed ──
+        actual_after = (link_path / "SKILL.md").read_text()
+        assert actual_after == tampered_content, (
+            "Canonical package content MUST reflect the adversarial "
+            "write in same-owner mode"
+        )
+
+        # The canonical store path also shows the change (same file)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert (pkg_path / "SKILL.md").read_text() == tampered_content
+
+    def test_integrity_verification_detects_and_repairs(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Integrity verification detects tampered canonical package
+        and rebuilds from trusted source when still available.
+
+        After a same-owner process tampers with canonical content,
+        calling build_from_source with verify_source_hash detects
+        the mismatch and forces a rebuild from the source tree.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-integrity-repair"
+
+        # First build — creates trusted canonical package
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        original = (pkg_path / "SKILL.md").read_text()
+
+        # Simulate adversarial tampering of canonical content
+        # (same-owner can chmod + rewrite)
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED")
+        # Restore readonly so is_built passes — a sophisticated attacker
+        # would do this too (same-owner means no OS-level barrier)
+        os.chmod(skill_file, 0o444)
+
+        # Verify is_built still returns True (ownership/permissions restored)
+        assert store.is_built(slug, "system", content_hash), (
+            "After restoring permissions, is_built passes — but content "
+            "bytes are tampered (no content verification in is_built)"
+        )
+
+        # ── Integrity verification: rebuild from source ──
+        # build_from_source with verify_source_hash detects mismatch
+        # and forcibly rebuilds from skill_source_dir.
+        # First make the package dir writable so rmtree can clean up.
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+        rebuilt_path = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        assert rebuilt_path == pkg_path
+
+        # Content should be restored to original
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert restored == original, (
+            "Package content must be restored from trusted source"
+        )
+        assert "# TAMPERED" not in restored
+
+    def test_absent_trusted_source_fails_closed(
+        self, store, tmp_path,
+    ):
+        """When trusted source is absent, integrity mismatch fails closed.
+
+        If the source directory disappears after initial build, and the
+        canonical package is then tampered, build_from_source with
+        verify_source_hash must raise CanonicalStoreError — never
+        silently bless corrupted bytes.
+        """
+        # Build a temp source and package
+        src_dir = tmp_path / "disappearing-source"
+        src_dir.mkdir()
+        (src_dir / "SKILL.md").write_text("# Valid Content")
+
+        content_hash = _compute_dir_hash(src_dir)
+        slug = "test-absent-source"
+        store.build_from_source(slug, "system", content_hash, src_dir)
+
+        # Verify initial content
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert "# Valid Content" in (pkg_path / "SKILL.md").read_text()
+
+        # Remove the trusted source
+        shutil.rmtree(src_dir)
+        assert not src_dir.exists()
+
+        # Tamper with canonical package (same-owner: chmod + rewrite)
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED AFTER SOURCE GONE")
+        # Attacker restores permissions — no OS-level barrier
+        os.chmod(skill_file, 0o444)
+
+        # ── Attempt rebuild without source: must fail ──
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises((CanonicalStoreError, FileNotFoundError)):
+            store.build_from_source(
+                slug, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
+            )
+
+        # Corrupted bytes must NOT be accepted as valid — the package
+        # still contains the tampered content
+        actual = (pkg_path / "SKILL.md").read_text()
+        assert "# Valid Content" not in actual, (
+            "Content was unexpectedly restored from nowhere"
+        )
+        assert "TAMPERED" in actual, (
+            "Tampered content persists since rebuild failed"
+        )
+
+    def test_valid_start_no_spurious_rebuild(
+        self, store, skill_source_dir,
+    ):
+        """A normal valid start does not spuriously rebuild/repair.
+
+        When the canonical package is intact, build_from_source with
+        verify_source_hash should return the existing package without
+        rebuilding.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-valid-start"
+
+        # Build once
+        path1 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+
+        # Second build with same hash — should return existing package
+        path2 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+
+        assert path1 == path2, "Valid start must not create new package"
+        assert store.is_built(slug, "system", content_hash)
+
+    def test_link_tampering_detected_and_repaired(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Tampered/malformed workspace symlinks are detected and safely
+        repaired. The repair replaces broken/wrong-target symlinks but
+        never follows or deletes attacker nodes.
+
+        Covers both .claude/skills and .agents/skills roots.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-link-repair"
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        # Materialize to both roots
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.materialize_skill(
+                slug, "system", content_hash, workspace_dir, subdir,
+            )
+
+        # Tamper: replace symlink with a broken one in one root
+        broken_link = workspace_dir / ".claude/skills" / slug
+        assert broken_link.is_symlink()
+        broken_link.unlink()
+        os.symlink("/nonexistent/path", str(broken_link))
+
+        # Repair workspace skills should fix both roots
+        expected_specs = [{
+            "slug": slug,
+            "version": "system",
+            "content_hash": content_hash,
+        }]
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.repair_workspace_skills(
+                expected_specs, workspace_dir, subdir,
+            )
+
+        # Both roots should have valid symlinks after repair
+        for subdir in (".claude/skills", ".agents/skills"):
+            link = workspace_dir / subdir / slug
+            assert link.is_symlink(), f"{subdir}/{slug} must be a symlink"
+            assert (link / "SKILL.md").exists(), (
+                f"{subdir}/{slug}/SKILL.md must be accessible"
+            )
+            assert "# Test Skill" in (link / "SKILL.md").read_text()
+
+    def test_policy_withdrawal_removes_only_managed_links(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Policy withdrawal removes only managed link entries.
+
+        When a skill is withdrawn from the expected set, only the
+        managed symlink is removed. The canonical package is retained.
+        Other files at the workspace link site (if an ordinary
+        directory) are never recursively deleted.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-withdraw"
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        subdir = ".claude/skills"
+        materializer.materialize_skill(
+            slug, "system", content_hash, workspace_dir, subdir,
+        )
+        link_path = workspace_dir / subdir / slug
+        assert link_path.is_symlink()
+
+        # Withdraw: repair with empty expected set
+        materializer.repair_workspace_skills([], workspace_dir, subdir)
+
+        # Link should be removed
+        assert not link_path.exists(follow_symlinks=False), (
+            "Withdrawn skill link must be removed"
+        )
+
+        # Canonical package must still exist (retained)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert pkg_path.is_dir(), (
+            "Canonical package must be retained after withdrawal"
+        )
+
+        # ── Ordinary directory at link site is never recursively deleted ──
+        # Build a canonical package so materialize_skill gets past verify_package
+        # and reaches create_relative_symlink (which detects ordinary dirs)
+        ordinary_src = workspace_dir / "ordinary-src"
+        ordinary_src.mkdir()
+        (ordinary_src / "SKILL.md").write_text("# ordinary")
+        ordinary_hash = _compute_dir_hash(ordinary_src)
+        store.build_from_source(
+            "test-ordinary-dir", "system", ordinary_hash, ordinary_src,
+        )
+
+        # Create an ordinary directory where a link would go
+        ordinary_dir = workspace_dir / subdir / "test-ordinary-dir"
+        ordinary_dir.mkdir(parents=True, exist_ok=True)
+        (ordinary_dir / "real-work.txt").write_text("real user work")
+
+        # Attempt materialize — should NOT delete the ordinary directory
+        with pytest.raises(SymlinkMaterializationError, match="ordinary_dir"):
+            materializer.materialize_skill(
+                "test-ordinary-dir", "system", ordinary_hash,
+                workspace_dir, subdir,
+            )
+
+        # Ordinary directory must still exist with its content intact
+        assert ordinary_dir.is_dir()
+        assert (ordinary_dir / "real-work.txt").read_text() == "real user work"
+
+    def test_mode_observability(
+        self, monkeypatch, tmp_path,
+    ):
+        """The selected mode (strict vs same-owner) is observable
+        via PlatformIsolation.is_same_owner_mode without auth/schema change."""
+        # Test isolation (from conftest) is same-owner by default
+        iso = isolation.detect_platform_isolation()
+        assert iso.is_same_owner_mode is True, (
+            "Test isolation must report same-owner mode"
+        )
+
+        # Verify the property is accessible on the abstract base
+        assert hasattr(PlatformIsolation, "is_same_owner_mode"), (
+            "Abstract base must define is_same_owner_mode property"
+        )
+
+    # ── Fix 1: Production-faithful same-owner hardening + is_built ─────
+
+    def test_same_owner_hardening_0755_dirs_is_built_true(
+        self, monkeypatch, tmp_path, skill_source_dir,
+    ):
+        """The REAL macOS same-owner hardening produces 0755 directories.
+
+        _verify_recursive_readonly must accept 0755/0444 canonical
+        packages in same-owner mode so is_built returns True and a
+        normal valid prelaunch start does not spuriously rebuild.
+
+        This test uses the actual _MacOSPlatformIsolation class, NOT
+        the conftest.py test double which creates 0555 directories.
+        """
+        # Force same-owner mode on the real macOS isolation class.
+        # _probe_macos_executor_account may succeed on real machines,
+        # so monkeypatch it to return None to guarantee same-owner entry.
+        monkeypatch.setattr(
+            "runtime.platform.isolation._probe_macos_executor_account",
+            lambda: None,
+        )
+        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
+
+        iso = _MacOSPlatformIsolation()
+        assert iso.is_same_owner_mode, (
+            "Must enter same-owner mode for this test"
+        )
+
+        store = CanonicalSkillStore(
+            root=tmp_path / "canonical",
+            isolation=iso,
+        )
+
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-0755-is-built"
+
+        # Build once through the REAL build path (which calls the real
+        # make_dir_readonly_executor → 0755, make_file_readonly → 0444)
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+
+        # ── Verify real hardening behavior ──
+        # Directory must be 0755 (owner-writable) — NOT 0555
+        root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
+        assert root_mode & stat.S_IWUSR, (
+            f"Package root must be owner-writable (expected 0755, got {oct(root_mode)})"
+        )
+        assert not (root_mode & stat.S_IWGRP), (
+            "Package root must NOT be group-writable"
+        )
+        assert not (root_mode & stat.S_IWOTH), (
+            "Package root must NOT be world-writable"
+        )
+
+        # Files must be 0444 (non-writable)
+        skill_file = pkg_path / "SKILL.md"
+        file_mode = stat.S_IMODE(skill_file.stat().st_mode)
+        assert not (file_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)), (
+            f"SKILL.md must be fully non-writable, got {oct(file_mode)}"
+        )
+
+        # ── is_built must return True with 0755 dirs ──
+        assert store.is_built(slug, "system", content_hash), (
+            "is_built must return True for intact 0755/0444 package "
+            "in same-owner mode — spurious rebuilds are prohibited"
+        )
+
+        # ── Normal valid prelaunch start does not rebuild ──
+        path1 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        path2 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        assert path1 == path2, (
+            "Valid start with real hardening must not create new package"
+        )
+
+        # ── SAME proof: same-owner CAN still write through a symlink ──
+        # (chmod + rewrite, since same-owner mode has no OS barrier)
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED")
+        os.chmod(skill_file, 0o444)
+
+        # is_built still returns True after chmod back to 0444
+        # (content bytes are wrong but permissions pass — this is
+        # the honest limit: mode-only checks don't detect content
+        # tampering; only verify_source_hash catches it)
+        assert store.is_built(slug, "system", content_hash), (
+            "After restoring permissions, is_built passes — content "
+            "bytes are tampered but hardening bits match"
+        )
+
+        # Integrity reconciliation restores trusted content
+        store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert "# TAMPERED" not in restored, (
+            "Integrity verification must restore trusted content"
+        )
+
+    # ── Fix 2: Legacy single-SKILL.md lifecycle artifact branch ────────
+
+    # ── Fix 2 v2: Real _build_lifecycle_canonical_specs branch tests ──
+    # The legacy single-SKILL.md lifecycle branch is exercised through
+    # the actual production function rather than direct store calls.
+    # The raw artifact SHA (ledger content_hash) differs from the
+    # derived source-tree hash (extracted temp dir _compute_dir_hash) —
+    # this is proven in every test. If verify_source_hash were omitted,
+    # wired to canonical bytes, or wired to raw artifact SHA, tampered
+    # content would be silently accepted.
+
+    def test_legacy_lifecycle_branch_tamper_detect_and_repair(
+        self, store, tmp_path, db,
+    ):
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: same-owner canonical target mutation is detected and
+        repaired when the verified artifact remains available.
+
+        Sets up a real ArtifactStore-backed lifecycle artifact.  The
+        raw artifact SHA (content_hash) USED to differ from the
+        derived source-tree hash — this proves that wiring
+        verify_source_hash to the wrong value would silently accept
+        tampered content.
+
+        Honest adversarial proposition: same-owner CAN modify the
+        symlinked canonical target.  Repair restores trusted content
+        only while the retained artifact input exists.
+        """
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        # ── 1. Artifact identity: raw bytes SHA ≠ derived tree hash ──
+        skill_md_bytes = b"# Test Legacy Skill\n\nOriginal content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        # Write artifact bytes into a temp dir to compute the *derived*
+        # source-tree hash (the one _build_lifecycle_canonical_specs
+        # passes as verify_source_hash).
+        src_dir = tmp_path / "probe-src"
+        src_dir.mkdir()
+        (src_dir / "SKILL.md").write_bytes(skill_md_bytes)
+        derived_tree_hash = _compute_dir_hash(src_dir)
+
+        # Proven: raw artifact SHA differs from derived tree hash.
+        assert raw_artifact_sha != derived_tree_hash, (
+            f"Raw artifact SHA {raw_artifact_sha[:16]}... must differ "
+            f"from derived tree hash {derived_tree_hash[:16]}... — "
+            f"_compute_dir_hash includes relative-path prefix bytes "
+            f"that raw SHA-256 does not"
+        )
+
+        # ── 2. Seed the lifecycle ledger ──
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-legacy/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-legacy",
+            slug="test-legacy",
+            name="Test Legacy Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A test legacy skill",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-legacy",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 3. Build through the real production branch ──
+        specs = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs) == 1
+        assert specs[0]["slug"] == "test-legacy"
+        assert specs[0]["version"] == "1.0.0"
+        assert specs[0]["content_hash"] == raw_artifact_sha
+
+        pkg_path = store.canonical_path("test-legacy", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 4. Same-owner tampers with canonical target ──
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED BY SAME OWNER")
+        os.chmod(skill_file, 0o444)
+
+        assert "TAMPERED" in (pkg_path / "SKILL.md").read_text(), (
+            "Same-owner CAN alter the symlinked canonical target — "
+            "this is the honest limit, not a security boundary"
+        )
+
+        # ── 5. Rebuild via real branch → detects tamper, repairs ──
+        # Make the tampered package writable so build_from_source can
+        # rmtree it during the forced rebuild.
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+
+        specs2 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs2) == 1
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert restored == skill_md_bytes.decode("utf-8"), (
+            "Integrity verification must restore trusted content from "
+            "verified artifact bytes; got: {!r}".format(restored)
+        )
+
+    def test_legacy_lifecycle_branch_absent_artifact_fails_closed(
+        self, store, tmp_path, db,
+    ):
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: when the trusted artifact is withdrawn/unavailable,
+        the function raises the documented named actionable failure
+        (LifecycleMaterializationError) and never blesses altered
+        canonical content.
+
+        If ArtifactNotFound were silently accepted, the tampered bytes
+        would persist unchallenged.
+        """
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        from runtime.orchestrator.workspace_adapters import (
+            LifecycleMaterializationError,
+        )
+        import datetime
+
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Legacy Skill\n\nWill be withdrawn.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-absent/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-absent",
+            slug="test-absent",
+            name="Test Absent Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="Skill that will be withdrawn",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-absent",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 2. First build succeeds ──
+        specs = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs) == 1
+        pkg_path = store.canonical_path("test-absent", "1.0.0", raw_artifact_sha)
+        assert "Valid Legacy" in (pkg_path / "SKILL.md").read_text()
+
+        # ── 3. Withdraw the artifact (mirrors ArtifactNotFound) ──
+        artifact_store.delete(artifact_key)
+
+        # ── 4. Tamper with canonical target (same-owner CAN do this) ──
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED AFTER WITHDRAWAL")
+        os.chmod(skill_file, 0o444)
+
+        # ── 5. Rebuild fails closed with named actionable error ──
+        with pytest.raises(LifecycleMaterializationError, match="Artifact not found"):
+            _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+
+        # ── 6. Tampered bytes are never silently blessed ──
+        actual = (pkg_path / "SKILL.md").read_text()
+        assert "TAMPERED" in actual, (
+            "Tampered content persists in canonical store since "
+            "rebuild failed — fail closed, never silently accept"
+        )
+        assert "Valid Legacy" not in actual, (
+            "Content was unexpectedly restored from a withdrawn artifact"
+        )
+
+    def test_legacy_lifecycle_branch_valid_no_spurious_rebuild(
+        self, store, tmp_path, db,
+    ):
+        """Through the real _build_lifecycle_canonical_specs production
+        branch: an intact valid artifact/canonical-store is reused
+        without spurious rebuild.
+
+        The second call passes the same verified source hash and the
+        canonical package content still matches — build_from_source
+        must return the existing path without entering the rebuild
+        code path.  We intercept _apply_readonly_hardening, which is
+        only invoked during rebuild (after os.replace publishes the
+        package).  If it is called during the second materialization
+        the implementation is needlessly deleting/rebuilding the
+        content-addressed package.
+        """
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-valid/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-valid",
+            slug="test-valid",
+            name="Test Valid Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A stable valid skill",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-valid",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 2. First build through real production branch ──
+        specs1 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs1) == 1
+        pkg_path = store.canonical_path("test-valid", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 3. Intercept the rebuild primitive and call again ──
+        # _apply_readonly_hardening is invoked exclusively during rebuild
+        # (after os.replace publishes the package).  If the second
+        # materialization reuses the existing package, this primitive
+        # must never be reached.
+        import runtime.skills.canonical_store as cs_mod
+
+        # Capture the original before patching — the tracker must invoke
+        # the saved callable, not the module attribute that is about to
+        # be replaced by the mock.
+        _original_hardening = cs_mod._apply_readonly_hardening
+
+        rebuild_calls: list[str] = []
+
+        def _track_rebuild(isolation, pkg_path_arg):
+            rebuild_calls.append(str(pkg_path_arg))
+            # Call the saved original so the test exercises the full
+            # rebuild path. Using cs_mod._apply_readonly_hardening here
+            # would recurse because that name is already mocked.
+            return _original_hardening(isolation, pkg_path_arg)
+
+        with patch.object(
+            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
+        ):
+            specs2 = _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+
+        # ── 4. Assert no rebuild occurred ──
+        assert len(rebuild_calls) == 0, (
+            f"_apply_readonly_hardening invoked {len(rebuild_calls)} time(s) "
+            f"on second materialization — rebuild detected when none should "
+            f"occur (paths: {rebuild_calls}). A spurious rebuild means the "
+            f"implementation is needlessly deleting and reconstructing the "
+            f"content-addressed canonical package."
+        )
+        assert len(specs2) == 1
+        assert specs2[0] == specs1[0], (
+            "Legacy lifecycle branch must not spuriously rebuild "
+            "when artifact content matches source hash"
+        )
+        assert store.is_built("test-valid", "1.0.0", raw_artifact_sha), (
+            "is_built must return True for intact package after valid reuse"
+        )
+
+    def test_legacy_lifecycle_branch_controlled_rebuild_positive(
+        self, store, tmp_path, db,
+    ):
+        """Red-side control: a deliberately corrupted canonical package
+        triggers a genuine rebuild through the saved original hardening
+        primitive, proving the zero-call assertion in the intact test
+        would catch a needless rebuild.
+
+        This test corrupts the canonical SKILL.md after the first
+        build, then verifies that the second lifecycle materialization
+        detects the mismatch, rebuilds (calling _apply_readonly_hardening),
+        and restores correct content.
+        """
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.models import LifecycleStatus
+        import datetime
+
+        # ── 1. Seed artifact + lifecycle package ──
+        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
+        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
+
+        org_root = tmp_path / "org"
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/test-corrupt/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md_bytes)
+
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:test-corrupt",
+            slug="test-corrupt",
+            name="Test Corrupt Skill",
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            policy_class="standard_operational",
+            description="A skill to test rebuild on corruption",
+            skill_md=skill_md_bytes.decode("utf-8"),
+            content_artifact_key=artifact_key,
+            status=LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:test-corrupt",
+            agent_name="test-agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=raw_artifact_sha,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # ── 2. First build through real production branch ──
+        specs1 = _build_lifecycle_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name="test-agent",
+            slug="test-org",
+        )
+        assert len(specs1) == 1
+        pkg_path = store.canonical_path("test-corrupt", "1.0.0", raw_artifact_sha)
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
+
+        # ── 3. Corrupt the canonical package in place ──
+        # Same-owner can write through symlinks; this simulates an
+        # accidental or adversarial mutation that the lifecycle
+        # materialization must detect and repair.
+        corrupted = b"# Corrupted Content\n\nThis should trigger a rebuild.\n"
+        # Make package and file writable, overwrite, then restore. The
+        # canonical directory is 0555 after hardening — same-owner can
+        # chmod it back, just like the file.
+        pkg_path.chmod(0o755)
+        (pkg_path / "SKILL.md").chmod(0o644)
+        (pkg_path / "SKILL.md").write_bytes(corrupted)
+        (pkg_path / "SKILL.md").chmod(0o444)
+        pkg_path.chmod(0o555)
+        assert (pkg_path / "SKILL.md").read_bytes() == corrupted, (
+            "Corruption must be in place before second materialization"
+        )
+
+        # ── 4. Make package writable so build_from_source can rmtree ──
+        # During the forced rebuild, build_from_source must rmtree the
+        # existing hardened package.  Same-owner can chmod it back.
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+
+        # ── 5. Intercept the rebuild primitive with saved-original ──
+        import runtime.skills.canonical_store as cs_mod
+        _original_hardening = cs_mod._apply_readonly_hardening
+
+        rebuild_calls: list[str] = []
+
+        def _track_rebuild(isolation, pkg_path_arg):
+            rebuild_calls.append(str(pkg_path_arg))
+            return _original_hardening(isolation, pkg_path_arg)
+
+        with patch.object(
+            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
+        ):
+            specs2 = _build_lifecycle_canonical_specs(
+                store=store,
+                org_root=org_root,
+                db=db,
+                agent_name="test-agent",
+                slug="test-org",
+            )
+
+        # ── 6. Assert rebuild DID occur (positive control) ──
+        assert len(rebuild_calls) == 1, (
+            f"Expected exactly 1 rebuild after corrupting canonical package, "
+            f"got {len(rebuild_calls)}. rebuild_calls={rebuild_calls}"
+        )
+        assert len(specs2) == 1
+        assert specs2[0] == specs1[0], (
+            "Specs must be identical after repair — same ledger record"
+        )
+        assert store.is_built("test-corrupt", "1.0.0", raw_artifact_sha), (
+            "is_built must return True after rebuild repairs the corrupted package"
+        )
+        # ── 7. Verify post-repair content is correct ──
+        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8"), (
+            "SKILL.md content must be restored to the original artifact bytes "
+            "after rebuild"
+        )
