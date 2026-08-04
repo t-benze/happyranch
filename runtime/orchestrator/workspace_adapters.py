@@ -775,13 +775,19 @@ def _build_lifecycle_canonical_specs(
             )
         else:
             # Legacy: single SKILL.md artifact
-            # Build a temp source dir with just the SKILL.md
+            # Build a temp source dir with just the SKILL.md.
+            # Derive the expected source tree hash from the already-verified
+            # manifest_bytes so build_from_source can verify the existing
+            # canonical package content before reuse — if a same-owner
+            # process tampered with it, the mismatch triggers a rebuild.
             import tempfile
             with tempfile.TemporaryDirectory() as tmpd:
                 tmp_path = Path(tmpd)
                 (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
+                source_hash = _compute_dir_hash(tmp_path)
                 store.build_from_source(
                     skill_slug, pkg.version, pkg.content_hash, tmp_path,
+                    verify_source_hash=source_hash,
                 )
 
         specs.append({

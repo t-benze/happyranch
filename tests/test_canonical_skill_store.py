@@ -27,6 +27,8 @@ from runtime.platform.isolation import (
     PlatformIdentity,
     PlatformIsolation,
     PlatformIsolationError,
+    _MacOSPlatformIsolation,
+    _probe_macos_executor_account,
 )
 # Use module-attribute access so the conftest monkeypatch on
 # runtime.platform.isolation.detect_platform_isolation takes effect
@@ -2901,3 +2903,260 @@ class TestSameOwnerAdversarialLimits:
         assert hasattr(PlatformIsolation, "is_same_owner_mode"), (
             "Abstract base must define is_same_owner_mode property"
         )
+
+    # ── Fix 1: Production-faithful same-owner hardening + is_built ─────
+
+    def test_same_owner_hardening_0755_dirs_is_built_true(
+        self, monkeypatch, tmp_path, skill_source_dir,
+    ):
+        """The REAL macOS same-owner hardening produces 0755 directories.
+
+        _verify_recursive_readonly must accept 0755/0444 canonical
+        packages in same-owner mode so is_built returns True and a
+        normal valid prelaunch start does not spuriously rebuild.
+
+        This test uses the actual _MacOSPlatformIsolation class, NOT
+        the conftest.py test double which creates 0555 directories.
+        """
+        # Force same-owner mode on the real macOS isolation class.
+        # _probe_macos_executor_account may succeed on real machines,
+        # so monkeypatch it to return None to guarantee same-owner entry.
+        monkeypatch.setattr(
+            "runtime.platform.isolation._probe_macos_executor_account",
+            lambda: None,
+        )
+        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
+
+        iso = _MacOSPlatformIsolation()
+        assert iso.is_same_owner_mode, (
+            "Must enter same-owner mode for this test"
+        )
+
+        store = CanonicalSkillStore(
+            root=tmp_path / "canonical",
+            isolation=iso,
+        )
+
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-0755-is-built"
+
+        # Build once through the REAL build path (which calls the real
+        # make_dir_readonly_executor → 0755, make_file_readonly → 0444)
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+
+        # ── Verify real hardening behavior ──
+        # Directory must be 0755 (owner-writable) — NOT 0555
+        root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
+        assert root_mode & stat.S_IWUSR, (
+            f"Package root must be owner-writable (expected 0755, got {oct(root_mode)})"
+        )
+        assert not (root_mode & stat.S_IWGRP), (
+            "Package root must NOT be group-writable"
+        )
+        assert not (root_mode & stat.S_IWOTH), (
+            "Package root must NOT be world-writable"
+        )
+
+        # Files must be 0444 (non-writable)
+        skill_file = pkg_path / "SKILL.md"
+        file_mode = stat.S_IMODE(skill_file.stat().st_mode)
+        assert not (file_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)), (
+            f"SKILL.md must be fully non-writable, got {oct(file_mode)}"
+        )
+
+        # ── is_built must return True with 0755 dirs ──
+        assert store.is_built(slug, "system", content_hash), (
+            "is_built must return True for intact 0755/0444 package "
+            "in same-owner mode — spurious rebuilds are prohibited"
+        )
+
+        # ── Normal valid prelaunch start does not rebuild ──
+        path1 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        path2 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        assert path1 == path2, (
+            "Valid start with real hardening must not create new package"
+        )
+
+        # ── SAME proof: same-owner CAN still write through a symlink ──
+        # (chmod + rewrite, since same-owner mode has no OS barrier)
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED")
+        os.chmod(skill_file, 0o444)
+
+        # is_built still returns True after chmod back to 0444
+        # (content bytes are wrong but permissions pass — this is
+        # the honest limit: mode-only checks don't detect content
+        # tampering; only verify_source_hash catches it)
+        assert store.is_built(slug, "system", content_hash), (
+            "After restoring permissions, is_built passes — content "
+            "bytes are tampered but hardening bits match"
+        )
+
+        # Integrity reconciliation restores trusted content
+        store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert "# TAMPERED" not in restored, (
+            "Integrity verification must restore trusted content"
+        )
+
+    # ── Fix 2: Legacy single-SKILL.md lifecycle artifact branch ────────
+
+    def test_legacy_single_skill_md_tamper_detect_and_repair(
+        self, store, tmp_path,
+    ):
+        """Legacy single-SKILL.md artifact branch — same-owner mutation
+        is detected and repaired from verified artifact bytes.
+
+        Mirrors the real legacy lifecycle branch at
+        workspace_adapters.py:_build_lifecycle_canonical_specs where a
+        single SKILL.md artifact is extracted to a temp dir and built
+        via build_from_source with verify_source_hash.
+        """
+        # Create a temp source dir with just SKILL.md (mirrors the
+        # legacy lifecycle branch exactly)
+        src_dir = tmp_path / "legacy-src"
+        src_dir.mkdir()
+        original_content = "# My Legacy Skill\n\nLegacy single-file artifact.\n"
+        (src_dir / "SKILL.md").write_text(original_content)
+
+        # Compute the source hash from the already-verified artifact
+        # bytes (mirrors _compute_dir_hash called on the temp dir)
+        source_hash = _compute_dir_hash(src_dir)
+        content_hash = _compute_dir_hash(src_dir)  # same for single file
+
+        slug = "test-legacy-mutation"
+
+        # Build via the legacy path: temp dir + verify_source_hash
+        store.build_from_source(
+            slug, "system", content_hash, src_dir,
+            verify_source_hash=source_hash,
+        )
+
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert original_content in (pkg_path / "SKILL.md").read_text()
+
+        # Same-owner mutates: chmod + rewrite + restore perms
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# CORRUPTED")
+        os.chmod(skill_file, 0o444)
+
+        # Rebuild with verify_source_hash → detects tampering, rebuilds.
+        # First make the package writable so rmtree can clean up (the
+        # rebuild path re-creates the package).
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+
+        store.build_from_source(
+            slug, "system", content_hash, src_dir,
+            verify_source_hash=source_hash,
+        )
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert original_content in restored, (
+            "Tampered legacy-skill content must be restored from "
+            "verified artifact bytes"
+        )
+        assert "# CORRUPTED" not in restored
+
+    def test_legacy_single_skill_md_absent_artifact_fails_closed(
+        self, store, tmp_path,
+    ):
+        """Legacy single-SKILL.md branch — when the trusted artifact
+        source is unavailable, fail closed and never bless altered bytes.
+
+        Mirrors the real legacy branch failure mode when an artifact
+        store read fails (ArtifactNotFound) or a temp dir source has
+        been withdrawn.
+        """
+        src_dir = tmp_path / "legacy-absent-src"
+        src_dir.mkdir()
+        (src_dir / "SKILL.md").write_text("# Valid Legacy")
+
+        source_hash = _compute_dir_hash(src_dir)
+        content_hash = _compute_dir_hash(src_dir)
+        slug = "test-legacy-absent"
+
+        store.build_from_source(
+            slug, "system", content_hash, src_dir,
+            verify_source_hash=source_hash,
+        )
+
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert "# Valid Legacy" in (pkg_path / "SKILL.md").read_text()
+
+        # Withdraw the trusted source (mirrors ArtifactNotFound)
+        shutil.rmtree(src_dir)
+        assert not src_dir.exists()
+
+        # Tamper with canonical package
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED AFTER WITHDRAWAL")
+        os.chmod(skill_file, 0o444)
+
+        # Build attempt must fail closed — source is gone
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises((CanonicalStoreError, FileNotFoundError)):
+            store.build_from_source(
+                slug, "system", content_hash, src_dir,
+                verify_source_hash=source_hash,
+            )
+
+        # Tampered bytes must NOT be silently accepted
+        actual = (pkg_path / "SKILL.md").read_text()
+        assert "# Valid Legacy" not in actual, (
+            "Content was unexpectedly restored from nowhere"
+        )
+        assert "TAMPERED" in actual, (
+            "Tampered content persists since rebuild failed — fail closed"
+        )
+
+    def test_legacy_single_skill_md_valid_no_spurious_rebuild(
+        self, store, tmp_path,
+    ):
+        """Legacy single-SKILL.md branch — a valid artifact does not
+        spuriously rebuild.
+
+        When the canonical package content matches the verified source
+        hash, build_from_source returns the existing package path
+        unchanged.
+        """
+        src_dir = tmp_path / "legacy-valid-src"
+        src_dir.mkdir()
+        (src_dir / "SKILL.md").write_text("# Valid Content")
+
+        source_hash = _compute_dir_hash(src_dir)
+        content_hash = _compute_dir_hash(src_dir)
+        slug = "test-legacy-valid"
+
+        # First build
+        path1 = store.build_from_source(
+            slug, "system", content_hash, src_dir,
+            verify_source_hash=source_hash,
+        )
+
+        # Second build with same verified source — no rebuild
+        path2 = store.build_from_source(
+            slug, "system", content_hash, src_dir,
+            verify_source_hash=source_hash,
+        )
+
+        assert path1 == path2, (
+            "Legacy single-SKILL.md branch must not spuriously rebuild "
+            "when artifact content matches source hash"
+        )
+        assert store.is_built(slug, "system", content_hash)
