@@ -288,6 +288,61 @@ schemas, never a hand-constructed copy. Normative prose is the signed
 architecture §2
 (``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
 
+## Spawn-Environment Invariant and Worktree Isolation
+
+Every runtime-created child subprocess — agent executor sessions, custom-adapter
+launches, and job-script subprocesses — inherits a sanitized copy of the daemon's
+environment that **strips** ``VIRTUAL_ENV`` and ``UV_PROJECT_ENVIRONMENT``.
+These variables are stripped because the daemon itself runs inside the shared
+canonical HappyRanch venv. If a child process inherits ``VIRTUAL_ENV``, a bare
+``uv sync`` or ``uv pip install -e .`` executed from a disposable worktree would
+rewrite the shared venv's editable-install ``.pth`` file to point at the worktree
+instead of the canonical source checkout. When the worktree is removed, every
+agent using that venv loses the ability to import the ``cli`` and ``runtime``
+packages.
+
+**Preserved:** ``PATH`` (including daemon-normalized standard tool directories),
+``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*`` runtime variables.
+
+### Worktree Rule (hard)
+
+**Never run** ``pip install -e .``, ``uv pip install -e .``, or
+``uv sync --active`` from inside a per-task worktree when the inherited
+environment carries the shared canonical venv. These commands rewrite the
+shared ``.pth`` entry and break every agent using that venv.
+
+Instead, create an **isolated worktree-local venv** before installing:
+
+```bash
+python3 -m venv .venv-local
+source .venv-local/bin/activate
+uv pip install -e .
+```
+
+**Never run editable install or ``uv sync --active`` against an inherited
+shared venv.** Isolation is prevention; PYTHONPATH recovery (below) is
+secondary and never a substitute for proper isolation.
+
+### Recovery (secondary)
+
+If a stale ``.pth`` has already broken the CLI, prefix every invocation with
+the canonical source checkout on ``PYTHONPATH``:
+
+```bash
+PYTHONPATH=/path/to/canonical/happyranch happyranch <args>
+```
+
+This is a non-destructive workaround — it does not modify the ``.pth`` file
+or run ``pip``/``uv``. Use it for one-off recovery; the permanent fix is to
+restore the editable install from the canonical checkout.
+
+The ``happyranch doctor`` command (local, read-only, no daemon required)
+checks whether the editable-install pointer resolves to the canonical source
+and emits the exact non-destructive repair command on failure. It uses an
+independent git-based or ``HAPPYRANCH_PROJECT_ROOT``-based canonical source
+detection — it never trusts the ``.pth``-selected ``runtime`` import for the
+expected canonical path.
+
 ## Self-Registration (custom executors)
 
 THR-052 adds a founder-initiated, candidate-CLI-completed registration flow for

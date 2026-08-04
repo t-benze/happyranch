@@ -138,9 +138,13 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
 
     # Inject adversarial VIRTUAL_ENV into os.environ BEFORE the test.
     # The _sanitize_child_env call inside run_job should strip it.
+    # Also inject a nonempty org slug so the assertion cannot pass by
+    # substring coincidence (the prior assertion HAPPYRANCH_ORG_SLUG= is
+    # vacuously true against the ABSENT output).
     import os
     os.environ["VIRTUAL_ENV"] = "/fake/canonical/.venv"
     os.environ["UV_PROJECT_ENVIRONMENT"] = "/fake/project"
+    os.environ["HAPPYRANCH_ORG_SLUG"] = "testorg-jobs"
     try:
         result = asyncio.run(run_job(
             script_text=script,
@@ -154,6 +158,7 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
     finally:
         del os.environ["VIRTUAL_ENV"]
         del os.environ["UV_PROJECT_ENVIRONMENT"]
+        del os.environ["HAPPYRANCH_ORG_SLUG"]
 
     assert result.status == "completed"
     assert result.exit_code == 0
@@ -161,6 +166,7 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
     assert "VIRTUAL_ENV=ABSENT" in out, f"VIRTUAL_ENV should be ABSENT, got: {out}"
     assert "UV_PROJECT_ENVIRONMENT=ABSENT" in out, f"UV_PROJECT_ENVIRONMENT should be ABSENT, got: {out}"
     assert "PATH=ABSENT" not in out, "PATH must be present"
-    assert "HAPPYRANCH_ORG_SLUG=ABSENT" not in out or "HAPPYRANCH_ORG_SLUG=" in out, (
-        "HAPPYRANCH_ORG_SLUG must be passed through if set"
+    # Exact value assertion — cannot pass by substring coincidence.
+    assert "HAPPYRANCH_ORG_SLUG=testorg-jobs" in out, (
+        f"HAPPYRANCH_ORG_SLUG must be passed through with exact value; got: {out}"
     )

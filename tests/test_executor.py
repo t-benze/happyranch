@@ -1810,3 +1810,115 @@ class TestCalleeEnvSanitization:
         assert "VIRTUAL_ENV" in original
         # Cleaned must be stripped.
         assert "VIRTUAL_ENV" not in cleaned
+
+
+# ── production Popen-launch env sanitization assertions ──────────────
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_normal_executor_popen_strips_adversarial_venv_from_env(
+    mock_subprocess, monkeypatch, tmp_path, runtime,
+):
+    """Normal executor (Codex) Popen must strip inherited VIRTUAL_ENV
+    and UV_PROJECT_ENVIRONMENT from the env= dict while preserving PATH
+    and required HAPPYRANCH_* runtime variables."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import CodexExecutor
+
+    # Inject adversarial inherited environment variables.
+    monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", "/tmp/hr-home")
+
+    # Register a fake codex binary so the executor resolves.
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    fake_bin = tmp_path / "fake-codex"
+    fake_bin.touch(mode=0o755)
+    set_binary("codex", str(fake_bin))
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+    executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    popen_kwargs = mock_subprocess.Popen.call_args[1]
+    assert "env" in popen_kwargs, "Popen must receive explicit env= dict"
+    env_dict = popen_kwargs["env"]
+
+    # Dangerous variables MUST be absent.
+    assert "VIRTUAL_ENV" not in env_dict, (
+        f"VIRTUAL_ENV must be stripped; got: {env_dict.get('VIRTUAL_ENV')!r}"
+    )
+    assert "UV_PROJECT_ENVIRONMENT" not in env_dict, (
+        f"UV_PROJECT_ENVIRONMENT must be stripped; got: {env_dict.get('UV_PROJECT_ENVIRONMENT')!r}"
+    )
+
+    # Required variables MUST be present.
+    assert "PATH" in env_dict
+    assert env_dict["HAPPYRANCH_ORG_SLUG"] == "testorg"
+    assert env_dict["HAPPYRANCH_DAEMON_HOME"] == "/tmp/hr-home"
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_custom_adapter_popen_strips_adversarial_venv_from_env(
+    mock_subprocess, monkeypatch, tmp_path,
+):
+    """Custom adapter executor Popen must strip inherited VIRTUAL_ENV
+    and UV_PROJECT_ENVIRONMENT from the env= dict.  The custom adapter
+    launch calls _callee_env() which returns a sanitized env copy."""
+    from runtime.orchestrator.adapter_store import compute_sha256
+    from runtime.orchestrator.executors import CustomAdapterExecutor
+
+    # Create a minimal adapter executable.
+    adapter_exe = tmp_path / "adapter"
+    adapter_exe.write_text(
+        "#!/bin/bash\necho '{\"contract_version\":1,\"identity\":{\"adapter\":\"test\",\"version\":\"1.0.0\",\"contract_version\":1},\"response\":{\"session_id\":\"sess-test\",\"success\":true,\"returncode\":0,\"stdout\":\"ok\"}}'\n"
+    )
+    adapter_exe.chmod(0o755)
+    exe_hash = compute_sha256(adapter_exe)
+
+    # Inject adversarial inherited env.
+    monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
+
+    mock_subprocess.Popen.return_value = _popen_mock(stdout=(
+        '{"contract_version":1,'
+        '"identity":{"adapter":"test","version":"1.0.0","contract_version":1},'
+        '"response":{"session_id":"sess-test","success":true,"returncode":0,"stdout":"ok"}}'
+    ))
+
+    executor = CustomAdapterExecutor(
+        profile_name="test",
+        adapter_entry_id="test-adapter",
+        adapter_executable=str(adapter_exe),
+        adapter_hash=exe_hash,
+        adapter_version="1.0.0",
+        adapter_contract_version=1,
+        provider="test",
+    )
+    executor.set_invocation_context(
+        agent="dev_agent", org="happyranch", invocation_kind="task"
+    )
+    executor.run(workspace=tmp_path, prompt="test", session_id="sess-test")
+
+    popen_kwargs = mock_subprocess.Popen.call_args[1]
+    assert "env" in popen_kwargs, "Custom adapter Popen must receive explicit env= dict"
+    env_dict = popen_kwargs["env"]
+
+    # Dangerous variables MUST be absent.
+    assert "VIRTUAL_ENV" not in env_dict, (
+        f"VIRTUAL_ENV must be stripped from custom adapter env; got: {env_dict.get('VIRTUAL_ENV')!r}"
+    )
+    assert "UV_PROJECT_ENVIRONMENT" not in env_dict, (
+        f"UV_PROJECT_ENVIRONMENT must be stripped from custom adapter env; got: {env_dict.get('UV_PROJECT_ENVIRONMENT')!r}"
+    )
+
+    # PATH and org context must be retained.
+    assert "PATH" in env_dict
+    assert env_dict.get("HAPPYRANCH_ORG_SLUG") == "testorg"
