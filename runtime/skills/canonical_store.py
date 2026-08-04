@@ -381,9 +381,12 @@ class CanonicalSkillStore:
     Package content is stored under:
         <store_root>/<slug>/<version>/<content_hash[:16]>/
 
-    Packages are stored non-writable for the executor identity and
-    never writable through workspace symlinks. The executor and daemon
-    share the same OS identity — do NOT describe byte targets, local
+    Packages are hash-addressed from exact verified provenance/members.
+    The executor and daemon share the same OS identity — a same-UID
+    process may mutate, race validation, and affect active/overlapping
+    sessions. Validation/detection is best-effort and fail-closed; there
+    is NO prevention of same-UID writes, NO OS-level isolation, and NO
+    local automatic repair/recovery. Do not describe byte targets, local
     sources, ArtifactStore, or links as OS-immutable, ACL-protected,
     trusted, executor-only writable/unwritable, or automatically recovered.
 

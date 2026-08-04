@@ -210,8 +210,8 @@ before Popen/retry), every resolved package member's artifact bytes are
 validated against the ledger-declared SHA-256 hashes. Both ``.claude/skills``
 and ``.agents/skills`` root links are validated. A mismatched existing
 canonical package is NEVER automatically rebuilt, copied, replaced, or healed
-from same-UID local source. On mismatch or malformed/broken/malicious link,
-malformed/broken/malicious link, or event-persistence failure, the daemon
+from same-UID local source. On mismatch, malformed/broken/malicious link,
+or event-persistence failure, the daemon
 emits a durable visible integrity event and refuses the session before
 Popen/retry. First-ever materialization of an absent package remains
 allowed; valid existing packages may be reused.

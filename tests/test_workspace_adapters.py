@@ -89,9 +89,8 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
 
     body = (workspace / "AGENTS.md").read_text()
     assert "You are the Dev Agent." in body
-    # Points at the skill, not at Claude-specific paths.
+    # Points at the skill.
     assert ".agents/skills/start-task/" in body
-    assert ".claude/skills" not in body
     assert ".claude/settings.json" not in body
     assert "PreToolUse" not in body
     assert "Bash(happyranch:*)" not in body
@@ -461,17 +460,21 @@ def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
 
 def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
     """The skills-directory guidance must name both .claude/skills and
-    .agents/skills roots, acknowledge same-owner residency, and disclaim
-    OS-level security enforcement.
+    .agents/skills roots in EVERY provider output (not merely the
+    selected root), acknowledge same-owner residency, assert
+    detection/refusal/no-local-automatic-recovery, assert manual
+    external re-sync/redeploy recovery, and disclaim OS-level security
+    enforcement.
 
     This injected section is read by every agent every session — a stale
-    distinct-identity or opt-in-mode claim is a contract violation.
+    distinct-identity, single-root, or auto-recovery claim is a contract
+    violation.
     """
     from runtime.orchestrator.workspace_adapters import (
         _skills_directory_readonly_section,
     )
 
-    # Verify with both roots
+    # Verify with both roots — but EVERY output must name BOTH roots
     for skills_dir in (".claude/skills", ".agents/skills"):
         lines = _skills_directory_readonly_section(skills_dir)
         text = "".join(lines)
@@ -479,9 +482,13 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
         # Section heading exists
         assert "## Skills Directory (do not edit)" in text
 
-        # Names the concrete skills path
-        assert skills_dir in text, (
-            f"skills directory guidance must name {skills_dir}"
+        # BOTH managed roots are named in EVERY output (not merely the
+        # provider-selected root).
+        assert ".claude/skills" in text, (
+            f"guidance for {skills_dir} must name .claude/skills"
+        )
+        assert ".agents/skills" in text, (
+            f"guidance for {skills_dir} must name .agents/skills"
         )
 
         # Same-owner residency: executor and daemon share OS identity
@@ -489,10 +496,19 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
             "must state executor and daemon share same OS identity"
         )
 
-        # No OS-enforced security claims — the join() concatenates
-        # strings without space, so "no" and "OS-enforced" abut.
+        # No OS-enforced security claims
         assert "OS-enforced security boundary" in text, (
             "must disclaim OS-enforced security boundary"
+        )
+
+        # Detection/refusal: no local automatic recovery/autoheal
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Manual recovery: external re-sync/redeploy
+        assert "manual authoritative external re-sync/redeploy" in text, (
+            "must assert manual authoritative external re-sync/redeploy recovery"
         )
 
         # Does NOT reference opt-in env var
@@ -500,8 +516,7 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
             "must not reference HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR env var"
         )
 
-        # Does NOT claim immutable or ACL denial (the text does
-        # accurately disclaim "not a security control")
+        # Does NOT claim immutable or ACL denial
         for forbidden in ("immutable", "ACL denial"):
             assert forbidden not in text.lower().replace("-", " "), (
                 f"must not claim {forbidden!r}"

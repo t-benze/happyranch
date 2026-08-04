@@ -631,12 +631,14 @@ class TestWriteViaLinkIsolation:
     def test_chmod_through_link_is_possible_but_does_not_affect_isolation(self, store, materializer, skill_source_dir, workspace_dir):
         """chmod through symlink changes canonical file perms but the store
         verification catches it on next check. This documents the POSIX symlink
-        behavior: symlinks don't protect permissions, only ownership/ACL does.
+        behavior: symlinks do not protect permissions.
 
-        The real isolation comes from the daemon-provisioned OS-level boundary
-        where executor identity cannot chmod because it's not the owner.
-        In a dev/test environment where all processes share uid, this is
-        expected to pass — the real isolation requires OS provisioned accounts.
+        The executor and daemon share the same OS identity — a same-UID
+        process may chmod canonical files through the symlink. This is
+        expected in the same-owner delivery model. Integrity validation
+        is detection-only with fail-closed refusal; it does NOT prevent
+        same-UID writes, does NOT claim local automatic repair/recovery,
+        and is not a security or OS-level boundary.
         """
         content_hash = "deadbeef12345678"
         store.build_from_source("test-skill", "1.0.0", content_hash, skill_source_dir)
