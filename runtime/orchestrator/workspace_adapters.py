@@ -864,45 +864,33 @@ def _compute_manifest_tree_hash(
     skill_slug: str,
 ) -> str:
     """Compute the expected canonical tree hash from the AUTHORITATIVE
-    manifest members (loaded from the artifact store), NOT from the
-    canonical tree.
+    manifest members, validating each member's artifact bytes against
+    its immutable ledger-declared SHA-256 BEFORE hashing.
+
+    Delegates to the canonical-store-level helper
+    ``_compute_tree_hash_from_manifest_members`` which performs the
+    identical validation.  Wraps ``CanonicalStoreError`` as
+    ``LifecycleMaterializationError`` for the caller's error domain.
 
     This prevents lifecycle-ledger packages from self-ratifying:
-    a same-owner executor that mutates a canonical package and restores
-    modes will NOT survive the next pre-launch integrity check because
-    the expected tree hash is derived from the immutable artifact-store
-    bytes — not from the potentially-corrupted canonical tree.
-
-    Members are sorted by path (deterministic order), matching the
-    canonical tree hash computation in CanonicalSkillStore.compute_tree_hash.
+    see ``_compute_tree_hash_from_manifest_members`` for details.
     """
-    import hashlib
-    from runtime.infrastructure.artifact_store import ArtifactNotFound
+    from runtime.skills.canonical_store import (
+        _compute_tree_hash_from_manifest_members,
+        CanonicalStoreError,
+    )
 
-    members = manifest.get("members", [])
-    # Sort by path for deterministic ordering (matches canonical tree hash)
-    sorted_members = sorted(members, key=lambda m: m["path"])
-
-    h = hashlib.sha256()
-    for member in sorted_members:
-        member_path = member["path"]
-        member_artifact_key = member["artifact_key"]
-
-        try:
-            member_bytes = artifact_store.read(member_artifact_key)
-        except ArtifactNotFound:
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name="materializer",
-                reason=f"Member artifact not found for tree hash: {member_artifact_key}",
-            )
-
-        h.update(member_path.encode())
-        h.update(b"\x00")
-        h.update(member_bytes)
-        h.update(b"\x00")
-
-    return h.hexdigest()
+    try:
+        return _compute_tree_hash_from_manifest_members(
+            manifest, artifact_store,
+            skill_slug=skill_slug,
+        )
+    except CanonicalStoreError as exc:
+        raise LifecycleMaterializationError(
+            skill_slug=skill_slug,
+            agent_name="materializer",
+            reason=f"{exc.code}: {exc.detail}",
+        ) from exc
 
 
 def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:

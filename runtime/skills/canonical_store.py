@@ -158,6 +158,24 @@ def _apply_readonly_hardening(
     isolation.make_dir_readonly_executor(pkg_path)
 
 
+def _make_writable_for_removal(pkg_path: Path) -> None:
+    """Make all files and directories in *pkg_path* owner-writable
+    so they can be removed by shutil.rmtree.
+
+    Canonical packages have files at 0444 and directories at 0555.
+    Before rmtree can delete them, we must restore write permission.
+    """
+    for entry in pkg_path.rglob("*"):
+        try:
+            entry.chmod(entry.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+    try:
+        pkg_path.chmod(pkg_path.stat().st_mode | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def _safe_remove_published_package(
     pkg_path: Path, slug: str, version: str, content_hash: str,
 ) -> None:
@@ -211,6 +229,77 @@ def _get_canonical_store_root(settings=None) -> Path:
 
     # Fallback: ~/.happyranch/canonical-skills/
     return Path.home() / ".happyranch" / "canonical-skills"
+
+
+def _compute_tree_hash_from_manifest_members(
+    manifest: dict,
+    artifact_store,
+    *,
+    skill_slug: str,
+) -> str:
+    """Compute expected canonical tree hash from manifest members.
+
+    Validates each member's artifact-store bytes against the immutable
+    ledger-declared hash (``member["hash"]``) BEFORE computing the
+    tree hash.  Used both by the pre-materialization spec builder
+    (``_compute_manifest_tree_hash`` in workspace_adapters) and the
+    ``build_from_manifest`` reuse verification path.
+
+    Raises CanonicalStoreError on hash mismatch, missing artifacts,
+    or malformed hash declarations.
+    """
+    members = manifest.get("members", [])
+    if not members:
+        raise CanonicalStoreError(
+            "empty_manifest",
+            f"Manifest for {skill_slug} has no members — cannot compute tree hash",
+        )
+
+    sorted_members = sorted(members, key=lambda m: m["path"])
+
+    h = hashlib.sha256()
+    for member in sorted_members:
+        member_path = member["path"]
+        member_artifact_key = member["artifact_key"]
+        member_hash = member.get("hash", "")
+
+        # Validate member hash declaration is well-formed
+        expected_hex = (
+            member_hash.split(":", 1)[-1] if ":" in member_hash
+            else member_hash
+        )
+        if not expected_hex or len(expected_hex) < 16:
+            raise CanonicalStoreError(
+                "malformed_hash",
+                f"Malformed or missing hash declaration for member "
+                f"{member_path}: {member_hash!r}",
+            )
+
+        # Load member bytes from artifact store
+        try:
+            member_bytes = artifact_store.read(member_artifact_key)
+        except Exception as exc:
+            raise CanonicalStoreError(
+                "artifact_load_failed",
+                f"Failed to load artifact {member_artifact_key}: {exc}",
+            ) from exc
+
+        # Validate bytes against immutable ledger-declared hash
+        actual_hash = hashlib.sha256(member_bytes).hexdigest()
+        if actual_hash != expected_hex:
+            raise CanonicalStoreError(
+                "member_hash_mismatch",
+                f"Member artifact hash mismatch for {member_path}: "
+                f"ledger declares {expected_hex[:16]}..., "
+                f"artifact store has {actual_hash[:16]}...",
+            )
+
+        h.update(member_path.encode())
+        h.update(b"\x00")
+        h.update(member_bytes)
+        h.update(b"\x00")
+
+    return h.hexdigest()
 
 
 class CanonicalSkillStore:
@@ -368,6 +457,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
@@ -410,7 +500,15 @@ class CanonicalSkillStore:
                           "artifact_key": "skill-lifecycle/..."}, ...]}
 
         Each member's bytes are loaded from the artifact store, their hash
-        is validated, and they are written into the canonical tree.
+        is validated against the immutable ledger-declared hash, and they
+        are written into the canonical tree.
+
+        When ``is_built()`` reports True (canonical package already exists),
+        this method does NOT blindly reuse it: it validates member artifact
+        bytes against their ledger-declared hashes, computes the expected
+        tree hash, and compares it against the canonical tree BEFORE
+        accepting reuse. A mismatched canonical tree triggers a rebuild
+        from artifact-store bytes.
 
         The *content_hash* is the package-version content hash from the
         lifecycle ledger. It is the SHA-256 of the manifest JSON itself
@@ -430,7 +528,33 @@ class CanonicalSkillStore:
         pkg_path = self.canonical_path(slug, version, content_hash)
 
         if self.is_built(slug, version, content_hash):
-            return pkg_path
+            # Defense-in-depth: verify canonical content matches the
+            # manifest BEFORE accepting reuse.  is_built() only checks
+            # ownership and mode bits — same-owner mutation can corrupt
+            # content while leaving modes intact.  We validate member
+            # bytes from the artifact store against ledger-declared
+            # hashes, compute the expected tree hash, and compare
+            # against the canonical tree.
+            members = manifest.get("members", [])
+            if members:
+                expected_tree = _compute_tree_hash_from_manifest_members(
+                    manifest, artifact_store,
+                    skill_slug=slug,
+                )
+                actual_tree = self.compute_tree_hash(slug, version, content_hash)
+                if actual_tree == expected_tree:
+                    return pkg_path
+                # Tree hash mismatch — canonical content corrupted.
+                # Fall through to rebuild from artifact store.
+                logger.warning(
+                    "Canonical package %s@%s (hash=%s) tree hash mismatch "
+                    "on reuse — rebuilding from artifact store. "
+                    "expected=%s..., actual=%s...",
+                    slug, version, content_hash[:16],
+                    expected_tree[:16], actual_tree[:16],
+                )
+            else:
+                return pkg_path
 
         members = manifest.get("members", [])
         if not members:
@@ -490,6 +614,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)

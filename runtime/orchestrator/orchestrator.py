@@ -728,11 +728,16 @@ class Orchestrator:
                 task_id,
                 note=(
                     "Pre-launch workspace skill integrity validation "
-                    "failed — executor launch refused. Recovery: "
-                    "happyranch set-executor <agent> --executor "
-                    "<current-executor> (re-materialize links from "
-                    "canonical store), then daemon restart if "
-                    "canonical store itself is corrupted."
+                    "failed — executor launch refused. "
+                    "Recovery (two operations): "
+                    "(a) For broken links: happyranch set-executor <agent> "
+                    "--executor <current-executor> (re-materializes links "
+                    "only, does NOT recover corrupted bytes). "
+                    "(b) For corrupted canonical bytes: stop daemon, "
+                    "delete corrupted package under <daemon-home>/"
+                    "canonical-skills/<slug>/<version>/<hash>, restart "
+                    "daemon (next materialization rebuilds from "
+                    "authoritative artifact source). No automatic repair."
                 ),
                 status=TaskStatus.FAILED,
             )

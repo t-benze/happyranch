@@ -220,9 +220,19 @@ Popen/`executor.run` launch-capable action. On mismatch:
 - Validation-event persistence failure also refuses the launch.
 - No executor Popen/run, no session-start success claim, and no auto-repair
   from workspace/canonical/same-UID local sources.
-- Recovery is manual only: `happyranch set-executor <agent> --executor
-  <current-executor>` (re-materializes workspace links from canonical store),
-  then daemon restart if canonical store itself is corrupted.
+- **Recovery operations (two distinct procedures, no single one-step command):**
+  (a) Broken/missing workspace LINKS: ``happyranch set-executor <agent>
+  --executor <current-executor>`` re-materializes symlinks from canonical
+  store. This repairs links ONLY — it does NOT recover corrupted canonical
+  bytes.
+  (b) Corrupted canonical BYTES (hash mismatch, tampered content): stop the
+  daemon, remove the corrupted package directory under
+  ``<daemon-home>/canonical-skills/<slug>/<version>/<hash>``, restart the
+  daemon. The next materialization rebuilds the canonical package from the
+  authoritative release/custom artifact source (the lifecycle ledger's
+  artifact-store content, validated against ledger-declared hashes). No
+  automatic repair from same-UID local sources is ever performed.
+  There is no single one-step command that covers both cases.
 
 **Residual risk (same-owner mode):** A same-owner process can mutate canonical
 target bytes through the linked root between the integrity check and use
