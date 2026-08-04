@@ -292,9 +292,10 @@ architecture §2
 
 Every runtime-created child subprocess — agent executor sessions, custom-adapter
 launches, and job-script subprocesses — inherits a sanitized copy of the daemon's
-environment that **strips** ``VIRTUAL_ENV`` and ``UV_PROJECT_ENVIRONMENT``.
+environment that **strips** ``VIRTUAL_ENV``, ``UV_PROJECT_ENVIRONMENT``,
+``UV_PYTHON``, and ``UV_SYSTEM_PYTHON``.
 These variables are stripped because the daemon itself runs inside the shared
-canonical HappyRanch venv. If a child process inherits ``VIRTUAL_ENV``, a bare
+canonical HappyRanch venv. If a child process inherits any of these, a bare
 ``uv sync`` or ``uv pip install -e .`` executed from a disposable worktree would
 rewrite the shared venv's editable-install ``.pth`` file to point at the worktree
 instead of the canonical source checkout. When the worktree is removed, every
@@ -339,9 +340,9 @@ restore the editable install from the canonical checkout.
 The ``happyranch doctor`` command (local, read-only, no daemon required)
 checks whether the editable-install pointer resolves to the canonical source
 and emits the exact non-destructive repair command on failure. It uses an
-independent git-based or ``HAPPYRANCH_PROJECT_ROOT``-based canonical source
-detection — it never trusts the ``.pth``-selected ``runtime`` import for the
-expected canonical path.
+independent git-based canonical source detection — it never trusts the
+``.pth``-selected ``runtime`` import or an untrusted environment override
+for the expected canonical path.
 
 ## Self-Registration (custom executors)
 

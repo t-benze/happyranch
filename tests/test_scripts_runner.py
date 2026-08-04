@@ -123,8 +123,8 @@ def test_in_flight_registry_clears_after_run(tmp_paths):
 
 
 def test_run_job_strips_venv_from_child_environment(tmp_paths):
-    """The job subprocess must NOT inherit VIRTUAL_ENV or
-    UV_PROJECT_ENVIRONMENT from the daemon."""
+    """The job subprocess must NOT inherit VIRTUAL_ENV, UV_PROJECT_ENVIRONMENT,
+    UV_PYTHON, or UV_SYSTEM_PYTHON from the daemon."""
     from runtime.daemon.jobs_runner import run_job
 
     tmp_paths["cwd"].mkdir()
@@ -132,18 +132,21 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
     script = (
         "echo VIRTUAL_ENV=${VIRTUAL_ENV:-ABSENT};"
         "echo UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT:-ABSENT};"
+        "echo UV_PYTHON=${UV_PYTHON:-ABSENT};"
+        "echo UV_SYSTEM_PYTHON=${UV_SYSTEM_PYTHON:-ABSENT};"
         "echo PATH=${PATH:-ABSENT};"
         "echo HAPPYRANCH_ORG_SLUG=${HAPPYRANCH_ORG_SLUG:-ABSENT}"
     )
 
-    # Inject adversarial VIRTUAL_ENV into os.environ BEFORE the test.
-    # The _sanitize_child_env call inside run_job should strip it.
+    # Inject adversarial installation-target selectors into os.environ.
+    # The _sanitize_child_env call inside run_job should strip them.
     # Also inject a nonempty org slug so the assertion cannot pass by
-    # substring coincidence (the prior assertion HAPPYRANCH_ORG_SLUG= is
-    # vacuously true against the ABSENT output).
+    # substring coincidence.
     import os
     os.environ["VIRTUAL_ENV"] = "/fake/canonical/.venv"
     os.environ["UV_PROJECT_ENVIRONMENT"] = "/fake/project"
+    os.environ["UV_PYTHON"] = "/fake/shared/.venv/bin/python"
+    os.environ["UV_SYSTEM_PYTHON"] = "1"
     os.environ["HAPPYRANCH_ORG_SLUG"] = "testorg-jobs"
     try:
         result = asyncio.run(run_job(
@@ -158,15 +161,24 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
     finally:
         del os.environ["VIRTUAL_ENV"]
         del os.environ["UV_PROJECT_ENVIRONMENT"]
+        del os.environ["UV_PYTHON"]
+        del os.environ["UV_SYSTEM_PYTHON"]
         del os.environ["HAPPYRANCH_ORG_SLUG"]
 
     assert result.status == "completed"
     assert result.exit_code == 0
     out = tmp_paths["stdout"].read_text()
-    assert "VIRTUAL_ENV=ABSENT" in out, f"VIRTUAL_ENV should be ABSENT, got: {out}"
-    assert "UV_PROJECT_ENVIRONMENT=ABSENT" in out, f"UV_PROJECT_ENVIRONMENT should be ABSENT, got: {out}"
-    assert "PATH=ABSENT" not in out, "PATH must be present"
+
+    # All four dangerous variables must be absent.
+    for var in ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_SYSTEM_PYTHON"):
+        assert f"{var}=ABSENT" in out, (
+            f"{var} should be ABSENT, got output:\n{out}"
+        )
+
+    # PATH must be present (non-vacuous).
+    assert "PATH=ABSENT" not in out, f"PATH must be present; got:\n{out}"
+
     # Exact value assertion — cannot pass by substring coincidence.
     assert "HAPPYRANCH_ORG_SLUG=testorg-jobs" in out, (
-        f"HAPPYRANCH_ORG_SLUG must be passed through with exact value; got: {out}"
+        f"HAPPYRANCH_ORG_SLUG must be passed through with exact value; got:\n{out}"
     )

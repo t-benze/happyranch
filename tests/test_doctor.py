@@ -55,14 +55,6 @@ class TestEditablePointer:
 
 
 class TestCanonicalSource:
-    def test_env_var_override(self, monkeypatch, tmp_path):
-        """HAPPYRANCH_PROJECT_ROOT takes priority."""
-        canonical = tmp_path / "canonical"
-        canonical.mkdir()
-        monkeypatch.setenv("HAPPYRANCH_PROJECT_ROOT", str(canonical))
-        result = _canonical_source()
-        assert result == canonical.resolve()
-
     def test_git_common_dir_from_worktree_pointer(self, monkeypatch, tmp_path):
         """When the .pth pointer is a git worktree, _canonical_source finds
         the main checkout via git rev-parse --git-common-dir."""
@@ -91,19 +83,23 @@ class TestCanonicalSource:
         result = _canonical_source()
         assert result == main_repo.resolve()
 
-    def test_returns_none_when_no_env_and_no_git(self, monkeypatch, tmp_path):
-        """When neither HAPPYRANCH_PROJECT_ROOT nor git detection works."""
-        monkeypatch.delenv("HAPPYRANCH_PROJECT_ROOT", raising=False)
-        # Mock _editable_pointer to return a non-existent path
+    def test_returns_none_when_pointer_not_git(self, monkeypatch, tmp_path):
+        """When the .pth pointer is not in a git repo, returns None."""
+        pointer = tmp_path / "pointer"
+        pointer.mkdir()
         monkeypatch.setattr(
             "cli.commands.doctor._editable_pointer",
-            lambda: tmp_path / "nonexistent",
+            lambda: pointer,
         )
+        # git fails for non-git directory
+        def fake_run_fail(cmd, **_kwargs):
+            return subprocess.CompletedProcess(cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+        monkeypatch.setattr(subprocess, "run", fake_run_fail)
+
         result = _canonical_source()
         assert result is None
 
     def test_returns_none_when_pointer_is_none(self, monkeypatch):
-        monkeypatch.delenv("HAPPYRANCH_PROJECT_ROOT", raising=False)
         monkeypatch.setattr("cli.commands.doctor._editable_pointer", lambda: None)
         result = _canonical_source()
         assert result is None
@@ -112,7 +108,6 @@ class TestCanonicalSource:
         """When git returns non-zero, returns None (no guesswork)."""
         pointer = tmp_path / "pointer"
         pointer.mkdir()
-        monkeypatch.delenv("HAPPYRANCH_PROJECT_ROOT", raising=False)
         monkeypatch.setattr(
             "cli.commands.doctor._editable_pointer",
             lambda: pointer,
@@ -233,9 +228,11 @@ class TestCmdDoctorOutput:
 
 class TestStaleWorktreeFalsePass:
     """When the .pth points at a still-existing disposable worktree, the
-    old Settings().project_root approach would falsely PASS because the
-    imported runtime package was also resolved from that worktree.
-    The new git-based _canonical_source prevents this false PASS."""
+    old Settings().project_root / HAPPYRANCH_PROJECT_ROOT approaches would
+    falsely PASS because the imported runtime package was also resolved from
+    that worktree. The git-based _canonical_source prevents this false PASS
+    by locating the main checkout via git-common-dir, independently of both
+    the .pth and any untrusted environment override."""
 
     def test_stale_worktree_detected_as_mismatch(self, monkeypatch, tmp_path):
         """A .pth pointing at a still-existing worktree must FAIL when the
@@ -261,6 +258,93 @@ class TestStaleWorktreeFalsePass:
             cmd_doctor(args)
         assert exc_info.value.code == 1
 
-        # The old Settings().project_root approach would have given false PASS
-        # because runtime would be imported from worktree. With independent
-        # git detection, we correctly detect the mismatch.
+    def test_real_git_linked_worktree_ignores_happyranch_project_root(
+        self, monkeypatch, tmp_path,
+    ):
+        """End-to-end test with a real git repository and linked worktree.
+
+        Proves that _canonical_source() ignores HAPPYRANCH_PROJECT_ROOT
+        even when it is set to the same stale worktree named in the
+        suspect .pth — the function uses only git-common-dir to locate
+        the main checkout, preventing the false PASS.
+
+        This test exercises the REAL _canonical_source() and cmd_doctor()
+        discovery paths (not mocked), only patching _editable_pointer to
+        supply the worktree path (since we cannot install a real .pth in
+        the test's site-packages).
+        """
+        import subprocess as sp
+
+        # 1. Create a real git repository with at least one commit.
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        sp.run(["git", "-C", str(main_repo), "init"], check=True, capture_output=True)
+        sp.run(
+            ["git", "-C", str(main_repo), "config", "user.email", "test@test"],
+            check=True, capture_output=True,
+        )
+        sp.run(
+            ["git", "-C", str(main_repo), "config", "user.name", "Test"],
+            check=True, capture_output=True,
+        )
+        (main_repo / "README.md").write_text("# test")
+        sp.run(
+            ["git", "-C", str(main_repo), "add", "README.md"],
+            check=True, capture_output=True,
+        )
+        sp.run(
+            ["git", "-C", str(main_repo), "commit", "-m", "initial"],
+            check=True, capture_output=True,
+        )
+
+        # 2. Create a real linked worktree from the main checkout.
+        worktree_path = tmp_path / "stale-worktree"
+        sp.run(
+            ["git", "-C", str(main_repo), "worktree", "add", str(worktree_path)],
+            check=True, capture_output=True,
+        )
+
+        # 3. Patch _editable_pointer to return the worktree (simulating a
+        #    .pth that was rewritten by a disposable worktree session).
+        monkeypatch.setattr(
+            "cli.commands.doctor._editable_pointer",
+            lambda: worktree_path,
+        )
+
+        # 4. Set HAPPYRANCH_PROJECT_ROOT to the STALE WORKTREE — the same
+        #    path the suspect .pth points at.  The OLD code would false-PASS
+        #    because env_override == pointer.  The NEW code ignores this
+        #    untrusted override.
+        monkeypatch.setenv("HAPPYRANCH_PROJECT_ROOT", str(worktree_path))
+
+        # 5. Call the REAL _canonical_source() — it must return the main
+        #    checkout via git-common-dir, NOT the worktree from the env var.
+        canonical = _canonical_source()
+        assert canonical is not None, (
+            "_canonical_source must find the main checkout via git"
+        )
+        assert canonical == main_repo.resolve(), (
+            f"Expected canonical={main_repo}, got {canonical}"
+        )
+        assert canonical != worktree_path.resolve(), (
+            f"Canonical source must NOT be the worktree; "
+            f"canonical={canonical}, worktree={worktree_path}"
+        )
+
+        # 6. Call cmd_doctor() — must FAIL (exit 1) because the .pth
+        #    pointer (worktree) does not match the canonical source (main).
+        #    Even though HAPPYRANCH_PROJECT_ROOT is set to the worktree,
+        #    the doctor ignores it and correctly identifies the mismatch.
+        args = argparse.Namespace()
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_doctor(args)
+        assert exc_info.value.code == 1, (
+            f"Doctor must FAIL (exit 1) even with HAPPYRANCH_PROJECT_ROOT set; "
+            f"got exit {exc_info.value.code}"
+        )
+
+        # 7. Clean up the linked worktree so the temp dir can be removed.
+        sp.run(
+            ["git", "-C", str(main_repo), "worktree", "remove", str(worktree_path), "--force"],
+            capture_output=True,
+        )

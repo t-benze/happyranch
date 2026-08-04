@@ -543,6 +543,10 @@ environment that **strips** the following variables:
   ``pip``, ``uv``, and other Python tooling to install into the venv.
 - ``UV_PROJECT_ENVIRONMENT`` — uv project environment target override; can
   redirect ``uv sync`` / ``uv pip install`` away from the default ``.venv``.
+- ``UV_PYTHON`` — uv ``--python`` selector: the interpreter into which
+  packages are installed; can steer installation into the shared venv.
+- ``UV_SYSTEM_PYTHON`` — uv ``--system`` flag: installs into the system
+  Python environment instead of a managed venv.
 
 These variables are stripped because the daemon process itself typically runs
 inside the shared canonical HappyRanch venv.  If an agent executor or job

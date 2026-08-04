@@ -13,7 +13,6 @@ Exit codes:  0 = PASS, 1 = FAIL (mismatch or missing pointer).
 from __future__ import annotations
 
 import argparse
-import os
 import shlex
 import site
 import subprocess
@@ -44,31 +43,30 @@ def _editable_pointer() -> Path | None:
 
 def _canonical_source() -> Path | None:
     """Determine the canonical source checkout independently of the
-    ``.pth``-selected ``runtime`` import.
+    ``.pth``-selected ``runtime`` import and independently of any
+    untrusted process-environment override.
 
-    Priority:
-    1. ``HAPPYRANCH_PROJECT_ROOT`` environment variable (explicit override).
-    2. **Git-based detection** — if the ``.pth`` pointer exists and is
-       inside a git worktree, ``git rev-parse --git-common-dir`` returns
-       the main checkout's ``.git`` directory; its parent is the canonical
-       source.  This is independent of which ``runtime`` package Python
-       imports and therefore detects the false-PASS case where a still-
-       existing disposable worktree has captured the editable pointer.
-    3. *None* — the caller reports ``exit 2`` (design gap) rather than
-       guessing.
+    **Git-based detection** — if the ``.pth`` pointer exists and is
+    inside a git worktree, ``git rev-parse --git-common-dir`` returns
+    the main checkout's ``.git`` directory; its parent is the canonical
+    source.  This is independent of which ``runtime`` package Python
+    imports and therefore detects the false-PASS case where a still-
+    existing disposable worktree has captured the editable pointer.
 
-    This function deliberately avoids importing ``runtime.config.Settings``
-    because ``Settings().project_root`` resolves from the ``runtime``
-    package that the **same** ``.pth`` selects — when the pointer points
-    at a still-existing worktree, ``Settings().project_root`` would be
-    that worktree, yielding a false PASS.
+    Returns *None* when no independent authoritative source is found —
+    the caller reports ``exit 2`` (design gap) rather than guessing.
+
+    This function deliberately avoids:
+    - ``runtime.config.Settings`` — ``Settings().project_root`` resolves
+      from the ``runtime`` package that the **same** ``.pth`` selects.
+      When the pointer points at a still-existing worktree,
+      ``Settings().project_root`` would be that worktree, yielding a
+      false PASS.
+    - ``HAPPYRANCH_PROJECT_ROOT`` — unvalidated process-environment
+      overrides are untrusted; an attacker or stale sandbox can set this
+      to the same stale worktree named in the suspect ``.pth``, making
+      the comparison PASS when it should FAIL.
     """
-    # 1. Explicit override.
-    env_root = os.environ.get("HAPPYRANCH_PROJECT_ROOT")
-    if env_root:
-        return Path(env_root).resolve()
-
-    # 2. Git-based detection from the .pth pointer.
     pointer = _editable_pointer()
     if pointer is not None and pointer.is_dir():
         try:
@@ -88,7 +86,7 @@ def _canonical_source() -> Path | None:
         except (OSError, subprocess.TimeoutExpired, ValueError):
             pass
 
-    # 3. No trustworthy local authoritative source available.
+    # No trustworthy local authoritative source available.
     return None
 
 
@@ -111,7 +109,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:  # noqa: ARG001
             file=sys.stderr,
         )
         print(
-            "Set HAPPYRANCH_PROJECT_ROOT to the canonical checkout path and re-run.",
+            "Ensure the checkout is a git repository and re-run.",
             file=sys.stderr,
         )
         sys.exit(2)

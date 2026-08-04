@@ -1724,27 +1724,39 @@ def test_claude_executor_error_unknown_certificate_text_raw_fallback(
 
 
 class TestCalleeEnvSanitization:
-    """_sanitize_child_env strips VIRTUAL_ENV and UV_PROJECT_ENVIRONMENT;
-    _callee_env() preserves PATH and HAPPYRANCH_* runtime variables."""
+    """_sanitize_child_env strips VIRTUAL_ENV, UV_PROJECT_ENVIRONMENT,
+    UV_PYTHON, and UV_SYSTEM_PYTHON; _callee_env() preserves PATH and
+    HAPPYRANCH_* runtime variables."""
 
-    def test_sanitize_strips_venv_and_uv_target(self, monkeypatch):
+    def test_sanitize_strips_all_dangerous_vars(self, monkeypatch):
         from runtime.orchestrator.executors import _sanitize_child_env
 
         env = {
             "PATH": "/usr/bin:/bin",
             "VIRTUAL_ENV": "/fake/canonical/.venv",
             "UV_PROJECT_ENVIRONMENT": "/fake/project",
+            "UV_PYTHON": "/fake/shared/.venv/bin/python",
+            "UV_SYSTEM_PYTHON": "1",
             "HAPPYRANCH_ORG_SLUG": "testorg",
             "HAPPYRANCH_DAEMON_HOME": "/tmp/hr",
             "HOME": "/home/user",
+            # Unrelated UV_* configuration must NOT be stripped.
+            "UV_NO_CACHE": "1",
+            "UV_COMPILE_BYTECODE": "1",
         }
         cleaned = _sanitize_child_env(dict(env))
 
-        # Sensitive variables are stripped.
+        # Dangerous variables are stripped.
         assert "VIRTUAL_ENV" not in cleaned
         assert "UV_PROJECT_ENVIRONMENT" not in cleaned
+        assert "UV_PYTHON" not in cleaned
+        assert "UV_SYSTEM_PYTHON" not in cleaned
 
-        # Required variables are preserved.
+        # Unrelated UV_* config is preserved.
+        assert cleaned.get("UV_NO_CACHE") == "1"
+        assert cleaned.get("UV_COMPILE_BYTECODE") == "1"
+
+        # Required variables are preserved with exact values.
         assert cleaned["PATH"] == "/usr/bin:/bin"
         assert cleaned["HAPPYRANCH_ORG_SLUG"] == "testorg"
         assert cleaned["HAPPYRANCH_DAEMON_HOME"] == "/tmp/hr"
@@ -1759,14 +1771,18 @@ class TestCalleeEnvSanitization:
         assert once == twice
         assert "VIRTUAL_ENV" not in twice
         assert "UV_PROJECT_ENVIRONMENT" not in twice
+        assert "UV_PYTHON" not in twice
+        assert "UV_SYSTEM_PYTHON" not in twice
 
     def test_callee_env_strips_venv_inherited_from_os_environ(self, monkeypatch):
-        """_callee_env() removes VIRTUAL_ENV inherited from os.environ."""
+        """_callee_env() removes all dangerous vars inherited from os.environ."""
         from runtime.orchestrator.executors import _callee_env
 
         monkeypatch.setenv("PATH", "/fake/bin")
         monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
         monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+        monkeypatch.setenv("UV_PYTHON", "/fake/shared/.venv/bin/python")
+        monkeypatch.setenv("UV_SYSTEM_PYTHON", "1")
         monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
         monkeypatch.setenv("HOME", "/home/user")
 
@@ -1774,6 +1790,8 @@ class TestCalleeEnvSanitization:
 
         assert "VIRTUAL_ENV" not in callee
         assert "UV_PROJECT_ENVIRONMENT" not in callee
+        assert "UV_PYTHON" not in callee
+        assert "UV_SYSTEM_PYTHON" not in callee
         assert callee["HAPPYRANCH_ORG_SLUG"] == "testorg"
         assert callee["PATH"] == "/fake/bin"
         assert callee["HOME"] == "/home/user"
@@ -1801,6 +1819,8 @@ class TestCalleeEnvSanitization:
         original = {
             "VIRTUAL_ENV": "/fake/.venv",
             "UV_PROJECT_ENVIRONMENT": "/fake/proj",
+            "UV_PYTHON": "/fake/shared/.venv/bin/python",
+            "UV_SYSTEM_PYTHON": "1",
             "PATH": "/bin",
         }
         before = dict(original)
@@ -1808,8 +1828,10 @@ class TestCalleeEnvSanitization:
         # Original must be unmutated.
         assert original == before
         assert "VIRTUAL_ENV" in original
+        assert "UV_PYTHON" in original
         # Cleaned must be stripped.
         assert "VIRTUAL_ENV" not in cleaned
+        assert "UV_PYTHON" not in cleaned
 
 
 # ── production Popen-launch env sanitization assertions ──────────────
@@ -1819,15 +1841,19 @@ class TestCalleeEnvSanitization:
 def test_normal_executor_popen_strips_adversarial_venv_from_env(
     mock_subprocess, monkeypatch, tmp_path, runtime,
 ):
-    """Normal executor (Codex) Popen must strip inherited VIRTUAL_ENV
-    and UV_PROJECT_ENVIRONMENT from the env= dict while preserving PATH
-    and required HAPPYRANCH_* runtime variables."""
+    """Normal executor (Codex) Popen must strip all four inherited
+    installation-target selector variables (VIRTUAL_ENV,
+    UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON) from the
+    env= dict while preserving exact PATH and HAPPYRANCH_* values."""
     from runtime.config import Settings
     from runtime.orchestrator.executors import CodexExecutor
 
-    # Inject adversarial inherited environment variables.
+    # Inject adversarial inherited environment — all four dangerous
+    # installation-target steering variables.
     monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+    monkeypatch.setenv("UV_PYTHON", "/fake/shared/.venv/bin/python")
+    monkeypatch.setenv("UV_SYSTEM_PYTHON", "1")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", "/tmp/hr-home")
@@ -1849,27 +1875,33 @@ def test_normal_executor_popen_strips_adversarial_venv_from_env(
     assert "env" in popen_kwargs, "Popen must receive explicit env= dict"
     env_dict = popen_kwargs["env"]
 
-    # Dangerous variables MUST be absent.
-    assert "VIRTUAL_ENV" not in env_dict, (
-        f"VIRTUAL_ENV must be stripped; got: {env_dict.get('VIRTUAL_ENV')!r}"
-    )
-    assert "UV_PROJECT_ENVIRONMENT" not in env_dict, (
-        f"UV_PROJECT_ENVIRONMENT must be stripped; got: {env_dict.get('UV_PROJECT_ENVIRONMENT')!r}"
-    )
+    # All four dangerous installation-target selectors MUST be absent.
+    for var in ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_SYSTEM_PYTHON"):
+        assert var not in env_dict, (
+            f"{var} must be stripped; got: {env_dict.get(var)!r}"
+        )
 
-    # Required variables MUST be present.
-    assert "PATH" in env_dict
-    assert env_dict["HAPPYRANCH_ORG_SLUG"] == "testorg"
-    assert env_dict["HAPPYRANCH_DAEMON_HOME"] == "/tmp/hr-home"
+    # Exact PATH and HAPPYRANCH_* values MUST be present.
+    assert env_dict.get("PATH") == "/usr/bin:/bin", (
+        f"PATH must be exactly /usr/bin:/bin; got: {env_dict.get('PATH')!r}"
+    )
+    assert env_dict.get("HAPPYRANCH_ORG_SLUG") == "testorg", (
+        f"HAPPYRANCH_ORG_SLUG must be testorg; got: {env_dict.get('HAPPYRANCH_ORG_SLUG')!r}"
+    )
+    assert env_dict.get("HAPPYRANCH_DAEMON_HOME") == "/tmp/hr-home", (
+        f"HAPPYRANCH_DAEMON_HOME must be /tmp/hr-home; got: {env_dict.get('HAPPYRANCH_DAEMON_HOME')!r}"
+    )
 
 
 @patch("runtime.orchestrator.executors.subprocess")
 def test_custom_adapter_popen_strips_adversarial_venv_from_env(
     mock_subprocess, monkeypatch, tmp_path,
 ):
-    """Custom adapter executor Popen must strip inherited VIRTUAL_ENV
-    and UV_PROJECT_ENVIRONMENT from the env= dict.  The custom adapter
-    launch calls _callee_env() which returns a sanitized env copy."""
+    """Custom adapter executor Popen must strip all four inherited
+    installation-target selector variables (VIRTUAL_ENV,
+    UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON) from the
+    env= dict.  The custom adapter launch calls _callee_env() which
+    returns a sanitized env copy."""
     from runtime.orchestrator.adapter_store import compute_sha256
     from runtime.orchestrator.executors import CustomAdapterExecutor
 
@@ -1881,9 +1913,11 @@ def test_custom_adapter_popen_strips_adversarial_venv_from_env(
     adapter_exe.chmod(0o755)
     exe_hash = compute_sha256(adapter_exe)
 
-    # Inject adversarial inherited env.
+    # Inject all four adversarial installation-target selectors.
     monkeypatch.setenv("VIRTUAL_ENV", "/fake/canonical/.venv")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/fake/project")
+    monkeypatch.setenv("UV_PYTHON", "/fake/shared/.venv/bin/python")
+    monkeypatch.setenv("UV_SYSTEM_PYTHON", "1")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
 
@@ -1911,14 +1945,16 @@ def test_custom_adapter_popen_strips_adversarial_venv_from_env(
     assert "env" in popen_kwargs, "Custom adapter Popen must receive explicit env= dict"
     env_dict = popen_kwargs["env"]
 
-    # Dangerous variables MUST be absent.
-    assert "VIRTUAL_ENV" not in env_dict, (
-        f"VIRTUAL_ENV must be stripped from custom adapter env; got: {env_dict.get('VIRTUAL_ENV')!r}"
-    )
-    assert "UV_PROJECT_ENVIRONMENT" not in env_dict, (
-        f"UV_PROJECT_ENVIRONMENT must be stripped from custom adapter env; got: {env_dict.get('UV_PROJECT_ENVIRONMENT')!r}"
-    )
+    # All four dangerous installation-target selectors MUST be absent.
+    for var in ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_SYSTEM_PYTHON"):
+        assert var not in env_dict, (
+            f"{var} must be stripped from custom adapter env; got: {env_dict.get(var)!r}"
+        )
 
-    # PATH and org context must be retained.
-    assert "PATH" in env_dict
-    assert env_dict.get("HAPPYRANCH_ORG_SLUG") == "testorg"
+    # Exact PATH and HAPPYRANCH_ORG_SLUG value must be retained.
+    assert env_dict.get("PATH") == "/usr/bin:/bin", (
+        f"PATH must be exactly /usr/bin:/bin; got: {env_dict.get('PATH')!r}"
+    )
+    assert env_dict.get("HAPPYRANCH_ORG_SLUG") == "testorg", (
+        f"HAPPYRANCH_ORG_SLUG must be testorg; got: {env_dict.get('HAPPYRANCH_ORG_SLUG')!r}"
+    )

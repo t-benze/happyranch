@@ -182,8 +182,10 @@ def _resolve_binary(executor_name: str) -> str:
 # is never accidentally mutated from a disposable worktree.
 # See protocol/05b-agent-runtime.md § "Spawn-Environment Invariant".
 _ENV_VARS_TO_STRIP: frozenset[str] = frozenset({
-    "VIRTUAL_ENV",            # standard venv activation; directs pip/uv
-    "UV_PROJECT_ENVIRONMENT",  # uv project environment target override
+    "VIRTUAL_ENV",             # standard venv activation; directs pip/uv
+    "UV_PROJECT_ENVIRONMENT",   # uv project environment target override
+    "UV_PYTHON",                # uv --python: interpreter into which packages install
+    "UV_SYSTEM_PYTHON",         # uv --system: install into system Python environment
 })
 
 
@@ -206,8 +208,8 @@ def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
 
     Strips inherited environment variables that can steer package
     installation into the canonical shared venv (VIRTUAL_ENV,
-    UV_PROJECT_ENVIRONMENT).  PATH and required HAPPYRANCH_* runtime
-    variables are preserved.
+    UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON).  PATH and
+    required HAPPYRANCH_* runtime variables are preserved.
 
     When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
     subprocesses can resolve org context without literal ``{ORG_SLUG}``
