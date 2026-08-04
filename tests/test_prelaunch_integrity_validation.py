@@ -1640,7 +1640,7 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         # ── Set up protocol skills source ───────────────────────────
         protocol_skills = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
             d = protocol_skills / sid
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -1661,6 +1661,20 @@ class TestProductionSeamLifecycleCorruptionRefusal:
         state = DaemonState.from_runtime(rt, settings_for_daemon)
         app = create_app(state)
 
+        # ── Copy lifecycle artifacts into the daemon org's store ──
+        daemon_org_artifacts = daemon_org_paths.artifacts_dir
+        daemon_org_artifacts.mkdir(parents=True, exist_ok=True)
+        from runtime.infrastructure.artifact_store import (
+            ArtifactStore,
+        )
+        daemon_art_store = ArtifactStore(daemon_org_artifacts)
+        daemon_art_store.put(manifest_key,
+                            art_store.read(manifest_key))
+        for member in manifest.get("members", []):
+            ak = member.get("artifact_key")
+            if ak:
+                daemon_art_store.put(ak, art_store.read(ak))
+
         try:
             # ── Intercept subprocess.Popen — prove zero launches ────
             popen_calls_phase2 = []
@@ -1671,6 +1685,19 @@ class TestProductionSeamLifecycleCorruptionRefusal:
                     communicate=MagicMock(return_value=("", "")),
                     returncode=0,
                 )
+
+            # ── Snapshot durable state before the route request ──
+            org_db = state.orgs["test-org"].db
+            before_events = org_db.list_skill_validation_events(
+                source="integrity_check",
+            )
+            before_event_ids = {
+                e.get("id") for e in before_events
+                if e.get("source") == "integrity_check" and not e.get("ok")
+            }
+            before_audit_count = len(
+                org_db.get_audit_logs_by_action("agent_managed")
+            )
 
             with mock_patch(
                 "runtime.platform.isolation.subprocess.Popen",
@@ -1704,21 +1731,32 @@ class TestProductionSeamLifecycleCorruptionRefusal:
                 f"switch refusal, got {len(popen_calls_phase2)}"
             )
 
-            # ── Prove mandatory durable validation event persisted ──
-            org_db = state.orgs["test-org"].db
-            events = org_db.list_skill_validation_events(
+            # ── Prove exactly one NEW durable validation event ──
+            after_events = org_db.list_skill_validation_events(
                 source="integrity_check",
             )
-            integrity_events_phase2 = [
-                e for e in events
+            new_integrity_events = [
+                e for e in after_events
                 if e.get("source") == "integrity_check"
                 and not e.get("ok")
+                and e.get("id") not in before_event_ids
             ]
-            assert len(integrity_events_phase2) >= 1, (
-                f"Expected at least 1 durable integrity_check event "
-                f"with ok=False from phase 2, got "
-                f"{len(integrity_events_phase2)}"
+            after_fail_ids = [
+                e.get("id") for e in after_events
+                if e.get("source") == "integrity_check" and not e.get("ok")
+            ]
+            assert len(new_integrity_events) == 1, (
+                f"Expected exactly 1 NEW durable integrity_check event "
+                f"with ok=False from the route request, got "
+                f"{len(new_integrity_events)} "
+                f"(before IDs: {sorted(before_event_ids)}, "
+                f"after IDs: {after_fail_ids})"
             )
+            # Validate the event identity fields
+            new_event = new_integrity_events[0]
+            assert new_event.get("source") == "integrity_check"
+            assert new_event.get("severity") == "error"
+            assert new_event.get("ok") is False
 
             # ── Prove no config/audit success side effects ──────────
             after_agent = prompt_loader.load_agent(
@@ -1733,6 +1771,14 @@ class TestProductionSeamLifecycleCorruptionRefusal:
             assert ws_after_cfg.get("executor") == "claude", (
                 f"Workspace executor must remain 'claude' after "
                 f"refusal, got {ws_after_cfg}"
+            )
+
+            # ── Prove no successful agent_managed audit row ────────
+            after_audit = org_db.get_audit_logs_by_action("agent_managed")
+            assert len(after_audit) == before_audit_count, (
+                f"Expected no new agent_managed audit rows after "
+                f"refused request (before={before_audit_count}, "
+                f"after={len(after_audit)})"
             )
         finally:
             wa._SKILLS_SRC = saved_skills_src
