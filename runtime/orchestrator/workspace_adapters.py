@@ -455,7 +455,10 @@ def _materialize_context_union(
     for cid in sorted(seen_system_contracts):
         src_dir = src_root / cid
         content_hash = _compute_dir_hash(src_dir)
-        store.build_from_source(cid, "system", content_hash, src_dir)
+        store.build_from_source(
+            cid, "system", content_hash, src_dir,
+            verify_source_hash=content_hash,
+        )
         expected_specs.append({
             "slug": cid,
             "version": "system",
@@ -505,6 +508,7 @@ def _materialize_context_union(
                 content_hash = _compute_dir_hash(src_dir)
                 store.build_from_source(
                     skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                    verify_source_hash=content_hash,
                 )
                 expected_specs.append({
                     "slug": skill_id_slug,
@@ -603,7 +607,10 @@ def _materialize_unified_canonical(
         for contract in contracts:
             src_dir = src_root / contract.id
             content_hash = _compute_dir_hash(src_dir)
-            store.build_from_source(contract.id, "system", content_hash, src_dir)
+            store.build_from_source(
+                contract.id, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
+            )
             # Org context is carried via session/task metadata, not
             # literal {ORG_SLUG} substitution in canonical bytes.
             expected_specs.append({
@@ -655,6 +662,7 @@ def _materialize_unified_canonical(
                 content_hash = _compute_dir_hash(src_dir)
                 store.build_from_source(
                     skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                    verify_source_hash=content_hash,
                 )
                 expected_specs.append({
                     "slug": skill_id_slug,
@@ -1348,25 +1356,33 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
 
 
 def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
-    """System-injected doctrine: the managed skills tree is not yours to edit.
+    """System-injected operational guidance: do not edit managed skill links.
 
     Skill entries under *skills_dir* (``.claude/skills`` or
     ``.agents/skills``, per executor) are daemon-materialized from the
-    canonical skill store. On a properly isolated deployment the executor's
-    OS identity can't write through them even if an agent tried; this
-    section exists for deployments running in same-owner mode
-    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``, see
-    ``runtime/platform/isolation.py``) where that OS-level guarantee is
-    absent and this instruction is the only thing standing between an agent
-    and a corrupted skills tree.
+    canonical skill store. This section directs agents NOT to edit these
+    managed links and to use the lifecycle/proposal workflow instead.
+
+    **IMPORTANT:** This is operational guidance, NOT enforcement. On
+    deployments running in same-owner mode
+    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``, see
+    ``runtime/platform/isolation.py``) there is NO security boundary —
+    the executor runs under the daemon's own OS identity and CAN write
+    through these symlinks. The daemon performs best-effort integrity
+    verification before each launch to detect and recover from accidental
+    corruption, but this is NOT an attacker-independent security guarantee.
     """
     return [
         "## Skills Directory (do not edit)\n",
         f"`{skills_dir}/` is materialized by the daemon from the canonical",
-        "skill store — never author, edit, move, or delete anything under",
-        "it, even if a task seems to call for it. Treat it as read-only,",
-        "regardless of what the filesystem permissions on this machine",
-        "happen to allow.\n",
+        "skill store. DO NOT author, edit, move, or delete anything under",
+        "it, even if a task seems to call for it. Treat it as read-only.\n",
+        "**Same-owner mode:** if ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``",
+        "is set on this deployment, the filesystem CAN be written through",
+        "these symlinks — there is no OS-enforced security boundary.",
+        "The daemon performs best-effort integrity checks before each",
+        "launch to detect and recover from accidental corruption, but",
+        "this is NOT a guarantee. Do not rely on it as a security control.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",

@@ -2553,3 +2553,351 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                             f"Link must NOT exist at {link_path} "
                             "after materialization failure"
                         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Same-Owner Mode: Honest-Adversarial Tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSameOwnerAdversarialLimits:
+    """Tests demonstrating the honest limits of same-owner mode.
+
+    In same-owner mode the executor runs under the daemon's own OS
+    identity. These tests prove that:
+    1. A same-owner process CAN write/alter canonical packages via
+       workspace symlinks — no permission denial occurs.
+    2. The daemon's integrity verification detects the alteration
+       and rebuilds from the trusted source when available.
+    3. When the trusted source is absent, the mismatch fails closed
+       and never blesses corrupted bytes as valid.
+    4. Link tampering and policy withdrawal behave as documented.
+    """
+
+    def test_same_owner_can_write_canonical_through_symlink(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """A same-owner process CAN alter canonical package content
+        through workspace symlinks.
+
+        This test PROVES the honest limit: there is NO os-level
+        write/chmod barrier in same-owner mode. The process running
+        as the daemon's identity writes through the symlink and the
+        canonical package content changes. The test expects the
+        write to SUCCEED — if it raised PermissionError, that would
+        falsely claim a security boundary.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-same-owner"
+
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        subdir = ".claude/skills"
+        materializer.materialize_skill(
+            slug, "system", content_hash, workspace_dir, subdir,
+        )
+
+        # Workspace symlink exists and is functional
+        link_path = workspace_dir / subdir / slug
+        assert link_path.is_symlink(), "Symlink must exist in workspace"
+
+        # Read original content through symlink
+        original = (link_path / "SKILL.md").read_text()
+        assert "# Test Skill" in original
+
+        # ── Adversarial write: alter canonical content through symlink ──
+        # In same-owner mode the daemon sets files read-only (0444), but
+        # since the executor is the same uid, it can simply chmod them
+        # back to writable first. This is the honest limit: readonly
+        # hardening is cosmetic when the attacker shares the daemon's uid.
+        tampered_content = "# TAMPERED SKILL\n\nCorrupted by same-owner process."
+        skill_file = link_path / "SKILL.md"
+
+        # Step 1: chmod to writable (same-owner process CAN do this)
+        try:
+            os.chmod(skill_file, 0o644)
+        except PermissionError:
+            pytest.fail(
+                "Same-owner process was denied chmod on canonical "
+                "package file. In same-owner mode this should succeed."
+            )
+
+        # Step 2: write tampered content
+        try:
+            skill_file.write_text(tampered_content)
+        except PermissionError:
+            pytest.fail(
+                "Same-owner process was denied write access to "
+                "canonical package via workspace symlink. This "
+                "should NOT happen — same-owner mode means no "
+                "OS-level isolation exists."
+            )
+
+        # ── Verify the canonical package bytes actually changed ──
+        actual_after = (link_path / "SKILL.md").read_text()
+        assert actual_after == tampered_content, (
+            "Canonical package content MUST reflect the adversarial "
+            "write in same-owner mode"
+        )
+
+        # The canonical store path also shows the change (same file)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert (pkg_path / "SKILL.md").read_text() == tampered_content
+
+    def test_integrity_verification_detects_and_repairs(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Integrity verification detects tampered canonical package
+        and rebuilds from trusted source when still available.
+
+        After a same-owner process tampers with canonical content,
+        calling build_from_source with verify_source_hash detects
+        the mismatch and forces a rebuild from the source tree.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-integrity-repair"
+
+        # First build — creates trusted canonical package
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        original = (pkg_path / "SKILL.md").read_text()
+
+        # Simulate adversarial tampering of canonical content
+        # (same-owner can chmod + rewrite)
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED")
+        # Restore readonly so is_built passes — a sophisticated attacker
+        # would do this too (same-owner means no OS-level barrier)
+        os.chmod(skill_file, 0o444)
+
+        # Verify is_built still returns True (ownership/permissions restored)
+        assert store.is_built(slug, "system", content_hash), (
+            "After restoring permissions, is_built passes — but content "
+            "bytes are tampered (no content verification in is_built)"
+        )
+
+        # ── Integrity verification: rebuild from source ──
+        # build_from_source with verify_source_hash detects mismatch
+        # and forcibly rebuilds from skill_source_dir.
+        # First make the package dir writable so rmtree can clean up.
+        for f in pkg_path.rglob("*"):
+            if f.is_file():
+                os.chmod(f, 0o644)
+            elif f.is_dir():
+                os.chmod(f, 0o755)
+        os.chmod(pkg_path, 0o755)
+        rebuilt_path = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+        assert rebuilt_path == pkg_path
+
+        # Content should be restored to original
+        restored = (pkg_path / "SKILL.md").read_text()
+        assert restored == original, (
+            "Package content must be restored from trusted source"
+        )
+        assert "# TAMPERED" not in restored
+
+    def test_absent_trusted_source_fails_closed(
+        self, store, tmp_path,
+    ):
+        """When trusted source is absent, integrity mismatch fails closed.
+
+        If the source directory disappears after initial build, and the
+        canonical package is then tampered, build_from_source with
+        verify_source_hash must raise CanonicalStoreError — never
+        silently bless corrupted bytes.
+        """
+        # Build a temp source and package
+        src_dir = tmp_path / "disappearing-source"
+        src_dir.mkdir()
+        (src_dir / "SKILL.md").write_text("# Valid Content")
+
+        content_hash = _compute_dir_hash(src_dir)
+        slug = "test-absent-source"
+        store.build_from_source(slug, "system", content_hash, src_dir)
+
+        # Verify initial content
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert "# Valid Content" in (pkg_path / "SKILL.md").read_text()
+
+        # Remove the trusted source
+        shutil.rmtree(src_dir)
+        assert not src_dir.exists()
+
+        # Tamper with canonical package (same-owner: chmod + rewrite)
+        skill_file = pkg_path / "SKILL.md"
+        os.chmod(skill_file, 0o644)
+        skill_file.write_text("# TAMPERED AFTER SOURCE GONE")
+        # Attacker restores permissions — no OS-level barrier
+        os.chmod(skill_file, 0o444)
+
+        # ── Attempt rebuild without source: must fail ──
+        from runtime.skills.canonical_store import CanonicalStoreError
+        with pytest.raises((CanonicalStoreError, FileNotFoundError)):
+            store.build_from_source(
+                slug, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
+            )
+
+        # Corrupted bytes must NOT be accepted as valid — the package
+        # still contains the tampered content
+        actual = (pkg_path / "SKILL.md").read_text()
+        assert "# Valid Content" not in actual, (
+            "Content was unexpectedly restored from nowhere"
+        )
+        assert "TAMPERED" in actual, (
+            "Tampered content persists since rebuild failed"
+        )
+
+    def test_valid_start_no_spurious_rebuild(
+        self, store, skill_source_dir,
+    ):
+        """A normal valid start does not spuriously rebuild/repair.
+
+        When the canonical package is intact, build_from_source with
+        verify_source_hash should return the existing package without
+        rebuilding.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-valid-start"
+
+        # Build once
+        path1 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+
+        # Second build with same hash — should return existing package
+        path2 = store.build_from_source(
+            slug, "system", content_hash, skill_source_dir,
+            verify_source_hash=content_hash,
+        )
+
+        assert path1 == path2, "Valid start must not create new package"
+        assert store.is_built(slug, "system", content_hash)
+
+    def test_link_tampering_detected_and_repaired(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Tampered/malformed workspace symlinks are detected and safely
+        repaired. The repair replaces broken/wrong-target symlinks but
+        never follows or deletes attacker nodes.
+
+        Covers both .claude/skills and .agents/skills roots.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-link-repair"
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        # Materialize to both roots
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.materialize_skill(
+                slug, "system", content_hash, workspace_dir, subdir,
+            )
+
+        # Tamper: replace symlink with a broken one in one root
+        broken_link = workspace_dir / ".claude/skills" / slug
+        assert broken_link.is_symlink()
+        broken_link.unlink()
+        os.symlink("/nonexistent/path", str(broken_link))
+
+        # Repair workspace skills should fix both roots
+        expected_specs = [{
+            "slug": slug,
+            "version": "system",
+            "content_hash": content_hash,
+        }]
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.repair_workspace_skills(
+                expected_specs, workspace_dir, subdir,
+            )
+
+        # Both roots should have valid symlinks after repair
+        for subdir in (".claude/skills", ".agents/skills"):
+            link = workspace_dir / subdir / slug
+            assert link.is_symlink(), f"{subdir}/{slug} must be a symlink"
+            assert (link / "SKILL.md").exists(), (
+                f"{subdir}/{slug}/SKILL.md must be accessible"
+            )
+            assert "# Test Skill" in (link / "SKILL.md").read_text()
+
+    def test_policy_withdrawal_removes_only_managed_links(
+        self, store, materializer, skill_source_dir, workspace_dir,
+    ):
+        """Policy withdrawal removes only managed link entries.
+
+        When a skill is withdrawn from the expected set, only the
+        managed symlink is removed. The canonical package is retained.
+        Other files at the workspace link site (if an ordinary
+        directory) are never recursively deleted.
+        """
+        content_hash = _compute_dir_hash(skill_source_dir)
+        slug = "test-withdraw"
+        store.build_from_source(slug, "system", content_hash, skill_source_dir)
+
+        subdir = ".claude/skills"
+        materializer.materialize_skill(
+            slug, "system", content_hash, workspace_dir, subdir,
+        )
+        link_path = workspace_dir / subdir / slug
+        assert link_path.is_symlink()
+
+        # Withdraw: repair with empty expected set
+        materializer.repair_workspace_skills([], workspace_dir, subdir)
+
+        # Link should be removed
+        assert not link_path.exists(follow_symlinks=False), (
+            "Withdrawn skill link must be removed"
+        )
+
+        # Canonical package must still exist (retained)
+        pkg_path = store.canonical_path(slug, "system", content_hash)
+        assert pkg_path.is_dir(), (
+            "Canonical package must be retained after withdrawal"
+        )
+
+        # ── Ordinary directory at link site is never recursively deleted ──
+        # Build a canonical package so materialize_skill gets past verify_package
+        # and reaches create_relative_symlink (which detects ordinary dirs)
+        ordinary_src = workspace_dir / "ordinary-src"
+        ordinary_src.mkdir()
+        (ordinary_src / "SKILL.md").write_text("# ordinary")
+        ordinary_hash = _compute_dir_hash(ordinary_src)
+        store.build_from_source(
+            "test-ordinary-dir", "system", ordinary_hash, ordinary_src,
+        )
+
+        # Create an ordinary directory where a link would go
+        ordinary_dir = workspace_dir / subdir / "test-ordinary-dir"
+        ordinary_dir.mkdir(parents=True, exist_ok=True)
+        (ordinary_dir / "real-work.txt").write_text("real user work")
+
+        # Attempt materialize — should NOT delete the ordinary directory
+        with pytest.raises(SymlinkMaterializationError, match="ordinary_dir"):
+            materializer.materialize_skill(
+                "test-ordinary-dir", "system", ordinary_hash,
+                workspace_dir, subdir,
+            )
+
+        # Ordinary directory must still exist with its content intact
+        assert ordinary_dir.is_dir()
+        assert (ordinary_dir / "real-work.txt").read_text() == "real user work"
+
+    def test_mode_observability(
+        self, monkeypatch, tmp_path,
+    ):
+        """The selected mode (strict vs same-owner) is observable
+        via PlatformIsolation.is_same_owner_mode without auth/schema change."""
+        # Test isolation (from conftest) is same-owner by default
+        iso = isolation.detect_platform_isolation()
+        assert iso.is_same_owner_mode is True, (
+            "Test isolation must report same-owner mode"
+        )
+
+        # Verify the property is accessible on the abstract base
+        assert hasattr(PlatformIsolation, "is_same_owner_mode"), (
+            "Abstract base must define is_same_owner_mode property"
+        )

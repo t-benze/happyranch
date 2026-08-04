@@ -261,6 +261,8 @@ class CanonicalSkillStore:
         version: str,
         content_hash: str,
         source_dir: Path,
+        *,
+        verify_source_hash: str | None = None,
     ) -> Path:
         """Build a canonical package from a source directory.
 
@@ -268,11 +270,22 @@ class CanonicalSkillStore:
         safe paths (no traversal), then atomically replaces into the canonical
         path. Sets all files read-only after build.
 
+        When *verify_source_hash* is provided and the package already exists
+        (``is_built``), the actual content of the canonical package is
+        compared against the expected source hash. If the content has been
+        altered (e.g. by a same-owner executor), the package is forcibly
+        rebuilt from *source_dir*. This is best-effort corruption detection
+        and recovery for same-owner deployments — it is NOT an
+        attacker-independent security guarantee.
+
         Args:
             slug: Skill slug
             version: Package version
             content_hash: Expected content hash (SHA-256 of canonical tree)
             source_dir: Directory containing skill files (SKILL.md, references/, assets/)
+            verify_source_hash: If set, verify existing package content
+                against this hash (source tree hash) before reusing. Mismatch
+                triggers rebuild from *source_dir*.
 
         Returns:
             Path to the built canonical package directory.
@@ -282,9 +295,27 @@ class CanonicalSkillStore:
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
-        # If already built and valid, return
+        # If already built and valid, verify content integrity before reusing.
         if self.is_built(slug, version, content_hash):
-            return pkg_path
+            if verify_source_hash is not None:
+                try:
+                    actual_hash = self.compute_tree_hash(slug, version, content_hash)
+                except CanonicalStoreError:
+                    actual_hash = ""
+                if actual_hash != verify_source_hash:
+                    logger.warning(
+                        "Canonical package %s@%s content mismatch "
+                        "(expected %s... got %s...) — forcibly rebuilding "
+                        "from source. This indicates possible tampering or "
+                        "accidental corruption; in same-owner mode this is "
+                        "best-effort detection only, not a security guarantee.",
+                        slug, version,
+                        verify_source_hash[:16], actual_hash[:16] if actual_hash else "<error>",
+                    )
+                else:
+                    return pkg_path
+            else:
+                return pkg_path
 
         # Collect files from source
         members: list[tuple[str, bytes]] = []
@@ -357,6 +388,40 @@ class CanonicalSkillStore:
                                                content_hash)
             raise
 
+    def verify_content_integrity(
+        self,
+        slug: str,
+        version: str,
+        content_hash: str,
+        expected_content_hash: str,
+    ) -> tuple[bool, str | None]:
+        """Verify that canonical package content matches expected hash.
+
+        Computes the actual tree hash of the existing package and compares
+        it to *expected_content_hash*. This is used for best-effort
+        corruption detection in same-owner deployments — it is NOT an
+        attacker-independent security guarantee.
+
+        Args:
+            slug: Skill slug
+            version: Package version
+            content_hash: The content_hash used for addressing
+            expected_content_hash: The expected tree hash to compare against
+
+        Returns:
+            (True, None) if content matches, (False, reason_string) if not.
+        """
+        try:
+            actual = self.compute_tree_hash(slug, version, content_hash)
+        except CanonicalStoreError:
+            return False, "package_missing_or_corrupt"
+        if actual != expected_content_hash:
+            return False, (
+                f"content_mismatch: expected {expected_content_hash[:16]}..., "
+                f"got {actual[:16]}..."
+            )
+        return True, None
+
     def build_from_manifest(
         self,
         slug: str,
@@ -391,8 +456,21 @@ class CanonicalSkillStore:
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
+        # If already built, verify content integrity before reusing.
+        # In same-owner mode an executor could tamper with the package
+        # bytes; this check detects that and forces a rebuild from the
+        # trusted ArtifactStore source.
         if self.is_built(slug, version, content_hash):
-            return pkg_path
+            if self._manifest_content_matches(pkg_path, manifest):
+                return pkg_path
+            logger.warning(
+                "Canonical package %s@%s content mismatch detected — "
+                "forcibly rebuilding from ArtifactStore manifest. "
+                "This indicates possible tampering or accidental "
+                "corruption; in same-owner mode this is best-effort "
+                "detection only, not a security guarantee.",
+                slug, version,
+            )
 
         members = manifest.get("members", [])
         if not members:
@@ -523,6 +601,11 @@ class CanonicalSkillStore:
         Returns hex digest of all file contents sorted by relative path.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
+        if not pkg_path.is_dir():
+            raise CanonicalStoreError(
+                "package_missing",
+                f"Canonical package not found: {slug}@{version}",
+            )
         h = hashlib.sha256()
         for fpath in sorted(pkg_path.rglob("*")):
             if fpath.is_file():
@@ -532,3 +615,45 @@ class CanonicalSkillStore:
                 h.update(fpath.read_bytes())
                 h.update(b"\x00")
         return h.hexdigest()
+
+    @staticmethod
+    def _manifest_content_matches(pkg_path: Path, manifest: dict) -> bool:
+        """Check if the canonical package content matches the manifest.
+
+        Compares each member file in *pkg_path* against the expected hash
+        declared in *manifest*. Returns True if ALL members match;
+        False if any member is missing, extra, or has wrong hash.
+
+        This is best-effort corruption detection for same-owner deployments —
+        NOT an attacker-independent security guarantee.
+        """
+        members = manifest.get("members", [])
+        if not members:
+            return True  # Empty manifest — nothing to verify
+
+        # Collect actual files
+        actual_files: set[str] = set()
+        for fpath in sorted(pkg_path.rglob("*")):
+            if fpath.is_file():
+                actual_files.add(str(fpath.relative_to(pkg_path)))
+
+        for member in members:
+            member_path = member["path"]
+            member_hash = member.get("hash", "")
+            expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+
+            member_file = pkg_path / member_path
+            if not member_file.is_file():
+                return False
+
+            actual_hex = hashlib.sha256(member_file.read_bytes()).hexdigest()
+            if actual_hex != expected_hex:
+                return False
+
+            actual_files.discard(member_path)
+
+        # Any files present that aren't in the manifest?
+        if actual_files:
+            return False
+
+        return True

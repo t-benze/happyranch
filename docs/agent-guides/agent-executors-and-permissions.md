@@ -1,12 +1,23 @@
 # Agent Executors And Permissions
 
 > **SUPERSESSION NOTICE (TASK-4009/TASK-4012):** Skill materialization now uses
-> the **immutable canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. See
-> ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
-> for ownership, provenance, link validation, repair/refusal/withdrawal/retention
-> semantics, macOS provisioning, and the compatibility-fallback boundary.
-> Linux and Windows are NOT supported — explicitly fail closed.
+> the **canonical skill store + workspace symlink architecture**
+> (macOS-only). The legacy per-session copy model is REMOVED. Two operating
+> modes exist: **strict distinct-identity** (default) with OS-enforced
+> ownership/permission isolation, and **same-owner** (explicit opt-in,
+> `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`) where integrity checks are
+> best-effort corruption detection only — no OS-level security boundary.
+> See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
+> symlinks" for ownership, provenance, link validation, repair/refusal/withdrawal/
+> retention semantics, macOS provisioning, integrity verification, and the
+> compatibility-fallback boundary. Linux and Windows are NOT supported —
+> explicitly fail closed.
+>
+> **SAME-OWNER HONESTY NOTICE (TASK-4189):** In same-owner mode do NOT call
+> canonical targets immutabe, protected, or claim write/chmod/ACL denial.
+> The prompt guard is operational guidance, not enforcement. Integrity
+> verification is best-effort recovery for accidental corruption, not an
+> attacker-independent external attestation authority.
 
 # Agent Executors And Permissions
 
