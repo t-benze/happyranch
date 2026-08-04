@@ -49,6 +49,8 @@ changes, or auth/bearer-flow changes.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -223,6 +225,51 @@ class AdapterSubmitRequest(BaseModel):
     )
 
     model_config = {"extra": "forbid"}
+
+
+class ContractReferenceResponse(BaseModel):
+    """Response body for GET /runtime/adapters/contract-reference (THR-107 seq184/seq339).
+
+    Browser-consumer classification: the web Settings/Onboarding shared
+    connection flow fetches this endpoint with the scoped adapter-purpose
+    token after minting to obtain the literal server-derived
+    ``required_executable_path`` for the prompt builder.  This is NOT a
+    CLI-only endpoint — the browser is an intentional scoped-token consumer.
+    """
+
+    contract_version: int = Field(..., description="v1 contract version (always 1)")
+    canonical_adapter_id: str = Field(
+        ..., description="The stable server-derived adapter ID for this token's intended profile"
+    )
+    canonical_adapter_id_description: str = Field(
+        ..., description="Provenance invariant: the wrapper MUST echo this exact ID"
+    )
+    adapter_input_schema: dict = Field(
+        ..., description="JSON Schema for AdapterInput (generated from authoritative Pydantic model)"
+    )
+    adapter_output_schema: dict = Field(
+        ..., description="JSON Schema for AdapterOutput (generated from authoritative Pydantic model)"
+    )
+    rules: dict = Field(..., description="Output constraints (max size, stdout/stderr contract, etc.)")
+    submission: dict = Field(..., description="Submit endpoint metadata (method, path, content-type, body schema)")
+    dependency_manifest: dict = Field(..., description="Dependency manifest schema and rules")
+    token_metering: dict = Field(..., description="Token-metering expectations for adapters declaring the capability")
+    reapproval_rule: str = Field(..., description="Rule: any change requires re-submission and founder re-approval")
+    probe: dict = Field(..., description="Minimal self-test input/output fixture for the conformance probe")
+    canonical_directory: str = Field(
+        ..., description="Absolute canonical path to the daemon-managed adapters directory"
+    )
+    canonical_directory_description: str = Field(
+        ..., description="Description of the canonical adapters directory"
+    )
+    required_executable_path: str = Field(
+        ..., description="Exact absolute canonical path where the wrapper executable MUST be created"
+    )
+    required_executable_path_description: str = Field(
+        ..., description="Description: the filename is the canonical adapter ID itself"
+    )
+
+    model_config = {"extra": "allow"}
 
 
 class BindProfileRequest(BaseModel):
@@ -762,6 +809,22 @@ def approve_registered_adapter(
 # ---------------------------------------------------------------------------
 
 
+def _has_traversal_spelling(raw_path: str) -> bool:
+    """Return True if the raw path string contains any traversal component.
+
+    Detects ``..`` directory components in the path before any normalization.
+    This catches absolute traversal bypasses such as
+    ``<daemon-home>/adapters/../adapters/<id>`` even when ``Path.resolve()``
+    would collapse them to the canonical form.
+
+    Only whole-segment ``..`` entries are flagged — a filename containing
+    ``..`` as a substring (e.g. ``foo..bar``) is NOT flagged.
+    """
+    sep = os.sep
+    parts = raw_path.split(sep)
+    return ".." in parts
+
+
 @submit_router.post(
     "/runtime/adapters/submit",
     dependencies=[require_registration_token()],
@@ -835,7 +898,94 @@ def submit_adapter(
             },
         )
 
-    # Reserve the token so concurrent submissions get single-winner
+    # 6. Validate body.executable matches the server-owned canonical path
+    #    (THR-107 seq339/340).  The scoped adapter wrapper MUST be at the
+    #    exact daemon-managed location — no foreign paths, no traversal
+    #    spellings, no alternate filenames, no symlink escape.
+    #    Compare the raw caller-provided string in its ORIGINAL LEXICAL
+    #    FORM before any Path.resolve() — this catches absolute traversal
+    #    bypasses such as <daemon-home>/adapters/../adapters/<id>.
+    from runtime.orchestrator.custom_adapter_registry import (
+        compute_canonical_adapter_path,
+        generate_adapter_id as _gen_id,
+    )
+    scoped_adapter_id = _gen_id(f"{intended_profile}-adapter")
+    try:
+        _, required_path = compute_canonical_adapter_path(scoped_adapter_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_canonical_path",
+                "message": str(exc),
+            },
+        )
+
+    required_str = str(required_path)
+    submitted_raw = body.executable
+
+    # Pre-resolve checks on the RAW caller-provided string.
+    if not submitted_raw or not os.path.isabs(submitted_raw):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_executable_path",
+                "message": (
+                    f"executable must be an absolute path, got {submitted_raw!r}. "
+                    f"The scoped adapter wrapper must be created at the exact "
+                    f"canonical path: {required_str}. Your token remains valid "
+                    f"and retryable."
+                ),
+                "required_executable_path": required_str,
+                "submitted_executable": submitted_raw,
+            },
+        )
+
+    # Traversal-spelling check: the raw string must not contain any path
+    # traversal components ("..").  This catches absolute normalization
+    # bypasses before resolve() collapses them.
+    if _has_traversal_spelling(submitted_raw):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_executable_path",
+                "message": (
+                    f"executable path contains traversal spelling: "
+                    f"{submitted_raw!r}. The scoped adapter wrapper must be "
+                    f"created at exactly the canonical path: {required_str}. "
+                    f"No '..' components, symlinks, or alternate locations "
+                    f"are accepted. Your token remains valid and retryable."
+                ),
+                "required_executable_path": required_str,
+                "submitted_executable": submitted_raw,
+            },
+        )
+
+    # Exact lexical equality: the raw caller-provided string must equal
+    # the server-derived required path EXACTLY.  Do NOT resolve() before
+    # this comparison — the canonical expected path is safely server-derived
+    # and may be canonicalized; the caller's string must match it verbatim.
+    if submitted_raw != required_str:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_executable_path",
+                "message": (
+                    f"The scoped adapter wrapper executable must be at the "
+                    f"server-owned canonical path: {required_str}. "
+                    f"Received: {submitted_raw!r}. "
+                    f"Create your adapter wrapper at exactly the required "
+                    f"executable path returned by GET /runtime/adapters/"
+                    f"contract-reference — no other location, symlink, or "
+                    f"alternate filename is accepted. Your token remains "
+                    f"valid and retryable."
+                ),
+                "required_executable_path": required_str,
+                "submitted_executable": submitted_raw,
+            },
+        )
+
+    # 7. Reserve the token so concurrent submissions get single-winner
     if not store.reserve_runtime(raw_token):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -875,13 +1025,17 @@ def submit_adapter(
 @contract_reference_router.get(
     "/runtime/adapters/contract-reference",
     dependencies=[require_registration_token()],
+    response_model=ContractReferenceResponse,
 )
-def get_contract_reference(request: Request) -> dict:
+def get_contract_reference(request: Request) -> ContractReferenceResponse:
     """Return the canonical v1 AdapterInput/AdapterOutput contract reference.
 
-    Loopback-only, registration-token-scoped (THR-107 seq184). The candidate
-    CLI fetches this reference FIRST to learn the exact AdapterInput and
-    AdapterOutput JSON Schemas before implementing a wrapper.
+    Scoped-token browser-consumer endpoint (THR-107 seq184/seq339). The
+    web Settings/Onboarding shared connection flow fetches this with the
+    scoped adapter-purpose token after minting to obtain the literal
+    server-derived ``required_executable_path`` for the prompt builder.
+    The candidate CLI also fetches this reference FIRST to learn the exact
+    AdapterInput and AdapterOutput JSON Schemas before implementing a wrapper.
 
     Auth scope:
     - Must be loopback (127.0.0.1, ::1, localhost) — enforced by
@@ -889,8 +1043,11 @@ def get_contract_reference(request: Request) -> dict:
     - Must carry a valid, unexpired, unconsumed ``hrreg_`` token.
     - Token purpose MUST be ``'adapter'`` — non-adapter-purpose tokens are
       rejected with 422. Master bearer is rejected at the dependency level.
+    - The browser Settings/Onboarding shared flow is an INTENTIONAL consumer
+      of this scoped-token endpoint (fetches after minting to obtain the
+      literal ``required_executable_path`` for the prompt builder).
     - Reading the contract-reference does NOT consume, reserve, or modify
-      the token — the candidate may fetch this multiple times and still
+      the token — the browser/CLI may fetch this multiple times and still
       proceed to conformance check-ins and submission.
 
     Response shape (stable v1):
@@ -928,7 +1085,11 @@ def get_contract_reference(request: Request) -> dict:
     # proceeding to conformance check-ins and submission.
 
     from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
-    from runtime.orchestrator.custom_adapter_registry import build_probe_input, generate_adapter_id
+    from runtime.orchestrator.custom_adapter_registry import (
+        build_probe_input,
+        compute_canonical_adapter_path,
+        generate_adapter_id,
+    )
 
     # Derive the canonical server-authoritative adapter ID from the token's
     # intended_profile_name — this is the same stable ID generation used at
@@ -936,6 +1097,14 @@ def get_contract_reference(request: Request) -> dict:
     # adapter_metadata.adapter (provenance invariant).
     canonical_adapter_id = generate_adapter_id(
         f"{token_record.intended_profile_name}-adapter"
+    )
+
+    # Compute the daemon-managed canonical adapter path (THR-107 seq339/340).
+    # Ensures the adapters directory exists with 0o700; rejects symlinks.
+    # The candidate CLI must create its wrapper executable at exactly
+    # required_executable_path.
+    canonical_directory, required_executable_path = compute_canonical_adapter_path(
+        canonical_adapter_id
     )
 
     # Build a minimal self-test fixture from the real probe builder.
@@ -974,10 +1143,10 @@ def get_contract_reference(request: Request) -> dict:
         },
     }
 
-    return {
-        "contract_version": 1,
-        "canonical_adapter_id": canonical_adapter_id,
-        "canonical_adapter_id_description": (
+    return ContractReferenceResponse(
+        contract_version=1,
+        canonical_adapter_id=canonical_adapter_id,
+        canonical_adapter_id_description=(
             f"The stable server-derived adapter ID for this token's "
             f"intended profile. The adapter wrapper's "
             f"adapter_metadata.adapter MUST exactly equal this value "
@@ -985,9 +1154,9 @@ def get_contract_reference(request: Request) -> dict:
             f"string, or arbitrary identity. A mismatch fails the conformance "
             f"probe at registration AND blocks every launch at runtime."
         ),
-        "adapter_input_schema": AdapterInput.model_json_schema(),
-        "adapter_output_schema": AdapterOutput.model_json_schema(),
-        "rules": {
+        adapter_input_schema=AdapterInput.model_json_schema(),
+        adapter_output_schema=AdapterOutput.model_json_schema(),
+        rules={
             "input": {
                 "source": "stdin",
                 "description": (
@@ -1019,7 +1188,7 @@ def get_contract_reference(request: Request) -> dict:
                 ),
             },
         },
-        "submission": {
+        submission={
             "method": "POST",
             "path": "/api/v1/runtime/adapters/submit",
             "content_type": "application/json",
@@ -1065,7 +1234,7 @@ def get_contract_reference(request: Request) -> dict:
                 },
             },
         },
-        "dependency_manifest": {
+        dependency_manifest={
             "description": (
                 "The dependency manifest is an independently versioned extension "
                 "that declares every child executable the adapter wrapper invokes. "
@@ -1097,7 +1266,7 @@ def get_contract_reference(request: Request) -> dict:
                 ],
             },
         },
-        "token_metering": {
+        token_metering={
             "description": (
                 "Adapters that declare the token_metering capability MUST produce "
                 "a valid, non-null token_usage in their AdapterOutput at conformance "
@@ -1115,13 +1284,13 @@ def get_contract_reference(request: Request) -> dict:
                 "adapter must truthfully report what its child CLI consumed."
             ),
         },
-        "reapproval_rule": (
+        reapproval_rule=(
             "Any change to the adapter executable, its hash, declared dependencies, "
             "or capabilities requires re-submission and founder re-approval. The "
             "approved snapshot is immutable — a tampered or stale dependency blocks "
             "launch with an actionable error."
         ),
-        "probe": {
+        probe={
             "description": (
                 "Before registration, the server runs a conformance probe against "
                 "the submitted executable. The server prepares/creates the probe "
@@ -1141,7 +1310,24 @@ def get_contract_reference(request: Request) -> dict:
             "requires_success_true": True,
             "self_test_fixture": probe_fixture,
         },
-    }
+        canonical_directory=str(canonical_directory),
+        canonical_directory_description=(
+            f"The absolute canonical path to the daemon-managed adapters "
+            f"directory ({canonical_directory}). Created with restrictive "
+            f"user-only mode (0700) if newly created. Never a symlink."
+        ),
+        required_executable_path=str(required_executable_path),
+        required_executable_path_description=(
+            f"The exact absolute canonical path where the adapter wrapper "
+            f"executable MUST be created: {required_executable_path}. "
+            f"The filename is the canonical adapter ID itself (lowercase "
+            f"alnum/hyphen only). The candidate CLI must create a regular "
+            f"executable file at exactly this path — no other location, "
+            f"symlink, or alternate filename is accepted by the scoped "
+            f"submission route. The adapters directory is already prepared "
+            f"and ready for the file creation."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

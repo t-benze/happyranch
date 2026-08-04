@@ -425,6 +425,29 @@ implementing adapter wrappers must fetch this endpoint and follow the
 **server-derived schema** — the schemas are generated from the shipping
 Pydantic models and are the authoritative external representation.
 
+**Canonical daemon-managed adapter path (THR-107 seq339/340).** The
+contract-reference response also returns:
+
+- ``canonical_directory`` — the absolute path to
+  ``<daemon-home>/adapters/``. Created with restrictive 0o700 owner-only
+  mode if newly created; rejects symlinks on the adapters directory or the
+  wrapper path.
+- ``required_executable_path`` — the exact absolute canonical path where
+  the adapter wrapper MUST live
+  (``<daemon-home>/adapters/<canonical-adapter-id>``). The filename is the
+  canonical adapter ID itself (lowercase alnum/hyphen only).
+
+The scoped submission route (``POST /runtime/adapters/submit``) validates
+``body.executable`` is exactly ``required_executable_path`` — rejecting
+non-absolute paths, foreign directories, traversal spellings, alternate
+filenames, and symlink escapes with an actionable 422 error that names the
+required path and keeps the token retryable.  The registration seam
+(``register_custom_adapter`` with ``intended_profile_name``) independently
+rechecks so a route-only check cannot be bypassed.  This enforcement
+applies to new scoped submissions and scoped re-registrations, but **not**
+to dependency records (existing absolute-path/hash-pinned rules remain) or
+the master-bearer ``/register`` route (operational/recovery path unchanged).
+
 ### 4.4 Registration, Conformance, Provenance
 
 | Step | Description | Gate |
@@ -437,6 +460,15 @@ Pydantic models and are the authoritative external representation.
 | **Bind (recovery/legacy)** | **Management-gated.** An APPROVED adapter WITHOUT an ``intended_profile_name`` (master-bearer registration path), or a legacy APPROVED-but-unbound adapter from before seq237, must be explicitly bound to a profile via POST /api/v1/runtime/adapters/{adapter_id}/bind-profile. This is the advanced Bind recovery action — labeled as recovery/legacy in the UI. The browser client renders a shared RecoveryBindCard that invokes bind → server-poll verify → durable Connected (eligibility: `already_bound`). **THR-107 seq237**: Normal adapters with ``intended_profile_name`` are auto-bound during approval and do NOT require this step. | Profile is bound with `command_adapter_id: custom-adapter:<id>`. After bind + server confirmation, the adapter reports `eligibility: already_bound`. The durable UI must retain Connected entries — not filter/unmount them. |
 | **Remove (APPROVED deletion)** | **Management-gated.** An APPROVED custom adapter may be removed via DELETE /api/v1/runtime/adapters/{id} with an exact snapshot of all material identity/binding facts. Rejects stale, re-registered, wrong-target, non-APPROVED, and profile-referenced snapshots. This is the separate approved-only removal path — distinct from the PENDING reject route above. | Adapter is removed from the durable store if not referenced by any profile. |
 | **Register** | Daemon writes to the durable adapter store. | Atomic load-validate-save under a store-level reentrant lock (RLock) that serializes competing writes (approval + rejection + other registrations) to the same adapters.yaml file. The lock is acquired before the durable reload at the commit boundary and released after the atomic temp-file replace. |
+
+**Migration story (seq339/340):** Existing APPROVED adapters at arbitrary
+(non-canonical) locations remain hash-valid and launchable — no automatic
+migration, invalidation, or rewriting occurs. An operator may intentionally
+create a separately scoped named registration in the managed location and
+migrate/bind under existing founder gates while the old record remains until
+explicitly retired. Enforcing canonical placement on the master-bearer
+``/register`` route requires a separate founder authorization/contract
+decision.
 
 ### 4.5 Change Detection
 
