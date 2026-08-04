@@ -201,10 +201,33 @@ For single-operator setups that have decided not to provision a distinct
 `_hrexec` account. In this mode the executor runs under the SAME OS identity
 as the daemon — there is NO OS-level isolation. An agent-controlled executor
 process can read, write, chmod, or chown the canonical skill store and
-anything else the daemon account can reach. Workspace symlinks, prompt
-guidance, hashes, verification, and repair are BEST-EFFORT corruption
-detection/recovery only. Do NOT call the target immutable, protected, or
-claim write/chmod/ACL denial, a security boundary, or cross-agent isolation.
+anything else the daemon account can reach. A same UID may mutate, race
+validation, and affect active/overlapping sessions. This is DETECTION-ONLY,
+FAIL-CLOSED behavior, not prevention. Do NOT call the target immutable,
+protected, trusted source, or claim write/chmod/ACL denial, a security
+boundary, or cross-agent isolation.
+
+**Detection and refusal:** Before every executor launch, every resolved
+package member's artifact bytes are validated against the immutable
+ledger-declared SHA-256 hashes. A mismatched existing canonical package is
+NEVER automatically rebuilt, copied, replaced, or healed from same-UID local
+source. The durable integrity/operations event is emitted and the session is
+refused. First-ever materialization of an absent package remains allowed;
+valid existing packages may be reused.
+
+**Manual recovery only:** (a) For broken links: ``happyranch set-executor
+<agent> --executor <current-executor>`` (re-materializes links only, NEVER
+recovers corrupted bytes). (b) For corrupted canonical bytes:
+``happyranch skills recover <slug> <version> <content_hash>`` — the sole
+operator-invoked recovery path. Validates ledger provenance and every
+declared member SHA-256 hash against the ArtifactStore before deletion;
+refuses already-valid targets. The next materialization will rebuild the
+package from the ArtifactStore. No automatic repair from same-UID local
+source. This command can ONLY be used after an authoritative external
+re-sync/redeploy of the release or custom artifacts has restored verified
+artifact bytes outside the compromised same-owner local source — the
+recovery route validates against ArtifactStore, which may itself be
+corrupted if the same-UID executor previously tampered with it.
 
 **Ownership and provenance:**
 - Canonical packages are daemon/materializer-owned, content-addressed trees
@@ -219,14 +242,16 @@ shares the daemon's uid and can chmod files back to writable.
 
 **Integrity verification (both modes):**
 Before each executor launch, the daemon compares actual canonical package
-content against a separately retained expected manifest:
+content against the immutable ledger-declared member hashes:
 - System-contract packages: compared against the shipped source tree hash.
 - Lifecycle skills: each member's actual hash compared against the
   ArtifactStore manifest.
-On mismatch the daemon rebuilds from the trusted source when still available;
-if the trusted source is absent, the launch fails closed with a named
-actionable error — corrupted bytes are never silently accepted as valid.
-This is recovery for accidental corruption; it is NOT an
+On mismatch the daemon emits a durable integrity/operations event and
+refuses the session. Corrupted bytes are NEVER silently accepted as valid
+and NEVER automatically rebuilt, copied, or healed from same-UID local
+source. The ArtifactStore is NOT a trusted or immutable source in
+same-owner mode — a same-UID process may also tamper with artifact
+bytes. This is detection-only with fail-closed refusal; it is NOT an
 attacker-independent external attestation authority.
 
 **Isolation contract (macOS):**
@@ -281,12 +306,12 @@ retired, and legacy-quarantined content never reaches the workspace.
 **Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
 (`<org_root>/skills/`) is retired and quarantined. During migration, legacy
 SKILL.md content is copied to the org ArtifactStore under
-`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for immutable retention; the
+`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for retention; the
 ledger stores only the artifact reference key, never the mutable filesystem path.
 Quarantined content is never resolved by `inject_managed_skills`.
 
 **Content retention (task-artifact policy).** Lifecycle proposal content
-is stored in the org ArtifactStore under content-addressed immutable keys:
+is stored in the org ArtifactStore under content-addressed keys:
 - ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
 - ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
 - ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset

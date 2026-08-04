@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -177,6 +178,24 @@ def _apply_readonly_hardening(
     isolation.make_dir_readonly_executor(pkg_path)
 
 
+def _make_writable_for_removal(pkg_path: Path) -> None:
+    """Make all files and directories in *pkg_path* owner-writable
+    so they can be removed by shutil.rmtree.
+
+    Canonical packages have files at 0444 and directories at 0555.
+    Before rmtree can delete them, we must restore write permission.
+    """
+    for entry in pkg_path.rglob("*"):
+        try:
+            entry.chmod(entry.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+    try:
+        pkg_path.chmod(pkg_path.stat().st_mode | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def _safe_remove_published_package(
     pkg_path: Path, slug: str, version: str, content_hash: str,
 ) -> None:
@@ -198,6 +217,8 @@ def _safe_remove_published_package(
         # store root (defense-in-depth against path manipulation)
         if not pkg_path.is_dir():
             return
+        # Make writable first — canonical packages are read-only (0444)
+        _make_writable_for_removal(pkg_path)
         # Remove only the package directory tree
         shutil.rmtree(pkg_path)
         logger.warning(
@@ -230,6 +251,126 @@ def _get_canonical_store_root(settings=None) -> Path:
 
     # Fallback: ~/.happyranch/canonical-skills/
     return Path.home() / ".happyranch" / "canonical-skills"
+
+
+# ── Canonical strict SHA-256 hash parser ────────────────────────────
+# THE single authoritative validator for member-hash declarations.
+# Every caller — workspace adapters, recovery route, manifest materialization,
+# lifecycle spec construction — must use this parser. No competing parsers.
+# Accepts ONLY "sha256:<64 lowercase hex>".
+
+_SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+def parse_strict_sha256_hash(hash_str: str) -> str:
+    """Parse a strictly-formatted sha256:<64-lowercase-hex> member hash.
+
+    Returns the 64-char hex digest (without prefix).
+    Raises ValueError for any malformed input.
+    """
+    if not hash_str.startswith("sha256:"):
+        raise ValueError(
+            f"Member hash missing algorithm prefix (expected sha256:<hex>): "
+            f"{hash_str[:80]}"
+        )
+    hex_digest = hash_str[7:]
+    if not _SHA256_HEX_RE.match(hex_digest):
+        raise ValueError(
+            f"Member hash invalid format (expected sha256:<64 lowercase hex>): "
+            f"{hash_str[:80]}"
+        )
+    return hex_digest
+
+
+def _validate_member_hash(member_path: str, raw_hash: str) -> str:
+    """Validate and extract the hex digest from a member hash declaration.
+
+    Delegates to the single canonical ``parse_strict_sha256_hash`` validator.
+    Rejects missing/unknown algorithm prefixes, bad hex length,
+    uppercase hex, non-hex characters, and malformed declarations.
+    Returns the 64-char lowercase hex portion on success.
+    """
+    if not raw_hash or not isinstance(raw_hash, str):
+        raise CanonicalStoreError(
+            "malformed_hash",
+            f"Missing hash declaration for member {member_path!r}",
+        )
+    try:
+        return parse_strict_sha256_hash(raw_hash)
+    except ValueError as exc:
+        raise CanonicalStoreError(
+            "malformed_hash",
+            f"Hash declaration for member {member_path!r} must be "
+            f"exactly sha256:<64 lowercase hex>; got {raw_hash!r}",
+        ) from exc
+
+
+def _compute_tree_hash_from_manifest_members(
+    manifest: dict,
+    artifact_store,
+    *,
+    skill_slug: str,
+) -> str:
+    """Compute expected canonical tree hash from manifest members.
+
+    Validates each member's artifact-store bytes against the immutable
+    ledger-declared SHA-256 hash BEFORE computing the tree hash.
+    Used by both the pre-materialization spec builder
+    (``_compute_manifest_tree_hash`` in workspace_adapters) and the
+    ``build_from_manifest`` reuse verification path.
+
+    Raises CanonicalStoreError on hash mismatch, missing artifacts,
+    malformed hash declarations, or missing/non-hex declarations.
+    """
+    members = manifest.get("members", [])
+    if not members:
+        raise CanonicalStoreError(
+            "empty_manifest",
+            f"Manifest for {skill_slug} has no members — cannot compute tree hash",
+        )
+
+    sorted_members = sorted(members, key=lambda m: m.get("path", ""))
+
+    h = hashlib.sha256()
+    for member in sorted_members:
+        member_path = member.get("path", "")
+        member_artifact_key = member.get("artifact_key", "")
+        member_hash = member.get("hash", "")
+
+        if not member_path:
+            raise CanonicalStoreError(
+                "malformed_manifest",
+                f"Member in manifest for {skill_slug} missing 'path' field",
+            )
+
+        # Validate member hash declaration strictly (Finding 3 fix)
+        expected_hex = _validate_member_hash(member_path, member_hash)
+
+        # Load member bytes from artifact store
+        try:
+            member_bytes = artifact_store.read(member_artifact_key)
+        except Exception as exc:
+            raise CanonicalStoreError(
+                "artifact_load_failed",
+                f"Failed to load artifact {member_artifact_key}: {exc}",
+            ) from exc
+
+        # Validate bytes against immutable ledger-declared hash
+        actual_hex = hashlib.sha256(member_bytes).hexdigest()
+        if actual_hex != expected_hex:
+            raise CanonicalStoreError(
+                "member_hash_mismatch",
+                f"Member artifact hash mismatch for {member_path}: "
+                f"ledger declares {expected_hex[:16]}..., "
+                f"artifact store has {actual_hex[:16]}...",
+            )
+
+        h.update(member_path.encode())
+        h.update(b"\x00")
+        h.update(member_bytes)
+        h.update(b"\x00")
+
+    return h.hexdigest()
 
 
 class CanonicalSkillStore:
@@ -329,10 +470,11 @@ class CanonicalSkillStore:
         When *verify_source_hash* is provided and the package already exists
         (``is_built``), the actual content of the canonical package is
         compared against the expected source hash. If the content has been
-        altered (e.g. by a same-owner executor), the package is forcibly
-        rebuilt from *source_dir*. This is best-effort corruption detection
-        and recovery for same-owner deployments — it is NOT an
-        attacker-independent security guarantee.
+        altered (e.g. by a same-owner executor), a ``CanonicalStoreError`` is
+        raised — NO automatic rebuild from same-UID local source occurs.
+        First-ever materialization of an absent package remains allowed;
+        a valid existing package may be reused. But a corrupted existing
+        package is never silently repaired.
 
         Args:
             slug: Skill slug
@@ -341,13 +483,14 @@ class CanonicalSkillStore:
             source_dir: Directory containing skill files (SKILL.md, references/, assets/)
             verify_source_hash: If set, verify existing package content
                 against this hash (source tree hash) before reusing. Mismatch
-                triggers rebuild from *source_dir*.
+                raises CanonicalStoreError instead of rebuilding.
 
         Returns:
             Path to the built canonical package directory.
 
         Raises:
-            CanonicalStoreError: on hash mismatch, path traversal, write failure.
+            CanonicalStoreError: on hash mismatch, path traversal, write failure,
+                or content corruption of an existing package.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
 
@@ -359,19 +502,41 @@ class CanonicalSkillStore:
                 except CanonicalStoreError:
                     actual_hash = ""
                 if actual_hash != verify_source_hash:
-                    logger.warning(
-                        "Canonical package %s@%s content mismatch "
-                        "(expected %s... got %s...) — forcibly rebuilding "
-                        "from source. This indicates possible tampering or "
-                        "accidental corruption; in same-owner mode this is "
-                        "best-effort detection only, not a security guarantee.",
-                        slug, version,
-                        verify_source_hash[:16], actual_hash[:16] if actual_hash else "<error>",
+                    raise CanonicalStoreError(
+                        "content_corruption",
+                        f"Canonical package {slug}@{version} content mismatch "
+                        f"(expected {verify_source_hash[:16]}... "
+                        f"got {actual_hash[:16] if actual_hash else '<error>'}). "
+                        f"No automatic repair from same-UID local source. "
+                        f"Recovery: use `happyranch skills recover "
+                        f"{slug} {version} {content_hash}` to remove the "
+                        f"corrupted package, then next materialization "
+                        f"rebuilds from the ArtifactStore.",
                     )
                 else:
                     return pkg_path
             else:
                 return pkg_path
+
+        # ── Detection: existing but invalid canonical package ────────
+        # If the canonical directory exists but is_built() is False,
+        # the package is CORRUPTED (wrong modes/ownership, partial
+        # hardening failure, etc.) — NOT an absent first-build scenario.
+        # Refuse with content_corruption instead of deleting and
+        # rebuilding from same-UID local source.
+        if pkg_path.exists():
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} exists at {pkg_path} "
+                f"but integrity check failed (is_built=False). "
+                f"Package may have wrong permissions/ownership or be "
+                f"incompletely hardened. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
+            )
 
         # Collect files from source
         members: list[tuple[str, bytes]] = []
@@ -405,10 +570,6 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
 
-            # Verify tree hash (optional: can be validated by caller)
-            # The content_hash in the ledger is manifest-based, not tree-based.
-            # We preserve the member hashes separately.
-
             # Provision ownership on temp before atomic replace.
             # (Do NOT make readonly yet — on macOS, rename() requires
             # write permission on the source directory.)
@@ -417,6 +578,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
@@ -514,18 +676,40 @@ class CanonicalSkillStore:
 
         # If already built, verify content integrity before reusing.
         # In same-owner mode an executor could tamper with the package
-        # bytes; this check detects that and forces a rebuild from the
-        # trusted ArtifactStore source.
+        # bytes; this check detects that and REFUSES reuse — NO automatic
+        # rebuild from same-UID ArtifactStore source.
         if self.is_built(slug, version, content_hash):
             if self._manifest_content_matches(pkg_path, manifest):
                 return pkg_path
-            logger.warning(
-                "Canonical package %s@%s content mismatch detected — "
-                "forcibly rebuilding from ArtifactStore manifest. "
-                "This indicates possible tampering or accidental "
-                "corruption; in same-owner mode this is best-effort "
-                "detection only, not a security guarantee.",
-                slug, version,
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} content mismatch "
+                f"detected — existing corrupted package present. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
+            )
+
+        # ── Detection: existing but invalid canonical package ────────
+        # If the canonical directory exists but is_built() is False,
+        # the package is CORRUPTED (wrong modes/ownership, partial
+        # hardening failure, etc.) — NOT an absent first-build scenario.
+        # Refuse with content_corruption instead of deleting and
+        # rebuilding from same-UID local source.
+        if pkg_path.exists():
+            raise CanonicalStoreError(
+                "content_corruption",
+                f"Canonical package {slug}@{version} exists at {pkg_path} "
+                f"but integrity check failed (is_built=False). "
+                f"Package may have wrong permissions/ownership or be "
+                f"incompletely hardened. "
+                f"No automatic repair from same-UID local source. "
+                f"Recovery: use `happyranch skills recover "
+                f"{slug} {version} {content_hash}` to remove the "
+                f"corrupted package, then next materialization "
+                f"rebuilds from the ArtifactStore.",
             )
 
         members = manifest.get("members", [])
@@ -563,8 +747,8 @@ class CanonicalSkillStore:
                         f"Failed to load artifact {member_artifact_key}: {exc}",
                     ) from exc
 
-                # Validate member hash
-                expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+                # Validate member hash strictly (Finding 3)
+                expected_hex = _validate_member_hash(member_path, member_hash)
                 actual_hash = hashlib.sha256(member_bytes).hexdigest()
                 if actual_hash != expected_hex:
                     raise CanonicalStoreError(
@@ -586,6 +770,7 @@ class CanonicalSkillStore:
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
             if pkg_path.exists():
+                _make_writable_for_removal(pkg_path)
                 shutil.rmtree(pkg_path)
             pkg_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, pkg_path)
@@ -695,9 +880,14 @@ class CanonicalSkillStore:
                 actual_files.add(str(fpath.relative_to(pkg_path)))
 
         for member in members:
-            member_path = member["path"]
+            member_path = member.get("path", "")
             member_hash = member.get("hash", "")
-            expected_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+
+            # Validate member hash declaration strictly
+            try:
+                expected_hex = _validate_member_hash(member_path, member_hash)
+            except CanonicalStoreError:
+                return False
 
             member_file = pkg_path / member_path
             if not member_file.is_file():

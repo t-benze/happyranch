@@ -43,6 +43,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
     refresh_workspace_repos,
+    validate_workspace_skills_integrity,
 )
 from runtime.orchestrator.teams import TeamsRegistry
 
@@ -693,7 +694,7 @@ class Orchestrator:
         #   refresh_session_skills (wholesale when enabled)
         #   ensure_system_contracts_materialized (inject + verify)
         #   inject_managed_skills (managed-catalog + lifecycle)
-        materialize_workspace_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, self._settings,
             slug=self._slug,
             context="task",
@@ -704,6 +705,64 @@ class Orchestrator:
             org_root=org_root,
             db=self.db,
         )
+
+        # ── Pre-launch integrity validation ─────────────────────────
+        # Validate workspace skill links and canonical package integrity
+        # BEFORE executor launch. Same-owner mode removes OS-level write
+        # barriers — this is a detective check, not a preventive boundary.
+        from runtime.orchestrator.workspace_adapters import (
+            WorkspaceIntegrityError as _IntegrityError,
+        )
+        try:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=self._settings,
+                db=self.db,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
+        except _IntegrityError:
+            # Integrity failure is terminal — no executor launch.
+            self._db.update_task(
+                task_id,
+                note=(
+                    "Pre-launch workspace skill integrity validation "
+                    "failed — executor launch refused. "
+                    "No automatic repair from same-UID local source. "
+                    "Manual recovery: (a) For broken links only: "
+                    "happyranch set-executor <agent> --executor "
+                    "<current-executor> (re-materializes links, does "
+                    "NOT recover corrupted bytes). "
+                    "(b) For corrupted canonical bytes: "
+                    "happyranch skills recover <slug> <version> "
+                    "<content_hash> (deletes the corrupted package; "
+                    "next materialization rebuilds from ArtifactStore)."
+                ),
+                status=TaskStatus.FAILED,
+            )
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id="",
+                error=(
+                    "Pre-launch workspace skill integrity validation "
+                    "failed — executor launch refused."
+                ),
+            ), None
+
+        # ── Per-retry launch validator closure ───────────────────────
+        # Wrapped so throttle retries after rate-limited responses
+        # re-validate integrity before the next Popen.
+        def _pre_launch_integrity_validator() -> None:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=self._settings,
+                db=self.db,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
@@ -833,6 +892,7 @@ class Orchestrator:
             on_started=_on_started,
             on_throttle_event=_on_throttle_event,
             model=model_name,
+            pre_launch_validator=_pre_launch_integrity_validator,
             org_slug=self._slug,
         )
         self._audit.log_session_end(

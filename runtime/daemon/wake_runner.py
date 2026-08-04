@@ -34,6 +34,7 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
+    validate_workspace_skills_integrity,
     SystemContractMaterializationError,
 )
 from runtime.orchestrator.prompt_loader import load_agent
@@ -169,7 +170,7 @@ async def run_wake(
     # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        materialize_workspace_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
             context="wake",
@@ -179,6 +180,15 @@ async def run_wake(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+        )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=work_hour_id,
         )
     except Exception as e:
         store.update(
@@ -193,6 +203,16 @@ async def run_wake(
         return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
+    # ── Per-retry launch validator ───────────────────────────────
+    def _pre_launch_validator():
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=work_hour_id,
+        )
 
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
@@ -232,6 +252,7 @@ async def run_wake(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,
     ))
 
