@@ -25,6 +25,7 @@ from cli.commands import (
     agents,
     artifacts,
     assistant,
+    doctor,
     dreams,
     executor_binaries,
     executors,
@@ -166,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     kb.register(sub)
     artifacts.register(sub)
     assistant.register(sub)
+    doctor.register(sub)
     dreams.register(sub)
     work_hours.register(sub)
     schedules.register(sub)

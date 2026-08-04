@@ -175,16 +175,47 @@ def _resolve_binary(executor_name: str) -> str:
     )
 
 
+# Environment variables inherited by the daemon that can steer package
+# installation into the canonical shared venv when a child subprocess
+# (agent executor, custom adapter, job script) runs an editable install
+# or `uv sync`. Stripped from the child environment so the shared venv
+# is never accidentally mutated from a disposable worktree.
+# See protocol/05b-agent-runtime.md § "Spawn-Environment Invariant".
+_ENV_VARS_TO_STRIP: frozenset[str] = frozenset({
+    "VIRTUAL_ENV",             # standard venv activation; directs pip/uv
+    "UV_PROJECT_ENVIRONMENT",   # uv project environment target override
+    "UV_PYTHON",                # uv --python: interpreter into which packages install
+    "UV_SYSTEM_PYTHON",         # uv --system: install into system Python environment
+})
+
+
+def _sanitize_child_env(env: dict[str, str]) -> dict[str, str]:
+    """Remove inherited venv/uv target vars from *env* in-place.
+
+    Returns *env* for chaining convenience.  Callers pass a fresh dict
+    copy (e.g. ``dict(os.environ)``) so the daemon's own environment is
+    never mutated.
+    """
+    for key in _ENV_VARS_TO_STRIP:
+        env.pop(key, None)
+    return env
+
+
 def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
     """Return a copy of ``os.environ`` suitable for passing as ``env=``
     to ``subprocess.Popen`` so the child inherits the daemon's normalized
     PATH instead of the stripped Finder/launchd PATH.
 
+    Strips inherited environment variables that can steer package
+    installation into the canonical shared venv (VIRTUAL_ENV,
+    UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON).  PATH and
+    required HAPPYRANCH_* runtime variables are preserved.
+
     When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
     subprocesses can resolve org context without literal ``{ORG_SLUG}``
     substitution in canonical skill bodies.
     """
-    env = dict(os.environ)
+    env = _sanitize_child_env(dict(os.environ))
     if org_slug is not None:
         env["HAPPYRANCH_ORG_SLUG"] = org_slug
     return env

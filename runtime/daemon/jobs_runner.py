@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from runtime.orchestrator.executors import _sanitize_child_env
+
 if TYPE_CHECKING:
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -332,8 +334,11 @@ async def run_job(
         binary,
         "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
         cwd=cwd,
+        # Sanitize inherited venv/uv vars (VIRTUAL_ENV, UV_PROJECT_ENVIRONMENT)
+        # before passing to the child so job scripts cannot accidentally steer
+        # package installation into the canonical shared venv.
         # dict() is required: uvloop rejects os.environ (Mapping) with TypeError.
-        env=dict(os.environ),
+        env=_sanitize_child_env(dict(os.environ)),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
