@@ -187,7 +187,10 @@ closed before launch/materialization with a named `PlatformIsolationError`.
 trees from exact verified provenance/members for system, release-managed, and
 lifecycle version-pinned packages.
 - Owner/permission/ACL checks reject identity confusion and mutation.
-- Canonical targets are read-only (0444) after build.
+- Canonical files are read-only (0444) after build in distinct-identity mode.
+  Canonical directories are 0755 (daemon-retains-write for rebuild). In same-
+  owner mode the executor shares the daemon uid and can chmod + write files;
+  integrity relies on pre-launch hash detection, not OS-level immutability.
 
 **Isolation modes:**
 - **Distinct-identity (default):** The daemon/materializer and executor MUST be

@@ -93,7 +93,7 @@ def _executor_switch_materialize(
             from runtime.orchestrator.workspace_adapters import (
                 materialize_workspace_skills_union,
             )
-            materialize_workspace_skills_union(
+            expected_specs = materialize_workspace_skills_union(
                 workspace, org.settings,
                 slug=org.slug,
                 contexts=["task", "thread", "wake", "dream",
@@ -110,6 +110,29 @@ def _executor_switch_materialize(
             _logger.error(
                 "Executor switch: materialization failed for "
                 "context-union provider=%s agent=%s: %s",
+                provider, agent_name, e,
+            )
+            return errors
+
+        # ── Pre-switch integrity validation ───────────────────────
+        # Validate the resolved union against the canonical store
+        # BEFORE executor switch can report success. A mismatch
+        # (same-owner mutation detected via hash, broken/malicious
+        # link, unexpected entry) emits a durable audit event and
+        # rejects the switch with the documented recovery command.
+        try:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=org.settings,
+                db=org.db,
+                agent_name=agent_name,
+            )
+        except Exception as e:
+            errors.append(str(e))
+            _logger.error(
+                "Executor switch: integrity validation failed for "
+                "provider=%s agent=%s: %s",
                 provider, agent_name, e,
             )
             return errors

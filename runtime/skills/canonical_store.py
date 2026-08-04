@@ -1,9 +1,16 @@
-"""Immutable canonical skill package store.
+"""Canonical skill package store.
 
-Daemon-owned, hash-addressed immutable storage outside executor workspaces.
+Daemon-owned, hash-addressed storage outside executor workspaces.
 Canonical packages are built atomically from verified source/manifest members.
-Files are read-only after build — the executor identity can only read, never
-write, delete, rename, chmod, or chown.
+
+In distinct-identity mode, files are read-only (0444) after build — the
+DISTINCT executor identity can only read, never write, delete, rename, chmod,
+or chown. Directories are 0755 so the daemon can rebuild.
+
+In same-owner mode (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``), the executor
+shares the daemon uid. A same-UID executor can chmod + write canonical files.
+Integrity is enforced by synchronous pre-launch hash detection in
+``validate_workspace_skills_integrity``, not by OS-level immutability.
 
 Package resolution maps a package identity (slug, version, content_hash) to
 an exact canonical path. Workspace links point to these paths.
@@ -44,9 +51,26 @@ class CanonicalStoreError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
-def _verify_recursive_readonly(pkg_path: Path) -> None:
+def _verify_recursive_readonly(
+    pkg_path: Path,
+    *,
+    is_same_owner_mode: bool = False,
+) -> None:
     """Recursively verify the package root and every file and directory
-    under *pkg_path* is NOT owner-writable, group-writable, or other-writable.
+    under *pkg_path* is NOT group-writable or other-writable.
+
+    Directory S_IWUSR (0755) is always allowed — the daemon owner must
+    retain write so new canonical packages can be built. In distinct-identity
+    mode the executor has a different uid and Unix user/group model prevents
+    write, not the directory mode bit.
+
+    File S_IWUSR policy depends on isolation mode:
+    - Distinct-identity: files must be 0444 (not owner-writable). The
+      executor identity is a different uid and cannot chmod to regain
+      write.
+    - Same-owner: files may be owner-writable (0644). The executor runs
+      as the same uid as the daemon and CAN chmod + write. Integrity is
+      deferred to hash comparison in ``verify_package()``.
 
     An insufficiently hardened package (hardening failed after os.replace)
     will fail these checks.  This prevents is_built() from returning True
@@ -54,18 +78,13 @@ def _verify_recursive_readonly(pkg_path: Path) -> None:
 
     Raises CanonicalStoreError on any writable bit found.
     """
-    # Check the root directory itself first
+    # Check the root directory itself first (dirs: allow S_IWUSR always)
     try:
         root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
     except OSError:
         raise CanonicalStoreError(
             "insufficient_hardening",
             f"Cannot stat package root: {pkg_path}",
-        )
-    if root_mode & stat.S_IWUSR:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package root is owner-writable: {pkg_path}",
         )
     if root_mode & stat.S_IWGRP:
         raise CanonicalStoreError(
@@ -83,21 +102,37 @@ def _verify_recursive_readonly(pkg_path: Path) -> None:
             mode = stat.S_IMODE(entry.stat().st_mode)
         except OSError:
             continue
-        if mode & stat.S_IWUSR:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"Package member is owner-writable: {entry}",
-            )
-        if mode & stat.S_IWGRP:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"Package member is group-writable: {entry}",
-            )
-        if mode & stat.S_IWOTH:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"Package member is world-writable: {entry}",
-            )
+        if entry.is_dir():
+            # Directories: allow S_IWUSR (daemon must rebuild), only
+            # reject S_IWGRP / S_IWOTH.
+            if mode & stat.S_IWGRP:
+                raise CanonicalStoreError(
+                    "insufficient_hardening",
+                    f"Package directory is group-writable: {entry}",
+                )
+            if mode & stat.S_IWOTH:
+                raise CanonicalStoreError(
+                    "insufficient_hardening",
+                    f"Package directory is world-writable: {entry}",
+                )
+        else:
+            # Files: distinct-identity mode requires 0444 (no S_IWUSR).
+            # Same-owner mode allows 0644 (executor IS owner, can chmod).
+            if not is_same_owner_mode and mode & stat.S_IWUSR:
+                raise CanonicalStoreError(
+                    "insufficient_hardening",
+                    f"Package file is owner-writable: {entry}",
+                )
+            if mode & stat.S_IWGRP:
+                raise CanonicalStoreError(
+                    "insufficient_hardening",
+                    f"Package file is group-writable: {entry}",
+                )
+            if mode & stat.S_IWOTH:
+                raise CanonicalStoreError(
+                    "insufficient_hardening",
+                    f"Package file is world-writable: {entry}",
+                )
 
 
 def _apply_readonly_hardening(
@@ -250,6 +285,9 @@ class CanonicalSkillStore:
         # writable.  An insufficiently hardened package (hardening failed
         # after os.replace) will fail these checks.
         try:
+            # is_built() always uses strict mode checking — the hardening
+            # step should have set files to 0444 regardless of isolation
+            # mode. If hardening failed, the package is NOT built.
             _verify_recursive_readonly(pkg_path)
         except CanonicalStoreError:
             return False
@@ -491,6 +529,11 @@ class CanonicalSkillStore:
         and every member is read-only (immutable invariant enforced at
         the materialization gate).
 
+        This checks presence, ownership, and mode invariants. Content
+        integrity (hash comparison) is performed separately by
+        ``validate_workspace_skills_integrity`` using tree hashes
+        computed at materialization time.
+
         Raises CanonicalStoreError if missing, tampered, or insufficiently
         hardened.
         """
@@ -515,7 +558,10 @@ class CanonicalSkillStore:
         # Enforce the full immutable invariant at the materialization gate.
         # A package whose hardening failed after os.replace must never be
         # materialized into a workspace link.
-        _verify_recursive_readonly(pkg_path)
+        _verify_recursive_readonly(
+            pkg_path,
+            is_same_owner_mode=self._isolation.is_same_owner_mode,
+        )
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).

@@ -131,6 +131,18 @@ class PlatformIsolation(ABC):
         """Return the provisioned restricted executor identity, or None."""
         ...
 
+    @property
+    @abstractmethod
+    def is_same_owner_mode(self) -> bool:
+        """True if the executor runs under the same OS identity as the daemon.
+
+        In same-owner mode the executor can read/write canonical packages.
+        Callers that enforce read-only package invariants must be mode-aware
+        — distinct-identity mode can enforce strict no-write for the executor
+        identity; same-owner mode must rely on hash-integrity detection.
+        """
+        ...
+
     @abstractmethod
     def provision_canonical_store(self, path: Path) -> None:
         """Set ownership/permissions on canonical store so only daemon
@@ -343,6 +355,11 @@ class _MacOSPlatformIsolation(PlatformIsolation):
 
     def executor_identity(self) -> Optional[PlatformIdentity]:
         return self._executor_identity
+
+    @property
+    def is_same_owner_mode(self) -> bool:
+        """True if the executor runs under the same OS identity as the daemon."""
+        return self._same_owner_mode
 
     def _assert_executor_distinct(self) -> None:
         """Verify executor identity is provisioned and distinct from daemon.

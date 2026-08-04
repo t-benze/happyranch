@@ -10,9 +10,13 @@
 > (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``) and pre-launch integrity
 > validation. All skill delivery now routes through
 > ``materialize_workspace_skills``, which creates validated relative symlinks to
-> daemon-owned immutable hash-addressed canonical packages. **macOS (darwin) only**;
-> Linux and Windows fail closed. The legacy sections below are preserved for
-> historical reference.
+> daemon-owned hash-addressed canonical packages with validated relative symlinks.
+> In distinct-identity mode, packages are read-only (0444) for the distinct executor
+> uid. In same-owner mode (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``), canonical
+> directories are 0755 and a same-UID executor can mutate targets — integrity is
+> enforced by synchronous pre-launch hash detection, not OS-level immutability.
+> **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections below
+> are preserved for historical reference.
 
 The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 
@@ -1077,8 +1081,9 @@ are permanently removed from source. The explicit injection paths —
 ``inject_system_contracts`` (§4.7) and ``inject_managed_skills`` (§4.10) —
 route through the canonical skill store + workspace symlink architecture.
 All skill delivery now goes through ``materialize_workspace_skills``, which
-creates validated relative symlinks to daemon-owned immutable hash-addressed
-canonical packages.
+creates validated relative symlinks to daemon-owned hash-addressed canonical
+packages. In distinct-identity mode packages are read-only for the executor uid;
+in same-owner mode integrity is enforced by synchronous pre-launch hash detection.
 
 **Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
 ADDITIVELY alongside the wholesale dump. This was the safety net proved correct

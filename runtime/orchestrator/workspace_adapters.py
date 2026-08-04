@@ -288,7 +288,7 @@ def materialize_workspace_skills(
     skills_root: Path,
     org_root: Path | None = None,
     db: "Database | None" = None,  # noqa: F821
-) -> None:
+) -> list[dict]:
     """Serialize the complete pre-spawn skill materialization transaction.
 
     All three materialization steps — system-contract injection,
@@ -317,6 +317,11 @@ def materialize_workspace_skills(
         skills_root: directory containing managed-catalog skill packages
         org_root: per-org root (optional; for lifecycle ledger resolution)
         db: optional DB handle for recording materialization events
+
+    Returns:
+        list of {slug, version, content_hash} dicts — the exact
+        resolved specs, which callers MUST pass to
+        ``validate_workspace_skills_integrity`` before executor launch.
     """
     with _workspace_skills_transaction(workspace):
         # Derive ONE unified expected set per provider root, then
@@ -343,7 +348,7 @@ def materialize_workspace_skills_union(
     skills_root: Path,
     org_root: Path | None = None,
     db=None,
-) -> None:
+) -> list[dict]:
     """Build a single full expected-spec union from MULTIPLE session contexts.
 
     Unlike ``materialize_workspace_skills`` which reconciles for a single
@@ -359,6 +364,11 @@ def materialize_workspace_skills_union(
     Args:
         contexts: list of session context names to union (e.g.
             ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
+
+    Returns:
+        list of {slug, version, content_hash} dicts — the resolved specs
+        that callers MUST pass to ``validate_workspace_skills_integrity``
+        before reporting executor-switch success.
     """
     with _workspace_skills_transaction(workspace):
         return _materialize_context_union(
@@ -784,6 +794,9 @@ def _build_lifecycle_canonical_specs(
             "slug": skill_slug,
             "version": pkg.version,
             "content_hash": pkg.content_hash,
+            "tree_hash": store.compute_tree_hash(
+                skill_slug, pkg.version, pkg.content_hash,
+            ),
         })
 
         # Record successful materialization — audit persistence is mandatory.
@@ -933,12 +946,27 @@ def validate_workspace_skills_integrity(
         version = spec["version"]
         content_hash = spec["content_hash"]
 
-        # 1. Verify canonical package integrity
+        # 1. Verify canonical package integrity (presence, ownership, mode)
         try:
             store.verify_package(slug, version, content_hash)
         except CanonicalStoreError as exc:
             findings.append(
                 f"Canonical package integrity failure for {slug}@{version}: {exc}"
+            )
+            continue
+
+        # 1b. Verify package tree hash matches the expected value.
+        #     In same-owner mode, the executor shares the daemon uid and can
+        #     chmod+mutate+restore canonical targets. The mode check above
+        #     allows owner-writable files in that mode, so we MUST also
+        #     validate actual content integrity via tree hash.
+        expected_tree_hash = spec.get("tree_hash", content_hash)
+        actual_tree_hash = store.compute_tree_hash(slug, version, content_hash)
+        if actual_tree_hash != expected_tree_hash:
+            findings.append(
+                f"Package tree hash mismatch for {slug}@{version}: "
+                f"expected {expected_tree_hash[:16]}..., "
+                f"got {actual_tree_hash[:16]}..."
             )
             continue
 
