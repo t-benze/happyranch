@@ -1966,6 +1966,272 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills": {
+      "GET": {
+        "params": [
+          [
+            "page",
+            "query"
+          ],
+          [
+            "page_size",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/agent": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/agent/{skill_slug}": {
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/migrate-legacy": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}": {
+      "GET": {
+        "params": [
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}/eligibility": {
+      "GET": {
+        "params": [
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}/eligibility/audit": {
+      "GET": {
+        "params": [
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}/eligibility/dry-run": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}/restore": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/custom-skills/{skill_slug}/retire": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_slug",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/effective-skills/{agent_name}": {
+      "GET": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skill-lifecycle/events/{skill_id}": {
       "GET": {
         "params": [

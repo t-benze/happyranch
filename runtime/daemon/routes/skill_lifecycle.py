@@ -1398,3 +1398,409 @@ def rollback_proposal(
         "assignments_deactivated": count,
         "reason": body.reason,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 Custom Skill Creation + Eligibility routes
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Import eligibility service
+from runtime.skills.lifecycle.eligibility_service import (
+    AgentForbiddenError as CSAgentForbiddenError,
+    CustomSkillError,
+    CustomSkillService,
+)
+from runtime.skills.lifecycle import eligibility_stores
+from runtime.skills.lifecycle.models import (
+    CreateSkillRequest,
+    CreateSkillResponse,
+    CustomSkillCatalogItem,
+    CustomSkillCatalogResponse,
+    CustomSkillDetailResponse,
+    CustomSkillVisibility,
+    EffectiveSkillExplanation,
+    EffectiveSkillsCatalogResponse,
+    EligibilityAuditEntry,
+    EligibilityAuditResponse,
+    EligibilityDryRunResponse,
+    EligibilityPolicyRequest,
+    EligibilityRuleInput,
+    EligibilityTargetScope,
+    RetireRequest,
+    RestoreRequest,
+    UpdateSkillRequest,
+)
+
+_cs_service = CustomSkillService()
+
+# ── Prohibited body keys for agent creation (same set as proposal) ──────
+
+_CREATE_PROHIBITED_KEYS = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+# ── Agent create-skill route ─────────────────────────────────────────────
+
+@dual_router.post("/custom-skills/agent", status_code=201)
+def create_skill_agent(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Custom skill package (no identity fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Create or update a custom skill via opaque agent-session binding.
+
+    **Agent-only.** Derives org, task, agent, and session from verified active
+    session context. Rejects presence of any identity/authority field before
+    parsing. Accepts standard_operational guidance only.
+
+    - Removes the fixed pilot slug map — any agent may create any non-protected slug.
+    - Agent may update ONLY a custom skill they originated.
+    - Agent may never set eligibility, retire/restore another's skill, modify
+      system/shipped/protected slugs, or change any permission/configuration.
+    - New skills default to hidden; eligibility is configured separately by founder.
+    """
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session custom skill creation only.",
+            },
+        )
+
+    # Reject prohibited body identity keys BEFORE parsing
+    for key in _CREATE_PROHIBITED_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set. Identity is derived from verified session context.",
+                },
+            )
+
+    body = CreateSkillRequest(**body_raw)
+
+    # Resolve session context
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        if verified_org != slug:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "code": "cross_org_session",
+                "detail": f"Session belongs to org '{verified_org}', not '{slug}'.",
+            })
+    else:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "code": "unknown_session",
+                "detail": f"No active session found for session_id '{session_id}'.",
+            })
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "code": "missing_org_context",
+            "detail": f"Session {session_id} has no org context.",
+        })
+
+    db = _get_db(org)
+    try:
+        result = _cs_service.create_skill_agent(
+            db=db,
+            slug=body.slug,
+            name=body.name,
+            description=body.description,
+            skill_md=body.skill_md,
+            agent_name=agent_name,
+            task_id=task_id,
+            session_id=session_id,
+            version=body.version,
+            policy_class=body.policy_class,
+            purpose=body.purpose,
+            org_root=org.org_root,
+        )
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+
+    return result
+
+
+# ── Agent update-skill route ─────────────────────────────────────────────
+
+@dual_router.put("/custom-skills/agent/{skill_slug}")
+def update_skill_agent(
+    slug: str,
+    skill_slug: str,
+    org: OrgDep,
+    body_raw: dict = RequestBody(..., description="Updated skill fields"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Agent updates a custom skill they originated."""
+    if has_bearer:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={
+            "code": "bearer_not_accepted",
+            "detail": "This route is for agent-session updates only.",
+        })
+
+    for key in _CREATE_PROHIBITED_KEYS:
+        if key in body_raw:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "code": "body_identity_rejected",
+                "detail": f"{key} must not be set.",
+            })
+
+    body = UpdateSkillRequest(**{k: v for k, v in body_raw.items()
+                                  if k in UpdateSkillRequest.model_fields})
+
+    context = org.sessions.get_context_by_session(session_id)
+    if context is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "code": "unknown_session",
+            "detail": f"No active session found for session_id '{session_id}'.",
+        })
+    verified_org, task_id, agent_name = context
+    if verified_org != slug:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "code": "cross_org_session",
+        })
+
+    db = _get_db(org)
+    try:
+        result = _cs_service.update_skill_agent(
+            db=db, slug=skill_slug, agent_name=agent_name,
+            task_id=task_id, session_id=session_id,
+            name=body.name, description=body.description,
+            skill_md=body.skill_md, version=body.version,
+            purpose=body.purpose, org_root=org.org_root,
+        )
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+
+    return result
+
+
+# ── Human create custom skill ─────────────────────────────────────────────
+
+@dual_router.post("/custom-skills", status_code=201, dependencies=[Depends(_require_human)])
+def create_skill_human(
+    slug: str,
+    org: OrgDep,
+    body: CreateSkillRequest,
+) -> dict:
+    """Human/founder creates a custom skill."""
+    db = _get_db(org)
+    try:
+        result = _cs_service.create_skill_human(
+            db=db, slug=body.slug, name=body.name,
+            description=body.description, skill_md=body.skill_md,
+            actor="founder", version=body.version,
+            policy_class=body.policy_class, org_root=org.org_root,
+        )
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+    return result
+
+
+# ── Custom skill detail ──────────────────────────────────────────────────
+
+@dual_router.get("/custom-skills/{skill_slug}")
+def get_custom_skill_detail(
+    skill_slug: str,
+    org: OrgDep,
+) -> dict:
+    """Get full detail for a custom skill."""
+    db = _get_db(org)
+    detail = _cs_service.get_skill_detail(db, skill_slug)
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={
+            "code": "not_found", "detail": f"No custom skill found with slug '{skill_slug}'.",
+        })
+    return detail
+
+
+# ── Custom skill catalog ─────────────────────────────────────────────────
+
+@dual_router.get("/custom-skills")
+def list_custom_skills(
+    org: OrgDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> dict:
+    """List all custom skills (catalog)."""
+    db = _get_db(org)
+    items, total = _cs_service.list_catalog(db, page=page, page_size=page_size)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+# ── Retire / restore ─────────────────────────────────────────────────────
+
+@dual_router.post("/custom-skills/{skill_slug}/retire", dependencies=[Depends(_require_human)])
+def retire_custom_skill(
+    skill_slug: str,
+    org: OrgDep,
+    body: RetireRequest = RetireRequest(),
+) -> dict:
+    """Human/founder retires a custom skill."""
+    db = _get_db(org)
+    try:
+        result = _cs_service.retire_skill(db, skill_slug, actor="founder", reason=body.reason)
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+    return result
+
+
+@dual_router.post("/custom-skills/{skill_slug}/restore", dependencies=[Depends(_require_human)])
+def restore_custom_skill(
+    skill_slug: str,
+    org: OrgDep,
+) -> dict:
+    """Human/founder restores a retired custom skill."""
+    db = _get_db(org)
+    try:
+        result = _cs_service.restore_skill(db, skill_slug, actor="founder")
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+    return result
+
+
+# ── Eligibility rules ────────────────────────────────────────────────────
+
+@dual_router.get("/custom-skills/{skill_slug}/eligibility")
+def get_eligibility_rules(
+    skill_slug: str,
+    org: OrgDep,
+) -> dict:
+    """Get eligibility rules for a custom skill."""
+    db = _get_db(org)
+    skill_id = f"hr:{skill_slug}"
+    skill = eligibility_stores.get_custom_skill(db, skill_id)
+    if skill is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={
+            "code": "not_found", "detail": f"No custom skill found with slug '{skill_slug}'.",
+        })
+    rules = eligibility_stores.get_eligibility_rules_for_skill(db, skill_id)
+    from runtime.skills.lifecycle.eligibility_service import _rule_to_dict
+    return {"skill_id": skill_id, "rules": [_rule_to_dict(r) for r in rules]}
+
+
+@dual_router.put("/custom-skills/{skill_slug}/eligibility", dependencies=[Depends(_require_human)])
+def set_eligibility_rules(
+    skill_slug: str,
+    org: OrgDep,
+    body: EligibilityPolicyRequest,
+) -> dict:
+    """Human/founder sets eligibility rules for a custom skill.
+
+    Atomically replaces all rules. Requires org agent/team configuration.
+    Returns dry-run impact preview.
+    """
+    db = _get_db(org)
+    skill_id = f"hr:{skill_slug}"
+
+    # Load org agent/team configuration for target validation
+    try:
+        org_agents = org.settings.get_agent_names() if org.settings else []
+        org_teams = org.settings.get_teams() if hasattr(org.settings, 'get_teams') else {}
+    except Exception:
+        org_agents = []
+        org_teams = {}
+
+    try:
+        result = _cs_service.set_eligibility_rules(
+            db=db, skill_id=skill_id, rules=body.rules,
+            org_agents=org_agents, org_teams=org_teams,
+            org_slug=slug, actor="founder",
+        )
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+    return result
+
+
+@dual_router.post("/custom-skills/{skill_slug}/eligibility/dry-run", dependencies=[Depends(_require_human)])
+def dry_run_eligibility(
+    skill_slug: str,
+    org: OrgDep,
+    body: list[EligibilityRuleInput],
+) -> dict:
+    """Dry-run preview of eligibility rules without persisting."""
+    db = _get_db(org)
+    skill_id = f"hr:{skill_slug}"
+    try:
+        org_agents = org.settings.get_agent_names() if org.settings else []
+        org_teams = org.settings.get_teams() if hasattr(org.settings, 'get_teams') else {}
+    except Exception:
+        org_agents = []
+        org_teams = {}
+
+    try:
+        result = _cs_service.dry_run_eligibility(
+            db=db, skill_id=skill_id, proposed_rules=body,
+            org_agents=org_agents, org_teams=org_teams, org_slug=slug,
+        )
+    except CustomSkillError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "detail": e.detail})
+    return result.model_dump()
+
+
+# ── Eligibility audit ────────────────────────────────────────────────────
+
+@dual_router.get("/custom-skills/{skill_slug}/eligibility/audit")
+def get_eligibility_audit(
+    skill_slug: str,
+    org: OrgDep,
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    """Get eligibility audit trail for a custom skill."""
+    db = _get_db(org)
+    skill_id = f"hr:{skill_slug}"
+    entries = eligibility_stores.list_eligibility_audit(db, skill_id=skill_id, limit=limit)
+    return {"entries": entries, "total": len(entries)}
+
+
+# ── Effective skills ─────────────────────────────────────────────────────
+
+@dual_router.get("/effective-skills/{agent_name}")
+def get_effective_skills(
+    agent_name: str,
+    org: OrgDep,
+) -> dict:
+    """Get effective custom skills for an agent.
+
+    Shows visible/hidden status, winning eligibility rule, and last
+    materialization evidence for each custom skill.
+    """
+    db = _get_db(org)
+    try:
+        org_slug_val = slug if 'slug' in dir() else None
+    except NameError:
+        org_slug_val = None
+    skills = _cs_service.get_effective_skills(
+        db, agent_name, org_slug=org_slug_val,
+    )
+    return {
+        "skills": [s.model_dump() for s in skills],
+        "total": len(skills),
+        "visible_count": sum(1 for s in skills if s.visible),
+        "hidden_count": sum(1 for s in skills if not s.visible),
+    }
+
+
+# ── Migration route ──────────────────────────────────────────────────────
+
+@dual_router.post("/custom-skills/migrate-legacy", dependencies=[Depends(_require_human)])
+def migrate_legacy_to_custom_skills(
+    org: OrgDep,
+) -> dict:
+    """Human/founder trigger: migrate legacy lifecycle proposals to custom_skills tables.
+
+    Idempotent. Preserves all provenance.
+    """
+    db = _get_db(org)
+    result = _cs_service.migrate_legacy_proposals(db, org_root=org.org_root)
+    return result

@@ -376,3 +376,287 @@ class RollbackProposalRequest(BaseModel):
     """Founder rollback (assignment-level only, never mutates package status)."""
     reason: str = ""
     expected_event_id: int  # Concurrency marker from detail
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 Custom Skill Creation + Eligibility (Phase 1 — backend contract)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class CustomSkillVisibility(str, Enum):
+    """Custom skill visibility status."""
+    HIDDEN = "hidden"
+    VISIBLE = "visible"
+
+
+class EligibilityTargetScope(str, Enum):
+    """Eligibility rule target scope."""
+    ORG = "org"
+    TEAM = "team"
+    AGENT = "agent"
+
+
+class EligibilityAction(str, Enum):
+    """Allow or deny visibility."""
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+# ── Custom skill record ──────────────────────────────────────────────────
+
+class CustomSkillRecord(BaseModel):
+    """An organization-scoped custom skill.
+
+    Every custom skill has a stable slug, metadata, a current editable
+    version, immutable historical versions, validation evidence, author
+    provenance, eligibility policy, and materialization history.
+    """
+    id: int | None = None
+    skill_id: str  # e.g. "hr:my-skill"
+    slug: str
+    name: str
+    description: str = ""
+    policy_class: str = "standard_operational"
+    visibility: CustomSkillVisibility = CustomSkillVisibility.HIDDEN
+    retired: bool = False
+    retired_at: datetime | None = None
+    retired_by: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    created_by: str = ""  # agent name or "founder"
+    # Agent provenance (when created by an agent)
+    proposer_agent: str | None = None
+    proposal_task_id: str | None = None
+    proposal_session_id: str | None = None
+    # Current version pointer
+    current_version_id: int | None = None
+    current_version: str | None = None
+    current_content_hash: str | None = None
+    # Last validation
+    last_validated_at: datetime | None = None
+    last_validator_version: str | None = None
+
+
+class CustomSkillVersionRecord(BaseModel):
+    """An immutable version record of a custom skill at a specific content hash."""
+    id: int | None = None
+    skill_id: str
+    slug: str
+    name: str
+    version: str
+    content_hash: str
+    policy_class: str = "standard_operational"
+    description: str = ""
+    content_artifact_key: str | None = None
+    status: LifecycleStatus = LifecycleStatus.PUBLISHED
+    created_at: datetime = Field(default_factory=utcnow)
+    created_by: str = ""
+    # Agent provenance
+    proposer_agent: str | None = None
+    proposal_task_id: str | None = None
+    proposal_session_id: str | None = None
+    # Validation
+    validated_at: datetime | None = None
+    validator_version: str | None = None
+    validation_passed: bool | None = None
+    validation_findings: list[str] | None = None
+
+    @field_validator("version")
+    @classmethod
+    def version_must_be_semver(cls, v: str) -> str:
+        parts = v.split(".")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            raise ValueError(f"version must be semver (MAJOR.MINOR.PATCH), got {v!r}")
+        return v
+
+
+# ── Eligibility rule ─────────────────────────────────────────────────────
+
+class EligibilityRule(BaseModel):
+    """A single eligibility rule for a custom skill.
+
+    Semantics: additive allow; explicit deny wins.
+    Target references validated against existing org agent/team configuration.
+    """
+    id: int | None = None
+    skill_id: str
+    target_scope: EligibilityTargetScope
+    target_name: str  # org slug, team name, or agent name
+    action: EligibilityAction
+    priority: int = 0  # Higher priority wins within same scope
+    created_at: datetime = Field(default_factory=utcnow)
+    created_by: str = ""  # "founder" — only human writes
+
+
+class EligibilityPolicyRequest(BaseModel):
+    """Request to set eligibility rules for a custom skill.
+
+    Replaces ALL rules for the skill atomically. Must include at least one rule.
+    """
+    skill_id: str
+    rules: list["EligibilityRuleInput"] = Field(min_length=1)
+
+
+class EligibilityRuleInput(BaseModel):
+    """Input for a single eligibility rule."""
+    target_scope: EligibilityTargetScope
+    target_name: str
+    action: EligibilityAction
+
+
+class EligibilityDryRunResponse(BaseModel):
+    """Impact preview before saving eligibility rules."""
+    skill_id: str
+    newly_visible: list[str] = []  # agent names
+    newly_hidden: list[str] = []
+    unchanged_visible: list[str] = []
+    unchanged_hidden: list[str] = []
+    winning_rules: dict[str, str] = {}  # agent_name -> rule provenance
+
+
+class EffectiveSkillExplanation(BaseModel):
+    """Why a skill is visible or hidden for an agent."""
+    skill_id: str
+    slug: str
+    name: str
+    version: str | None = None
+    content_hash: str | None = None
+    visible: bool
+    hidden_reason: str | None = None  # e.g. "deny:org:founder:2026-08-05"
+    winning_rule: "EligibilityRule | None" = None
+    validation_passed: bool | None = None
+    last_materialization: "MaterializationRecord | None" = None
+    retired: bool = False
+
+
+class EffectiveSkillsCatalogResponse(BaseModel):
+    """Aggregate catalog for custom skills with effective visibility."""
+    skills: list[EffectiveSkillExplanation]
+    total: int
+    visible_count: int
+    hidden_count: int
+
+
+# ── Agent create-skill request/response ───────────────────────────────────
+
+class CreateSkillRequest(BaseModel):
+    """Agent-submitted custom skill creation/update.
+
+    Identity (org, task, session, agent) derives from verified active
+    session context — never from body claims. The server rejects the
+    PRESENCE of any identity/authority field before parsing.
+    """
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(min_length=1, max_length=512)
+    skill_md: str = Field(min_length=1)
+    version: str = "0.1.0"
+    policy_class: str = "standard_operational"
+    purpose: str = ""
+
+
+class UpdateSkillRequest(BaseModel):
+    """Agent-submitted update to an existing custom skill they originated."""
+    name: str | None = None
+    description: str | None = None
+    skill_md: str | None = None
+    version: str | None = None
+    purpose: str = ""
+
+
+class CreateSkillResponse(BaseModel):
+    """Response after creating or updating a custom skill."""
+    skill_id: str
+    slug: str
+    name: str
+    version: str
+    content_hash: str
+    validation_passed: bool
+    validation_findings: list[str] = []
+    visibility: CustomSkillVisibility
+    version_id: int
+    created_by: str
+    created_at: str
+    proposal_task_id: str | None = None
+
+
+class CustomSkillDetailResponse(BaseModel):
+    """Full detail for a custom skill (human/agent readable)."""
+    id: int
+    skill_id: str
+    slug: str
+    name: str
+    description: str
+    policy_class: str
+    visibility: CustomSkillVisibility
+    retired: bool
+    retired_at: str | None = None
+    retired_by: str | None = None
+    created_at: str
+    created_by: str
+    proposer_agent: str | None = None
+    proposal_task_id: str | None = None
+    current_version_id: int | None = None
+    current_version: str | None = None
+    current_content_hash: str | None = None
+    versions: list[dict] = []  # version history
+    eligibility_rules: list[dict] = []
+    materializations: list[dict] = []
+
+
+class CustomSkillCatalogItem(BaseModel):
+    """A single item in the custom skills catalog."""
+    skill_id: str
+    slug: str
+    name: str
+    description: str
+    version: str | None = None
+    content_hash: str | None = None
+    visibility: CustomSkillVisibility
+    retired: bool
+    validation_passed: bool | None = None
+    created_by: str
+    proposer_agent: str | None = None
+    created_at: str
+    eligible_agents_count: int = 0
+
+
+class CustomSkillCatalogResponse(BaseModel):
+    """Paginated custom skills catalog."""
+    items: list[CustomSkillCatalogItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class EligibilityAuditEntry(BaseModel):
+    """A single eligibility policy change audit entry."""
+    id: int
+    skill_id: str
+    action: str  # "set_policy", "preview"
+    actor: str
+    rules_before: list[dict] | None = None
+    rules_after: list[dict] | None = None
+    created_at: str
+
+
+class EligibilityAuditResponse(BaseModel):
+    """Audit trail for eligibility policy changes."""
+    entries: list[EligibilityAuditEntry]
+    total: int
+
+
+class RetireRequest(BaseModel):
+    """Request to retire a custom skill."""
+    reason: str = ""
+
+
+class RestoreRequest(BaseModel):
+    """Request to restore a retired custom skill."""
+    pass
+
+
+class MigrationStatusResponse(BaseModel):
+    """Migration status after cutover."""
+    migrated_count: int
+    skipped_count: int
+    errors: list[str] = []

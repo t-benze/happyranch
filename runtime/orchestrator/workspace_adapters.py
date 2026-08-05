@@ -571,6 +571,16 @@ def _materialize_context_union(
         )
         expected_specs.extend(lifecycle_specs)
 
+        # THR-055: custom skills resolved via eligibility rules
+        custom_specs = _build_custom_skill_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name=agent_name,
+            slug=slug,
+        )
+        expected_specs.extend(custom_specs)
+
     # ── Reconcile ONCE with the full union ─────────────────────────
     for subdir in (".claude/skills", ".agents/skills"):
         materializer.repair_workspace_skills(
@@ -746,6 +756,16 @@ def _materialize_unified_canonical(
         )
         expected_specs.extend(lifecycle_specs)
 
+        # THR-055: custom skills resolved via eligibility rules
+        custom_specs = _build_custom_skill_canonical_specs(
+            store=store,
+            org_root=org_root,
+            db=db,
+            agent_name=agent_name,
+            slug=slug,
+        )
+        expected_specs.extend(custom_specs)
+
     # ── Reconcile ONCE with unified expected set ────────────────────
     # Both provider roots get the same full set so system contracts
     # remain while managed/lifecycle links are created/withdrawn.
@@ -755,6 +775,131 @@ def _materialize_unified_canonical(
         )
 
     return expected_specs
+
+
+def _build_custom_skill_canonical_specs(
+    *,
+    store,
+    org_root: Path,
+    db,
+    agent_name: str,
+    slug: str,
+) -> list[dict]:
+    """Resolve custom skills visible via eligibility and build into canonical store.
+
+    Only non-retired custom skills with eligibility-matched visibility are materialized.
+    Fail-closed: any error raises LifecycleMaterializationError.
+    Records materialization evidence on success.
+    """
+    import hashlib
+    import logging
+
+    from runtime.skills.lifecycle.eligibility_service import (
+        CustomSkillService,
+        CustomSkillError,
+        _validate_skill_content,
+        VALIDATOR_VERSION,
+    )
+    from runtime.skills.lifecycle import eligibility_stores
+    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalStoreError
+
+    logger = logging.getLogger("happyranch.skills.custom.materialization")
+    cs_service = CustomSkillService()
+
+    # Get visible skills for this agent via eligibility rules
+    visible_skills = cs_service.get_visible_skills_for_agent(
+        db, agent_name, org_slug=slug,
+    )
+    if not visible_skills:
+        return []
+
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+    specs: list[dict] = []
+
+    for skill in visible_skills:
+        skill_slug = skill.slug
+        version_id = skill.current_version_id
+        version = skill.current_version
+        content_hash = skill.current_content_hash
+
+        if not version_id or not content_hash:
+            continue
+
+        # Build canonical store entry from artifact
+        try:
+            # Load SKILL.md from artifact store
+            prefix = f"skill-lifecycle/{skill_slug}"
+            artifact_key = f"{prefix}/{content_hash[:16]}/SKILL.md"
+            try:
+                skill_bytes = artifact_store.read(artifact_key)
+            except ArtifactNotFound:
+                # Try to read from content_artifact_key in version record
+                version_rec = eligibility_stores.get_custom_skill_version(db, version_id)
+                if version_rec and version_rec.content_artifact_key:
+                    skill_bytes = artifact_store.read(version_rec.content_artifact_key)
+                else:
+                    raise
+
+            # Validate hash
+            actual_hash = hashlib.sha256(skill_bytes).hexdigest()
+            if actual_hash != content_hash:
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=f"Hash mismatch: expected {content_hash[:16]}..., got {actual_hash[:16]}...",
+                )
+
+            # Add to canonical store (writes to store, materializer creates symlinks)
+            spec = store.add_skill_package(
+                slug=skill_slug,
+                version=version or "0.1.0",
+                content_hash=content_hash,
+                skill_md=skill_bytes.decode("utf-8"),
+                references={},
+                assets={},
+            )
+            specs.append(spec)
+
+            # Record successful materialization
+            cs_service.record_materialization(
+                db=db,
+                skill_id=skill.skill_id,
+                agent_name=agent_name,
+                version_id=version_id,
+                version=version or "0.1.0",
+                content_hash=content_hash,
+                success=True,
+                session_context="session_spawn",
+                session_id=None,
+            )
+
+        except LifecycleMaterializationError:
+            raise
+        except Exception as exc:
+            # Record failure
+            try:
+                cs_service.record_materialization(
+                    db=db,
+                    skill_id=skill.skill_id,
+                    agent_name=agent_name,
+                    version_id=version_id or 0,
+                    version=version or "0.1.0",
+                    content_hash=content_hash or "",
+                    success=False,
+                    error_message=str(exc),
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=f"Materialization failed: {exc}",
+            ) from exc
+
+    return specs
 
 
 def _build_lifecycle_canonical_specs(
