@@ -1326,12 +1326,13 @@ def validate_workspace_skills_integrity(
     #   There is NO automatic same-UID local source repair and
     #   NO automatic recovery from any local same-UID source.
     recovery = (
-        "For broken/missing links: happyranch set-executor <agent> "
-        "--executor <current-executor>. "
-        "For corrupted canonical bytes: happyranch skills recover "
-        "<slug> <version> <content_hash> (then restart daemon; next "
-        "materialization rebuilds from ArtifactStore). "
-        "No automatic repair from same-UID local sources."
+        "FIRST manual authoritative external re-sync/redeploy "
+        "of release/custom artifacts; ONLY THEN: "
+        "for link-only faults — happyranch set-executor <agent> "
+        "--executor <current-executor> (non-destructive re-materialize); "
+        "for corrupted canonical bytes — happyranch skills recover "
+        "<slug> <version> <content_hash> then restart daemon. "
+        "Local same-UID sources are not automatically repaired or trusted."
     )
 
     raise WorkspaceIntegrityError(
