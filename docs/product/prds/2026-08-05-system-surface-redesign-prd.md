@@ -112,14 +112,14 @@ The user experience should ensure the setting is *discoverable* from Work Hours 
 
 | Gate / decision | Owner | Current status | Required before build planning |
 | --- | --- | --- | --- |
-| IA/visual cutline and sequencing across groups | Founder | Required | Decide which navigation or surface changes, if any, are worth implementing; this PRD recommends a staged pilot, not a wholesale rewrite. |
-| Work Hours operating-control placement | Product recommendation | Proposed here | Approve Settings → Organization operating controls as the single mutable owner, with Work Hours read-only context/link; no contract change. |
+| #576/#577 pilot cutline and sequencing | Founder | Ruled in THR-140 | Deliver #576 first; then #577 as a navigation-only AppShell grouping pilot. Preserve routes, deep links, and compatibility redirects; broader navigation/surface changes remain out of scope. |
+| Work Hours operating-control placement | Founder | Ruled in THR-140 | Settings → Organization is the sole editable owner for Work Hours enablement and eligibility; Work Hours provides derived context and a Manage operating control handoff. Preserve the existing organization settings patch and scheduler contract. |
 | Current Work Hours contract feasibility | Engineering Manager | Confirmed, THR-147 seq. 2 | Settings placement is feasible only as an org-contextual representation of the one `org_settings[working_hours]` section through the existing org patch; preserve gate-before-eligibility-before-resolution-before-routine/evidence order, validated atomic writes and audit. |
 | Current UX/fidelity constraints | Frontend Engineer | Confirmed, THR-148 seq. 2 | The API supports Settings placement, but Work Hours currently owns wider layout, roster/impact preview, modal editors, confirmation/recovery/timing feedback and Sidebar scent. An implementation needs an explicit cross-navigation/data/layout design, not a field relocation. |
 | Detailed implementation plan and API impact | Engineering Manager | Not started | Reconcile touched routes/components, preserve endpoints/deep links, and identify any contract change as a new proposal. |
 | Assistant governance writes or delegated human roles | Founder + Engineering | Not authorized | Separate product/authority design; excluded from this redesign. |
 
-**Recommended sequencing if the Founder authorizes work:** first validate the Work Hours governance-placement pattern with one organization setting and its domain handoff; then assess one Operate/Evidence navigation group using measured findability; only then consider broader navigation consolidation. Do not use a surface redesign to smuggle in cross-domain runtime changes.
+**Approved pilot sequence:** deliver the #576 Work Hours governance-placement pattern first, then #577 as the bounded navigation-only AppShell grouping pilot. Preserve existing routes, deep links, and compatibility redirects. Do not use either pilot to smuggle in cross-domain runtime changes or broader navigation consolidation.
 
 ## Acceptance criteria for any future implementation proposal
 

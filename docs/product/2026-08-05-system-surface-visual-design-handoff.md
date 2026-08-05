@@ -7,7 +7,7 @@
 | Date | 2026-08-05 |
 | Source Links | [System-surface Redesign PRD](prds/2026-08-05-system-surface-redesign-prd.md); [PR #555](https://github.com/t-benze/happyranch/pull/555); TASK-4373 evidence; focused fidelity review TASK-4377; [#572](https://github.com/t-benze/happyranch/issues/572)–[#577](https://github.com/t-benze/happyranch/issues/577) |
 | Commitment Boundary | analysis-only design translation. This document neither authorizes a UI build nor changes routes, API contracts, scheduler behavior, browser authority, or delivery timing. |
-| Founder Decisions | Required before implementation: pilot cutline and sequence. The proposed Work Hours placement is a product recommendation, not an approved build order. |
+| Founder rulings | THR-140 approves #576 with Settings → Organization as the sole editable owner for Work Hours enablement and eligibility, and approves #577 as a navigation-only AppShell grouping pilot after #576. Each remains separate implementation work subject to its own PR and review. |
 
 ## Purpose and use
 
@@ -22,8 +22,8 @@ owns the selected change:
 
 | Work | Owner issue | Scope boundary |
 | --- | --- | --- |
-| Work Hours organization-control placement | [#576](https://github.com/t-benze/happyranch/issues/576) | First pilot; one existing org-settings patch and one mutable representation. |
-| Intent-first navigation pilot | [#577](https://github.com/t-benze/happyranch/issues/577) | A later, bounded navigation pilot; it must not become a route migration or visual-system rewrite. |
+| Work Hours organization-control placement | [#576](https://github.com/t-benze/happyranch/issues/576) | First Founder-approved pilot; one existing org-settings patch and one mutable representation. |
+| Intent-first navigation pilot | [#577](https://github.com/t-benze/happyranch/issues/577) | Founder-approved after #576; a bounded navigation-only pilot that must not become a route migration or visual-system rewrite. |
 | Dreams unavailable-data defect | [#572](https://github.com/t-benze/happyranch/issues/572) | Truthful fallback only. |
 | Dashboard attention contradiction | [#573](https://github.com/t-benze/happyranch/issues/573) | Traceability to a canonical record or removal of the unsupported claim. |
 | Artifact provenance placeholder | [#574](https://github.com/t-benze/happyranch/issues/574) | Show supplied provenance or an explicit unavailable treatment. |

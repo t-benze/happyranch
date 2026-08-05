@@ -7,7 +7,7 @@
 | Date | 2026-08-05 |
 | Source Links | THR-140 seq. 86–101; updated `screens.zip` (`THR-140-20260805T054438Z-screens.zip`); PR #555; current daemon/web contracts; TASK-4410 reconciliation |
 | Commitment Boundary | analysis-only — no schema, API, authority, retention, or UI mutation is authorized |
-| Founder Decisions | Required: the six decisions in the ledger below. Ruled: #576 is Settings → Organization placement only; #577 is navigation-only; founder-authenticated actions are the present baseline. |
+| Founder Decisions | **Pending:** D1–D6 in the ledger below. Separately ruled: #576 makes Settings → Organization the sole editable owner for Work Hours enablement and eligibility; #577 is a navigation-only AppShell grouping pilot after #576. Founder-authenticated actions are the present baseline. |
 
 ## Recommendation
 
@@ -39,7 +39,7 @@ Every future family-specific write must use its canonical record rather than a d
 
 This common shape intentionally does **not** create a generalized authorization service. Each family must still name its own actor, target, lifecycle, and founder ruling.
 
-## Decision ledger
+## Pending decision ledger
 
 | ID | Founder decision needed | Recommendation | What is deliberately given up if accepted |
 | --- | --- | --- | --- |

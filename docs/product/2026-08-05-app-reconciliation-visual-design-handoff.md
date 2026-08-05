@@ -16,8 +16,8 @@
 | [#573](https://github.com/t-benze/happyranch/issues/573) | Revise | The TODAY sentence is currently derived from `narrative_counts.escalated_open`, while the card renders the routable `escalations` list. Without an approved API change, both signals must derive from that same list; do not invent a missing row. |
 | [#574](https://github.com/t-benze/happyranch/issues/574) | Revise | The API supplies `name`, `size_bytes`, and `modified_at`, not authoritative source provenance. The design may show the supplied modified time and filename-derived provenance when present, but must label both truthfully. |
 | [#575](https://github.com/t-benze/happyranch/issues/575) | Approve as written | `POST /assistant/register` validates, bootstraps, saves, and returns the current state in the same request. The UI should explicitly say registration is live-applied; it must not imply a daemon restart. |
-| [#576](https://github.com/t-benze/happyranch/issues/576) | Approve as written | It is a bounded ownership/placement pilot over the existing organization-settings write boundary. Implementation remains founder-gated. |
-| [#577](https://github.com/t-benze/happyranch/issues/577) | Approve as written | The issue is correctly staged after #576 and preserves paths/deep links. Its selected pilot cutline still needs founder approval before build work. |
+| [#576](https://github.com/t-benze/happyranch/issues/576) | Founder-approved in THR-140 | Settings → Organization is the sole editable owner for Work Hours enablement and eligibility. It preserves the existing organization-settings write boundary and scheduler contract; implementation remains a separate PR and review. |
+| [#577](https://github.com/t-benze/happyranch/issues/577) | Founder-approved in THR-140, after #576 | A navigation-only AppShell grouping pilot. It preserves routes, deep links, and compatibility redirects; implementation remains a separate PR and review. |
 
 ## Shared design rules
 
@@ -101,7 +101,7 @@ These rules apply to every frame below.
 
 ## #577 — Intent-first navigation pilot
 
-**Target routes and states:** only the founder-selected normal AppShell pilot routes. The crosswalk starts from current destinations: Dashboard, Threads, Tasks, Jobs, Todos; Agents, Teams, Work Hours; Skills, Settings; KB, Artifacts, Audit, Dreams, Usage, Health. Existing route paths, `/schedule` → Work Hours Wakes, and `/spend` → Usage remain compatibility targets.
+**Target routes and states:** only the Founder-approved normal AppShell pilot routes. The crosswalk starts from current destinations: Dashboard, Threads, Tasks, Jobs, Todos; Agents, Teams, Work Hours; Skills, Settings; KB, Artifacts, Audit, Dreams, Usage, Health. Existing route paths, `/schedule` → Work Hours Wakes, and `/spend` → Usage remain compatibility targets.
 
 **Layout and interaction:** express the selected group as a text heading plus navigational structure, not a color-only sidebar treatment. Retain selected organization context and make current destination/group discoverable. Dashboard, assistant, summary cards, and evidence surfaces visibly hand off to their canonical record; they do not imply an action happened inside the triage surface. Command palette, help, top bar, and route highlight must stay aligned with the chosen crosswalk. Design the smallest founder-approved group/surfaces first; do not render all groups as an all-at-once shell replacement.
 
