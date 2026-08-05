@@ -23,9 +23,10 @@ discoverability only — it grants no capabilities.
    `scheduling_disabled`.  This skill does **not** claim the capability
    — it documents the callback for use when the flag is already on.
 
-3. **Self-target only.**  The server resolves the creating agent from
-   your `(task_id, session_id, agent)` triple.  The payload cannot
-   nominate another agent.
+3. **Self-target only.**  Agents must create Todos only for themselves
+   and must never target another agent.  The `agent` field must match
+   your own agent name — the server validates it against the active
+   session.
 
 4. **Normalize before arming.**  Before firing the callback, turn the
    founder/operator instruction into a concrete, founder-reviewable
@@ -65,7 +66,7 @@ permission matchers.
 | --- | :---: | --- |
 | `task_id` | ✓ | Your current task id |
 | `session_id` | ✓ | Your current session id |
-| `agent` | ✓ | Your agent name (resolved server-side; must match the live session) |
+| `agent` | ✓ | Your agent name (validated against the active session) |
 | `source_instruction` | ✓ | Verbatim instruction — kept for audit, never edited afterward |
 | `normalized_brief` | ✓ | Self-contained, founder-reviewable brief — immutable after creation |
 | `kind` | ✓ | `"one_shot"` or `"weekly"` |
@@ -208,7 +209,7 @@ happyranch schedules create --org happyranch --from-file /tmp/schedule-weekly-ma
 
 | Out of scope | Details |
 | --- | --- |
-| Cross-agent scheduling | Self-only; the payload cannot nominate another agent |
+| Cross-agent scheduling | Self-only; agents must never target another agent |
 | Cron or complex recurrence | Only simple weekly (one weekday, one time) |
 | Hidden / silent schedules | All Todos are founder-visible |
 | General unscheduled backlog | No "Todo inbox" — every Todo has a `fire_at` |

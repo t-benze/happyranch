@@ -37,7 +37,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in protocol/skills/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"] (fix: add todos to task-context fixtures, correct SKILL.md self-target claim, and add docs parity for todos SystemContract)
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -483,6 +483,41 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
 
     assert result.success is True
     assert mock_executor.run.call_count == 1
+
+
+def test_run_agent_materializes_todos_skill_on_task_path(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Normal task path must materialize the todos system contract to
+    .agents/skills/todos/SKILL.md before the executor runs.
+
+    This proves the universal todos SystemContract reaches every task
+    session through the existing materialize_workspace_skills path."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    ws = test_runtime.workspaces_dir / "dev_agent"
+    task_id = orchestrator.create_task("ping with todos")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-td")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=1,
+        session_id="sess-td",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, _ = orchestrator._run_agent(task_id, "dev_agent", "any prompt")
+
+    assert result.success is True
+    assert mock_executor.run.call_count == 1
+
+    # Prove the universal todos SystemContract materialized through the
+    # real _run_agent / TASK context path.
+    todos_marker = ws / ".agents" / "skills" / "todos" / "SKILL.md"
+    assert todos_marker.is_file(), (
+        f"todos skill not materialized at {todos_marker}; "
+        f"workspace skills dir contents: "
+        f"{list((ws / '.agents' / 'skills').rglob('*')) if (ws / '.agents' / 'skills').is_dir() else 'missing'}"
+    )
 
 
 def test_task_history_written_per_agent_only(orchestrator, test_runtime):

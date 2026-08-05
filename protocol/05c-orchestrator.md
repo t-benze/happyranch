@@ -1102,6 +1102,7 @@ in the guard test, then removed in Phase 4.
 | ``make-worktree`` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | yes |
 | ``thread`` | ✓ | ✓ | ✓ | | ✓ | ✓ | no |
 | ``dream`` | | | | ✓ | | | no |
+| ``todos`` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 
 **Session-context mapping:**
 - ``TASK`` — ``Orchestrator._run_agent`` (ordinary task/subtask session)
