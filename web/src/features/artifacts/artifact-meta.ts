@@ -97,3 +97,24 @@ export function formatProvenanceDate(date: string): string {
   const [y, m, d] = date.split('-').map((n) => Number.parseInt(n, 10));
   return `${MONTHS[m - 1]} ${d}, ${y}`;
 }
+
+const MODIFIED_AT_FMT: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+};
+
+/**
+ * Format the runtime-supplied `modified_at` ISO string for the card.
+ * Returns `null` when the value is missing or not a valid date — callers must
+ * render an explicit "Modified time unavailable" fallback and must never pass
+ * the raw string through `new Date()` unguarded.
+ */
+export function formatArtifactModifiedAt(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString(undefined, MODIFIED_AT_FMT);
+}
