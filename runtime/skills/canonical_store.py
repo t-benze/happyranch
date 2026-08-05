@@ -784,7 +784,7 @@ class CanonicalSkillStore:
 
     def verify_package(self, slug: str, version: str, content_hash: str) -> None:
         """Verify a canonical package exists, has correct ownership,
-        and every member is read-only (immutable invariant enforced at
+        and every member is non-writable (hardening check enforced at
         the materialization gate).
 
         Raises CanonicalStoreError if missing, tampered, or insufficiently

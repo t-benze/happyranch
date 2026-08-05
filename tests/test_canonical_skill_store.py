@@ -186,20 +186,6 @@ class TestSymlinkOperations:
         os.symlink(str(regular), str(sym))
         assert iso.is_valid_symlink(sym)
 
-    @pytest.mark.skip(reason="REMOVED: make_file_readonly removed from PlatformIsolation")
-    def test_make_file_readonly(self, tmp_path):
-        """make_file_readonly sets file to 0444."""
-        iso = isolation.detect_platform_isolation()
-        f = tmp_path / "readonly.txt"
-        f.write_text("data")
-        iso.make_file_readonly(f)
-        mode = stat.S_IMODE(f.stat().st_mode)
-        # Should be at most 0444 on Unix
-        if os.name != "nt":
-            assert mode & stat.S_IWGRP == 0
-            assert mode & stat.S_IWOTH == 0
-
-
 # ── Canonical store tests ───────────────────────────────────────────
 
 
@@ -900,24 +886,23 @@ class TestBuildAtomicOrdering:
     must apply readonly permissions AFTER os.replace, not before.
 
     On macOS, rename() requires write permission on the source
-    directory.  If make_dir_readonly_executor (→ 0555) runs before
-    os.replace, the rename fails with PermissionError [Errno 13].
-    The fix moves os.replace before the readonly steps and applies
-    them to the final package path instead of the temp directory.
+    directory. _apply_readonly_hardening (→ 0555 dirs, 0444 files)
+    must run AFTER os.replace, not before.
+    The fix ensures os.replace runs first, then readonly hardening
+    is applied to the final location.
     """
 
     def test_build_from_source_succeeds_with_readonly_isolation(
         self, temp_canonical_root, skill_source_dir,
     ):
         """build_from_source completes without PermissionError when
-        make_dir_readonly_executor genuinely removes write bits (0555).
+        _apply_readonly_hardening removes write bits (0444/0555).
         """
         import hashlib
 
-        # Use a store with the test-mode isolation (patched via conftest).
         store = CanonicalSkillStore(root=temp_canonical_root)
 
-        # The isolation.make_dir_readonly_executor sets 0555 (no write).
+        # _apply_readonly_hardening sets files 0444, dirs 0755.
         # On macOS CI this would block os.replace if applied before the
         # atomic rename.  The fix ensures os.replace runs first, then
         # readonly is applied to the final location.
@@ -988,8 +973,8 @@ class TestBuildAtomicOrdering:
     def test_build_from_manifest_succeeds_with_readonly_isolation(
         self, temp_canonical_root,
     ):
-        """build_from_manifest also succeeds when readonly isolation is
-        genuinely removing write bits (0555)."""
+        """build_from_manifest also succeeds when _apply_readonly_hardening
+        applies 0444 files / 0755 dirs (no write bits)."""
         import hashlib
 
         # Create a mock artifact store
@@ -1039,42 +1024,32 @@ class TestHardeningFailureAfterPublication:
     """
 
     def test_source_hardening_failure_after_publish_not_built(
-        self, temp_canonical_root, skill_source_dir,
+        self, temp_canonical_root, skill_source_dir, monkeypatch,
     ):
-        """If make_dir_readonly_executor fails after os.replace in
+        """If _apply_readonly_hardening fails after os.replace in
         build_from_source, is_built() returns False — the package is
         NOT considered built despite being on disk."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
         content_hash = hashlib.sha256(b"src-harden-fail").hexdigest()
 
-        # Inject failure: make_dir_readonly_executor raises on the FIRST call
-        # (which happens on the root pkg_path AFTER all files are hardened).
-        # The file-level make_file_readonly calls succeed, but the root dir
-        # hardening fails — simulating a partial-readonly state.
-        calls = [0]
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise OSError("Injected hardening failure")
 
-        def fail_make_dir_readonly(path):
-            calls[0] += 1
-            if calls[0] == 1:
-                raise OSError("Injected hardening failure on root dir")
-            # Subsequent calls succeed (for subdirs before root)
-            os.chmod(path, stat.S_IRUSR | stat.S_IXUSR
-                     | stat.S_IRGRP | stat.S_IXGRP
-                     | stat.S_IROTH | stat.S_IXOTH)
-
-        original_make_dir = store._isolation.make_dir_readonly_executor
-        store._isolation.make_dir_readonly_executor = fail_make_dir_readonly
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         try:
-            pkg_path = store.build_from_source(
+            store.build_from_source(
                 "test-skill", "1.0.0", content_hash, skill_source_dir,
             )
         except (CanonicalStoreError, OSError):
             pass
-        finally:
-            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
         # After the failure, is_built() must return False.
         assert not store.is_built("test-skill", "1.0.0", content_hash), (
@@ -1138,11 +1113,12 @@ class TestHardeningFailureAfterPublication:
         )
 
     def test_manifest_hardening_failure_after_publish_not_built(
-        self, temp_canonical_root,
+        self, temp_canonical_root, monkeypatch,
     ):
-        """If make_dir_readonly_executor fails after os.replace in
+        """If _apply_readonly_hardening fails after os.replace in
         build_from_manifest, is_built() returns False."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         artifact_store = MagicMock()
         artifact_store.read.return_value = b"# Manifest-built skill\n"
@@ -1162,11 +1138,12 @@ class TestHardeningFailureAfterPublication:
 
         store = CanonicalSkillStore(root=temp_canonical_root)
 
-        original_make_dir = store._isolation.make_dir_readonly_executor
-        store._isolation.make_dir_readonly_executor = lambda path: (
-            (_ for _ in ()).throw(
-                OSError("Injected hardening failure"))
-        )
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise OSError("Injected hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         try:
             store.build_from_manifest(
@@ -1174,27 +1151,27 @@ class TestHardeningFailureAfterPublication:
             )
         except (CanonicalStoreError, OSError):
             pass
-        finally:
-            store._isolation.make_dir_readonly_executor = original_make_dir
 
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
         assert not store.is_built("mf-skill", "1.0.0", content_hash), (
             "is_built() must return False when readonly hardening failed "
             "after manifest publication"
         )
 
     def test_pre_existing_trusted_state_unaffected(
-        self, temp_canonical_root, skill_source_dir,
+        self, temp_canonical_root, skill_source_dir, monkeypatch,
     ):
         """A successfully built package (trusted state) must remain
         correctly reported as built after a DIFFERENT package's
         hardening failure."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
 
         # Build a trusted package normally
         trusted_hash = hashlib.sha256(b"trusted-pkg").hexdigest()
-        trusted_path = store.build_from_source(
+        store.build_from_source(
             "trusted-skill", "1.0.0", trusted_hash, skill_source_dir,
         )
         assert store.is_built("trusted-skill", "1.0.0", trusted_hash)
@@ -1202,11 +1179,12 @@ class TestHardeningFailureAfterPublication:
         # Now attempt a different package with hardening failure
         fail_hash = hashlib.sha256(b"fail-pkg").hexdigest()
 
-        original_make_dir = store._isolation.make_dir_readonly_executor
-        store._isolation.make_dir_readonly_executor = lambda path: (
-            (_ for _ in ()).throw(
-                OSError("Injected hardening failure"))
-        )
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise OSError("Injected hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         try:
             store.build_from_source(
@@ -1214,8 +1192,8 @@ class TestHardeningFailureAfterPublication:
             )
         except (CanonicalStoreError, OSError):
             pass
-        finally:
-            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
         # Trusted state must be unaffected
         assert store.is_built("trusted-skill", "1.0.0", trusted_hash), (
@@ -1233,47 +1211,46 @@ class TestHardeningFailureAfterPublication:
         the error must surface explicitly as a named compensation failure
         — not swallowed."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
         content_hash = hashlib.sha256(b"cleanup-fail").hexdigest()
 
-        original_make_dir = store._isolation.make_dir_readonly_executor
+        # Inject _apply_readonly_hardening failure
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise OSError("Injected hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         # Inject rmtree failure so that _safe_remove_published_package
         # cannot clean up the unsafe package.
         import shutil as _shutil_mod
-        original_rmtree = _shutil_mod.rmtree
 
         def fail_rmtree(path, ignore_errors=False, onerror=None):
             raise PermissionError("Injected rmtree failure")
 
         monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
 
-        store._isolation.make_dir_readonly_executor = lambda path: (
-            (_ for _ in ()).throw(
-                OSError("Injected hardening failure"))
-        )
-
-        try:
-            # Both hardening and compensation fail → must raise named error
-            with pytest.raises(CanonicalStoreError) as exc_info:
-                store.build_from_source(
-                    "test-skill", "1.0.0", content_hash, skill_source_dir,
-                )
-            assert exc_info.value.code == "compensation_failed", (
-                f"Expected compensation_failed, got {exc_info.value.code}"
+        # Both hardening and compensation fail → must raise named error
+        with pytest.raises(CanonicalStoreError) as exc_info:
+            store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
             )
-            assert "Injected rmtree failure" in exc_info.value.detail
-        finally:
-            store._isolation.make_dir_readonly_executor = original_make_dir
-            monkeypatch.undo()
+        assert exc_info.value.code == "compensation_failed", (
+            f"Expected compensation_failed, got {exc_info.value.code}"
+        )
+        assert "Injected rmtree failure" in exc_info.value.detail
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
     def test_canonical_hashes_preserved_after_hardening_failure(
-        self, temp_canonical_root, skill_source_dir,
+        self, temp_canonical_root, skill_source_dir, monkeypatch,
     ):
         """Canonical manifest member hashes remain correct after a
         hardening failure — no corruption of the content on disk."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
         content_hash = hashlib.sha256(b"hash-integrity").hexdigest()
@@ -1286,11 +1263,12 @@ class TestHardeningFailureAfterPublication:
                 expected_files[rel] = hashlib.sha256(
                     fpath.read_bytes()).hexdigest()
 
-        original_make_dir = store._isolation.make_dir_readonly_executor
-        store._isolation.make_dir_readonly_executor = lambda path: (
-            (_ for _ in ()).throw(
-                OSError("Injected hardening failure"))
-        )
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise OSError("Injected hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         try:
             store.build_from_source(
@@ -1298,8 +1276,8 @@ class TestHardeningFailureAfterPublication:
             )
         except (CanonicalStoreError, OSError):
             pass
-        finally:
-            store._isolation.make_dir_readonly_executor = original_make_dir
+
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
         # If the package path still exists (cleanup may have failed),
         # verify file content hashes are correct (unchanged from source)
@@ -1347,21 +1325,23 @@ class TestHardeningFailureAfterPublication:
     def test_source_hardening_and_compensation_failure_rejected_by_both_gates(
         self, temp_canonical_root, skill_source_dir, monkeypatch,
     ):
-        """When file hardening AND compensation/quarantine both fail in
+        """When hardening AND compensation/quarantine both fail in
         build_from_source, the produced package must be rejected by BOTH
         is_built() and verify_package(), and a named compensation failure
         must surface."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
         content_hash = hashlib.sha256(b"src-both-fail").hexdigest()
 
-        # Inject: make_file_readonly fails for files after publication
-        original_make_file = store._isolation.make_file_readonly
-        store._isolation.make_file_readonly = lambda path: (
-            (_ for _ in ()).throw(
-                PermissionError("Injected file hardening failure"))
-        )
+        # Inject: _apply_readonly_hardening fails after publication
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise PermissionError("Injected file hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         # Inject: rmtree fails so compensation cannot clean up
         import shutil as _shutil_mod
@@ -1369,27 +1349,23 @@ class TestHardeningFailureAfterPublication:
             raise PermissionError("Injected compensation failure")
         monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
 
-        try:
-            with pytest.raises(CanonicalStoreError) as exc_info:
-                store.build_from_source(
-                    "test-skill", "1.0.0", content_hash, skill_source_dir,
-                )
-            # Must be a compensation_failed error
-            assert exc_info.value.code == "compensation_failed", (
-                f"Expected compensation_failed, got {exc_info.value.code}"
+        with pytest.raises(CanonicalStoreError) as exc_info:
+            store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
             )
-            assert "Injected compensation failure" in exc_info.value.detail
-        finally:
-            store._isolation.make_file_readonly = original_make_file
-            monkeypatch.undo()
+        # Must be a compensation_failed error
+        assert exc_info.value.code == "compensation_failed", (
+            f"Expected compensation_failed, got {exc_info.value.code}"
+        )
+        assert "Injected compensation failure" in exc_info.value.detail
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
         # After both failures, the published package must be rejected
         # by BOTH reuse and materialization gates.
         assert not store.is_built("test-skill", "1.0.0", content_hash), (
             "is_built() must return False when hardening + compensation fail"
         )
-        # verify_package enforces the immutable invariant strictly —
-        # files must be 0444 regardless of isolation mode.
+        # Files must be 0444 regardless of mode (detection-only hardening invariant).
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
         assert ve.value.code in (
@@ -1400,11 +1376,12 @@ class TestHardeningFailureAfterPublication:
     def test_manifest_hardening_and_compensation_failure_rejected_by_both_gates(
         self, temp_canonical_root, monkeypatch,
     ):
-        """When file hardening AND compensation/quarantine both fail in
+        """When hardening AND compensation/quarantine both fail in
         build_from_manifest, the produced package must be rejected by BOTH
         is_built() and verify_package(), and a named compensation failure
         must surface."""
         import hashlib
+        import runtime.skills.canonical_store as _cs_mod
 
         artifact_store = MagicMock()
         artifact_store.read.return_value = b"# Manifest skill content\n"
@@ -1424,12 +1401,13 @@ class TestHardeningFailureAfterPublication:
 
         store = CanonicalSkillStore(root=temp_canonical_root)
 
-        # Inject: make_file_readonly fails after publication
-        original_make_file = store._isolation.make_file_readonly
-        store._isolation.make_file_readonly = lambda path: (
-            (_ for _ in ()).throw(
-                PermissionError("Injected file hardening failure"))
-        )
+        # Inject: _apply_readonly_hardening fails after publication
+        hardening_calls = [0]
+        def fail_hardening(pkg_path):
+            hardening_calls[0] += 1
+            raise PermissionError("Injected file hardening failure")
+
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         # Inject: rmtree fails so compensation cannot clean up
         import shutil as _shutil_mod
@@ -1437,24 +1415,21 @@ class TestHardeningFailureAfterPublication:
             raise PermissionError("Injected compensation failure")
         monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
 
-        try:
-            with pytest.raises(CanonicalStoreError) as exc_info:
-                store.build_from_manifest(
-                    "mf-skill", "1.0.0", content_hash, manifest, artifact_store,
-                )
-            assert exc_info.value.code == "compensation_failed", (
-                f"Expected compensation_failed, got {exc_info.value.code}"
+        with pytest.raises(CanonicalStoreError) as exc_info:
+            store.build_from_manifest(
+                "mf-skill", "1.0.0", content_hash, manifest, artifact_store,
             )
-            assert "Injected compensation failure" in exc_info.value.detail
-        finally:
-            store._isolation.make_file_readonly = original_make_file
-            monkeypatch.undo()
+        assert exc_info.value.code == "compensation_failed", (
+            f"Expected compensation_failed, got {exc_info.value.code}"
+        )
+        assert "Injected compensation failure" in exc_info.value.detail
+        assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
         # Both gates must reject the unsafe package.
         assert not store.is_built("mf-skill", "1.0.0", content_hash), (
             "is_built() must return False when manifest hardening + compensation fail"
         )
-        # verify_package enforces the immutable invariant strictly.
+        # Files must be 0444 regardless of mode (detection-only hardening invariant).
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("mf-skill", "1.0.0", content_hash)
         assert ve.value.code in (
@@ -1492,8 +1467,8 @@ class TestHardeningFailureAfterPublication:
             "is_built() must reject package with owner-writable member"
         )
 
-        # Files must always be 0444 — the immutable invariant is enforced
-        # regardless of isolation mode.
+        # Files must always be 0444 — the hardening check is enforced
+        # in all modes (detection-only, not prevention).
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
         assert ve.value.code == "insufficient_hardening", (
@@ -1575,6 +1550,7 @@ class TestHardeningFailureAfterPublication:
         Stub invocation and no-executor-launch are proven."""
         import hashlib
         import subprocess as _subprocess_mod
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
 
@@ -1605,16 +1581,15 @@ class TestHardeningFailureAfterPublication:
                 AssertionError("Popen must not be called"))
         )
 
-        # ── 4. Inject dual failure: file hardening + compensation ──
+        # ── 4. Inject dual failure: hardening + compensation ──
         hardening_calls = [0]
         compensation_calls = [0]
 
-        original_make_file = store._isolation.make_file_readonly
-        def fail_make_file_readonly(path):
+        def fail_hardening(pkg_path):
             hardening_calls[0] += 1
             raise PermissionError(
-                f"Injected file hardening failure on {path}")
-        store._isolation.make_file_readonly = fail_make_file_readonly
+                f"Injected hardening failure on {pkg_path}")
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         import shutil as _shutil_mod
         def fail_rmtree(path, ignore_errors=False, onerror=None):
@@ -1625,95 +1600,89 @@ class TestHardeningFailureAfterPublication:
 
         content_hash = hashlib.sha256(b"src-boundary-dual").hexdigest()
 
-        try:
-            # ── 5. build_from_source → must raise compensation_failed ─
-            with pytest.raises(CanonicalStoreError) as exc_info:
-                store.build_from_source(
-                    "test-skill", "1.0.0", content_hash, skill_source_dir,
-                )
-            assert exc_info.value.code == "compensation_failed", (
-                f"Expected compensation_failed, got {exc_info.value.code}"
+        # ── 5. build_from_source → must raise compensation_failed ─
+        with pytest.raises(CanonicalStoreError) as exc_info:
+            store.build_from_source(
+                "test-skill", "1.0.0", content_hash, skill_source_dir,
             )
-            assert "Injected compensation failure" in exc_info.value.detail
+        assert exc_info.value.code == "compensation_failed", (
+            f"Expected compensation_failed, got {exc_info.value.code}"
+        )
+        assert "Injected compensation failure" in exc_info.value.detail
 
-            # ── 6. Prove stubs were actually installed and invoked ──
-            assert hardening_calls[0] > 0, (
-                "File hardening stub was never invoked — test is false-positive"
-            )
-            assert compensation_calls[0] > 0, (
-                "Compensation stub was never invoked — test is false-positive"
-            )
+        # ── 6. Prove stubs were actually installed and invoked ──
+        assert hardening_calls[0] > 0, (
+            "_apply_readonly_hardening stub was never invoked"
+        )
+        assert compensation_calls[0] > 0, (
+            "Compensation stub was never invoked — test is false-positive"
+        )
 
-            # ── 7. Reuse gate: is_built() must reject ─────────────
-            assert not store.is_built(
-                "test-skill", "1.0.0", content_hash), (
-                "is_built() must return False after dual failure"
-            )
+        # ── 7. Reuse gate: is_built() must reject ─────────────
+        assert not store.is_built(
+            "test-skill", "1.0.0", content_hash), (
+            "is_built() must return False after dual failure"
+        )
 
-            # ── 8. Materialization pre-check gate: verify_package ──
-            # The immutable file invariant is enforced regardless of
-            # isolation mode.
-            with pytest.raises(CanonicalStoreError) as ve:
-                store.verify_package("test-skill", "1.0.0", content_hash)
-            assert ve.value.code in (
-                "insufficient_hardening", "ownership_violation"), (
-                f"verify_package must reject on readonly invariant, "
-                f"got {ve.value.code}"
-            )
+        # ── 8. Materialization pre-check gate: verify_package ──
+        # The file invariant is enforced regardless of mode.
+        with pytest.raises(CanonicalStoreError) as ve:
+            store.verify_package("test-skill", "1.0.0", content_hash)
+        assert ve.value.code in (
+            "insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, "
+            f"got {ve.value.code}"
+        )
 
-            # ── 9. Materialization boundary: BOTH provider roots ───
-            skills_subdirs = [".claude/skills", ".agents/skills"]
-            for subdir in skills_subdirs:
-                # verify_package always rejects — materialization follows
-                # the same immutable invariant.
-                # Attempt materialization → must raise (fail-closed)
-                with pytest.raises(
-                    SymlinkMaterializationError, match="canonical_missing"
-                ):
-                    materializer.materialize_skill(
-                        "test-skill", "1.0.0", content_hash,
-                        workspace_dir, subdir,
-                    )
-
-                # No link created
-                link_path = workspace_dir / subdir / "test-skill"
-                assert not link_path.exists(follow_symlinks=False), (
-                    f"Link must NOT exist at {link_path} after "
-                    "materialization failure"
+        # ── 9. Materialization boundary: BOTH provider roots ───
+        skills_subdirs = [".claude/skills", ".agents/skills"]
+        for subdir in skills_subdirs:
+            # verify_package always rejects — materialization follows
+            # the same invariant.
+            # Attempt materialization → must raise (fail-closed)
+            with pytest.raises(
+                SymlinkMaterializationError, match="canonical_missing"
+            ):
+                materializer.materialize_skill(
+                    "test-skill", "1.0.0", content_hash,
+                    workspace_dir, subdir,
                 )
 
-            # ── 10. No executor launch attempted ───────────────────
-            assert len(popen_calls) == 0, (
-                f"subprocess.Popen was called {len(popen_calls)} times — "
-                "executor launch should never have been attempted"
+            # No link created
+            link_path = workspace_dir / subdir / "test-skill"
+            assert not link_path.exists(follow_symlinks=False), (
+                f"Link must NOT exist at {link_path} after "
+                "materialization failure"
             )
 
-            # ── 11. Trusted package hashes unchanged (NON-CONDITIONAL) ─
-            trusted_current = store.canonical_path(
-                "trusted-skill", "1.0.0", trusted_hash)
-            assert trusted_current.is_dir(), (
-                "Trusted package must still exist"
-            )
-            for rel, expected_hash in trusted_hashes.items():
-                fp = trusted_current / rel
-                assert fp.is_file(), (
-                    f"Trusted file {rel} must still exist"
-                )
-                actual = hashlib.sha256(fp.read_bytes()).hexdigest()
-                assert actual == expected_hash, (
-                    f"Trusted file {rel} hash changed: expected "
-                    f"{expected_hash[:16]}..., got {actual[:16]}..."
-                )
+        # ── 10. No executor launch attempted ───────────────────
+        assert len(popen_calls) == 0, (
+            f"subprocess.Popen was called {len(popen_calls)} times — "
+            "executor launch should never have been attempted"
+        )
 
-            # Trusted package still passes validation
-            assert store.is_built("trusted-skill", "1.0.0", trusted_hash), (
-                "Trusted package must still pass is_built()"
+        # ── 11. Trusted package hashes unchanged (NON-CONDITIONAL) ─
+        trusted_current = store.canonical_path(
+            "trusted-skill", "1.0.0", trusted_hash)
+        assert trusted_current.is_dir(), (
+            "Trusted package must still exist"
+        )
+        for rel, expected_hash in trusted_hashes.items():
+            fp = trusted_current / rel
+            assert fp.is_file(), (
+                f"Trusted file {rel} must still exist"
             )
-            store.verify_package("trusted-skill", "1.0.0", trusted_hash)
+            actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+            assert actual == expected_hash, (
+                f"Trusted file {rel} hash changed: expected "
+                f"{expected_hash[:16]}..., got {actual[:16]}..."
+            )
 
-        finally:
-            store._isolation.make_file_readonly = original_make_file
-            monkeypatch.undo()
+        # Trusted package still passes validation
+        assert store.is_built("trusted-skill", "1.0.0", trusted_hash), (
+            "Trusted package must still pass is_built()"
+        )
+        store.verify_package("trusted-skill", "1.0.0", trusted_hash)
 
     def test_manifest_dual_failure_materialization_boundary_trusted_hashes(
         self, temp_canonical_root, workspace_dir, monkeypatch,
@@ -1725,6 +1694,7 @@ class TestHardeningFailureAfterPublication:
         are proven."""
         import hashlib
         import subprocess as _subprocess_mod
+        import runtime.skills.canonical_store as _cs_mod
 
         store = CanonicalSkillStore(root=temp_canonical_root)
 
@@ -1812,12 +1782,11 @@ class TestHardeningFailureAfterPublication:
         hardening_calls = [0]
         compensation_calls = [0]
 
-        original_make_file = store._isolation.make_file_readonly
-        def fail_make_file_readonly(path):
+        def fail_hardening(pkg_path):
             hardening_calls[0] += 1
             raise PermissionError(
-                f"Injected file hardening failure on {path}")
-        store._isolation.make_file_readonly = fail_make_file_readonly
+                f"Injected hardening failure on {pkg_path}")
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", fail_hardening)
 
         import shutil as _shutil_mod
         def fail_rmtree(path, ignore_errors=False, onerror=None):
@@ -1826,111 +1795,105 @@ class TestHardeningFailureAfterPublication:
                 f"Injected compensation failure on {path}")
         monkeypatch.setattr(_shutil_mod, "rmtree", fail_rmtree)
 
-        try:
-            # ── 5. build_from_manifest → must raise compensation_failed ─
-            with pytest.raises(CanonicalStoreError) as exc_info:
-                store.build_from_manifest(
-                    "fail-mf", "1.0.0", failing_content_hash,
-                    failing_manifest, failing_artifact_store,
-                )
-            assert exc_info.value.code == "compensation_failed", (
-                f"Expected compensation_failed, got {exc_info.value.code}"
+        # ── 5. build_from_manifest → must raise compensation_failed ─
+        with pytest.raises(CanonicalStoreError) as exc_info:
+            store.build_from_manifest(
+                "fail-mf", "1.0.0", failing_content_hash,
+                failing_manifest, failing_artifact_store,
             )
-            assert "Injected compensation failure" in exc_info.value.detail
+        assert exc_info.value.code == "compensation_failed", (
+            f"Expected compensation_failed, got {exc_info.value.code}"
+        )
+        assert "Injected compensation failure" in exc_info.value.detail
 
-            # ── 6. Prove stubs were actually installed and invoked ──
-            assert hardening_calls[0] > 0, (
-                "File hardening stub was never invoked — test is false-positive"
-            )
-            assert compensation_calls[0] > 0, (
-                "Compensation stub was never invoked — test is false-positive"
-            )
+        # ── 6. Prove stubs were actually installed and invoked ──
+        assert hardening_calls[0] > 0, (
+            "_apply_readonly_hardening stub was never invoked"
+        )
+        assert compensation_calls[0] > 0, (
+            "Compensation stub was never invoked — test is false-positive"
+        )
 
-            # ── 7. Reuse gate: is_built() must reject ─────────────
-            assert not store.is_built(
-                "fail-mf", "1.0.0", failing_content_hash), (
-                "is_built() must return False after manifest dual failure"
-            )
+        # ── 7. Reuse gate: is_built() must reject ─────────────
+        assert not store.is_built(
+            "fail-mf", "1.0.0", failing_content_hash), (
+            "is_built() must return False after manifest dual failure"
+        )
 
-            # ── 8. Materialization pre-check gate: verify_package ──
-            # The immutable file invariant is enforced regardless of
-            # isolation mode.
-            with pytest.raises(CanonicalStoreError) as ve:
-                store.verify_package(
-                    "fail-mf", "1.0.0", failing_content_hash)
-            assert ve.value.code in (
-                "insufficient_hardening", "ownership_violation"), (
-                f"verify_package must reject on readonly invariant, "
-                f"got {ve.value.code}"
-            )
-
-            # ── 9. Materialization boundary: BOTH provider roots ───
-            skills_subdirs = [".claude/skills", ".agents/skills"]
-            for subdir in skills_subdirs:
-                # verify_package always rejects — materialization follows
-                # the same immutable invariant.
-                # Attempt materialization → must raise (fail-closed)
-                with pytest.raises(
-                    SymlinkMaterializationError, match="canonical_missing"
-                ):
-                    materializer.materialize_skill(
-                        "fail-mf", "1.0.0", failing_content_hash,
-                        workspace_dir, subdir,
-                    )
-
-                # No link created
-                link_path = workspace_dir / subdir / "fail-mf"
-                assert not link_path.exists(follow_symlinks=False), (
-                    f"Link must NOT exist at {link_path} after "
-                    "materialization failure"
-                )
-
-            # ── 10. No executor launch attempted ───────────────────
-            assert len(popen_calls) == 0, (
-                f"subprocess.Popen was called {len(popen_calls)} times — "
-                "executor launch should never have been attempted"
-            )
-
-            # ── 11. Trusted manifest member hashes unchanged ───────
-            for m in trusted_manifest["members"]:
-                member_path = m["path"]
-                expected_h = trusted_member_hashes[member_path]
-                # Re-derive via artifact key to verify no corruption
-                actual_bytes = trusted_artifact_store.read(m["artifact_key"])
-                actual_h = hashlib.sha256(actual_bytes).hexdigest()
-                assert actual_h == expected_h, (
-                    f"Trusted manifest member {member_path} hash changed: "
-                    f"expected {expected_h[:16]}..., got {actual_h[:16]}..."
-                )
-
-            # ── 12. Trusted file hashes unchanged (NON-CONDITIONAL) ──
-            trusted_current = store.canonical_path(
-                "trusted-mf", "1.0.0", trusted_content_hash)
-            assert trusted_current.is_dir(), (
-                "Trusted package must still exist"
-            )
-            for rel, expected_hash in trusted_file_hashes.items():
-                fp = trusted_current / rel
-                assert fp.is_file(), (
-                    f"Trusted file {rel} must still exist"
-                )
-                actual = hashlib.sha256(fp.read_bytes()).hexdigest()
-                assert actual == expected_hash, (
-                    f"Trusted file {rel} hash changed: expected "
-                    f"{expected_hash[:16]}..., got {actual[:16]}..."
-                )
-
-            # Trusted package still passes validation
-            assert store.is_built(
-                "trusted-mf", "1.0.0", trusted_content_hash), (
-                "Trusted package must still pass is_built()"
-            )
+        # ── 8. Materialization pre-check gate: verify_package ──
+        # The file invariant is enforced regardless of mode.
+        with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package(
-                "trusted-mf", "1.0.0", trusted_content_hash)
+                "fail-mf", "1.0.0", failing_content_hash)
+        assert ve.value.code in (
+            "insufficient_hardening", "ownership_violation"), (
+            f"verify_package must reject on readonly invariant, "
+            f"got {ve.value.code}"
+        )
 
-        finally:
-            store._isolation.make_file_readonly = original_make_file
-            monkeypatch.undo()
+        # ── 9. Materialization boundary: BOTH provider roots ───
+        skills_subdirs = [".claude/skills", ".agents/skills"]
+        for subdir in skills_subdirs:
+            # verify_package always rejects — materialization follows
+            # the same invariant.
+            # Attempt materialization → must raise (fail-closed)
+            with pytest.raises(
+                SymlinkMaterializationError, match="canonical_missing"
+            ):
+                materializer.materialize_skill(
+                    "fail-mf", "1.0.0", failing_content_hash,
+                    workspace_dir, subdir,
+                )
+
+            # No link created
+            link_path = workspace_dir / subdir / "fail-mf"
+            assert not link_path.exists(follow_symlinks=False), (
+                f"Link must NOT exist at {link_path} after "
+                "materialization failure"
+            )
+
+        # ── 10. No executor launch attempted ───────────────────
+        assert len(popen_calls) == 0, (
+            f"subprocess.Popen was called {len(popen_calls)} times — "
+            "executor launch should never have been attempted"
+        )
+
+        # ── 11. Trusted manifest member hashes unchanged ───────
+        for m in trusted_manifest["members"]:
+            member_path = m["path"]
+            expected_h = trusted_member_hashes[member_path]
+            # Re-derive via artifact key to verify no corruption
+            actual_bytes = trusted_artifact_store.read(m["artifact_key"])
+            actual_h = hashlib.sha256(actual_bytes).hexdigest()
+            assert actual_h == expected_h, (
+                f"Trusted manifest member {member_path} hash changed: "
+                f"expected {expected_h[:16]}..., got {actual_h[:16]}..."
+            )
+
+        # ── 12. Trusted file hashes unchanged (NON-CONDITIONAL) ──
+        trusted_current = store.canonical_path(
+            "trusted-mf", "1.0.0", trusted_content_hash)
+        assert trusted_current.is_dir(), (
+            "Trusted package must still exist"
+        )
+        for rel, expected_hash in trusted_file_hashes.items():
+            fp = trusted_current / rel
+            assert fp.is_file(), (
+                f"Trusted file {rel} must still exist"
+            )
+            actual = hashlib.sha256(fp.read_bytes()).hexdigest()
+            assert actual == expected_hash, (
+                f"Trusted file {rel} hash changed: expected "
+                f"{expected_hash[:16]}..., got {actual[:16]}..."
+            )
+
+        # Trusted package still passes validation
+        assert store.is_built(
+            "trusted-mf", "1.0.0", trusted_content_hash), (
+            "Trusted package must still pass is_built()"
+        )
+        store.verify_package(
+            "trusted-mf", "1.0.0", trusted_content_hash)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2093,10 +2056,10 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         # Sabotage _apply_readonly_hardening so file hardening fails
         hardening_calls = [0]
 
-        def failing_hardening(isolation, pkg_path):
+        def failing_hardening(pkg_path):
             hardening_calls[0] += 1
             raise PermissionError(
-                "Injected file hardening failure on " + str(pkg_path))
+                "Injected hardening failure on " + str(pkg_path))
 
         # Sabotage shutil.rmtree so compensation (cleanup) also fails
         compensation_calls = [0]
@@ -2106,13 +2069,8 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
             raise PermissionError(
                 "Injected compensation failure on " + str(path))
 
-        monkeypatch.setattr(
-            "runtime.skills.canonical_store._apply_readonly_hardening",
-            failing_hardening,
-        )
-        # The canonical_store module imports shutil at the top, so
-        # monkeypatch through the module reference.
         import runtime.skills.canonical_store as _cs_mod
+        monkeypatch.setattr(_cs_mod, "_apply_readonly_hardening", failing_hardening)
         monkeypatch.setattr(_cs_mod.shutil, "rmtree", failing_rmtree)
 
         with mock_patch.object(
@@ -2220,7 +2178,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     "after dual failure"
                 )
 
-                # (b) verify_package enforces the immutable file invariant
+                # (b) verify_package enforces the file hardening check
                 #     regardless of isolation mode.
                 with pytest.raises(CanonicalStoreError) as ve:
                     store.verify_package(sid, "system", content_h)
@@ -2415,7 +2373,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         # ── 4. Inject dual failure ─────────────────────────────────────
         hardening_calls = [0]
 
-        def failing_hardening(isolation, pkg_path):
+        def failing_hardening(pkg_path):
             hardening_calls[0] += 1
             raise PermissionError(
                 "Injected file hardening failure on " + str(pkg_path))
@@ -2547,7 +2505,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     "after dual failure"
                 )
 
-                # (b) verify_package enforces the immutable file invariant
+                # (b) verify_package enforces the file hardening check
                 #     regardless of isolation mode.
                 with pytest.raises(CanonicalStoreError) as ve:
                     store.verify_package(sid, "system", content_h)
@@ -2912,145 +2870,6 @@ class TestSameOwnerAdversarialLimits:
         # Ordinary directory must still exist with its content intact
         assert ordinary_dir.is_dir()
         assert (ordinary_dir / "real-work.txt").read_text() == "real user work"
-
-    @pytest.mark.skip(reason="REMOVED: is_same_owner_mode property no longer exists")
-    def test_mode_observability(
-        self, monkeypatch, tmp_path,
-    ):
-        """The selected mode (strict vs same-owner) is observable
-        via PlatformIsolation.is_same_owner_mode without auth/schema change."""
-        # Test isolation (from conftest) is same-owner by default
-        iso = isolation.detect_platform_isolation()
-        assert iso.is_same_owner_mode is True, (
-            "Test isolation must report same-owner mode"
-        )
-
-        # Verify the property is accessible on the abstract base
-        assert hasattr(PlatformIsolation, "is_same_owner_mode"), (
-            "Abstract base must define is_same_owner_mode property"
-        )
-
-    # ── Fix 1: Production-faithful same-owner hardening + is_built ─────
-
-    @pytest.mark.skip(reason="ADAPT: _apply_readonly_hardening now uses direct os.chmod; test needs monkeypatch of os.chmod instead of probe mock")
-    def test_same_owner_hardening_0755_dirs_is_built_true(
-        self, monkeypatch, tmp_path, skill_source_dir,
-    ):
-        """The REAL macOS same-owner hardening produces 0755 directories.
-
-        _verify_recursive_readonly must accept 0755/0444 canonical
-        packages in same-owner mode so is_built returns True and a
-        normal valid prelaunch start does not spuriously rebuild.
-
-        This test uses the actual _MacOSPlatformIsolation class, NOT
-        the conftest.py test double which creates 0555 directories.
-        """
-        # Force same-owner mode on the real macOS isolation class.
-        # _probe_macos_executor_account may succeed on real machines,
-        # so monkeypatch it to return None to guarantee same-owner entry.
-        monkeypatch.setattr(
-            "runtime.platform.isolation._probe_macos_executor_account",
-            lambda: None,
-        )
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
-
-        iso = _MacOSPlatformIsolation()
-        assert iso.is_same_owner_mode, (
-            "Must enter same-owner mode for this test"
-        )
-
-        store = CanonicalSkillStore(
-            root=tmp_path / "canonical",
-            isolation=iso,
-        )
-
-        content_hash = _compute_dir_hash(skill_source_dir)
-        slug = "test-0755-is-built"
-
-        # Build once through the REAL build path (which calls the real
-        # make_dir_readonly_executor → 0755, make_file_readonly → 0444)
-        store.build_from_source(slug, "system", content_hash, skill_source_dir)
-        pkg_path = store.canonical_path(slug, "system", content_hash)
-
-        # ── Verify real hardening behavior ──
-        # Directory must be 0755 (owner-writable) — NOT 0555
-        root_mode = stat.S_IMODE(pkg_path.stat().st_mode)
-        assert root_mode & stat.S_IWUSR, (
-            f"Package root must be owner-writable (expected 0755, got {oct(root_mode)})"
-        )
-        assert not (root_mode & stat.S_IWGRP), (
-            "Package root must NOT be group-writable"
-        )
-        assert not (root_mode & stat.S_IWOTH), (
-            "Package root must NOT be world-writable"
-        )
-
-        # Files must be 0444 (non-writable)
-        skill_file = pkg_path / "SKILL.md"
-        file_mode = stat.S_IMODE(skill_file.stat().st_mode)
-        assert not (file_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)), (
-            f"SKILL.md must be fully non-writable, got {oct(file_mode)}"
-        )
-
-        # ── is_built must return True with 0755 dirs ──
-        assert store.is_built(slug, "system", content_hash), (
-            "is_built must return True for intact 0755/0444 package "
-            "in same-owner mode — spurious rebuilds are prohibited"
-        )
-
-        # ── Normal valid prelaunch start does not rebuild ──
-        path1 = store.build_from_source(
-            slug, "system", content_hash, skill_source_dir,
-            verify_source_hash=content_hash,
-        )
-        path2 = store.build_from_source(
-            slug, "system", content_hash, skill_source_dir,
-            verify_source_hash=content_hash,
-        )
-        assert path1 == path2, (
-            "Valid start with real hardening must not create new package"
-        )
-
-        # ── SAME proof: same-owner CAN still write through a symlink ──
-        # (chmod + rewrite, since same-owner mode has no OS barrier)
-        os.chmod(skill_file, 0o644)
-        skill_file.write_text("# TAMPERED")
-        os.chmod(skill_file, 0o444)
-
-        # is_built still returns True after chmod back to 0444
-        # (content bytes are wrong but permissions pass — this is
-        # the honest limit: mode-only checks don't detect content
-        # tampering; only verify_source_hash catches it)
-        assert store.is_built(slug, "system", content_hash), (
-            "After restoring permissions, is_built passes — content "
-            "bytes are tampered but hardening bits match"
-        )
-
-        # Integrity verification REFUSES automatic repair
-        from runtime.skills.canonical_store import CanonicalStoreError
-        with pytest.raises(CanonicalStoreError) as exc:
-            store.build_from_source(
-                slug, "system", content_hash, skill_source_dir,
-                verify_source_hash=content_hash,
-            )
-        assert "content_corruption" in str(exc.value)
-        # Canonical bytes must remain tampered — no auto-repair
-        still_tampered = (pkg_path / "SKILL.md").read_text()
-        assert "# TAMPERED" in still_tampered, (
-            "Integrity verification must refuse auto-repair — "
-            "canonical bytes stay corrupted"
-        )
-
-    # ── Fix 2: Legacy single-SKILL.md lifecycle artifact branch ────────
-
-    # ── Fix 2 v2: Real _build_lifecycle_canonical_specs branch tests ──
-    # The legacy single-SKILL.md lifecycle branch is exercised through
-    # the actual production function rather than direct store calls.
-    # The raw artifact SHA (ledger content_hash) differs from the
-    # derived source-tree hash (extracted temp dir _compute_dir_hash) —
-    # this is proven in every test. If verify_source_hash were omitted,
-    # wired to canonical bytes, or wired to raw artifact SHA, tampered
-    # content would be silently accepted.
 
     def test_legacy_lifecycle_branch_tamper_detect_and_refuse(
         self, store, tmp_path, db,
