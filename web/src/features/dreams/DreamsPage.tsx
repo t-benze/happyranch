@@ -40,6 +40,7 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
+import { isValidCount, formatTotalCount } from './count-helpers';
 import type { DreamRecord } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
@@ -86,7 +87,14 @@ function DreamCard({
   active: boolean;
   onClick: () => void;
 }): JSX.Element {
-  const isQuiet = dream.status === 'completed' && dream.kb_candidate_count === 0 && dream.new_learnings_count > 0;
+  // Quiet-dream state is only shown when both counts are valid: a malformed
+  // value must not be silently treated as "no candidates / some learnings".
+  const isQuiet =
+    dream.status === 'completed' &&
+    isValidCount(dream.kb_candidate_count) &&
+    dream.kb_candidate_count === 0 &&
+    isValidCount(dream.new_learnings_count) &&
+    dream.new_learnings_count > 0;
 
   return (
     <li>
@@ -207,8 +215,14 @@ function LoadingSkeleton(): JSX.Element {
  * omitted because no field on the dreams payload backs it.
  */
 function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
-  const totalLearnings = dreams.reduce((sum, d) => sum + d.new_learnings_count, 0);
-  const totalCandidates = dreams.reduce((sum, d) => sum + d.kb_candidate_count, 0);
+  const learningValues = dreams.map((d) => d.new_learnings_count);
+  const candidateValues = dreams.map((d) => d.kb_candidate_count);
+  const totalLearnings = formatTotalCount(learningValues, 'learning', 'learnings');
+  const totalCandidates = formatTotalCount(candidateValues, 'candidate', 'candidates');
+  const allCandidatesValid = candidateValues.every(isValidCount);
+  const totalCandidateNumber = allCandidatesValid
+    ? candidateValues.reduce((sum, d) => sum + (d as number), 0)
+    : null;
 
   return (
     <aside
@@ -223,7 +237,7 @@ function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
           </h2>
           <ul className="text-text-secondary space-y-1 font-mono text-xs tabular-nums">
             <li>{DREAM_STRINGS.reflectionsCount(dreams.length)}</li>
-            <li>{DREAM_STRINGS.learningsCount(totalLearnings)}</li>
+            <li>{totalLearnings}</li>
           </ul>
         </section>
 
@@ -233,9 +247,11 @@ function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
             {DREAM_STRINGS.railCandidatesTitle}
           </h2>
           <p className="text-text-secondary text-xs">
-            {totalCandidates > 0
-              ? DREAM_STRINGS.candidatesCount(totalCandidates)
-              : DREAM_STRINGS.railCandidatesEmpty}
+            {totalCandidateNumber === null
+              ? totalCandidates
+              : totalCandidateNumber > 0
+                ? DREAM_STRINGS.candidatesCount(totalCandidateNumber)
+                : DREAM_STRINGS.railCandidatesEmpty}
           </p>
         </section>
 

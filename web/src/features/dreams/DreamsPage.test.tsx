@@ -38,6 +38,8 @@ vi.mock('react-router-dom', async () => {
 
 import { useDreamsList, useDream, useAcceptCandidate, useDismissCandidate } from '@/hooks/dreams';
 import { DreamsPage } from './DreamsPage';
+import { DREAM_STRINGS } from './strings';
+import type { DreamRecord } from '@/hooks/dreams';
 
 const mockDreamsList = vi.mocked(useDreamsList);
 const mockDream = vi.mocked(useDream);
@@ -169,6 +171,72 @@ function mutationLike<T>() {
     isPending: false,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/*  Adversarial count fixtures (issue #572)                           */
+/*  DreamRecord declares counts as `number`, but server payloads may  */
+/*  arrive malformed. These casts exercise the rendering boundary.    */
+/* ------------------------------------------------------------------ */
+
+const DREAM_VALID_ZERO_COUNTS = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-ZERO',
+  new_learnings_count: 0,
+  kb_candidate_count: 0,
+};
+
+const DREAM_MISSING_LEARNINGS = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-MISS-L',
+  new_learnings_count: undefined,
+} as unknown as DreamRecord;
+
+const DREAM_MISSING_CANDIDATES = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-MISS-C',
+  kb_candidate_count: undefined,
+} as unknown as DreamRecord;
+
+const DREAM_NAN_LEARNINGS = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-NAN-L',
+  new_learnings_count: NaN,
+} as unknown as DreamRecord;
+
+const DREAM_INFINITY_CANDIDATES = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-INF-C',
+  kb_candidate_count: Infinity,
+} as unknown as DreamRecord;
+
+const DREAM_NEGATIVE_CANDIDATES = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-NEG-C',
+  kb_candidate_count: -3,
+} as unknown as DreamRecord;
+
+const DREAM_STRING_COUNTS = {
+  ...QUIET_DREAM,
+  dream_id: 'DREAM-STR',
+  new_learnings_count: 'two',
+  kb_candidate_count: 'few',
+} as unknown as DreamRecord;
+
+const DREAM_DETAIL_INVALID_COUNTS = {
+  ...DREAM_DETAIL_RESPONSE,
+  dream_id: 'DREAM-DETAIL-INVALID',
+  new_learnings_count: undefined,
+  kb_candidate_count: NaN,
+  kb_candidates: [],
+} as unknown as DreamRecord;
+
+const DREAM_DETAIL_MISSING_CANDIDATE_COUNT = {
+  ...DREAM_DETAIL_RESPONSE,
+  dream_id: 'DREAM-DETAIL-MISS-C',
+  new_learnings_count: 2,
+  kb_candidate_count: undefined,
+  kb_candidates: [],
+} as unknown as DreamRecord;
 
 describe('DreamsPage', () => {
   beforeEach(() => {
@@ -512,5 +580,142 @@ describe('DreamsPage', () => {
     expect(within(rail).getByText(/configured in Settings/i)).toBeDefined();
     // ... and never claims a (data-unbacked) next-run time.
     expect(within(rail).queryByText(/next run/i)).toBeNull();
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  Issue #572 — unavailable/invalid count rendering                */
+  /* ---------------------------------------------------------------- */
+
+  it('renders valid zero counts literally on the card strip', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [DREAM_VALID_ZERO_COUNTS] }));
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-ZERO').closest('button')!;
+    expect(within(card).getByText('0 learnings')).toBeDefined();
+    expect(within(card).getByText('0 candidates')).toBeDefined();
+    // Valid zero is not "unavailable".
+    expect(within(card).queryByText(/unavailable/i)).toBeNull();
+  });
+
+  it('renders unavailable for missing, NaN, Infinity, negative, and non-numeric counts', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({
+        dreams: [
+          DREAM_MISSING_LEARNINGS,
+          DREAM_NAN_LEARNINGS,
+          DREAM_INFINITY_CANDIDATES,
+          DREAM_NEGATIVE_CANDIDATES,
+          DREAM_STRING_COUNTS,
+        ],
+      }),
+    );
+    renderPage(<DreamsPage />);
+
+    // Raw malformed tokens must never appear as factual copy.
+    expect(screen.queryByText('undefined learnings')).toBeNull();
+    expect(screen.queryByText('undefined candidates')).toBeNull();
+    expect(screen.queryByText('NaN learnings')).toBeNull();
+    expect(screen.queryByText('NaN candidates')).toBeNull();
+    expect(screen.queryByText('Infinity candidates')).toBeNull();
+    expect(screen.queryByText('-3 candidates')).toBeNull();
+
+    // Each malformed fixture surfaces the unavailable qualifier instead.
+    expect(screen.getAllByText('Learnings unavailable').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Candidates unavailable').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('does not treat invalid counts as the quiet-dream state', () => {
+    // QUIET_DREAM is completed with 0 candidates and 2 learnings -> quiet.
+    // DREAM_MISSING_CANDIDATES is completed with an invalid candidate count -> not quiet.
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [QUIET_DREAM, DREAM_MISSING_CANDIDATES] }),
+    );
+    renderPage(<DreamsPage />);
+
+    // Exactly one quiet indicator (the valid QUIET_DREAM).
+    expect(screen.getAllByText(DREAM_STRINGS.quietTitle)).toHaveLength(1);
+  });
+
+  it('does not sum invalid counts into the rail totals', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({
+        dreams: [
+          DREAM_WITH_CANDIDATES, // 1 learning / 2 candidates (valid)
+          DREAM_NAN_LEARNINGS,   // invalid learnings
+          DREAM_MISSING_CANDIDATES, // invalid candidates
+        ],
+      }),
+    );
+    renderPage(<DreamsPage />);
+
+    const rail = screen.getByRole('complementary', { name: /overview/i });
+    // Reflections count is always valid (derived from array length).
+    expect(within(rail).getByText('3 reflections')).toBeDefined();
+    // Because at least one dream has invalid learnings, the total is unavailable.
+    expect(within(rail).getByText('Learnings unavailable')).toBeDefined();
+    // Because at least one dream has invalid candidates, the total is unavailable.
+    expect(within(rail).getByText('Candidates unavailable')).toBeDefined();
+    // Do not claim a partial sum.
+    expect(within(rail).queryByText('1 learning')).toBeNull();
+    expect(within(rail).queryByText('2 candidates')).toBeNull();
+    expect(within(rail).queryByText('No knowledge candidates')).toBeNull();
+  });
+
+  it('renders detail drawer counts truthfully when values are invalid', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [DREAM_DETAIL_INVALID_COUNTS] }),
+    );
+    mockDream.mockReturnValue(loaded(DREAM_DETAIL_INVALID_COUNTS));
+
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-DETAIL-INVALID').closest('button')!;
+    fireEvent.click(card);
+
+    // Raw malformed tokens must never appear in the drawer.
+    expect(screen.queryByText('undefined learnings')).toBeNull();
+    expect(screen.queryByText('NaN candidates')).toBeNull();
+
+    // Detail strip shows unavailable for both counts (the card strip may also
+    // show the same text, so we assert at least one occurrence is present).
+    expect(screen.getAllByText('Learnings unavailable').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Candidates unavailable').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not show quiet state in detail drawer when learnings count is invalid', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [DREAM_DETAIL_INVALID_COUNTS] }),
+    );
+    mockDream.mockReturnValue(loaded(DREAM_DETAIL_INVALID_COUNTS));
+
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-DETAIL-INVALID').closest('button')!;
+    fireEvent.click(card);
+
+    // The dream is completed with no candidates, but learnings are invalid -> not quiet.
+    expect(screen.queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+  });
+
+  it('does not claim quiet in opened drawer when kb_candidate_count is invalid even with empty kb_candidates', () => {
+    // Reviewer-specified adversarial: valid positive learnings, missing/invalid
+    // candidate count, and an empty candidate array must not produce the quiet
+    // "nothing escalated" message. The authoritative count is unavailable.
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [DREAM_DETAIL_MISSING_CANDIDATE_COUNT] }),
+    );
+    mockDream.mockReturnValue(loaded(DREAM_DETAIL_MISSING_CANDIDATE_COUNT));
+
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-DETAIL-MISS-C').closest('button')!;
+    fireEvent.click(card);
+
+    // The drawer's count strip must render the unavailable copy, not a factual
+    // zero or quiet claim (the card strip and rail may also show it).
+    const drawer = screen.getByRole('dialog');
+    expect(within(drawer).getByText('Candidates unavailable')).toBeDefined();
+    expect(within(drawer).queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+    expect(within(drawer).queryByText('0 candidates')).toBeNull();
   });
 });
