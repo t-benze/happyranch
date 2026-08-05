@@ -229,3 +229,23 @@ def _deterministic_throttle():
     )
     yield
     throttle.reset_throttle()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_org_slug():
+    """Clear HAPPYRANCH_ORG_SLUG so tests aren't contaminated by ambient env.
+
+    The CLI's ``resolve_org_slug`` checks HAPPYRANCH_ORG_SLUG before falling
+    back to the mock-controlled available-orgs list.  An ambient value (e.g.
+    ``happyranch`` from a developer shell) overrides test mocks and causes
+    org-slug mismatches in 10 test_cli tests.
+
+    Dedicated resolve-org-slug tests that need the env var set it explicitly
+    via monkeypatch and are unaffected.
+    """
+    import os
+    old = os.environ.get("HAPPYRANCH_ORG_SLUG")
+    os.environ.pop("HAPPYRANCH_ORG_SLUG", None)
+    yield
+    if old is not None:
+        os.environ["HAPPYRANCH_ORG_SLUG"] = old
