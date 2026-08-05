@@ -25,6 +25,8 @@ import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
 import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
 import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
+import { ProposalsQueuePage } from '@/features/skills/ProposalsQueuePage';
+import { ProposalDetailPage } from '@/features/skills/ProposalDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -38,6 +40,7 @@ import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/Wa
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
+import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
 
@@ -103,11 +106,17 @@ export function AppRoutes(): JSX.Element {
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="tasks/:task_id" element={<TaskDetailPage />} />
+          <Route path="todos" element={<TodosPage />} />
+          <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="kb" element={<KbPage />} />
           <Route path="kb/*" element={<KbPage />} />
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
+          {/* THR-055 Slice 3A — Proposal Queue / Detail (before :skillId
+              so React Router doesn't treat "proposals" as a skillId). */}
+          <Route path="skills/proposals" element={<ProposalsQueuePage />} />
+          <Route path="skills/proposals/:versionId" element={<ProposalDetailPage />} />
           {/* Static `new`/`validation` rank above the dynamic `:skillId` in
               react-router v6, but keep them declared first for readability. */}
           <Route path="skills/new" element={<SkillCreatePage />} />

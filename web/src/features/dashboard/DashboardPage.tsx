@@ -190,12 +190,14 @@ export function DashboardPage(): JSX.Element {
   const now = new Date(s.server_now);
   const nowHour = now.getUTCHours();
 
-  // First-run empty state for a brand-new org with no activity.
+  // First-run empty state for a brand-new org with no activity. The waiting
+  // signal must come from the same routable escalation list that feeds the
+  // "Waiting on you" card, not the summary counter (THR-140 #573).
   if (
     s.org_age_days === 0 &&
     s.narrative_counts.completed_today === 0 &&
     s.narrative_counts.failed_today === 0 &&
-    s.narrative_counts.escalated_open === 0
+    s.escalations.length === 0
   ) {
     return (
       <div className="mx-auto max-w-2xl p-8">
@@ -224,6 +226,16 @@ export function DashboardPage(): JSX.Element {
             day: 'numeric',
           })}
           {` · Day ${s.org_age_days} · ${s.narrative_counts.agents_active_now} agents active`}
+          {s.generated_at && (
+            <span className="text-text-muted/70 ml-1 font-normal normal-case tracking-normal">
+              · Updated {relativeAge(s.generated_at, now)} ago
+            </span>
+          )}
+          {!s.generated_at && (
+            <span className="text-text-muted/50 ml-1 font-normal normal-case tracking-normal">
+              · Loading first snapshot…
+            </span>
+          )}
         </p>
         <h1 className="font-display text-display text-text-primary mb-8 font-medium">
           {statusSummary(pendingCount)}
@@ -318,7 +330,10 @@ export function DashboardPage(): JSX.Element {
             <Panel title="Today" meta="last 24h">
               <Heartbeat data={s.heartbeat} nowIdx={nowHour} />
               <div className="mt-3">
-                <NarrativeParagraph counts={s.narrative_counts} />
+                <NarrativeParagraph
+                  counts={s.narrative_counts}
+                  escalationCount={pendingCount}
+                />
               </div>
               {/* Counter tiles — ds.css display-num / mono pattern */}
               <div className="border-border-default mt-5 grid grid-cols-5 gap-3 border-t pt-4">

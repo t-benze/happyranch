@@ -9,6 +9,7 @@ import {
   health as healthApi,
   orgs as orgsApi,
   settings as settingsApi,
+  adapters as adaptersApi,
 } from '@/lib/api';
 
 function renderPage() {
@@ -109,13 +110,32 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     // The SAME prompt block the custom flow uses, pointed at register-binary:
     // carries the scoped token, targets register-binary (NOT the profile
     // register route), keeps the conformance challenge, and has no /connect URL.
-    const pre = await screen.findByText(/connecting the built-in/i);
+    const pre = await screen.findByText(/connect the built-in/i);
     expect(pre).toHaveTextContent('hr_tok_BIN123');
     expect(pre).toHaveTextContent('/executors/runtime/register-binary');
     expect(pre).toHaveTextContent('/executors/runtime/conformance-checkin');
     expect(pre).not.toHaveTextContent('/connect/');
     // Kind is carried by the token, never sent in the request body.
     expect(pre).not.toHaveTextContent('"kind"');
+    // THR-107 seq352: all four conformance steps in order
+    const text = pre.textContent || '';
+    const wsIdx = text.indexOf('workspace_access');
+    const lrIdx = text.indexOf('loopback_reachable');
+    const ccIdx = text.indexOf('cli_callback');
+    const eeIdx = text.indexOf('emit_envelope');
+    expect(wsIdx).toBeLessThan(lrIdx);
+    expect(lrIdx).toBeLessThan(ccIdx);
+    expect(ccIdx).toBeLessThan(eeIdx);
+    // Failure-visible curl semantics
+    expect(text).toMatch(/--fail-with-body/);
+    // Fourth check-in response captured and gated on all_complete:true
+    expect(text).toMatch(/all_complete/);
+    // register-binary appears AFTER the all_complete gate (not before)
+    const regIdx = text.indexOf('register-binary');
+    const acIdx = text.indexOf('all_complete');
+    expect(acIdx).toBeLessThan(regIdx);
+    // No background/concurrency syntax
+    expect(text).not.toMatch(/&\s*$/m);
   });
 
   test('built-in poll flips to connected when the kind registers (present:true), via builtin path', async () => {
@@ -563,6 +583,25 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         { tool: 'pi', present: true, path: '/usr/bin/pi', hint: '' },
       ],
     });
+    // Default: contract-reference returns a deterministic non-guessed path
+    // so the prompt renders the literal server-returned value.
+    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
+      contract_version: 1,
+      canonical_adapter_id: '',
+      canonical_adapter_id_description: '',
+      adapter_input_schema: {},
+      adapter_output_schema: {},
+      rules: {},
+      submission: {},
+      dependency_manifest: {},
+      token_metering: {},
+      reapproval_rule: '',
+      probe: {},
+      canonical_directory: '/tmp/happyranch-daemon/adapters',
+      canonical_directory_description: '',
+      required_executable_path: '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter',
+      required_executable_path_description: '',
+    });
   });
 
   /** Navigate to the adapter-backed custom-CLI form (NOT clicking through to legacy). */
@@ -680,6 +719,30 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(promptText).toContain('AdapterInput');
     // Does NOT mention source-only Python path
     expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
+  });
+
+  test('adapter-backed: prompt includes literal server-returned required_executable_path (seq339)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_SEQ339', expires_at: Date.now() / 1000 + 1800 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'cmdline-tester-1');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // The LITERAL server-returned path (from mocked contract-reference)
+    // must appear in the prompt, not a placeholder or guessed path.
+    const expectedPath = '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter';
+    expect(promptText).toContain(expectedPath);
+    // The path appears in the "create at exactly" instruction
+    expect(promptText).toContain('LITERAL server-authoritative path');
+    // Path also appears in the submit body (pre-filled)
+    expect(promptText).toContain(`"executable":"${expectedPath}"`);
+    // Must tell the candidate NOT to place in home dir or self-chosen path
+    expect(promptText).toContain('Do NOT place');
   });
 
   test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
@@ -1031,9 +1094,9 @@ describe('OnboardingPage — Custom two-stage flow regression (profile → binar
 
     // (b)+(c) The waiting UI shows the binary-stage prompt with register-binary
     // route (NOT the profile register route).
-    const promptEl = await screen.findByText(/register your binary path/i, {}, { timeout: 5000 });
+    const promptEl = await screen.findByText(/register the binary path/i, {}, { timeout: 5000 });
     expect(promptEl.closest('pre')).toHaveTextContent('/executors/runtime/register-binary');
-    expect(promptEl.closest('pre')).toHaveTextContent('"path":"<your absolute binary path>"');
+    expect(promptEl.closest('pre')).toHaveTextContent('$BIN');
 
     // (c+) Explicit red-side: the connected card must NOT appear while
     // present:false — ProfileStage appearance-only advances to BinaryStage,
@@ -1114,7 +1177,9 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
 
     // Honesty copy says "30 minutes", not the old "10 minutes".
     const thirtyMinElements = screen.getAllByText(/valid for about 30 minutes/i);
-    expect(thirtyMinElements.length).toBeGreaterThanOrEqual(2);
+    // The expired box always shows this; the binary prompt no longer carries
+    // it inline (the prompt is an executable shell script now — THR-107 seq352).
+    expect(thirtyMinElements.length).toBeGreaterThanOrEqual(1);
     // The expiry message specifically:
     expect(
       screen.getByText(/prompt is valid for about 30 minutes and this one lapsed/i),
@@ -1127,6 +1192,36 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
 /* ── Adversarial: onboarding recovery/Bind absence (TASK-3836 fix-forward) ── */
 
 describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // Default: healthy container
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+      ],
+    });
+    // Contract-reference must be mocked since useAdapterConnect fetches it
+    // after minting the scoped token.
+    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
+      contract_version: 1,
+      canonical_adapter_id: '',
+      canonical_adapter_id_description: '',
+      adapter_input_schema: {},
+      adapter_output_schema: {},
+      rules: {},
+      submission: {},
+      dependency_manifest: {},
+      token_metering: {},
+      reapproval_rule: '',
+      probe: {},
+      canonical_directory: '/tmp/happyranch-daemon/adapters',
+      canonical_directory_description: '',
+      required_executable_path: '/tmp/happyranch-daemon/adapters/test-cli-adapter',
+      required_executable_path_description: '',
+    });
+  });
+
   /** Navigate to the adapter-backed custom-CLI form. */
   async function goAdapter(user: UserEvent): Promise<void> {
     await user.click(

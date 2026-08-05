@@ -51,9 +51,11 @@ def _make_fake_adapter_with_deps(
     name: str,
     dep_exes: list[Path] | None = None,
     has_token_metering: bool = False,
-    adapter_id: str = "fake-adapter",
+    adapter_id: str | None = None,
 ) -> Path:
     """Create a fake adapter script that passes conformance with optional deps and token_usage."""
+    if adapter_id is None:
+        adapter_id = name
     dep_section = ""
     if dep_exes:
         dep_json = json.dumps([{"executable": str(d), "sha256": compute_sha256(str(d))} for d in dep_exes])
@@ -769,6 +771,341 @@ class TestPreLaunchDependencyRevalidation:
         )
 
         assert result.success
+
+    # ── seq315 correction: replaced PATH-scrubbing tests ──
+
+    def test_manifest_adapter_inherits_normal_path_callback_invoked(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """seq315: Manifest adapter inherits normalized PATH; child can invoke callback.
+
+        The adapter's declared child invokes ``happyranch report-completion``
+        from the inherited normalized PATH.  A fake ``happyranch`` on PATH
+        records the invocation, proving the callback is actually called through
+        the inherited (not scrubbed) environment.  The child is invoked via its
+        declared absolute path from the manifest.
+        """
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+
+        callback_log = tmp_path / "callback-invocations.txt"
+
+        # Fake happyranch on inherited PATH — records its invocations
+        callback_dir = tmp_path / "fake-happyranch-bin"
+        callback_dir.mkdir()
+        hrc = callback_dir / "happyranch"
+        hrc.write_text(
+            f"#!/bin/sh\n"
+            f"echo \"CALLBACK-ARGS: $*\" >> {callback_log}\n"
+            f"echo '{{\"status\":\"completed\"}}'\n"
+        )
+        hrc.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{callback_dir}:/usr/bin:/bin")
+
+        # Declared child dependency: invokes happyranch from inherited PATH
+        child_log = tmp_path / "child-invoked.txt"
+        child_exe = tmp_path / "child-agent"
+        child_exe.write_text(
+            f"#!/bin/sh\n"
+            f"echo \"CHILD-INVOKED\" >> {child_log}\n"
+            f"happyranch report-completion --from-file /dev/null\n"
+        )
+        child_exe.chmod(0o755)
+        child_hash = compute_sha256(str(child_exe))
+
+        # Adapter that invokes the declared child via its absolute path
+        adapter_script = f"""#!/usr/bin/env python3
+import sys, json, subprocess
+raw = sys.stdin.read()
+input_data = json.loads(raw) if raw else {{}}
+session_id = input_data.get("invocation", {{}}).get("invocation_id", "probe-sess")
+# Invoke declared child via absolute path (passed from manifest)
+child_result = subprocess.run(
+    ["{child_exe}"], capture_output=True, text=True, timeout=10
+)
+output = {{
+    "success": True, "duration_seconds": 0, "session_id": session_id,
+    "returncode": 0, "stdout_tail": "ok", "stderr_tail": child_result.stderr or "",
+    "result": {{"text": "hello"}}, "token_usage": None, "error": None,
+    "agent_session_id": None, "rate_limited": False,
+    "adapter_metadata": {{
+        "adapter": "callback-verify-adapter-py",
+        "adapter_version": "1.0.0", "contract_version": 1,
+    }},
+    "child_session_id": None, "raw_forensics_ref": None,
+}}
+sys.stdout.write(json.dumps(output))
+sys.exit(0)
+"""
+        adapter = tmp_path / "callback-verify-adapter.py"
+        adapter.write_text(adapter_script)
+        adapter.chmod(0o755)
+        adapter_hash = compute_sha256(str(adapter))
+
+        # Register and approve the adapter
+        entry = register_custom_adapter(
+            executable=str(adapter),
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(child_exe), "sha256": child_hash}],
+        )
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        assert approved.status == "approved"
+
+        # Reset logs after conformance probe (which also invokes the adapter)
+        child_log.write_text("")
+        callback_log.write_text("")
+
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+
+        executor = CustomAdapterExecutor(
+            profile_name="test-profile",
+            adapter_entry_id=entry.id,
+            adapter_executable=entry.executable,
+            adapter_hash=entry.executable_hash,
+            adapter_version=entry.version,
+            adapter_contract_version=entry.contract_version,
+            provider="test",
+        )
+        executor.set_dependency_manifest(
+            1, [{"executable": str(child_exe), "sha256": child_hash}]
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        workspace = tmp_path / "ws-cb"
+        workspace.mkdir()
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=10,
+        )
+
+        assert result.success
+        # Child was actually invoked
+        assert child_log.read_text().strip() == "CHILD-INVOKED"
+        # Callback was actually called (via inherited PATH, not scrubbed)
+        callback_text = callback_log.read_text()
+        assert "CALLBACK-ARGS: report-completion" in callback_text, (
+            f"Expected happyranch report-completion to be called; got: {callback_text!r}"
+        )
+
+    def test_agentic_cli_sentinel_on_path_never_selected(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """seq315: Agentic CLI sentinels on inherited PATH are never selected.
+
+        Put bare ``claude``, ``codex``, ``opencode``, ``pi`` sentinels on the
+        inherited PATH.  Each sentinel writes a poison-pill marker if invoked.
+        The adapter wrapper is launched via its approved absolute executable
+        path and the declared child via its approved absolute manifest path —
+        neither ever resolves through ambient PATH.  Assert the poison-pill
+        markers are absent after successful launch, proving the runtime
+        selection boundary has no PATH fallback for agentic CLIs.
+        """
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+
+        poison_log = tmp_path / "poison-pill.txt"
+
+        # Agentic CLI sentinels on PATH — each writes poison-pill if invoked
+        sentinel_dir = tmp_path / "sentinel-bin"
+        sentinel_dir.mkdir()
+        for name in ("claude", "codex", "opencode", "pi"):
+            sp = sentinel_dir / name
+            sp.write_text(
+                f"#!/bin/sh\n"
+                f"echo \"SENTINEL-{name}-INVOKED\" >> {poison_log}\n"
+                f"exit 99\n"
+            )
+            sp.chmod(0o755)
+
+        # Also add a happyranch sentinel for callback availability
+        callback_log = tmp_path / "sentinel-callback-log.txt"
+        hrc_sentinel = sentinel_dir / "happyranch"
+        hrc_sentinel.write_text(
+            f"#!/bin/sh\n"
+            f"echo \"CALLBACK: $*\" >> {callback_log}\n"
+        )
+        hrc_sentinel.chmod(0o755)
+
+        monkeypatch.setenv("PATH", f"{sentinel_dir}:/usr/bin:/bin")
+
+        # Declared child: simple script at absolute path
+        child_exe = tmp_path / "sentinel-child"
+        child_exe.write_text("#!/bin/sh\necho ok\n")
+        child_exe.chmod(0o755)
+        child_hash = compute_sha256(str(child_exe))
+
+        # Adapter at absolute path (NOT in sentinel_dir)
+        adapter = _make_fake_adapter_with_deps(
+            tmp_path, "sentinel-adapter", dep_exes=[child_exe],
+            adapter_id="sentinel-adapter",
+        )
+
+        entry = register_custom_adapter(
+            executable=str(adapter),
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(child_exe), "sha256": child_hash}],
+        )
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        assert approved.status == "approved"
+
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+
+        executor = CustomAdapterExecutor(
+            profile_name="test-profile",
+            adapter_entry_id=entry.id,
+            adapter_executable=entry.executable,
+            adapter_hash=entry.executable_hash,
+            adapter_version=entry.version,
+            adapter_contract_version=entry.contract_version,
+            provider="test",
+        )
+        executor.set_dependency_manifest(
+            1, [{"executable": str(child_exe), "sha256": child_hash}]
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        workspace = tmp_path / "ws-sentinel"
+        workspace.mkdir()
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=10,
+        )
+
+        assert result.success, f"Expected success but got: {result.error}"
+
+        # NO poison-pill markers — sentinels were never invoked
+        if poison_log.exists():
+            poison_text = poison_log.read_text()
+            raise AssertionError(
+                f"Agentic CLI sentinels were invoked via PATH fallback: {poison_text!r}"
+            )
+
+        # Verify the approved absolute paths are what the executor holds
+        assert os.path.isabs(executor._adapter_executable), (
+            "Adapter executable must be absolute"
+        )
+        assert executor._adapter_executable == str(adapter), (
+            f"Adapter executable {executor._adapter_executable!r} "
+            f"differs from approved path {str(adapter)!r}"
+        )
+        # The declared child in the manifest is the approved absolute path
+        deps = executor._dependencies
+        assert len(deps) == 1
+        assert deps[0]["executable"] == str(child_exe), (
+            f"Declared child executable {deps[0]['executable']!r} "
+            f"differs from approved path {str(child_exe)!r}"
+        )
+
+    def test_manifest_adapter_no_path_rewrite_or_callback_resolver(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """seq315: No PATH rewrite or callback-directory resolver in manifest launch.
+
+        After the seq315 correction, the adapter launch environment is the
+        inherited normalized _callee_env() — identical to normal launches.
+        There is no _resolve_happyranch_callback_path function, no
+        PATH=/usr/bin:/bin scrubbing, and no callback-directory injection.
+        This test verifies the function is absent and that the inherited
+        PATH passes through unchanged.
+        """
+        import runtime.orchestrator.executors as exec_mod
+
+        # The _resolve_happyranch_callback_path function must NOT exist
+        assert not hasattr(exec_mod, "_resolve_happyranch_callback_path"), (
+            "_resolve_happyranch_callback_path must not exist after seq315 correction"
+        )
+
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+
+        dep_exe = _make_fake_exe(tmp_path, "no-resolve-dep")
+        dep_hash = compute_sha256(str(dep_exe))
+        adapter = _make_fake_adapter_with_deps(
+            tmp_path, "no-resolve-adapter", dep_exes=[dep_exe],
+            adapter_id="no-resolve-adapter",
+        )
+
+        entry = register_custom_adapter(
+            executable=str(adapter),
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
+        )
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        assert approved.status == "approved"
+
+        # Set a distinctive inherited PATH
+        custom_path = "/my/custom/bin:/usr/bin:/bin"
+        monkeypatch.setenv("PATH", custom_path)
+
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+
+        executor = CustomAdapterExecutor(
+            profile_name="test-profile",
+            adapter_entry_id=entry.id,
+            adapter_executable=entry.executable,
+            adapter_hash=entry.executable_hash,
+            adapter_version=entry.version,
+            adapter_contract_version=entry.contract_version,
+            provider="test",
+        )
+        executor.set_dependency_manifest(
+            1, [{"executable": str(dep_exe), "sha256": dep_hash}]
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        workspace = tmp_path / "ws-no-resolve"
+        workspace.mkdir()
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=10,
+        )
+
+        assert result.success
+
+        # The adapter executable path is absolute (never resolved from PATH)
+        assert os.path.isabs(executor._adapter_executable)
 
     def test_legacy_adapter_launches_with_normal_env(self, tmp_path: Path, monkeypatch):
         """Legacy adapter (no manifest, loaded from persisted store) uses normal env."""

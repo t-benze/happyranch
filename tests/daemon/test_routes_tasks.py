@@ -828,6 +828,118 @@ def test_recall_payload_includes_revisit_of_task_id(
     assert r2.json()["revisit_of_task_id"] is None
 
 
+def test_recall_preserves_structured_verdict_from_completion(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Regression TASK-3903: verdict from completion report IS surfaced in recall."""
+    from runtime.models import TaskRecord
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "Review PR #529"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "code_reviewer", "sess-cr")
+
+    # Submit completion WITH a structured verdict (real code_reviewer path)
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-cr",
+            "agent": "code_reviewer",
+            "status": "completed",
+            "confidence": 92,
+            "output_summary": "All checks passed.",
+            "verdict": "APPROVE",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    # Recall MUST surface the structured verdict
+    recall = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/recall",
+        headers=auth_headers,
+    )
+    assert recall.status_code == 200
+    body = recall.json()
+    assert body["verdict"] == "APPROVE", (
+        f"Expected verdict 'APPROVE' in recall output, got {body.get('verdict')!r}. "
+        f"Full body: {body}"
+    )
+
+
+def test_recall_preserves_structured_verdict_pass_from_completion(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Regression TASK-3903: verdict PASS from QA completion IS surfaced in recall."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "QA PR #529"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "qa_engineer", "sess-qa")
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-qa",
+            "agent": "qa_engineer",
+            "status": "completed",
+            "confidence": 95,
+            "output_summary": "QA checks passed.",
+            "verdict": "PASS",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    recall = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/recall",
+        headers=auth_headers,
+    )
+    assert recall.status_code == 200
+    body = recall.json()
+    assert body["verdict"] == "PASS"
+
+
+def test_recall_verdict_none_when_not_reported(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Verdict is null when the completion report omitted it."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "Worker task"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-w")
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-w",
+            "agent": "dev_agent",
+            "status": "completed",
+            "confidence": 88,
+            "output_summary": "Work done.",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    recall = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/recall",
+        headers=auth_headers,
+    )
+    assert recall.status_code == 200
+    body = recall.json()
+    assert body["verdict"] is None, (
+        f"Expected verdict None when omitted, got {body.get('verdict')!r}"
+    )
+
+
 def test_recall_tree_includes_descendants(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:

@@ -32,8 +32,10 @@ import type {
 import {
   assignSkill as lifecycleAssign,
   getLifecycleStatus,
+  getProposalsQueue,
   listCustomCatalog,
   submitProposal,
+  type ProposalQueueResponse,
 } from '@/lib/api/skillLifecycle';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
@@ -293,6 +295,30 @@ function useSkillValidation(params?: {
   }) as QueryLike<{ events: ValidationEvent[]; label: string }>;
 }
 
+/** Founder-only proposal queue (THR-055 Slice 3A). Server-authoritative
+ *  read-only listing with filter/query params. Never re-sorts or re-counts
+ *  client-side. */
+function useProposalsQueue(
+  params?: {
+    status?: string;
+    page?: number;
+    page_size?: number;
+    validation_outcome?: 'validated' | 'validation_failed' | 'unvalidated';
+    search?: string;
+    proposer?: string;
+    submitted_after?: string;
+    submitted_before?: string;
+  },
+): QueryLike<ProposalQueueResponse> {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['proposals-queue', slug, params ?? null],
+    queryFn: () => getProposalsQueue(slug, params),
+    enabled: !!slug,
+    staleTime: 15_000,
+  }) as QueryLike<ProposalQueueResponse>;
+}
+
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
@@ -302,4 +328,5 @@ export const realSkillsApi: SkillsApi = {
   useSkillStatus,
   useAssignSkill,
   useSkillValidation,
+  useProposalsQueue,
 };

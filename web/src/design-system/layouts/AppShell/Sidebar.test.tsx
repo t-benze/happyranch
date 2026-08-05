@@ -61,6 +61,7 @@ function seedSidebarShell(
         org_pulse: [],
         org_age_days: summary.org_age_days ?? 0,
         server_now: '2026-06-17T12:00:00Z',
+        generated_at: '2026-06-17T12:00:00Z',
       }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
@@ -91,6 +92,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       expect(aside.getByText('Threads')).toBeInTheDocument();
       expect(aside.getByText('Tasks')).toBeInTheDocument();
       expect(aside.getByText('Agents')).toBeInTheDocument();
+      expect(aside.getByText('Skills')).toBeInTheDocument();
       expect(aside.getByText('Knowledge')).toBeInTheDocument();
       expect(aside.getByText('Artifacts')).toBeInTheDocument();
     });
@@ -249,6 +251,7 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       expect(aside.getByText('Threads').closest('a')).toBeInTheDocument();
       expect(aside.getByText('Tasks').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
       expect(aside.getByText('Agents').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/agents`);
+      expect(aside.getByText('Skills').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/skills`);
       expect(aside.getByText('Knowledge').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/kb`);
       expect(aside.getByText('Artifacts').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/artifacts`);
       // Operate group
@@ -290,6 +293,7 @@ describe('IA-2: Default landing = Home', () => {
           org_pulse: [],
           org_age_days: 0,
           server_now: '2026-06-17T12:00:00Z',
+          generated_at: '2026-06-17T12:00:00Z',
         }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
@@ -417,6 +421,40 @@ describe('Operate surfaces', () => {
     // 'Schedule' must NOT appear in the sidebar or app bar after redirect —
     // the nav item is removed and the 'schedule' route redirects away.
     expect(screen.queryByText('Schedule')).toBeNull();
+  });
+});
+
+describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surface)', () => {
+  test('Skills nav item is present in Primary group', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+    await waitFor(() => {
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      expect(aside.getByText('Skills')).toBeInTheDocument();
+    });
+  });
+
+  test('Proposal review is absent from sidebar nav (entry moved to Skills surface)', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+    await waitFor(() => {
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      expect(aside.getByText('Skills')).toBeInTheDocument();
+    });
+    const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+    expect(aside.queryByText('Proposal review')).toBeNull();
+  });
+
+  test('no proposal-queue link appears in sidebar or global nav', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+    await waitFor(() => {
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      expect(aside.getByText('Skills')).toBeInTheDocument();
+    });
+    const nav = screen.getByRole('navigation', { name: /Primary navigation/i });
+    const links = nav.querySelectorAll('a[href*="skills/proposals"]');
+    expect(links.length).toBe(0);
   });
 });
 

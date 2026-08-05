@@ -805,14 +805,16 @@ def _seed_skills_and_config(
 
 
 def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
-    """Create a workspace with the start-task skill marker so _run_agent
-    passes the readiness check."""
+    """Create a workspace WITHOUT ordinary skill directories.
+    Under the canonical store model, the SymlinkMaterializer creates skill
+    symlinks during materialization — pre-creating ordinary directories
+    at link paths causes ordinary_dir_at_link_path."""
     ws = test_runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    skill = ws / ".claude" / "skills" / "start-task"
-    skill.mkdir(parents=True, exist_ok=True)
-    (skill / "SKILL.md").write_text("# start-task\n")
+    # Create agent.yaml and repos so materialization can proceed.
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
 
 
@@ -839,7 +841,7 @@ class TestCallPathManagedSkillsIndex:
 
         # TASK-2511: pre-create protocol/skills/ source dirs so
         # ensure_system_contracts_materialized can inject + verify.
-        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
             src = test_settings.get_protocol_dir() / "skills" / sid
             src.mkdir(parents=True, exist_ok=True)
             (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")

@@ -267,9 +267,50 @@ async def _lifespan(app: FastAPI):
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
 
+    # ── Dashboard projection cold-start + periodic refresh ────────────
+    # THR-129: per-org durable last-known-good cache, refreshed every 10s.
+    # Load persisted snapshot synchronously (never block the event loop),
+    # then start an async bootstrap-and-schedule task. The lifespan must
+    # NOT await a DB compose before yielding — the initial warm runs in
+    # the background. Cache-only GET /dashboard/summary returns 503 until
+    # the first warm completes.
+    from runtime.infrastructure.kb_store import KBStore
+    _dashboard_tasks: list[asyncio.Task] = []
+    for org in state.orgs.values():
+        mgr = org.dashboard_projection
+        # Load persisted snapshot from disk synchronously (no-op if missing).
+        # This is a fast filesystem read — no DB access, no event-loop block.
+        persisted = mgr.load_from_disk()
+        if persisted is not None:
+            mgr._projection = persisted
+            _logger.info(
+                "dashboard projection loaded from disk for org %s (generated_at=%s)",
+                org.slug, persisted.generated_at.isoformat(),
+            )
+        # Start the bootstrap-then-schedule task. The initial warm runs
+        # asynchronously — the lifespan yields immediately. The route
+        # returns 503 until warm completes (cache-only, never synchronous).
+        kb_store = KBStore(org.root / "kb")
+        task = mgr.start_scheduler(
+            db=org.db, kb_store=kb_store, teams=org.teams,
+            loop=_main_loop, initial_warm=True,
+        )
+        _dashboard_tasks.append(task)
+
     try:
         yield
     finally:
+        # ── Dashboard projection cleanup ──────────────────────────────
+        # Cancel FIRST (before any await) so a refresh stuck in its
+        # to_thread/warm path doesn't make daemon shutdown wait for
+        # cooperative stop observation. Then reap to collect outcomes
+        # with return_exceptions — never leave unowned task exceptions.
+        for org in state.orgs.values():
+            org.dashboard_projection.cancel_scheduler()
+        if _dashboard_tasks:
+            await asyncio.gather(*_dashboard_tasks, return_exceptions=True)
+        for org in state.orgs.values():
+            await org.dashboard_projection.reap_scheduler()
         for t in thread_worker_tasks:
             t.cancel()
         dream_scheduler_task.cancel()

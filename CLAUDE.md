@@ -17,6 +17,20 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, tests, OpenAPI snapshots, and implementation. Protocol docs are bundled with the runtime — your session prompt injects a one-line-per-doc manifest with absolute paths for on-demand `Read`. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
+## Architecture: Canonical Skill Store + Workspace Symlinks (macOS-only)
+
+Skill delivery uses a **canonical skill store** — hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed. The executor runs under the same OS identity as the daemon — linked, validated relative skill links live under BOTH `.claude/skills` and `.agents/skills`; every user-facing and executor-facing guidance surface names both roots, never only the provider-selected root. Guidance is operational, not a technical security boundary.
+
+- **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
+- **Delivery model:** The executor and daemon share the same OS identity. There is NO OS-level isolation. A same-UID process may mutate, race validation, and affect active/overlapping sessions. Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal — do NOT claim immutable, protected, read-only, OS-enforced isolation, or automatic repair.
+- **Integrity verification:** Before each launch the daemon validates every resolved package member's bytes against the ledger-declared SHA-256 hashes. Pre-launch and retry-time manifest/member-hash plus both-root link validation occurs at real Popen/run seams. On mismatch the daemon emits a durable visible integrity event and refuses the session before Popen/retry. A mismatched existing canonical package is NEVER automatically rebuilt, copied, replaced, or healed from same-UID local source. First-ever materialization of an absent package remains allowed; valid existing packages may be reused. Recovery is manual, operator-invoked only: `happyranch skills recover <slug> <version> <content_hash>` (validates ledger provenance and all member SHA-256 hashes against ArtifactStore before deletion; refuses already-valid targets). This command requires a preceding authoritative external re-sync/redeploy of release or custom artifacts. No automatic repair from same-UID local source. `set-executor` may repair links only after byte integrity passes — it never repairs bytes. Policy withdrawal and atomic link repair remain safe.
+- **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/refuse boundary before launch. System-contract links are unioned across all ordinary session contexts so a later single-context launch never withdraws a valid link belonging to another context; release-managed and lifecycle links remain policy-reconciled and withdrawable.
+- **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
+- **Residual risk:** Same-UID TOCTOU, active, and overlapping-session residual risk is accurately noted. Do not describe byte targets, local sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted, executor-only writable/unwritable, or automatically recovered.
+- **Serving deployment** is independently verified after merge.
+
+Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + workspace symlinks", `protocol/05c-orchestrator.md`, `docs/agent-guides/agent-executors-and-permissions.md`.
+
 ## Essentials
 
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` currently builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.
@@ -51,15 +65,24 @@ scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run
 scripts/local_ci.sh integration  # Python integration tests
 scripts/local_ci.sh help         # List targets and caveats
 # Full guide: docs/local-ci.md
-# Agent worktrees get a mandatory pre-push hook (scripts/local_ci.sh all)
-# automatically via worktree_guard.py cmd_setup. See
-# protocol/skills/make-worktree/SKILL.md and docs/local-ci.md.
-# GitHub CI remains authoritative (clean-environment/matrix merge gate).
-# The hook CANNOT prevent git push --no-verify; --no-verify remains
-# prohibited by engineering policy. Local-CI is pre-push feedback only.
 ```
 
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
+
+## Engineering delivery gates
+
+- **CI recovery:** For a pinned PR head and failure signature, allow one
+  cancel/rerun at most. Then capture SHA, job URL, and log excerpt; classify
+  branch-scoped repair vs mainline/environmental block vs diagnosis. Never
+  re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
+  The `jobs` skill defines the full gate and the existing external-job terminal
+  verdict still controls completion.
+- **Frontend handoff:** Before review/QA, supply acceptance/spec mapping,
+  relevant state coverage, screenshot or deterministic-test evidence, and
+  changes since prior review. Return incomplete handoffs rather than discovering
+  missing proof piecemeal. Reuse the behavioral doc-sweep and adversarial
+  evidence checklists; a third fix-forward round requires structural
+  diagnosis/escalation, not a fourth retry.
 
 ## Code Conventions
 
@@ -83,7 +106,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **TASK-3881** (31557 symbols, 76059 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TASK-4376** (34671 symbols, 82652 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -106,10 +129,10 @@ This project is indexed by GitNexus as **TASK-3881** (31557 symbols, 76059 relat
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/TASK-3881/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/TASK-3881/clusters` | All functional areas |
-| `gitnexus://repo/TASK-3881/processes` | All execution flows |
-| `gitnexus://repo/TASK-3881/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/TASK-4376/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TASK-4376/clusters` | All functional areas |
+| `gitnexus://repo/TASK-4376/processes` | All execution flows |
+| `gitnexus://repo/TASK-4376/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

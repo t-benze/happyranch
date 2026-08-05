@@ -26,6 +26,33 @@ file system access, shell commands, web search, and git operations. Executor sel
 is stored in the org agent frontmatter (``AgentDef.executor``), so agents can run on
 different executors in the same org.
 
+**Per-agent model override (Issue #568).** An agent may override the default
+model its executor launches with via the ``model:`` field in its frontmatter
+(``AgentDef.model``). This is the SINGLE authoritative per-agent model store.
+When set, the runtime forwards it to the executor via ``executor.run(model=...)``
+in every built-in invocation class:
+
+- **Task/subtask:** ``Orchestrator._run_agent`` resolves model via
+  ``_resolve_model_name`` and passes it to ``executor.run(model=model_name)``.
+- **Thread bootstrap/reply:** ``thread_runner.run_invocation`` resolves model
+  from ``AgentDef.model`` and passes it in the `_invoke` closure.
+- **Working-hours wake:** ``wake_runner.run_wake`` resolves model from
+  ``AgentDef.model`` and passes it to ``executor.run(model=...)``.
+- **Dream:** ``dream_runner.run_dream`` resolves model from ``AgentDef.model``
+  and passes it to ``executor.run(model=...)``.
+- **Schedule fire:** ``schedule_runner.run_schedule`` resolves model from
+  ``AgentDef.model`` and passes it to ``executor.run(model=...)``.
+
+When ``model`` is absent (``None`` or not set in frontmatter), the executor
+launches with its CLI-default behavior — the same as before Issue #568.
+Custom executor profiles and custom-adapter profiles are unaffected: model
+is forwarded through the standard ``executor.run(model=...)`` API without
+modifying the executor factory, permission construction, or adapter semantics.
+
+The session-not-found eviction fallback in ``run_invocation`` also forwards
+the model on its clean-slate retry — both the initial resume attempt and the
+fallback full-prompt launch receive the same ``model`` value.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
@@ -60,7 +87,12 @@ The stable v1 contract is defined by the Pydantic models at
 for external consumers** (candidates implementing adapter wrappers) is the
 versioned ``GET /api/v1/runtime/adapters/contract-reference`` endpoint
 (THR-107 seq184), which returns JSON Schemas generated from those models at
-runtime. The server-derived schema is canonical. Key invariants:
+runtime. **THR-107 seq339/340:** the contract-reference response also returns
+``canonical_directory`` and ``required_executable_path`` — the daemon-managed
+canonical adapter path (<daemon-home>/adapters/<canonical-id>, 0700). Scoped
+submissions must create the wrapper at exactly this path; the route and
+registration seam independently enforce canonical placement. The
+master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,
@@ -127,8 +159,10 @@ runtime. The server-derived schema is canonical. Key invariants:
 - **THR-107 seq244 dependency manifest:** new adapter registrations require
   ``dependency_manifest_version: 1`` with a non-empty list of declared child
   executable dependencies (absolute path + SHA-256). Dependencies are validated
-  at registration and re-verified before every launch. Manifest-adapters cannot
-  rely on ambient PATH — the runtime scrubs PATH to ``/usr/bin:/bin``.
+  at registration and re-verified before every launch. Manifest-adapters are
+  explicitly absolute and hash-pinned/revalidated with no executor fallback to
+  ambient PATH; the adapter process inherits normalized PATH for normal
+  callback/utility availability.
   ``token_metering`` capability enforces truthful non-null token_usage at
   conformance. Legacy entries without the manifest are preserved unchanged.
 
@@ -166,8 +200,125 @@ Claude workspaces have a `.claude/settings.json` that configures Claude Code's a
 
 Skills — structured guidance packages that tell an agent how to perform specific
 operations — are materialized into the agent's workspace on every session spawn
-by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
-contexts (task, thread, wake, dream).
+by `materialize_workspace_skills` (`workspace_adapters.py`). This runs on all
+spawn contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch).
+An unrecognised context string — one that is not a valid ``SessionContext`` value
+— is a no-op: the function returns immediately without creating, building,
+preflighting, or reconciling any links, and must not withdraw or mutate an
+existing valid workspace state.  For valid contexts, system-contract links are
+unioned across all ordinary session contexts so a later single-context launch
+never withdraws a valid link belonging to another context; release-managed and
+lifecycle links remain policy-reconciled and withdrawable.
+
+#### Canonical skill store + workspace symlinks (macOS-only)
+
+As of TASK-4009/TASK-4012, skill materialization uses a **canonical skill store**
+outside executor workspaces. Skills are built once into hash-addressed packages
+and workspace entries are **validated relative symlinks** to exact approved
+package versions under both `.claude/skills` and `.agents/skills` roots
+(including Codex, Opencode, Pi, and mapped custom profiles).
+
+**Supported platform:** macOS (darwin) only. Linux and Windows explicitly fail
+closed before launch/materialization with a named `PlatformIsolationError`.
+
+**Delivery model (same-owner):**
+
+The executor and daemon share the same OS identity on macOS. Linked,
+validated relative skill links live under BOTH ``.claude/skills`` and
+``.agents/skills`` (including Codex, Opencode, Pi, and mapped custom
+profiles). Every user-facing and executor-facing guidance surface names
+both roots, never only the provider-selected root. Guidance is operational,
+not a technical security boundary.
+
+The executor runs under the SAME OS identity as the daemon — there is NO
+OS-level isolation. An agent-controlled executor process can read, write,
+chmod, or chown the canonical skill store and anything else the daemon
+account can reach. A same UID may mutate, race validation, and affect
+active/overlapping sessions. Integrity checks are DETECTION-ONLY,
+FAIL-CLOSED behavior, not prevention. Do NOT call the target immutable,
+protected, trusted source, or claim write/chmod/ACL denial, a security
+boundary, or cross-agent isolation.
+
+**Detection and refusal:** Before every executor launch (and at retry-time
+before Popen/retry), every resolved package member's artifact bytes are
+validated against the ledger-declared SHA-256 hashes. Both ``.claude/skills``
+and ``.agents/skills`` root links are validated. A mismatched existing
+canonical package is NEVER automatically rebuilt, copied, replaced, or healed
+from same-UID local source. On mismatch, malformed/broken/malicious link,
+or event-persistence failure, the daemon
+emits a durable visible integrity event and refuses the session before
+Popen/retry. First-ever materialization of an absent package remains
+allowed; valid existing packages may be reused.
+
+**Manual recovery only:** (a) For broken links: ``happyranch set-executor
+<agent> --executor <current-executor>`` (re-materializes links only, NEVER
+recovers corrupted bytes). (b) For corrupted canonical bytes:
+``happyranch skills recover <slug> <version> <content_hash>`` — the sole
+operator-invoked recovery path. Validates ledger provenance and every
+declared member SHA-256 hash against the ArtifactStore before deletion;
+refuses already-valid targets. The next materialization will rebuild the
+package from the ArtifactStore. No automatic repair from same-UID local
+source. This command can ONLY be used after an authoritative external
+re-sync/redeploy of the release or custom artifacts has restored verified
+artifact bytes outside the compromised same-owner local source — the
+recovery route validates against ArtifactStore, which may itself be
+corrupted if the same-UID executor previously tampered with it.
+
+Policy withdrawal and atomic link repair remain safe.
+
+**Ownership and provenance:**
+- Canonical packages are content-addressed trees from exact verified
+provenance/members for system, release-managed, and lifecycle
+version-pinned packages.
+- The readonly hardening is cosmetic — the executor shares the daemon's uid
+and can chmod files back to writable. Do not describe byte targets, local
+sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted,
+executor-only writable/unwritable, or automatically recovered.
+
+**Integrity verification:**
+Before each executor launch, the daemon compares actual canonical package
+content against the ledger-declared member hashes:
+- System-contract packages: compared against the shipped source tree hash.
+- Lifecycle skills: each member's actual hash compared against the
+  ArtifactStore manifest.
+On mismatch the daemon emits a durable integrity/operations event and
+refuses the session. Corrupted bytes are NEVER silently accepted as valid
+and NEVER automatically rebuilt, copied, or healed from same-UID local
+source. The ArtifactStore is NOT a trusted or immutable source — a
+same-UID process may also tamper with artifact bytes. This is
+detection-only with fail-closed refusal; it is NOT an attacker-independent
+external attestation authority.
+
+**Isolation contract (macOS):**
+- The executor launches directly under the daemon's identity. The prompt
+guard directs agents not to edit managed skill links and states that
+integrity verification is not a security boundary.
+- Ordinary directories, malicious/broken/external/wrong-version links, unsafe
+targets, failed permission check, or repair errors fail closed and prevent
+launch. Never recursively delete or follow attacker nodes.
+
+**Link validation and repair:**
+- Materialized links are validated relative symlinks resolving inside the
+canonical store. Stale, broken, wrong-version, non-symlink, external, or
+mismatched-hash entries are atomically repaired.
+- Withdrawal removes only owned validated links, retains canonical packages.
+- The full expected union is derived once per provider root:
+  **system-contract links are unioned across all ordinary session contexts**
+  (task, thread, wake, dream, schedule, bootstrap) and retained so a later
+  single-context launch never withdraws a valid link belonging to another
+  context.  **Release-managed and lifecycle links remain policy-reconciled**
+  and are withdrawn when the agent becomes ineligible, retired, or unassigned.
+
+**Legacy compatibility fallback:** The legacy per-session copy model
+(``_copy_skills_tree``, ``refresh_session_skills``, and the former
+``_WHOLESALE_DUMP_ENABLED`` flag) is removed as an executable path. No
+catch-and-copy or silent fallback survives. The canonical store + symlink
+model is the sole production materialization path.
+
+**Org context:** `{ORG_SLUG}` placeholders in canonical skill bodies are NOT
+substituted. The org slug is passed to the child process via
+`HAPPYRANCH_ORG_SLUG` environment variable from the authorized session/task
+metadata. Existing multi-org commands receive a real existing-org slug.
 
 **Release-shipped managed-catalog skills.** Bundled skills ship inside the
 repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
@@ -184,12 +335,12 @@ retired, and legacy-quarantined content never reaches the workspace.
 **Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
 (`<org_root>/skills/`) is retired and quarantined. During migration, legacy
 SKILL.md content is copied to the org ArtifactStore under
-`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for immutable retention; the
+`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for retention; the
 ledger stores only the artifact reference key, never the mutable filesystem path.
 Quarantined content is never resolved by `inject_managed_skills`.
 
 **Content retention (task-artifact policy).** Lifecycle proposal content
-is stored in the org ArtifactStore under content-addressed immutable keys:
+is stored in the org ArtifactStore under content-addressed keys:
 - ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
 - ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
 - ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset
@@ -280,10 +431,45 @@ task/session-bound proposal submission.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
-skills directory passing as complete. All four caller contexts (orchestrator
-`run_step`, `thread_runner`, `wake_runner`, `dream_runner`) persist a
-database-terminal failure and return BEFORE executor spawn — a materialization
-error in any spawn path blocks the agent launch, never silently skipped.
+skills directory passing as complete. All five caller contexts (orchestrator
+`run_step`, `thread_runner`, `wake_runner`, `dream_runner`, `schedule_runner`)
+persist a database-terminal failure and return BEFORE executor spawn — a
+materialization error in any spawn path blocks the agent launch, never silently
+skipped.
+
+**Process-local workspace serialization (Issue #536).** All pre-spawn skill
+materialization for a given agent workspace — system-contract injection +
+on-disk verification, managed-skill injection, and lifecycle-ledger injection
+— runs inside a single unified transaction (``materialize_workspace_skills``)
+protected by a process-local ``threading.RLock`` (re-entrant lock) keyed by
+the canonical (resolved) workspace path. The legacy wholesale copy
+(``_WHOLESALE_DUMP_ENABLED`` / ``refresh_session_skills``) is permanently
+removed. Concurrent task, thread, wake, dream, schedule, and
+executor-switch/bootstrap callers targeting the same workspace serialize
+their complete pre-spawn materialization. The three executor adapter
+``_copy_skills`` methods (Claude, Codex, Opencode) and the set-executor
+route's all-context materialization also participate in this lock boundary.
+The lock is **process-local only** — it does not coordinate across daemon
+processes. Cross-process protection for the same agent workspace relies on
+the daemon's per-agent concurrency ceiling (at most one ``run_step`` session
+plus one thread invocation per agent).
+
+The RLock allows safe re-entrant use: when the executor-switch route
+acquires the lock and calls ``ensure_workspace_ready``, the adapter's
+``_copy_skills`` can re-acquire the same lock without deadlocking.
+
+Per-file ``os.replace`` reader safety is preserved: a concurrent reader
+(or an agent session already running in the workspace) always sees either
+the complete old or complete new skill file, never a half-written one.
+The lock serializes writers only; it does NOT block readers.
+
+Named fail-closed behavior: if materialization fails for a real filesystem
+error (disk full, permission denied, missing source), the error propagates
+as a named exception (``SystemContractMaterializationError``,
+``LifecycleMaterializationError``, or the underlying ``OSError``) — never
+a bare ``FileNotFoundError``. The caller persists the terminal failure and
+no agent subprocess is launched. Recovery requires fixing the underlying
+filesystem/permission issue and explicitly re-dispatching.
 
 **Atomic emergency rollback.** The `POST /skill-lifecycle/rollback` handler wraps
 package status change, assignment deactivation, and event insertion in an explicit
@@ -445,6 +631,67 @@ bundled `happyranch` CLI.
 Because `_callee_env()` copies `os.environ` for child subprocesses, every
 executor spawn inherits the normalized PATH with the bundled directory
 leading when frozen.
+
+### Spawn-Environment Invariant
+
+Every runtime-created child subprocess — agent executor sessions (through
+``_callee_env()`` in ``runtime/orchestrator/executors.py``), custom-adapter
+launches, and job-script subprocesses (through ``_sanitize_child_env()`` in
+``runtime/daemon/jobs_runner.py``) — inherits a sanitized copy of the daemon's
+environment that **strips** the following variables:
+
+- ``VIRTUAL_ENV`` — standard venv activation marker; its presence directs
+  ``pip``, ``uv``, and other Python tooling to install into the venv.
+- ``UV_PROJECT_ENVIRONMENT`` — uv project environment target override; can
+  redirect ``uv sync`` / ``uv pip install`` away from the default ``.venv``.
+- ``UV_PYTHON`` — uv ``--python`` selector: the interpreter into which
+  packages are installed; can steer installation into the shared venv.
+- ``UV_SYSTEM_PYTHON`` — uv ``--system`` flag: installs into the system
+  Python environment instead of a managed venv.
+
+These variables are stripped because the daemon process itself typically runs
+inside the shared canonical HappyRanch venv.  If an agent executor or job
+script inherits ``VIRTUAL_ENV``, a bare ``uv sync`` or ``uv pip install -e .``
+executed from a **disposable worktree** would rewrite the shared venv's
+editable-install ``.pth`` file to point at the worktree instead of the
+canonical source checkout.  When the worktree is removed, every agent using
+that venv loses the ability to import the ``cli`` and ``runtime`` packages.
+
+**Preserved variables:** ``PATH`` (including the daemon-normalized standard
+tool directories), ``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*``
+runtime variables.  No unrelated configuration is blanket-removed.
+
+#### Worktree Rule (hard)
+
+**Never run** ``pip install -e .``, ``uv pip install -e .``, or
+``uv sync --active`` from inside a per-task worktree when the inherited
+environment carries the shared canonical venv.  These commands rewrite the
+shared ``.pth`` entry and break every agent using that venv.
+
+Instead, create an **isolated worktree-local venv** before installing:
+
+```bash
+python3 -m venv .venv-local
+source .venv-local/bin/activate
+uv pip install -e .
+```
+
+#### Recovery (secondary)
+
+If a stale ``.pth`` has already broken the CLI, prefix every invocation with
+the canonical source checkout on ``PYTHONPATH``:
+
+```bash
+PYTHONPATH=/path/to/canonical/happyranch happyranch <args>
+```
+
+This is a non-destructive workaround — it does not modify the ``.pth`` file
+or run ``pip``/``uv``.  Use it for one-off recovery; the permanent fix is to
+restore the editable install from the canonical checkout.
+
+The ``happyranch doctor`` command (local, read-only, no daemon required) checks
+whether the editable-install pointer resolves to the canonical source and emits
+the exact repair command on failure.
 
 ---
 

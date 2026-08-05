@@ -1801,8 +1801,11 @@ class TestAgentOnlyProposalRoute:
 
         # Verify through the read endpoint
         skill_id = data["skill_id"]
+        # Read endpoint is now Founder-only (bearer required)
+        import runtime.daemon.paths as paths_mod
         r2 = client.get(
             f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}",
+            headers={"Authorization": f"Bearer {paths_mod.read_token()}"},
         )
         assert r2.status_code == 200
         status_data = r2.json()

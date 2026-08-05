@@ -1,5 +1,33 @@
 # Agent Executors And Permissions
 
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
+> now uses the **canonical skill store + workspace symlink architecture**
+> (macOS-only). The legacy per-session copy model is REMOVED. The executor
+> and daemon share the same OS identity — linked, validated relative skill
+> links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
+> user-facing and executor-facing guidance surface names both roots.
+> Integrity verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO
+> OS-level security boundary, no automatic repair from same-UID local source.
+> See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
+> symlinks" for ownership, provenance, link validation, refusal/withdrawal/
+> retention semantics, integrity verification, and the compatibility-fallback
+> boundary. Linux and Windows are NOT supported — explicitly fail closed.
+>
+> **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
+> protected, or claim write/chmod/ACL denial. The prompt guard is operational
+> guidance, not enforcement. Integrity verification is DETECTION-ONLY with
+> FAIL-CLOSED refusal — NO automatic repair from same-UID local source. A
+> same-UID process may mutate, race validation, and affect active/overlapping
+> sessions. Manual recovery only: (a) ``set-executor`` for broken links,
+> (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
+> corrupted canonical bytes. No automatic repair from same-UID local source.
+> Recovery requires that an authoritative re-sync/redeploy of release or
+> custom artifacts has occurred outside the compromised same-owner local
+> source before recovery can safely materialize again. Policy withdrawal
+> and atomic link repair remain safe.
+
+# Agent Executors And Permissions
+
 **THR-095 (founder ruling option B):** The executor is declared in the
 **org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
 authoritative store. The workspace ``agent.yaml`` is no longer read or
@@ -181,6 +209,30 @@ endpoint returns JSON Schemas generated from the shipping Pydantic models
 canonical**. Candidates implementing adapter wrappers must fetch this reference
 first and follow the returned schemas exactly.
 
+**Canonical daemon-managed adapter path (THR-107 seq339/340).** The
+contract-reference response includes ``canonical_directory`` (absolute path to
+``<daemon-home>/adapters/``, created with restrictive 0o700 owner-only mode) and
+``required_executable_path`` (the exact absolute canonical path where the adapter
+wrapper MUST live — ``<daemon-home>/adapters/<canonical-adapter-id>``). The
+filename is the canonical adapter ID itself (lowercase alnum/hyphen only).
+
+**The scoped adapter submission route** (``POST /runtime/adapters/submit``)
+validates ``body.executable`` against this server-owned canonical target:
+
+- Rejects any non-canonical path (foreign directories, traversal spellings,
+  alternate filenames, symlink escape) with a 422 error that names
+  ``required_executable_path`` and keeps the token retryable.
+- The registration seam (``register_custom_adapter`` with
+  ``intended_profile_name``) independently rechecks the canonical path so a
+  route-only check cannot be bypassed.
+- Applies to **new scoped submissions and scoped re-registrations** — both
+  must use the exact canonical location.
+- Does **NOT** apply to dependency records (their existing absolute-path/
+  hash-pinned rules remain) or the master-bearer ``/register`` route
+  (no-intended-profile operational/recovery path unchanged).
+- Existing APPROVED adapters at arbitrary locations remain hash-valid and
+  launchable — no automatic migration, invalidation, or rewriting occurs.
+
 **Adapter lifecycle:**
 
 0. **Fetch contract-reference** — candidate CLI fetches
@@ -202,25 +254,29 @@ first and follow the returned schemas exactly.
    an intended profile (master-bearer registration) are approved without auto-binding
    and retain explicit advanced Bind recovery via Settings.
 4. **Advanced Bind recovery** — for approved adapters without an intended profile
-   (``recovery_ready`` eligibility), the founder provides an explicit profile name
-   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. Only APPROVED
-   adapters with hash-verified artifacts can bind. The registration route rejects
-   binding to PENDING, unknown, removed, tampered, non-regular, or non-executable
-   adapters before any durable mutation, registry mutation, audit write, or token
-   consumption. **This path is secondary to atomic approve-and-bind (seq237).**
-5. **Remove (THR-107)** — founder removes an APPROVED adapter via the
-   management ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route
-   (bearer-authenticated, Settings → Executors → Custom Adapters).
-   The caller MUST supply an exact durable snapshot (all material identity
-   and binding facts) — the server rejects stale, re-registered, and
-   wrong-target snapshots. Removal is rejected when any custom runtime
-   profile references ``command_adapter_id: custom-adapter:<id>`` — the
-   profile must be removed first from Settings → Executors → Custom CLIs.
-   Under the reentrant adapter-store lock the adapter is durably removed
-   and an audit entry (scope ``adapter:<id>``, action ``adapter_removed``)
-   is written. If auditing fails after durable removal, the adapter is
-   restored before the lock is released — a successful removal is always
-   auditable. The adapter's on-disk executable is never touched.
+   (``recovery_ready`` eligibility) or where atomic binding did not succeed
+   (``ready_to_bind`` eligibility), the founder provides an explicit profile name
+   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. In the ordinary
+   Settings UI this recovery affordance lives inside **Settings → Executors →
+   Custom CLIs**, not in a separate adapter list or the pending queue. Only
+   APPROVED adapters with hash-verified artifacts can bind. The registration
+   route rejects binding to PENDING, unknown, removed, tampered, non-regular, or
+   non-executable adapters before any durable mutation, registry mutation, audit
+   write, or token consumption. **This path is secondary to atomic
+   approve-and-bind (seq237).**
+5. **Remove (THR-107)** — the authenticated ``DELETE /api/v1/runtime/adapters/{adapter_id}``
+   route still exists, but the ordinary Settings UI no longer exposes a standalone
+   Custom Adapters list. Adapter-backed custom CLIs are managed inside
+   **Settings → Executors → Custom CLIs**; removing a profile that references
+   ``command_adapter_id: custom-adapter:<id>`` removes the binding from the
+   runtime store. The underlying adapter registration cleanup is not surfaced as
+   a separate founder-facing UI in ordinary Settings. When removal is performed
+   via the API, the caller MUST supply an exact durable snapshot (all material
+   identity and binding facts) — the server rejects stale, re-registered, and
+   wrong-target snapshots. Under the reentrant adapter-store lock the adapter is
+   durably removed and an audit entry (scope ``adapter:<id>``, action
+   ``adapter_removed``) is written. The adapter's on-disk executable is never
+   touched.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before
@@ -234,6 +290,18 @@ with actionable re-registration/approval error.
 unknown-version, oversized (>1MB) output; adapter identity/version/contract
 mismatch; session-id echo mismatch; success/returncode inconsistency.
 
+**Canonical adapter ID provenance invariant (THR-107 seq268):** the
+``adapter_metadata.adapter`` field MUST exactly equal the stable
+server-derived canonical adapter ID (e.g. ``kimi-adapter``), obtained
+from the ``canonical_adapter_id`` field of the contract-reference
+endpoint response. The value is a machine-stable slug derived from the
+submission profile — never a display name, provider string, or arbitrary
+implementation identity. A mismatch fails the conformance probe at
+registration AND blocks every launch at runtime (D7B). The
+contract-reference's self-test/probe fixture uses the same real
+token-derived ID so adapter authors can verify exact-ID compatibility
+before submission.
+
 **Rollback:** re-register the profile with ``command_adapter_id: generic-cli``
 or revert the deployment. Legacy stored profiles are never auto-mutated.
 
@@ -245,8 +313,9 @@ require ``dependency_manifest_version: 1`` with a non-empty ``dependencies``
 list (each: ``{executable: absolute-path, sha256: hex}``). Every declared
 child executable must exist, be a regular executable file, and match its
 declared SHA-256 at registration and again before each launch.
-Manifest-adapters cannot rely on ambient PATH — the runtime scrubs PATH to
-``/usr/bin:/bin``. ``token_metering`` capability requires truthful non-null
+Manifest-adapters are explicitly absolute and hash-pinned/revalidated with
+no executor fallback to ambient PATH; the adapter process inherits
+normalized PATH for normal callback/utility availability. ``token_metering`` capability requires truthful non-null
 ``token_usage`` at conformance. Legacy entries without the manifest are
 never auto-mutated. A dependency or wrapper change requires re-submission
 and founder re-approval.
@@ -260,6 +329,62 @@ wrappers must fetch the contract-reference endpoint and follow the returned
 schemas, never a hand-constructed copy. Normative prose is the signed
 architecture §2
 (``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
+
+## Spawn-Environment Invariant and Worktree Isolation
+
+Every runtime-created child subprocess — agent executor sessions, custom-adapter
+launches, and job-script subprocesses — inherits a sanitized copy of the daemon's
+environment that **strips** ``VIRTUAL_ENV``, ``UV_PROJECT_ENVIRONMENT``,
+``UV_PYTHON``, and ``UV_SYSTEM_PYTHON``.
+These variables are stripped because the daemon itself runs inside the shared
+canonical HappyRanch venv. If a child process inherits any of these, a bare
+``uv sync`` or ``uv pip install -e .`` executed from a disposable worktree would
+rewrite the shared venv's editable-install ``.pth`` file to point at the worktree
+instead of the canonical source checkout. When the worktree is removed, every
+agent using that venv loses the ability to import the ``cli`` and ``runtime``
+packages.
+
+**Preserved:** ``PATH`` (including daemon-normalized standard tool directories),
+``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*`` runtime variables.
+
+### Worktree Rule (hard)
+
+**Never run** ``pip install -e .``, ``uv pip install -e .``, or
+``uv sync --active`` from inside a per-task worktree when the inherited
+environment carries the shared canonical venv. These commands rewrite the
+shared ``.pth`` entry and break every agent using that venv.
+
+Instead, create an **isolated worktree-local venv** before installing:
+
+```bash
+python3 -m venv .venv-local
+source .venv-local/bin/activate
+uv pip install -e .
+```
+
+**Never run editable install or ``uv sync --active`` against an inherited
+shared venv.** Isolation is prevention; PYTHONPATH recovery (below) is
+secondary and never a substitute for proper isolation.
+
+### Recovery (secondary)
+
+If a stale ``.pth`` has already broken the CLI, prefix every invocation with
+the canonical source checkout on ``PYTHONPATH``:
+
+```bash
+PYTHONPATH=/path/to/canonical/happyranch happyranch <args>
+```
+
+This is a non-destructive workaround — it does not modify the ``.pth`` file
+or run ``pip``/``uv``. Use it for one-off recovery; the permanent fix is to
+restore the editable install from the canonical checkout.
+
+The ``happyranch doctor`` command (local, read-only, no daemon required)
+checks whether the editable-install pointer resolves to the canonical source
+and emits the exact non-destructive repair command on failure. It uses an
+independent git-based canonical source detection — it never trusts the
+``.pth``-selected ``runtime`` import or an untrusted environment override
+for the expected canonical path.
 
 ## Self-Registration (custom executors)
 
@@ -380,6 +505,56 @@ directly, and the generated prompt does **not** instruct the candidate
 to run `happyranch executors register --org` — the candidate drives the
 flow entirely via loopback HTTP calls to the runtime routes above.
 
+#### Built-in binary registration (THR-107 seq352)
+
+For **built-in** profiles (Claude Code, Codex, OpenCode, Pi), the SPA
+mints a ``purpose='binary'`` token and renders a **strictly sequential,
+copy-pasteable shell script** with no background or parallel commands.
+The script opens with ``set -e`` so any ``curl`` HTTP error (signaled by
+``--fail-with-body -sS``) stops execution immediately while still
+printing the server error detail for debugging. The fourth check-in
+(``emit_envelope``) uses an explicit ``|| exit 1`` guard because
+command-substitution failures are not caught by ``set -e`` alone.
+
+The built-in prompt drives the candidate through:
+
+1. **Self-discovery** — the CLI uses ``command -v`` or ``which`` to
+   resolve its own absolute binary path and exits with a clear error if
+   the binary is not found or not executable.
+2. **Sequential conformance check-ins** — four independent ``curl``
+   commands POST ``workspace_access``, ``loopback_reachable``,
+   ``cli_callback``, and ``emit_envelope`` in order. Each response is
+   printed; a failed request stops the sequence.
+3. **Completion gate** — the fourth (``emit_envelope``) response is
+   captured and checked: the script reads the returned JSON and exits
+   unless ``"all_complete":true`` is present. This is a **mechanical
+   enforcement**, not an advisory comment — ``register-binary`` is
+   reachable only after this gate passes.
+4. **Registration** — the binary path is POSTed to
+   ``/api/v1/executors/runtime/register-binary``. The kind is carried
+   by the token (no ``kind`` field in the body).
+
+Error responses from ``register-binary`` are designed to be
+**actionable for an external CLI operator** without reading server
+source code:
+
+- **401 (invalid/expired/consumed/wrong-runtime token)** — tells the
+  candidate to regenerate the connect prompt from Settings > Executors or
+  onboarding and run the full sequence again. This applies to both
+  pre-handler rejection (``_check_registration_token`` — invalid,
+  expired, consumed, or non-registration-form token) and post-handler
+  validation (``validate_runtime`` — consumed mid-flight).
+- **400 (incomplete conformance)** — names the pending steps and
+  instructs the candidate to complete them sequentially and await
+  ``all_complete:true``.
+- **422 (bad path)** — reports whether the path is non-absolute,
+  non-existent, or non-executable so the candidate can correct it.
+- **500 (write failure)** — releases the token for retry and advises
+  checking daemon data-directory write access.
+
+Failed attempts do **not** consume the token and do **not** write the
+registry; the token remains retryable within its TTL.
+
 ### Registration ≠ enrollment
 
 A registered profile whose binary is currently launchable (`present: true`)
@@ -498,3 +673,28 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 When adding orchestrator capabilities, keep them under the `happyranch` binary so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation cannot be wrapped in `happyranch`.
 
 Agent-side completion payloads must be single-line `happyranch` invocations. The Claude permission matcher treats newlines and shell separators as separate commands. New callbacks with multiple arguments should use `--from-file <path>`.
+
+## Canonical Adapter Path Migration Story (THR-107 seq339/340)
+
+Existing APPROVED custom adapters at arbitrary (non-canonical) locations are
+**not affected** — they remain hash-valid, launchable, and are never auto-migrated,
+invalidated, rewritten, or moved. No automatic migration occurs.
+
+An operator who wants to bring an existing adapter under the canonical
+managed-location model should:
+
+1. Create a **new scoped registration** with the same intended profile name
+   via the normal Settings → onboarding flow. This places the wrapper at its
+   canonical path (``<daemon-home>/adapters/<canonical-id>``).
+2. Complete the existing founder approval and lifecycle gates for the new
+   registration.
+3. When ready, retire the old adapter record via the management UI.
+
+Both old and new registrations coexist during the transition — there is no
+conflict, no forced cutover, and no downtime. The old adapter remains launchable
+until explicitly retired.
+
+**Master-bearer /register path:** Enforcing canonical placement on the
+master-bearer ``/register`` route (no intended profile, operational/recovery
+path) is a separate founder authorization/contract decision and is **not**
+implemented in this phase.

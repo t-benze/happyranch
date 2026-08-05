@@ -44,11 +44,100 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
-    SystemContractMaterializationError,
-    ensure_system_contracts_materialized,
+    _workspace_skills_transaction,
+    materialize_workspace_skills,
+    validate_workspace_skills_integrity,
 )
 
 router = APIRouter(dependencies=[require_token()])
+
+
+def _executor_switch_materialize(
+    workspace: Path,
+    org: OrgState,
+    agent_name: str,
+    provider: str,
+) -> list[str]:
+    """Materialize the six-context canonical skill union during executor switch.
+
+    Runs under the process-local workspace RLock so a concurrent
+    session-time task/thread spawn cannot interleave inside the
+    materialization tree. Returns a list of materialization error
+    messages (empty on success).
+
+    This function does ONLY the union materialization. Bootstrap files
+    (CLAUDE.md/AGENTS.md, .claude/settings.json, memory, task_history)
+    are NOT written here — they are handled by the caller AFTER this
+    function succeeds and before the new executor frontmatter is
+    persisted. This ordering guarantees:
+
+    1. Union failure → no bootstrap files, no config change, no audit.
+    2. Union success + bootstrap failure → safe compensation cleans up
+       any partial bootstrap files BEFORE any config/audit mutation.
+    3. Union success + bootstrap success → config + audit proceed.
+    """
+    _logger = logging.getLogger(__name__)
+
+    # Resolve agent team for the unified call
+    try:
+        agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), agent_name)
+        agent_team = agent_def.team if agent_def else "engineering"
+    except Exception:
+        agent_team = "engineering"
+
+    skills_root = org.settings.project_root / "runtime" / "skills"
+
+    with _workspace_skills_transaction(workspace):
+        errors: list[str] = []
+        try:
+            from runtime.orchestrator.workspace_adapters import (
+                materialize_workspace_skills_union,
+            )
+            expected_specs = materialize_workspace_skills_union(
+                workspace, org.settings,
+                slug=org.slug,
+                contexts=["task", "thread", "wake", "dream",
+                          "schedule", "bootstrap"],
+                provider=provider,
+                agent_name=agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org.root,
+                db=org.db,
+            )
+        except Exception as e:
+            errors.append(str(e))
+            _logger.error(
+                "Executor switch: materialization failed for "
+                "context-union provider=%s agent=%s: %s",
+                provider, agent_name, e,
+            )
+            return errors
+
+        # ── Pre-switch integrity validation ───────────────────────
+        # Validate the resolved union against the canonical store
+        # BEFORE executor switch can report success. A mismatch
+        # (same-owner mutation detected via hash, broken/malicious
+        # link, unexpected entry) emits a durable audit event and
+        # rejects the switch with the documented recovery command.
+        try:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=org.settings,
+                db=org.db,
+                agent_name=agent_name,
+            )
+        except Exception as e:
+            errors.append(str(e))
+            _logger.error(
+                "Executor switch: integrity validation failed for "
+                "provider=%s agent=%s: %s",
+                provider, agent_name, e,
+            )
+            return errors
+
+    return errors
 
 
 class InitBody(BaseModel):
@@ -755,6 +844,12 @@ async def set_agent_executor(
 ) -> dict:
     """Founder action: switch an existing agent's executor end-to-end.
 
+    **Atomicity contract:** The six-context canonical union materialization
+    MUST complete successfully BEFORE any new executor frontmatter is
+    persisted and BEFORE audit logging. On union/materialization failure,
+    this route returns a named HTTP error, preserves the previous executor
+    configuration and audit state, and prohibits subsequent launch.
+
     Reconciles all three surfaces the orchestrator reads:
       1. org agent .md frontmatter (``executor:``) — atomic rebuild via
          render_agent_text + tempfile + os.replace (same pattern as the
@@ -786,7 +881,143 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
-    # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+    # ── Step 1: Materialize the six-context canonical union FIRST ──
+    # This MUST complete successfully before any frontmatter is persisted.
+    # On failure, the previous executor is preserved and a named HTTP
+    # error is returned — no partial state mutation.
+    materialization_errors: list[str] = []
+    if has_workspace:
+        materialization_errors = await asyncio.to_thread(
+            _executor_switch_materialize,
+            workspace, org, agent_name, body.executor,
+        )
+        if materialization_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_materialization_failed",
+                    "errors": materialization_errors,
+                    "message": (
+                        "Canonical skill materialization for the new executor "
+                        "failed. The previous executor has been preserved. "
+                        "Resolve the materialization errors before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 2: Bootstrap persistent workspace files ──
+    # Run AFTER successful union but BEFORE frontmatter/audit persistence.
+    # A bootstrap failure must clean up any partial files and refuse the
+    # switch — no config change, no audit row. Only if this succeeds does
+    # the switch become durable.
+    if has_workspace:
+        # ── Snapshot pre-bootstrap workspace state ──
+        # Every file, directory, link, and their contents that existed
+        # before bootstrap must survive a subsequent bootstrap failure
+        # exactly. Only artifacts newly created by the failed attempt
+        # will be removed.
+        pre_bootstrap_snapshot: set[str] = set()
+        pre_bootstrap_contents: dict[str, bytes] = {}
+        for root_dir, dirnames, filenames in os.walk(str(workspace)):
+            root_path = Path(root_dir)
+            rel_root = root_path.relative_to(workspace)
+            pre_bootstrap_snapshot.add(str(rel_root))
+            for name in filenames:
+                rel = str(rel_root / name) if str(rel_root) != "." else name
+                pre_bootstrap_snapshot.add(rel)
+                # Snapshot contents for restoration if modified
+                fp = root_path / name
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        pre_bootstrap_contents[rel] = fp.read_bytes()
+                    except OSError:
+                        pass  # unreadable file — skip content snapshot
+            for name in dirnames:
+                pre_bootstrap_snapshot.add(
+                    str(rel_root / name) if str(rel_root) != "." else name
+                )
+
+        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+        try:
+            ctx.ensure_workspace_ready(
+                workspace,
+                agent_name,
+                existing.system_prompt,
+                provider=body.executor,
+            )
+        except Exception as e:
+            _logger = logging.getLogger(__name__)
+            _logger.error(
+                "Executor switch: bootstrap failed after successful "
+                "union for provider=%s agent=%s: %s",
+                body.executor, agent_name, e,
+            )
+            # ── Snapshot-and-restore compensation ──
+            # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
+            # 2. Restore any pre-existing files whose contents were modified.
+            # Every pre-existing workspace file/directory/link is preserved
+            # exactly. Errors during cleanup are surfaced, not suppressed.
+            errors: list[str] = []
+            # Restore modified pre-existing files to original contents
+            for rel, original_bytes in pre_bootstrap_contents.items():
+                fp = workspace / rel
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        current = fp.read_bytes()
+                        if current != original_bytes:
+                            fp.write_bytes(original_bytes)
+                    except OSError as exc:
+                        errors.append(
+                            f"Failed to restore file {rel}: {exc}"
+                        )
+            for root_dir, _dirnames, filenames in os.walk(
+                str(workspace), topdown=False,
+            ):
+                root_path = Path(root_dir)
+                for name in filenames:
+                    fp = root_path / name
+                    rel = fp.relative_to(workspace)
+                    if str(rel) not in pre_bootstrap_snapshot:
+                        try:
+                            fp.unlink()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new file {fp}: {exc}"
+                            )
+                # Remove empty directories that were newly created
+                if str(root_path) != str(workspace):
+                    rel_dir = root_path.relative_to(workspace)
+                    if str(rel_dir) not in pre_bootstrap_snapshot:
+                        try:
+                            if not any(root_path.iterdir()):
+                                root_path.rmdir()
+                        except OSError as exc:
+                            errors.append(
+                                f"Failed to remove new directory {root_path}: {exc}"
+                            )
+            if errors:
+                _logger.error(
+                    "Executor switch bootstrap cleanup errors: %s",
+                    "; ".join(errors),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": str(e),
+                    "message": (
+                        "Executor workspace bootstrap failed after "
+                        "successful skill materialization. The previous "
+                        "executor has been preserved. Any partial "
+                        "bootstrap files have been cleaned up. "
+                        "Resolve the bootstrap error before retrying."
+                    ),
+                },
+            )
+
+    # ── Step 3: Persist the new executor frontmatter ──
+    # Only reached if union materialization AND bootstrap both succeeded
+    # (or no workspace exists).
     updated = AgentDef(
         name=existing.name,
         team=existing.team,
@@ -821,60 +1052,12 @@ async def set_agent_executor(
     stale_files: list[str] = []
     removed: list[str] = []
     cleaned = False
-    materialization_errors: list[str] = []
 
     if has_workspace:
         # THR-095: agent.yaml is no longer the source — skip the
         # agent.yaml reconcile.  The .md frontmatter is the single
         # source of truth.
         after_ws = before_ws
-        # regenerate the executor bootstrap with the NEW provider.
-        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-        await asyncio.to_thread(
-            ctx.ensure_workspace_ready,
-            workspace,
-            agent_name,
-            existing.system_prompt,
-            provider=body.executor,
-        )
-        # 5. Materialize system contracts for ALL 4 session contexts so
-        #    skills are present the INSTANT the switch completes (not one
-        #    session later).  Complements #378's spawn precondition.
-        #
-        #    Decision (1): No single context is a strict superset — 'task'
-        #    misses 'dream'; 'dream' misses 'start-task' and 'thread'.
-        #    Loop over all 4 to guarantee every contract any future session
-        #    could need is on disk.
-        #
-        #    Decision (2): Failure is NON-FATAL — steps 1-3 have already
-        #    mutated org .md irreversibly; #378 guarantees
-        #    correctness at next spawn regardless.  Surface errors in the
-        #    response body + warning log.
-        #
-        #    Decision (3): provider=body.executor matches existing step-3
-        #    convention.  Standard claude/codex/opencode/pi names route to
-        #    the correct .claude/ or .agents/ skills root.  A custom profile
-        #    on the claude adapter with a non-"claude" name would mis-route
-        #    the verify path — flagged, out of scope for this change.
-        materialization_errors = []
-        _logger = logging.getLogger(__name__)
-        for ctx in ("task", "thread", "wake", "dream"):
-            try:
-                await asyncio.to_thread(
-                    ensure_system_contracts_materialized,
-                    workspace,
-                    org.settings,
-                    slug=org.slug,
-                    context=ctx,
-                    provider=body.executor,
-                )
-            except SystemContractMaterializationError as e:
-                materialization_errors.append(str(e))
-                _logger.warning(
-                    "Executor switch: system contract materialization "
-                    "failed for context=%s provider=%s agent=%s: %s",
-                    ctx, body.executor, agent_name, e,
-                )
 
         # 4. stale Claude-only files when switching AWAY from a Claude
         #    adapter. Check the profile's canonical workspace_adapter_id (D6),
@@ -912,7 +1095,6 @@ async def set_agent_executor(
         "stale_files": stale_files,
         "cleaned": cleaned,
         "removed": removed,
-        "materialization_errors": materialization_errors,
     }
 
 
@@ -1270,7 +1452,13 @@ async def list_learnings(
 
 
 @router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}", include_in_schema=False)
-async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
+async def get_learning(
+    slug: str,
+    agent_name: str,
+    id_or_slug: str,
+    org: OrgDep,
+    session_id: str | None = Query(None),
+) -> dict:
     store = _workspace_memory_store(org, agent_name)
     try:
         entry = store.read_entry(id_or_slug)
@@ -1279,8 +1467,25 @@ async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep)
             status_code=404,
             detail={"error": "id_not_found", "id_or_slug": id_or_slug},
         )
+    # THR-091 Slice 2: validate session_id via SessionTracker before
+    # using it for correlation.  Only a server-side-verified
+    # (org_slug, task_id, agent_name) tuple qualifies for same-session
+    # attribution.  No validated context → source=explicit_or_other.
+    validated_task_id: str | None = None
+    validated_session_id: str | None = None
+    if session_id is not None:
+        ctx = org.sessions.get_context_by_session(session_id)
+        if ctx is not None:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
+                validated_task_id = task_id
+                validated_session_id = session_id
     AuditLogger(org.db).log_memory_read(
-        agent=agent_name, id=entry.id, slug=entry.slug,
+        agent=agent_name,
+        id=entry.id,
+        slug=entry.slug,
+        session_id=validated_session_id,
+        task_id=validated_task_id,
     )
     return _entry_to_dict(entry)
 
@@ -1299,7 +1504,11 @@ class LearningSearchBody(BaseModel):
 
 @router.post("/agents/{agent_name}/learnings/entries/search", include_in_schema=False)
 async def search_learnings(
-    slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
+    slug: str,
+    agent_name: str,
+    body: LearningSearchBody,
+    org: OrgDep,
+    session_id: str | None = Query(None),
 ) -> dict:
     org_cfg = load_org_config(OrgPaths(root=org.root))
     sc = org_cfg.memory_search
@@ -1336,6 +1545,30 @@ async def search_learnings(
     # THR-032 P4b: merge + sort combined memory+KB hits, then truncate
     hits.sort(key=lambda h: (-h.score, h.updated_at or "", h.title, h.id))
     hits = hits[:limit]
+    # THR-091 Slice 2: log privacy-preserving search telemetry.
+    # Store only memory IDs (exclude KB hits), plus counts/correlation.
+    # NEVER persist raw query text, snippets, titles, or bodies.
+    # Validate session_id via SessionTracker before using it for
+    # correlation — only a server-side-verified context qualifies.
+    memory_hit_ids = [h.id for h in hits if h.source != "kb"]
+    kb_hit_count = sum(1 for h in hits if h.source == "kb")
+    validated_task_id: str | None = None
+    validated_session_id: str | None = None
+    if session_id is not None:
+        ctx = org.sessions.get_context_by_session(session_id)
+        if ctx is not None:
+            ctx_org, task_id, ctx_agent = ctx
+            if ctx_org == slug and ctx_agent == agent_name:
+                validated_task_id = task_id
+                validated_session_id = session_id
+    AuditLogger(org.db).log_memory_search(
+        agent=agent_name,
+        session_id=validated_session_id,
+        memory_ids=memory_hit_ids,
+        hit_count=len(memory_hit_ids),
+        kb_hit_count=kb_hit_count,
+        task_id=validated_task_id,
+    )
     result: dict = {
         "hits": [
             {

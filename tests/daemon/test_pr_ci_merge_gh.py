@@ -264,13 +264,12 @@ def test_recall_fetch_verdict_no_verdict() -> None:
 
 
 def test_recall_fetch_verdict_real_output_fixture() -> None:
-    """_recall_fetch_verdict rejects structured APPROVE + Verdict: APPROVE (malformed).
+    """_recall_fetch_verdict accepts structured APPROVE + Verdict: APPROVE (canonical).
 
     Real recall output includes a top-level ``verdict`` field (added in
-    TASK-3739).  The legacy ``Verdict: APPROVE`` line in ``output_summary`` is
-    not in the strict legacy vocabulary (PASS|FAIL|REVISE only) and MUST be
-    rejected as a malformed candidate — there is no structured-verdict equality
-    escape (removed TASK-3762).
+    TASK-3739).  ``Verdict: APPROVE`` is now in the strict legacy vocabulary
+    (PASS|FAIL|REVISE|APPROVE).  When structured and anchored prose agree on
+    the canonical token APPROVE, the verdict is accepted.
     """
     import json
 
@@ -291,8 +290,10 @@ def test_recall_fetch_verdict_real_output_fixture() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=real_recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
-            _recall_fetch_verdict("happyranch", "TASK-1496", "review")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-1496", "review")
+    assert verdict == "APPROVE", (
+        f"Expected 'APPROVE' from structured+prose agreement, got {verdict!r}"
+    )
 
 
 def test_recall_fetch_verdict_top_level_verdict_field() -> None:
@@ -490,7 +491,7 @@ def test_recall_fetch_verdict_legacy_case_variant_rejected() -> None:
 
 
 def test_recall_fetch_verdict_legacy_malformed_label_rejected() -> None:
-    """Malformed legacy label (e.g. 'APPROVED') is rejected — strict PASS|FAIL|REVISE only."""
+    """Malformed legacy label (e.g. 'APPROVED') is rejected — strict PASS|FAIL|REVISE|APPROVE only."""
     import json
 
     recall_json = json.dumps({
@@ -552,14 +553,12 @@ def test_recall_fetch_verdict_structured_pass_plus_malformed_rejected() -> None:
             _recall_fetch_verdict("happyranch", "TASK-SMIX", "qa")
 
 
-def test_recall_fetch_verdict_structured_approve_plus_verdict_approve_rejected() -> None:
-    """Structured APPROVE + physical Verdict: APPROVE → fail closed (malformed).
+def test_recall_fetch_verdict_structured_approve_plus_verdict_approve_accepted() -> None:
+    """Structured APPROVE + physical Verdict: APPROVE → accepted (canonical).
 
-    Per KB contract: ANY physical line starting with "Verdict:" that does
-    NOT match the strict PASS|FAIL|REVISE grammar is malformed and fails
-    closed unconditionally.  There is no structured-verdict equality escape.
-    "Verdict: APPROVE" is NOT in the legacy vocabulary and must be rejected
-    even when it textually equals the structured verdict.
+    ``Verdict: APPROVE`` is now in the strict legacy vocabulary
+    (PASS|FAIL|REVISE|APPROVE).  When structured verdict agrees with
+    the anchored physical line, the verdict is accepted.
     """
     import json
 
@@ -574,8 +573,8 @@ def test_recall_fetch_verdict_structured_approve_plus_verdict_approve_rejected()
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
-            _recall_fetch_verdict("happyranch", "TASK-RAPPROVE", "review")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-RAPPROVE", "review")
+    assert verdict == "APPROVE"
 
 
 def test_recall_fetch_verdict_legacy_horizontal_whitespace_ok() -> None:

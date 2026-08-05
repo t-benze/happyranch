@@ -1,32 +1,80 @@
 """Skills web-surface endpoints — PHASE 1 read foundation.
 
-Three GET endpoints, all bearer-authed + org-scoped:
-- GET /skills/catalog — union managed catalog + system contracts + user store
+Operational endpoints:
+- GET /skills/catalog — union managed catalog + system contracts
 - GET /skills/catalog/{skill_id} — single-skill detail
-- GET /agents/{agent_id}/skills/effective — effective + hidden skills with provenance
+- GET /agents/{agent_id}/skills/effective — effective + hidden skills
+- POST /skills/recover — operator recovery for corrupted canonical packages
 
 Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-endpoint-spec-v3.md).
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from pydantic import BaseModel, field_validator
 
 from runtime.config import settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.state import DaemonState
 from runtime.orchestrator.org_config import OrgConfigError
 from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
 from runtime.skills.models import PolicyClass, SkillEntry, SkillStatus
 from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+from runtime.skills.canonical_store import parse_strict_sha256_hash
 
 router = APIRouter(dependencies=[require_token()])
+
+
+def _recover_audit_event_mandatory(
+    db,
+    *,
+    slug: str,
+    agent: str = "operator",
+    detail: str,
+    reason_codes: list[str] | None = None,
+    skill_id: str | None = None,
+    version: str | None = None,
+    ok: bool = False,
+    severity: str = "error",
+    source: str = "operator_recovery",
+) -> None:
+    """Emit a durable audit event for operator recovery paths.
+
+    Persistence is mandatory for refusal and recovery events.  On
+    failure this helper raises HTTPException(500) — the caller must
+    NOT return or proceed with any destructive action.
+    """
+    try:
+        db.insert_skill_validation_event(  # type: ignore[union-attr]
+            skill_id=skill_id or f"hr:{slug}",
+            slug=slug,
+            agent=agent,
+            source=source,
+            severity=severity,
+            ok=ok,
+            version=version,
+            findings=[detail],
+            reason_codes=reason_codes or [],
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Recovery audit event persistence failed: {exc}. "
+                f"No changes were made. Retry recovery after resolving "
+                f"the persistence issue."
+            ),
+        )
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1039,4 +1087,420 @@ def skill_status(
         "current_version": skill_entry.version,
         "assignments": assignments,
         "last_validation": validation_block,
+    }
+
+
+# ── Recovery request model ───────────────────────────────────────────────
+
+
+class SkillRecoverRequest(BaseModel):
+    """Operator-invoked recovery for a named corrupted canonical package.
+
+    All fields required. Identity/path inputs are strictly validated before
+    any deletion.
+    """
+    slug: str
+    version: str
+    content_hash: str
+
+    @field_validator("slug")
+    @classmethod
+    def _slug_non_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("slug must not be empty")
+        if ".." in v or "/" in v or "\\" in v:
+            raise ValueError("slug must not contain path separators or '..'")
+        return v
+
+    @field_validator("version")
+    @classmethod
+    def _version_non_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("version must not be empty")
+        if ".." in v or "/" in v or "\\" in v:
+            raise ValueError("version must not contain path separators or '..'")
+        return v
+
+    @field_validator("content_hash")
+    @classmethod
+    def _content_hash_valid_sha256(cls, v: str) -> str:
+        import re as _re
+        v = v.strip()
+        if not v:
+            raise ValueError("content_hash must not be empty")
+        if not _re.match(r"^[a-f0-9]{64}$", v):
+            raise ValueError(
+                "content_hash must be exactly 64 lowercase hex characters "
+                "(raw SHA-256 hex digest)"
+            )
+        return v
+
+
+# ── Route: POST /skills/recover ──────────────────────────────────────────
+
+@router.post("/skills/recover", status_code=200)
+def skill_recover(
+    body: SkillRecoverRequest,
+    request: Request,
+    org: OrgDep,
+):
+    """Operator-invoked one-step recovery for a corrupted canonical package.
+
+    Narrowly scoped: validates identity/path inputs, checks ledger provenance,
+    revalidates member SHA-256 hashes against the ArtifactStore, then deletes
+    ONLY the corrupted canonical package directory. The next materialization
+    will rebuild from the ArtifactStore (which must be verified against
+    the release source for same-owner deployments).
+
+    Fails closed without valid authority/provenance. Never automatic.
+    set-executor only repairs links after byte integrity passes; this endpoint
+    is the sole operator surface for recovering corrupted bytes.
+    """
+    from runtime.config import settings as rt_settings
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.platform.isolation import detect_platform_isolation
+    from runtime.skills.lifecycle.service import SkillLifecycleService
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.skills.lifecycle import stores as lifecycle_stores
+    import json as _json
+    import shutil
+
+    slug = body.slug
+    version = body.version
+    content_hash = body.content_hash
+
+    # ── 1. Validate ledger provenance ─────────────────────────────
+    service = SkillLifecycleService()
+    try:
+        pkgs = service.list_catalog(org.db)
+    except Exception as exc:
+        # Emit durable failure event before refusing
+        _recover_audit_event_mandatory(
+            org.db, slug=slug, agent="operator",
+            ok=False,
+            detail=f"Ledger query failure for recover {slug}@{version}: {exc}",
+            reason_codes=["ledger_query_failure"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to query lifecycle ledger: {exc}",
+        )
+
+    pkg_match = None
+    for pkg in pkgs:
+        if pkg.slug == slug and pkg.version == version:
+            pkg_match = pkg
+            break
+
+    if pkg_match is None:
+        _recover_audit_event_mandatory(
+            org.db, slug=slug, agent="operator",
+            ok=False,
+            detail=(
+                f"No PUBLISHED lifecycle package found for "
+                f"{slug}@{version}"
+            ),
+            reason_codes=["package_not_found"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No PUBLISHED lifecycle package found for "
+                f"{slug}@{version}. Recovery requires an active "
+                f"lifecycle ledger entry."
+            ),
+        )
+
+    # Validate content_hash matches ledger
+    if pkg_match.content_hash != content_hash:
+        _recover_audit_event_mandatory(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", ok=False,
+            detail=(
+                f"content_hash mismatch: provided {content_hash[:16]}..., "
+                f"ledger has {pkg_match.content_hash[:16]}..."
+            ),
+            reason_codes=["hash_mismatch"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"content_hash mismatch: provided {content_hash[:16]}..., "
+                f"ledger has {pkg_match.content_hash[:16]}..."
+            ),
+        )
+
+    # ── 2. Validate artifact store member hashes ──────────────────
+    org_root = org.root
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+    manifest = None  # May be populated if content_artifact_key exists
+
+    if pkg_match.content_artifact_key:
+        try:
+            manifest_bytes = artifact_store.read(pkg_match.content_artifact_key)
+        except Exception:
+            _recover_audit_event_mandatory(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", ok=False,
+                detail=(
+                    f"Manifest artifact not found: "
+                    f"{pkg_match.content_artifact_key}"
+                ),
+                reason_codes=["artifact_not_found"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Manifest artifact not found: "
+                    f"{pkg_match.content_artifact_key}"
+                ),
+            )
+
+        # Verify manifest hash against ledger
+        actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_manifest_hash != content_hash:
+            _recover_audit_event_mandatory(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", ok=False,
+                detail=(
+                    f"Manifest artifact hash mismatch: "
+                    f"expected {content_hash[:16]}..., "
+                    f"got {actual_manifest_hash[:16]}..."
+                ),
+                reason_codes=["manifest_hash_mismatch"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Manifest artifact hash mismatch: "
+                    f"expected {content_hash[:16]}..., "
+                    f"got {actual_manifest_hash[:16]}... "
+                    f"ArtifactStore may also be corrupted."
+                ),
+            )
+
+        # Parse manifest and validate member hashes
+        try:
+            manifest = _json.loads(manifest_bytes.decode("utf-8"))
+        except Exception:
+            _recover_audit_event_mandatory(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", ok=False,
+                detail="Manifest artifact is not valid JSON",
+                reason_codes=["invalid_manifest"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manifest artifact is not valid JSON",
+            )
+
+        if isinstance(manifest, dict) and "members" in manifest:
+            for member in manifest["members"]:
+                member_path = member.get("path", "")
+                member_hash = member.get("hash", "")
+                member_key = member.get("artifact_key", "")
+
+                try:
+                    member_bytes = artifact_store.read(member_key)
+                except Exception:
+                    _recover_audit_event_mandatory(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", ok=False,
+                        detail=(
+                            f"Member artifact not found: {member_key}. "
+                            f"Recovery requires intact ArtifactStore."
+                        ),
+                        reason_codes=["member_artifact_not_found"],
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Member artifact not found: {member_key}. "
+                            f"Recovery requires intact ArtifactStore."
+                        ),
+                    )
+
+                # Validate strict sha256:<64 lowercase hex> format
+                # Uses the single canonical validator from canonical_store
+                try:
+                    expected_hex = parse_strict_sha256_hash(member_hash)
+                except ValueError as exc:
+                    _recover_audit_event_mandatory(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", ok=False,
+                        detail=(
+                            f"Member {member_path} hash invalid: {exc}"
+                        ),
+                        reason_codes=["malformed_hash"],
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Member {member_path} hash invalid: {exc}"
+                        ),
+                    )
+
+                actual_hex = hashlib.sha256(member_bytes).hexdigest()
+                if actual_hex != expected_hex:
+                    _recover_audit_event_mandatory(
+                        org.db, skill_id=pkg_match.skill_id, slug=slug,
+                        agent="operator", ok=False,
+                        detail=(
+                            f"Member {member_path} hash mismatch: "
+                            f"expected {expected_hex[:16]}..., "
+                            f"got {actual_hex[:16]}..."
+                        ),
+                        reason_codes=["member_hash_mismatch"],
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Member {member_path} hash mismatch: "
+                            f"expected {expected_hex[:16]}..., "
+                            f"got {actual_hex[:16]}... "
+                            f"ArtifactStore appears corrupted — "
+                            f"recovery requires intact artifact bytes."
+                        ),
+                    )
+
+    # ── 3. Refuse recovery of valid (non-corrupted) targets ───────
+    isolation = detect_platform_isolation()
+    store = CanonicalSkillStore(settings=rt_settings, isolation=isolation)
+    pkg_path = store.canonical_path(slug, version, content_hash)
+
+    if not pkg_path.exists():
+        _recover_audit_event_mandatory(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", ok=False,
+            detail=(
+                f"Canonical package not found at {pkg_path}. "
+                f"Package will be rebuilt on next materialization."
+            ),
+            reason_codes=["package_not_found_on_disk"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Canonical package not found at {pkg_path}. "
+                f"Nothing to recover — package will be rebuilt on "
+                f"next materialization."
+            ),
+        )
+
+    # Verify the target is actually corrupted — refuse valid targets.
+    # For manifest-based packages, validate each canonical member's
+    # SHA-256 against the manifest's declared hashes. If ALL match,
+    # the target is valid and recovery is refused.
+    if isinstance(manifest, dict) and "members" in manifest:
+        all_members_valid = True
+        for member in manifest["members"]:
+            member_path_str = member["path"]
+            member_file = pkg_path / member_path_str
+            if member_file.is_file():
+                try:
+                    expected_hex = parse_strict_sha256_hash(
+                        member["hash"])
+                except ValueError:
+                    all_members_valid = False
+                    break
+                actual_hex = hashlib.sha256(
+                    member_file.read_bytes()).hexdigest()
+                if actual_hex != expected_hex:
+                    all_members_valid = False
+                    break
+            else:
+                all_members_valid = False
+                break
+
+        if all_members_valid:
+            _recover_audit_event_mandatory(
+                org.db, skill_id=pkg_match.skill_id, slug=slug,
+                agent="operator", ok=False,
+                detail=(
+                    f"Recovery refused: canonical package {slug}@{version} "
+                    f"at {pkg_path} is valid (all member hashes match ledger)."
+                ),
+                reason_codes=["valid_target_refused"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Canonical package {slug}@{version} at {pkg_path} "
+                    f"is valid (all member hashes match ledger). "
+                    f"No recovery needed. Refusing to delete a valid "
+                    f"target."
+                ),
+            )
+
+    # ── 3. Emit durable recovery event BEFORE deletion ────────────
+    # Persistence must succeed before any destructive action.
+    # If the event write fails, the canonical package is left
+    # untouched (fail-closed) — the operator can retry.
+    try:
+        org.db.insert_skill_validation_event(
+            skill_id=pkg_match.skill_id,
+            slug=slug,
+            agent="operator",
+            source="operator_recovery",
+            severity="info",
+            ok=True,
+            version=version,
+            findings=[
+                f"Operator recovery: deleting corrupted canonical package "
+                f"{slug}@{version} (hash={content_hash[:16]}...) at {pkg_path}. "
+                f"Next materialization will rebuild from ArtifactStore."
+            ],
+            reason_codes=["operator_recovery"],
+        )
+    except Exception as exc:
+        # Event persistence failed — fail closed.
+        # Do NOT delete the package; canonical bytes stay unchanged.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Recovery event persistence failed: {exc}. "
+                f"The canonical package was NOT deleted — it remains "
+                f"intact on disk. Retry recovery after resolving the "
+                f"persistence issue."
+            ),
+        )
+
+    # ── 4. Delete the corrupted package (only after event persisted) ──
+    try:
+        # Make writable first (hardened packages are readonly)
+        from runtime.skills.canonical_store import _make_writable_for_removal
+        _make_writable_for_removal(pkg_path)
+        shutil.rmtree(pkg_path)
+    except Exception as exc:
+        _recover_audit_event_mandatory(
+            org.db, skill_id=pkg_match.skill_id, slug=slug,
+            agent="operator", ok=False,
+            detail=(
+                f"Failed to delete corrupted package {slug}@{version} "
+                f"at {pkg_path} (successful recovery event was "
+                f"already persisted): {exc}"
+            ),
+            reason_codes=["deletion_failed"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete corrupted package: {exc}",
+        )
+
+    return {
+        "ok": True,
+        "action": "recovered",
+        "slug": slug,
+        "version": version,
+        "content_hash": content_hash,
+        "canonical_path": str(pkg_path),
+        "message": (
+            f"Corrupted canonical package {slug}@{version} deleted. "
+            f"Restart daemon or trigger next launch to rebuild from "
+            f"the ArtifactStore (which must be verified against the "
+            f"release source for same-owner deployments)."
+        ),
     }

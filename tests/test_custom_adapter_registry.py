@@ -91,7 +91,7 @@ def _make_fake_adapter_script(
             "agent_session_id": None,
             "rate_limited": False,
             "adapter_metadata": {
-                "adapter": "fake-adapter",
+                "adapter": name,
                 "adapter_version": "1.0.0",
                 "contract_version": 1,
             },
@@ -372,7 +372,7 @@ class TestConformanceProbe:
         result = run_conformance_probe(str(script), "conformant-adapter")
         assert result.success is True
         assert result.adapter_metadata.contract_version == 1
-        assert result.adapter_metadata.adapter == "fake-adapter"
+        assert result.adapter_metadata.adapter == "conformant-adapter"
 
     def test_adapter_exit_nonzero_fails(self, tmp_path: Path):
         script = _make_fake_adapter_script(
@@ -492,6 +492,285 @@ class TestConformanceProbe:
         result = run_conformance_probe(str(script), "no-import-adapter")
         assert result.success is True
         # There's no Python import/discovery path — the executable is a subprocess
+
+    def test_conformance_probe_rejects_wrong_adapter_identity(self, tmp_path: Path):
+        """THR-107 seq268: conformance probe rejects adapter_metadata.adapter that doesn't match canonical ID."""
+        script = _make_fake_adapter_script(
+            tmp_path, "real-adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "ok",
+                "stderr_tail": "",
+                "result": {"text": "ok"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "wrong-provider-string",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        with pytest.raises(ValueError, match="adapter identity mismatch"):
+            run_conformance_probe(str(script), "real-adapter")
+        # Error message must include both expected and received values
+        with pytest.raises(ValueError, match="real-adapter"):
+            run_conformance_probe(str(script), "real-adapter")
+        with pytest.raises(ValueError, match="wrong-provider-string"):
+            run_conformance_probe(str(script), "real-adapter")
+
+    def test_kimi_adapter_reproduction_fixture_exact_id_accepted(self, tmp_path: Path):
+        """THR-107 seq268: kimi-adapter fixture — exact ID accepted, wrong provider/display rejected."""
+        # fixtured adapter that correctly reports adapter="kimi-adapter"
+        good_kimi = _make_fake_adapter_script(
+            tmp_path, "kimi-adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "kimi ok",
+                "stderr_tail": "",
+                "result": {"text": "kimi ok"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "kimi-adapter",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        result = run_conformance_probe(str(good_kimi), "kimi-adapter")
+        assert result.success is True
+        assert result.adapter_metadata.adapter == "kimi-adapter"
+
+        # A wrapper that reports a display name or provider string instead of
+        # the canonical adapter ID must be rejected.
+        bad_kimi = _make_fake_adapter_script(
+            tmp_path, "kimi-bad",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "kimi bad",
+                "stderr_tail": "",
+                "result": {"text": "kimi bad"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "Kimi AI",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        with pytest.raises(ValueError, match="adapter identity mismatch"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
+        # Error must name the expected canonical ID
+        with pytest.raises(ValueError, match="kimi-bad"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
+        # Error must name what was actually received
+        with pytest.raises(ValueError, match="Kimi AI"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
+
+    def test_contract_adapter_metadata_adapter_description_exposes_canonical_id_invariant(self):
+        """THR-107 seq268: AdapterMetadata.adapter schema description states the canonical-ID requirement."""
+        from runtime.orchestrator.adapter_contract import AdapterMetadata
+        schema = AdapterMetadata.model_json_schema()
+        adapter_field = schema["properties"]["adapter"]
+        description = adapter_field.get("description", "")
+        # The description MUST assert the canonical-ID invariant
+        assert "canonical_adapter_id" in description
+        assert "contract-reference" in description
+        assert "exactly equal" in description.lower() or "MUST exactly equal" in description
+        assert "display name" in description.lower()
+        assert "provider" in description.lower()
+
+    def test_contract_adapter_output_schema_exposes_adapter_metadata_descriptions(self):
+        """THR-107 seq268: AdapterOutput JSON schema surfaces adapter_metadata with canonical-ID prose."""
+        from runtime.orchestrator.adapter_contract import AdapterOutput
+        schema = AdapterOutput.model_json_schema()
+        # adapter_metadata is defined as a $ref to AdapterMetadata
+        # Resolve it through the $defs
+        adapter_metadata_def = schema["$defs"]["AdapterMetadata"]
+        adapter_field = adapter_metadata_def["properties"]["adapter"]
+        description = adapter_field.get("description", "")
+        assert "canonical_adapter_id" in description
+        assert "display name" in description.lower()
+        assert "provider" in description.lower()
+
+    def test_contract_adapter_metadata_adapter_is_required(self):
+        """THR-107 seq268: adapter_metadata.adapter is a required field in AdapterMetadata."""
+        from runtime.orchestrator.adapter_contract import AdapterMetadata
+        schema = AdapterMetadata.model_json_schema()
+        assert "adapter" in schema.get("required", [])
+
+    def test_documentation_schema_parity_canonical_adapter_id_invariant(self):
+        """THR-107 seq268: Every canonical source — both docs, both schemas — retains
+        the normative invariant that adapter_metadata.adapter MUST exactly equal
+        the canonical_adapter_id, and expressly rejects display name, provider string,
+        and arbitrary implementation identity.
+
+        Robust to harmless prose layout changes; fails only when the requirement
+        is removed or weakened. Never uses global document searches — each check
+        is scoped to the specific named block that carries the invariant.
+        """
+        import re
+        here = Path(__file__).parent
+
+        # ── Source 1: agent-executors-and-permissions.md ──────────────────
+        # Extract ONLY the named "Canonical adapter ID provenance invariant"
+        # block — never a global scan (global "provider string" appears in
+        # unrelated executor-throttle prose at L447).
+        guide_path = (
+            here.parent
+            / "docs"
+            / "agent-guides"
+            / "agent-executors-and-permissions.md"
+        )
+        guide_text = guide_path.read_text()
+
+        # Find the named invariant block: starts with the bold heading,
+        # ends at the next bold heading or double-newline section break.
+        block_start = guide_text.find(
+            "**Canonical adapter ID provenance invariant"
+        )
+        assert block_start != -1, (
+            "Canonical adapter ID provenance invariant block not found"
+        )
+        guide_rest = guide_text[block_start:]
+        # Find the end: next "**" heading after the invariant paragraph(s).
+        # The block ends before the next bold section heading.
+        # Look for "**" that starts after the initial heading marker.
+        next_bold = guide_rest.find("\n**", len("**Canonical adapter ID"))
+        if next_bold != -1:
+            invariant_block = guide_rest[:next_bold]
+        else:
+            invariant_block = guide_rest
+
+        invariant_lower = invariant_block.lower()
+        # Provenance: adapter_metadata.adapter MUST exactly equal canonical_adapter_id
+        assert "adapter_metadata.adapter" in invariant_block
+        assert "canonical_adapter_id" in invariant_block
+        assert "must exactly equal" in invariant_lower
+        # Rejection trio — must appear in THIS block, not elsewhere in the doc
+        assert "display name" in invariant_lower
+        assert "provider string" in invariant_lower
+        assert "arbitrary" in invariant_lower
+        # Contract-reference provenance
+        assert "contract-reference" in invariant_lower
+        assert "submission" in invariant_lower
+
+        # ── Source 2: unified-adapter-runtime-architecture.md ────────────
+        # Extract ONLY the adapter_metadata.adapter field comment from
+        # §2.2. The comment lives on the "adapter" key inside the
+        # adapter_metadata object block in the JSON schema example.
+        arch_path = (
+            here.parent
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-07-24-unified-adapter-runtime-architecture.md"
+        )
+        arch_text = arch_path.read_text()
+
+        # Locate the adapter_metadata block in §2.2, then find the
+        # specific "adapter" field comment within it.
+        meta_block_start = arch_text.find('"adapter_metadata": {')
+        assert meta_block_start != -1, (
+            "adapter_metadata block not found in unified architecture spec"
+        )
+        # Find the "adapter" field line within adapter_metadata:
+        #   "adapter": "happyranch-claude-adapter",   // string, required. ...
+        after_meta = arch_text[meta_block_start:]
+        adapter_line_start = after_meta.find('"adapter":')
+        assert adapter_line_start != -1, (
+            "adapter field not found within adapter_metadata block"
+        )
+        # Extract the full comment line: from '"adapter":' to the next
+        # adjacent key line (started by '"adapter_version"') or newline
+        # before the next field.
+        adapter_line_rest = after_meta[adapter_line_start:]
+        next_field = adapter_line_rest.find('"adapter_version"')
+        if next_field != -1:
+            adapter_field_block = adapter_line_rest[:next_field]
+        else:
+            adapter_field_block = adapter_line_rest
+
+        adapter_field_lower = adapter_field_block.lower()
+        # Provenance: MUST exactly equal the stable server-derived
+        # canonical_adapter_id from the contract-reference / submitted adapter ID
+        assert "must exactly equal" in adapter_field_lower, (
+            "'MUST exactly equal' not in adapter field comment"
+        )
+        assert "canonical_adapter_id" in adapter_field_block, (
+            "canonical_adapter_id not in adapter field comment"
+        )
+        assert "contract-reference" in adapter_field_lower, (
+            "contract-reference not in adapter field comment"
+        )
+        assert "submitted" in adapter_field_lower, (
+            "'submitted' not in adapter field comment"
+        )
+        # Rejection trio
+        assert "display name" in adapter_field_lower
+        assert "provider" in adapter_field_lower
+        assert "arbitrary" in adapter_field_lower
+
+        # ── Source 3: AdapterMetadata schema description ─────────────────
+        from runtime.orchestrator.adapter_contract import (
+            AdapterMetadata,
+            AdapterOutput,
+        )
+        meta_schema = AdapterMetadata.model_json_schema()
+        meta_desc = meta_schema["properties"]["adapter"].get("description", "")
+        meta_lower = meta_desc.lower()
+        # Full provenance: server-derived canonical_adapter_id from
+        # contract-reference / submitted adapter ID
+        assert "canonical_adapter_id" in meta_desc
+        assert "exactly equal" in meta_lower
+        assert "contract-reference" in meta_lower
+        assert "submitted" in meta_lower
+        # Exact equality assertion
+        assert "must" in meta_lower or "required" in meta_lower, (
+            "Schema description missing normative obligation wording"
+        )
+        # Rejection trio
+        assert "display name" in meta_lower
+        assert "provider" in meta_lower
+        assert "arbitrary" in meta_lower
+
+        # ── Source 4: AdapterOutput schema ($defs resolution) ────────────
+        out_schema = AdapterOutput.model_json_schema()
+        out_meta_def = out_schema["$defs"]["AdapterMetadata"]
+        out_desc = out_meta_def["properties"]["adapter"].get("description", "")
+        out_lower = out_desc.lower()
+        # Same full invariant via $defs resolution
+        assert "canonical_adapter_id" in out_desc
+        assert "exactly equal" in out_lower
+        assert "contract-reference" in out_lower
+        assert "submitted" in out_lower
+        # Rejection trio
+        assert "display name" in out_lower
+        assert "provider" in out_lower
+        assert "arbitrary" in out_lower
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +934,7 @@ class TestReRegistration:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake-adapter",
+                    "adapter": "adapter-v2",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -1329,9 +1608,10 @@ class TestContractVersionExact:
             cv_py = "True" if contract_version else "False"
         else:
             cv_py = repr(contract_version)
-        # Build the adapter_metadata as Python code
+        # Build the adapter_metadata as Python code — use the name as the
+        # canonical adapter identity (provenance invariant).
         meta_lines = [
-            '        "adapter": "fake",',
+            f'        "adapter": "{name}",',
             '        "adapter_version": "1.0.0",',
         ]
         if cv_py is not None:
@@ -1566,7 +1846,7 @@ class TestReRegistrationPreservesPending:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "adapter",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -1831,7 +2111,7 @@ class TestApprovalGate:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "approval-adapter",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -2256,7 +2536,7 @@ class TestApproveRoute:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "rereg-approve-v1",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },

@@ -33,10 +33,9 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
-    inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
+    validate_workspace_skills_integrity,
+    SystemContractMaterializationError,
 )
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.routine_parser import parse_routines
@@ -149,6 +148,9 @@ async def run_wake(
         )
         return
 
+    # Issue #568: forward AgentDef.model to executor.run for wake invocations.
+    model_name: str | None = agent_def.model
+
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
@@ -159,50 +161,61 @@ async def run_wake(
         paths=paths, agent_name=record.agent_name,
     )
 
-    # Refresh on-disk skill bodies on EVERY session (THR-070).
-    refresh_session_skills(workspace, settings, slug=org_state.slug)
-
     # TASK-2511: resolve executor name early so we can pass provider to the
     # materialization guard before spawn.
     _prov = _executor_name(paths, record.agent_name)
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 
-    # Explicit context-aware system-contract injection with on-disk verification
-    # (THR-055 Phase 1 + TASK-2511 hardening).
-    ensure_system_contracts_materialized(
-        workspace, settings, slug=org_state.slug, context="wake",
-        provider=_prov,
-    )
-
-    # Managed-catalog skill injection (THR-055 Phase 4).
+    # Issue #536: serialize the complete pre-spawn skill materialization
+    # transaction under a process-local workspace lock.
     # FAIL-CLOSED: a materialization error must persist a terminal failure
-    # and return BEFORE executor spawn — no half-populated skills dir may
-    # pass as complete (REVISE TASK-2829).
+    # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        inject_managed_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
+            context="wake",
+            provider=_prov,
             agent_name=record.agent_name,
             team=agent_def.team,
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
         )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=work_hour_id,
+        )
     except Exception as e:
         store.update(
             work_hour_id, status=WorkHourStatus.FAILED,
             ended_at=datetime.now(timezone.utc),
-            error=f"managed_skills_materialization_failed: {e}",
+            error=f"materialization_failed: {e}",
         )
         AuditLogger(org_state.db).log_work_hour_failed(
             work_hour_id, record.agent_name,
-            reason=f"managed_skills_materialization_failed: {e}",
+            reason=f"materialization_failed: {e}",
         )
         return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
+    # ── Per-retry launch validator ───────────────────────────────
+    def _pre_launch_validator():
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=work_hour_id,
+        )
 
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
@@ -242,6 +255,9 @@ async def run_wake(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        pre_launch_validator=_pre_launch_validator,
+        org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:

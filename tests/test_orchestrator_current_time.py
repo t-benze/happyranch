@@ -20,7 +20,7 @@ from runtime.orchestrator.teams import TeamsRegistry
 _FROZEN = datetime(2026, 6, 27, 4, 47, tzinfo=timezone.utc)  # 12:47 in +08:00
 
 # System-contract IDs for "task" context with repos.
-_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread"]
+_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream"]
 
 
 @pytest.fixture(autouse=True)
@@ -190,13 +190,16 @@ class TestRunAgentMemoryDigest:
         )
 
     def _setup_ws(self, test_runtime, agent: str = "dev_agent"):
-        """Set up a workspace with start-task skill marker."""
+        """Set up a workspace WITHOUT ordinary skill directories.
+        Under the canonical store model, skill symlinks are created by the
+        SymlinkMaterializer during materialization — pre-creating ordinary
+        directories at link paths causes ordinary_dir_at_link_path."""
         ws = test_runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-        skill = ws / ".claude" / "skills" / "start-task"
-        skill.mkdir(parents=True, exist_ok=True)
-        (skill / "SKILL.md").write_text("# start-task\n")
+        # Also create agent.yaml and repos so materialization can proceed.
+        (ws / "agent.yaml").write_text("executor: claude\n")
+        (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
     def _seed_memory_store(self, test_runtime, agent: str = "dev_agent"):
         """Create a memory/ dir with seeded items and return the store root."""

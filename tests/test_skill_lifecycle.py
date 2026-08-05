@@ -78,7 +78,7 @@ def _full_lifecycle_to_published(db, service, **proposal_overrides):
     """Run a skill through the full lifecycle to PUBLISHED. Returns PackageVersion."""
     pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs(**proposal_overrides))
     pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-    pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+    pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
     pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
     pkg = service.review_decision(
         db=db, actor_kind="human", version_id=pkg.id,
@@ -174,7 +174,7 @@ class TestHumanLifecycle:
     def test_full_lifecycle_happy_path(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -206,7 +206,7 @@ class TestHumanLifecycle:
             db=db, actor_kind="agent",
             **_proposal_kwargs(proposer_agent="founder"))
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id, sponsor="founder")
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         with pytest.raises(LifecycleError, match="must be distinct from author"):
             service.review_decision(
@@ -231,7 +231,7 @@ class TestHumanLifecycle:
         """Publish must reference the correct approval event ID."""
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -246,7 +246,9 @@ class TestHumanLifecycle:
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = self._claim(db, service, pkg)
         pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=False,
-                                         findings=["Missing required reference"])
+                                         findings=["Missing required reference"],
+                                         validator_version="THR-055/1.0.0",
+                                         validator_key="THR-055/1.0.0")
         assert pkg.status == LifecycleStatus.VALIDATION_FAILED
 
     def test_hash_change_forks_version(self, db, service):
@@ -266,7 +268,7 @@ class TestHumanLifecycle:
             db=db, actor_kind="agent",
             **_proposal_kwargs(proposer_agent="dev_agent"))
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id, sponsor="founder")
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -350,7 +352,7 @@ class TestTwoPublishedCap:
             task_id="TASK-3", session_id="sess-3",
             proposer_agent="dev_agent")
         pkg3 = service.claim_proposal(db=db, actor_kind="human", version_id=pkg3.id)
-        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True)
+        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg3 = service.submit_for_review(db=db, actor_kind="human", version_id=pkg3.id)
         pkg3 = service.review_decision(
             db=db, actor_kind="human", version_id=pkg3.id,
@@ -383,7 +385,7 @@ class TestTwoPublishedCap:
             task_id="TASK-3", session_id="sess-3",
             proposer_agent="dev_agent")
         pkg3 = service.claim_proposal(db=db, actor_kind="human", version_id=pkg3.id)
-        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True)
+        pkg3 = service.record_validation(db=db, actor_kind="human", version_id=pkg3.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg3 = service.submit_for_review(db=db, actor_kind="human", version_id=pkg3.id)
         pkg3 = service.review_decision(
             db=db, actor_kind="human", version_id=pkg3.id,
@@ -569,14 +571,14 @@ class TestCatalogVisibility:
     def test_validated_not_in_catalog(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         catalog = service.list_catalog(db)
         assert all(c.skill_id != pkg.skill_id for c in catalog)
 
     def test_approved_not_in_catalog(self, db, service):
         pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -593,10 +595,13 @@ class TestCatalogVisibility:
         pkg = _full_lifecycle_to_published(db, service)
         service.rollback(db=db, actor_kind="human", skill_id=pkg.skill_id, reason="Bad")
         catalog = service.list_catalog(db)
-        # Rolled back packages may still show if status check doesn't explicitly
-        # filter ROLLED_BACK; the catalog only shows PUBLISHED status
-        assert all(c.status != LifecycleStatus.PUBLISHED
-                   for c in catalog if c.skill_id == pkg.skill_id)
+        # Rollback is assignment-level only — does NOT mutate package status.
+        # The package remains PUBLISHED and visible in catalog.
+        # However, all assignments are deactivated (verified below).
+        assert any(c.skill_id == pkg.skill_id for c in catalog)
+        # Verify assignments are deactivated
+        active = lifecycle_stores.get_all_active_assignments_for_skill(db, pkg.skill_id)
+        assert len(active) == 0
 
 
 # ── Test: Retire ──────────────────────────────────────────────────────────
@@ -797,7 +802,7 @@ class TestMaterializationFailClosed:
                 **_proposal_kwargs(skill_md="# Test Content\n"),
             )
             pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-            pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+            pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
             pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
             pkg = service.review_decision(
                 db=db, actor_kind="human", version_id=pkg.id,
@@ -867,7 +872,7 @@ class TestMaterializationFailClosed:
             **_proposal_kwargs(),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -909,7 +914,9 @@ class TestRollbackAtomicityAndResidue:
     remove prior materialized workspace residue."""
 
     def test_rollback_cleans_workspace_residue(self, db):
-        """Rollback service deactivates assignments atomically.
+        """Rollback service deactivates assignments without mutating package status.
+
+        Package decision lifecycle is separate from assignment projection.
         Workspace residue cleanup is a route-level operation (tested via daemon route tests)."""
         service = SkillLifecycleService()
         pkg = service.submit_proposal(
@@ -917,7 +924,7 @@ class TestRollbackAtomicityAndResidue:
             **_proposal_kwargs(slug="test-rollback-skill"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -951,9 +958,9 @@ class TestRollbackAtomicityAndResidue:
         )
         assert len(post_assignments) == 0
 
-        # Verify package status is ROLLED_BACK
+        # Verify package status is STILL PUBLISHED — assignment is a separate projection
         rolled_pkg = lifecycle_stores.get_latest_package_version(db, pkg.skill_id)
-        assert rolled_pkg.status == LifecycleStatus.ROLLED_BACK
+        assert rolled_pkg.status == LifecycleStatus.PUBLISHED
 
         # Verify rollback event was recorded
         events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
@@ -961,14 +968,17 @@ class TestRollbackAtomicityAndResidue:
         assert len(rollback_events) >= 1
 
     def test_rollback_partial_failure_no_ledger_state(self, db):
-        """If rollback fails mid-operation, no partial ledgers/assignment state remains."""
+        """If rollback fails mid-operation, no partial assignment state remains.
+
+        Package status is never mutated by rollback (separate projection).
+        """
         service = SkillLifecycleService()
         pkg = service.submit_proposal(
             db=db, actor_kind="agent",
             **_proposal_kwargs(slug="test-atomic-rollback"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -989,10 +999,10 @@ class TestRollbackAtomicityAndResidue:
         )
         assert len(pre_assignments) > 0
 
-        # Force a failure by patching update_package_status BEFORE the service
-        # even starts writing — this simulates a DB-level failure.
+        # Force a failure by patching deactivate_assignments_for_skill
+        # (rollback no longer calls update_package_status — assignment is separate projection).
         with patch.object(
-            lifecycle_stores, "update_package_status",
+            lifecycle_stores, "deactivate_assignments_for_skill",
             side_effect=RuntimeError("Simulated DB failure"),
         ):
             with pytest.raises(RuntimeError, match="Simulated"):
@@ -1006,7 +1016,7 @@ class TestRollbackAtomicityAndResidue:
             db, pkg.skill_id,
         )
         assert len(post_assignments) == len(pre_assignments)
-        # Package status should still be PUBLISHED
+        # Package status should still be PUBLISHED (rollback never changes it)
         rolled_pkg = lifecycle_stores.get_latest_package_version(db, pkg.skill_id)
         assert rolled_pkg.status == LifecycleStatus.PUBLISHED
 
@@ -1023,7 +1033,7 @@ class TestLegacyCatalogVisibility:
             **_proposal_kwargs(slug="lifecycle-visible"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1062,7 +1072,7 @@ class TestLegacyCatalogVisibility:
             **_proposal_kwargs(slug="active-skill"),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1762,7 +1772,7 @@ class TestFullPackageRetention:
         )
         # Publish and assign
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1823,7 +1833,7 @@ class TestFullPackageRetention:
             org_root=str(org_root),
         )
         pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
-        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True, validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0")
         pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
         pkg = service.review_decision(
             db=db, actor_kind="human", version_id=pkg.id,
@@ -1974,3 +1984,270 @@ class TestAgentPilotPolicy:
                 db=db, actor_kind="agent", skill_id=pkg.skill_id,
                 reason="test",
             )
+
+
+# ── Test: Adversarial REJECTED materialization interleaving ──────────────
+
+class TestAdversarialRejectedMaterialization:
+    """CRITICAL: An exact addressed version that becomes REJECTED during
+    materialization must NOT leave bytes or directories in either
+    .claude/skills/<slug> or .agents/skills/<slug>."""
+
+    def test_rejected_at_success_boundary_cleans_and_raises(self, db):
+        """Adversarial interleaving: package flips PUBLISHED→REJECTED at
+        the success-recording seam. Must clean residue and raise
+        LifecycleMaterializationError with zero materialized-success events."""
+        import tempfile
+        from pathlib import Path
+
+        service = SkillLifecycleService()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org_root = Path(tmpdir)
+            pkg = service.submit_proposal(
+                db=db, actor_kind="agent",
+                org_root=org_root,
+                **_proposal_kwargs(
+                    slug="rejected-race",
+                    skill_md="# Rejected Race Test\nContent.\n",
+                ),
+            )
+            pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.record_validation(
+                db=db, actor_kind="human", version_id=pkg.id, ok=True,
+                validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0",
+            )
+            pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.review_decision(
+                db=db, actor_kind="human", version_id=pkg.id,
+                decision="approved", rationale="ok", reviewer="founder",
+            )
+            pkg = service.publish(
+                db=db, actor_kind="human", version_id=pkg.id,
+                approval_event_id=pkg.publication_decision_id,
+            )
+            service.assign(
+                db=db, actor_kind="human", skill_id=pkg.skill_id,
+                agent_name="dev_agent", version_id=pkg.id,
+            )
+
+            workspace = org_root / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            from runtime.orchestrator.workspace_adapters import (
+                _materialize_lifecycle_skills,
+                LifecycleMaterializationError,
+            )
+
+            # Flush the package to REJECTED status AFTER get_effective_skills
+            # would have seen it as PUBLISHED, but BEFORE record_materialization
+            # records success — simulated by patching record_materialization
+            # on the CLASS (not an instance, since _materialize_lifecycle_skills
+            # creates its own SkillLifecycleService).
+            from runtime.skills.lifecycle.service import LifecycleError
+
+            original_rm = SkillLifecycleService.record_materialization
+
+            def _flip_then_raise_rejected(self, *args, **kwargs):
+                # Only interfere with the success recording.
+                if kwargs.get("success"):
+                    # Flip the package version to REJECTED in the database
+                    conn = db
+                    if hasattr(db, '_conn'):
+                        conn = db._conn
+                    conn.execute(
+                        "UPDATE skill_lifecycle_packages SET status = ? WHERE id = ?",
+                        ("rejected", pkg.id),
+                    )
+                    raise LifecycleError(
+                        code="rejected_terminal",
+                        detail=f"Package version {pkg.id} is terminally REJECTED.",
+                        status_code=409,
+                    )
+                return original_rm(self, *args, **kwargs)
+
+            SkillLifecycleService.record_materialization = _flip_then_raise_rejected
+
+            try:
+                with pytest.raises(LifecycleMaterializationError) as exc_info:
+                    _materialize_lifecycle_skills(
+                        workspace=workspace,
+                        org_root=org_root,
+                        db=db,
+                        agent_name="dev_agent",
+                        slug="test-org",
+                    )
+
+                # Verify the error message names the rejected version
+                assert "REJECTED" in str(exc_info.value)
+                assert str(pkg.id) in str(exc_info.value)
+
+                # Verify no residue in workspace
+                dest_claude = workspace / ".claude" / "skills" / pkg.slug
+                dest_agents = workspace / ".agents" / "skills" / pkg.slug
+                assert not dest_claude.exists(), (
+                    f".claude/skills/{pkg.slug} should not exist after rejected clean"
+                )
+                assert not dest_agents.exists(), (
+                    f".agents/skills/{pkg.slug} should not exist after rejected clean"
+                )
+
+                # Verify zero materialized-success events
+                events = lifecycle_stores.list_lifecycle_events(
+                    db, skill_id=pkg.skill_id,
+                )
+                mat_success = [e for e in events if e.event_type == "materialized"]
+                assert len(mat_success) == 0, (
+                    "No materialized events should be recorded for REJECTED packages"
+                )
+            finally:
+                SkillLifecycleService.record_materialization = original_rm
+
+    def test_normal_materialization_records_success(self, db):
+        """Normal (non-adversarial) materialization records a success event."""
+        import tempfile
+        from pathlib import Path
+
+        service = SkillLifecycleService()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org_root = Path(tmpdir)
+            pkg = service.submit_proposal(
+                db=db, actor_kind="agent",
+                org_root=org_root,
+                **_proposal_kwargs(
+                    slug="normal-success",
+                    skill_md="# Normal Success\nContent.\n",
+                ),
+            )
+            pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.record_validation(
+                db=db, actor_kind="human", version_id=pkg.id, ok=True,
+                validator_version="THR-055/1.0.0", validator_key="THR-055/1.0.0",
+            )
+            pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+            pkg = service.review_decision(
+                db=db, actor_kind="human", version_id=pkg.id,
+                decision="approved", rationale="ok", reviewer="founder",
+            )
+            pkg = service.publish(
+                db=db, actor_kind="human", version_id=pkg.id,
+                approval_event_id=pkg.publication_decision_id,
+            )
+            service.assign(
+                db=db, actor_kind="human", skill_id=pkg.skill_id,
+                agent_name="dev_agent", version_id=pkg.id,
+            )
+
+            workspace = org_root / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            from runtime.orchestrator.workspace_adapters import _materialize_lifecycle_skills
+
+            _materialize_lifecycle_skills(
+                workspace=workspace,
+                org_root=org_root,
+                db=db,
+                agent_name="dev_agent",
+                slug="test-org",
+            )
+
+            # Verify success event was recorded
+            events = lifecycle_stores.list_lifecycle_events(
+                db, skill_id=pkg.skill_id,
+            )
+            mat_success = [e for e in events if e.event_type == "materialized"]
+            assert len(mat_success) >= 1
+
+            # Verify content landed on disk in both trees
+            dest_claude = workspace / ".claude" / "skills" / pkg.slug / "SKILL.md"
+            dest_agents = workspace / ".agents" / "skills" / pkg.slug / "SKILL.md"
+            assert dest_claude.is_file(), f"Expected {dest_claude} to exist"
+            assert dest_agents.is_file(), f"Expected {dest_agents} to exist"
+
+
+# ── Test: Validator key blank/whitespace normalization ───────────────────
+
+class TestValidatorKeyNormalization:
+    """Blank or whitespace-only validator_key is normalized to the
+    mandatory nonblank validator_version, consistent with None/empty behavior."""
+
+    def test_blank_validator_key_normalized_to_version(self, db):
+        """Empty string validator_key → falls back to validator_version."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-blank"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized
+
+    def test_whitespace_validator_key_normalized_to_version(self, db):
+        """Whitespace-only validator_key → falls back to validator_version."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-whitespace"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="   ",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized
+
+    def test_explicit_nonblank_validator_key_preserved(self, db):
+        """Explicit nonblank validator_key is preserved as-is."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-explicit"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key="CUSTOM-KEY-v2",
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "CUSTOM-KEY-v2"  # Preserved
+
+    def test_none_validator_key_normalized_to_version(self, db):
+        """None validator_key → falls back to validator_version (existing behavior)."""
+        service = SkillLifecycleService()
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="key-none"),
+        )
+        pkg = service.claim_proposal(db, "human", pkg.id)
+        pkg = service.record_validation(
+            db, "human", pkg.id, True,
+            validator_version="THR-055/1.0.0",
+            validator_key=None,
+        )
+        events = lifecycle_stores.list_lifecycle_events(db, skill_id=pkg.skill_id)
+        val_events = [e for e in events if e.event_type == "validated"]
+        assert len(val_events) >= 1
+        meta = val_events[-1].metadata
+        assert meta["validator_version"] == "THR-055/1.0.0"
+        assert meta["validator_key"] == "THR-055/1.0.0"  # Normalized

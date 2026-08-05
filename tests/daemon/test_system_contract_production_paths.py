@@ -19,11 +19,15 @@ from pathlib import Path
 import pytest
 
 from runtime.daemon.dream_runner import run_dream
+from runtime.daemon.schedule_runner import run_schedule
 from runtime.daemon.thread_runner import run_invocation
 from runtime.daemon.wake_runner import run_wake
 from runtime.models import (
     DreamRecord,
     DreamStatus,
+    ScheduleKind,
+    ScheduleRecord,
+    ScheduleStatus,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
     ThreadMessageKind,
@@ -39,10 +43,15 @@ from runtime.config import Settings
 
 
 @pytest.mark.asyncio
-async def test_thread_spawn_stops_on_missing_contracts(org_state, tmp_path, monkeypatch):
-    """run_invocation with an EMPTY workspace (no .claude/skills) must fail
-    the invocation BEFORE spawning the executor — invocation stays FAILED,
-    executor is never called."""
+async def test_thread_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
+    """run_invocation must fail BEFORE spawning the executor when
+    materialization of workspace skills raises.
+
+    Under the canonical store model, the correct unit seam for inducing
+    a materialization failure is to inject an explicit
+    SymlinkMaterializationError into the SymlinkMaterializer, not to rely
+    on an empty protocol/skills/ directory (which the production code now
+    skips with continue)."""
     db = org_state.db
     db.insert_thread(ThreadRecord(id="THR-001", subject="test"))
     db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
@@ -55,21 +64,38 @@ async def test_thread_spawn_stops_on_missing_contracts(org_state, tmp_path, monk
         triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
     )
 
-    # Workspace: agent.yaml exists (so executor resolution works) but
-    # .claude/skills/ is ABSENT — post-redeploy state.
+    # Workspace setup: agent.yaml + repos so executor resolution works.
     ws = org_state.root / "workspaces" / "dev_agent"
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    # Use a TEMP project root so protocol/skills/ is empty — no source
-    # material is available for injection.
+    # Create source skill dirs so the canonical build has real content.
     settings = Settings(project_root=tmp_path)
     proto_skills = tmp_path / "protocol" / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(proto_skills, "start-task")
+    _make_skill_dir(proto_skills, "jobs")
+    _make_skill_dir(proto_skills, "make-worktree")
+    _make_skill_dir(proto_skills, "thread")
 
-    # Replace executor factory so we can DETECT if spawn was attempted.
-    import runtime.daemon.thread_runner as runner_mod
+    # Inject explicit materialization error — canonical store builds
+    # will succeed, but the symlink materializer will raise.
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializer,
+        SymlinkMaterializationError,
+    )
+    _orig_materialize = SymlinkMaterializer.materialize_skill
+
+    def _failing_materialize(self, skill_slug, version, content_hash,
+                             workspace, skills_subdir, **kwargs):
+        raise SymlinkMaterializationError(
+            "injected_failure",
+            f"Injected materialization failure for {skill_slug}",
+        )
+
+    monkeypatch.setattr(SymlinkMaterializer, "materialize_skill", _failing_materialize)
+
     executor_spawned = False
 
     class _FakeExec:
@@ -82,9 +108,9 @@ async def test_thread_spawn_stops_on_missing_contracts(org_state, tmp_path, monk
             from runtime.orchestrator.executors import ExecutorResult
             return ExecutorResult(success=True, duration_seconds=0, session_id="fake")
 
+    # Replace executor factory so we can DETECT if spawn was attempted.
     monkeypatch.setattr(
-        runner_mod,
-        "_build_executor_for_provider",
+        "runtime.daemon.thread_runner._build_executor_for_provider",
         lambda provider, s, paths: _FakeExec(),
     )
 
@@ -96,21 +122,18 @@ async def test_thread_spawn_stops_on_missing_contracts(org_state, tmp_path, monk
 
     # Executor must NOT have been spawned.
     assert not executor_spawned, (
-        "executor was spawned despite missing system contracts"
+        "executor was spawned despite injected materialization error"
     )
 
-    # Invocation must be marked FAILED (not stuck in PENDING).
+    # Invocation must be marked FAILED.
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.status == ThreadInvocationStatus.FAILED, (
         f"expected FAILED, got {inv_after.status}"
     )
-    # The error message names missing contracts, not bare Errno 2.
+    # The error message names the materialization failure.
     reason = inv_after.decline_reason or ""
-    assert "contract" in reason.lower(), (
-        f"decline_reason should mention contracts: {reason!r}"
-    )
-    assert "Errno 2" not in reason, (
-        f"decline_reason must not contain bare Errno 2: {reason!r}"
+    assert "materialization" in reason.lower(), (
+        f"decline_reason should mention materialization: {reason!r}"
     )
 
 
@@ -118,9 +141,9 @@ async def test_thread_spawn_stops_on_missing_contracts(org_state, tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_dream_spawn_stops_on_missing_contracts(org_state, tmp_path, monkeypatch):
-    """run_dream with an EMPTY workspace must fail the dream BEFORE spawning
-    the executor — dream stays FAILED, executor is never called."""
+async def test_dream_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
+    """run_dream must fail BEFORE spawning the executor when
+    materialization of workspace skills raises."""
     db = org_state.db
 
     def _dt(hour: int) -> datetime:
@@ -139,10 +162,28 @@ async def test_dream_spawn_stops_on_missing_contracts(org_state, tmp_path, monke
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    # Use a TEMP project root so protocol/skills/ is empty.
+    # Create source skill dirs so canonical store builds succeed.
     settings = Settings(project_root=tmp_path)
     proto_skills = tmp_path / "protocol" / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(proto_skills, "jobs")
+    _make_skill_dir(proto_skills, "make-worktree")
+    _make_skill_dir(proto_skills, "dream")
+
+    # Inject explicit materialization error.
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializer,
+        SymlinkMaterializationError,
+    )
+
+    def _failing_materialize(self, skill_slug, version, content_hash,
+                             workspace, skills_subdir, **kwargs):
+        raise SymlinkMaterializationError(
+            "injected_failure",
+            f"Injected materialization failure for {skill_slug}",
+        )
+
+    monkeypatch.setattr(SymlinkMaterializer, "materialize_skill", _failing_materialize)
 
     executor_spawned = False
 
@@ -164,18 +205,15 @@ async def test_dream_spawn_stops_on_missing_contracts(org_state, tmp_path, monke
     )
 
     assert not executor_spawned, (
-        "executor was spawned despite missing system contracts"
+        "executor was spawned despite injected materialization error"
     )
 
     dream = db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED, (
         f"expected FAILED, got {dream.status}"
     )
-    assert "contract" in (dream.error or "").lower(), (
-        f"error should mention contracts: {dream.error!r}"
-    )
-    assert "Errno 2" not in (dream.error or ""), (
-        f"error must not contain bare Errno 2: {dream.error!r}"
+    assert "materialization" in (dream.error or "").lower(), (
+        f"error should mention materialization: {dream.error!r}"
     )
 
 
@@ -256,8 +294,9 @@ async def test_wake_spawn_succeeds_when_contracts_present(org_state, tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_wake_spawn_stops_on_missing_contracts(org_state, tmp_path, monkeypatch):
-    """run_wake with an EMPTY workspace must fail BEFORE spawning the executor."""
+async def test_wake_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
+    """run_wake must fail BEFORE spawning the executor when
+    materialization of workspace skills raises."""
     db = org_state.db
     now = datetime.now(timezone.utc)
     db.work_hours.insert(WorkHourRecord(
@@ -291,38 +330,181 @@ async def test_wake_spawn_stops_on_missing_contracts(org_state, tmp_path, monkey
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    # Use a TEMP project root — no source material available.
+    # Create source skill dirs so canonical store builds succeed.
     settings = Settings(project_root=tmp_path)
     proto_skills = tmp_path / "protocol" / "skills"
     proto_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(proto_skills, "start-task")
+    _make_skill_dir(proto_skills, "jobs")
+    _make_skill_dir(proto_skills, "make-worktree")
+    _make_skill_dir(proto_skills, "thread")
 
-    # NOTE: wake_runner already calls ensure_system_contracts_materialized
-    # WITHOUT try/except wrapping (correct pattern). The error propagates
-    # and the wake worker loop catches it. We verify the error is raised.
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
+    # Inject explicit materialization error.
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializer,
+        SymlinkMaterializationError,
     )
+
+    def _failing_materialize(self, skill_slug, version, content_hash,
+                             workspace, skills_subdir, **kwargs):
+        raise SymlinkMaterializationError(
+            "injected_failure",
+            f"Injected materialization failure for {skill_slug}",
+        )
+
+    monkeypatch.setattr(SymlinkMaterializer, "materialize_skill", _failing_materialize)
+
+    executor_spawned = False
 
     class _FakeExec:
         def __init__(self, **kwargs):
             pass
 
         def run(self, **kwargs):
+            nonlocal executor_spawned
+            executor_spawned = True
             from runtime.orchestrator.executors import ExecutorResult
             return ExecutorResult(success=True, duration_seconds=0, session_id="fake")
 
     fake_exec = _FakeExec()
 
-    with pytest.raises(SystemContractMaterializationError) as exc_info:
-        await run_wake(
-            org_state=org_state,
-            work_hour_id="WH-002",
-            settings=settings,
-            executor_factory=lambda *a, **kw: fake_exec,
-        )
-    msg = str(exc_info.value)
-    assert "contract" in msg.lower()
-    assert "Errno 2" not in msg
+    await run_wake(
+        org_state=org_state,
+        work_hour_id="WH-002",
+        settings=settings,
+        executor_factory=lambda *a, **kw: fake_exec,
+    )
+
+    # Executor was NOT spawned (fail-closed pre-spawn)
+    assert not executor_spawned, (
+        "executor was spawned despite injected materialization error"
+    )
+
+    # Work hour is marked FAILED with a materialization error
+    wh = db.work_hours.get("WH-002")
+    assert wh is not None
+    assert wh.status == WorkHourStatus.FAILED, (
+        f"Expected FAILED status, got {wh.status}"
+    )
+    assert "materialization" in (wh.error or "").lower(), (
+        f"Error message should reference materialization failure: {wh.error}"
+    )
+
+
+# ── Schedule production path ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
+    """run_schedule must fail BEFORE spawning the executor when
+    materialization of workspace skills raises.
+
+    Also proves that context="schedule" (SessionContext.SCHEDULE) reaches
+    materialize_workspace_skills from the schedule-fire production path —
+    not "wake" or "task"."""
+    db = org_state.db
+    now = datetime.now(timezone.utc)
+
+    # Insert a FIRING schedule record so run_schedule picks it up.
+    db.schedules.insert(ScheduleRecord(
+        id="SCHEDULE-001",
+        agent_name="dev_agent",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        normalized_brief="Test brief",
+        source_instruction="Test instruction",
+        status=ScheduleStatus.FIRING,
+        team="engineering",
+    ))
+
+    # Agent def in org/agents/ needed by load_agent()
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\n"
+        "name: dev_agent\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "---\n\n"
+        "## Routine Tasks\n\n"
+        "- Run routine check.\n"
+    )
+
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+    # Create source skill dirs so canonical store builds succeed.
+    settings = Settings(project_root=tmp_path)
+    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(proto_skills, "start-task")
+    _make_skill_dir(proto_skills, "jobs")
+    _make_skill_dir(proto_skills, "make-worktree")
+    _make_skill_dir(proto_skills, "thread")
+
+    # Intercept materialize_workspace_skills to confirm context="schedule"
+    # reaches it from the schedule-fire production path.
+    # Must monkeypatch the schedule_runner module's own import binding,
+    # not the source module, because schedule_runner does a direct import.
+    captured_context = []
+    from runtime.daemon import schedule_runner as sr_mod
+
+    def _capturing_materialize(workspace, settings, *, slug, context,
+                               provider, agent_name, team, skills_root,
+                               org_root=None, db=None):
+        captured_context.append(context)
+        raise RuntimeError("injected_schedule_materialization_error")
+
+    monkeypatch.setattr(sr_mod, "materialize_workspace_skills", _capturing_materialize)
+
+    executor_spawned = False
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            nonlocal executor_spawned
+            executor_spawned = True
+            from runtime.orchestrator.executors import ExecutorResult
+            return ExecutorResult(success=True, duration_seconds=0, session_id="fake")
+
+    monkeypatch.setattr(
+        "runtime.daemon.schedule_runner._executor_name",
+        lambda paths, agent_name: "claude",
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.schedule_runner._build_executor_for_provider",
+        lambda provider, s, paths: _FakeExec(),
+    )
+
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-001",
+        settings=settings,
+    )
+
+    # Executor was NOT spawned (fail-closed pre-spawn)
+    assert not executor_spawned, (
+        "executor was spawned despite injected materialization error"
+    )
+
+    # Context must be "schedule", not "wake" or "task".
+    assert captured_context == ["schedule"], (
+        f"Expected context=['schedule'], got {captured_context}"
+    )
+
+    # Schedule must be FAILED with a materialization error.
+    refreshed = db.schedules.get("SCHEDULE-001")
+    assert refreshed is not None
+    assert refreshed.status == ScheduleStatus.FAILED, (
+        f"Expected FAILED, got {refreshed.status}"
+    )
+    assert "materialization" in (refreshed.error or "").lower(), (
+        f"Error should mention materialization: {refreshed.error!r}"
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

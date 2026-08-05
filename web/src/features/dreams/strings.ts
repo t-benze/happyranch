@@ -2,6 +2,8 @@
  * Dreams UI strings — kept in one file so the copypasta detective finds
  * no duplicated magic strings across the feature.
  */
+import { formatCount } from './count-helpers';
+
 export const DREAM_STRINGS = {
   /**
    * DREAMS-03 Direction-A header — uppercase eyebrow (live distinct-night
@@ -35,10 +37,16 @@ export const DREAM_STRINGS = {
     `from dream · proposed by ${agentName} · dismissed`,
   acceptButton: 'Accept',
   dismissButton: 'Dismiss',
-  /** Learnings */
-  learningsCount: (n: number) => `${n} learning${n === 1 ? '' : 's'}`,
-  candidatesCount: (n: number) => `${n} candidate${n === 1 ? '' : 's'}`,
-  reflectionsCount: (n: number) => `${n} reflection${n === 1 ? '' : 's'}`,
+  /**
+   * Learnings / candidates / reflections counts.
+   * These accept unknown values so malformed server data is rendered as
+   * "Unavailable" rather than coerced to factual copy. The DreamRecord
+   * TypeScript contract itself remains strict; casts are confined to tests
+   * and the rendering boundary.
+   */
+  learningsCount: (n: unknown) => formatCount(n, 'learning', 'learnings'),
+  candidatesCount: (n: unknown) => formatCount(n, 'candidate', 'candidates'),
+  reflectionsCount: (n: unknown) => formatCount(n, 'reflection', 'reflections'),
   /** Right-side overview rail (DREAMS-02) — data-backed totals + calm sections */
   railOverviewTitle: 'Overview',
   railCandidatesTitle: 'Knowledge candidates',

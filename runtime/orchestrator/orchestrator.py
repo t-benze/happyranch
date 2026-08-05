@@ -42,11 +42,9 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
-    inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
     refresh_workspace_repos,
+    validate_workspace_skills_integrity,
 )
 from runtime.orchestrator.teams import TeamsRegistry
 
@@ -694,16 +692,99 @@ class Orchestrator:
                 task_id=task_id,
             )
 
-        # TASK-2511: materialize system-contract skills BEFORE the readiness
-        # marker check. Post-Phase-4 cutover, inject_system_contracts is the
-        # sole delivery path; a fresh/reset workspace has no marker until
-        # injection runs. The ensure call injects + verifies, raising a named
-        # SystemContractMaterializationError on failure (retry-eligible),
-        # never a bare Errno 2.
-        ensure_system_contracts_materialized(
-            workspace, self._settings, slug=self._slug, context="task",
+        # Resolve agent team + managed-skill paths before the unified
+        # materialization call.
+        try:
+            from runtime.orchestrator.prompt_loader import load_agent
+            agent_def = load_agent(self._paths, agent_name)
+            team = agent_def.team if agent_def else "engineering"
+        except Exception:
+            team = "engineering"
+        skills_root = self._settings.project_root / "runtime" / "skills"
+        org_root = self._paths.root
+
+        # Issue #536: serialize the complete pre-spawn skill materialization
+        # transaction under a process-local workspace lock so concurrent
+        # task/thread/wake/dream/schedule callers targeting the same workspace
+        # cannot race on the predictable .tmp.<name> cleanup/write/replace
+        # window in _copy_skills_tree.
+        #
+        # This single call replaces the previous three separate calls:
+        #   refresh_session_skills (wholesale when enabled)
+        #   ensure_system_contracts_materialized (inject + verify)
+        #   inject_managed_skills (managed-catalog + lifecycle)
+        expected_specs = materialize_workspace_skills(
+            workspace, self._settings,
+            slug=self._slug,
+            context="task",
             provider=provider,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
+            org_root=org_root,
+            db=self.db,
         )
+
+        # ── Pre-launch integrity validation ─────────────────────────
+        # Validate workspace skill links and canonical package integrity
+        # BEFORE executor launch. The executor shares the daemon's OS
+        # identity — this is a detective check, not a preventive boundary.
+        from runtime.orchestrator.workspace_adapters import (
+            WorkspaceIntegrityError as _IntegrityError,
+        )
+        try:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=self._settings,
+                db=self.db,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
+        except _IntegrityError:
+            # Integrity failure is terminal — no executor launch.
+            self._db.update_task(
+                task_id,
+                note=(
+                    "Pre-launch workspace skill integrity validation "
+                    "failed — executor launch refused. "
+                    "No automatic repair from same-UID local source. "
+                    "Recovery: FIRST perform manual authoritative "
+                    "external re-sync/redeploy of release/custom "
+                    "artifacts. THEN: (a) for broken links only — "
+                    "happyranch set-executor <agent> --executor "
+                    "<current-executor> (re-materializes links, does "
+                    "NOT recover corrupted bytes); (b) for corrupted "
+                    "canonical bytes — happyranch skills recover "
+                    "<slug> <version> <content_hash> (then restart "
+                    "daemon; next materialization rebuilds from "
+                    "ArtifactStore). Local same-UID sources are not "
+                    "automatically repaired or trusted."
+                ),
+                status=TaskStatus.FAILED,
+            )
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id="",
+                error=(
+                    "Pre-launch workspace skill integrity validation "
+                    "failed — executor launch refused."
+                ),
+            ), None
+
+        # ── Per-retry launch validator closure ───────────────────────
+        # Wrapped so throttle retries after rate-limited responses
+        # re-validate integrity before the next Popen.
+        def _pre_launch_integrity_validator() -> None:
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=self._settings,
+                db=self.db,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
@@ -751,42 +832,11 @@ class Orchestrator:
             paths=self._paths, agent_name=agent_name,
         )
 
-        # Refresh on-disk skill bodies from the bundled protocol/skills/ on EVERY
-        # session so edits to system/contract skills reach agents without a
-        # lifecycle event (THR-070).
-        refresh_session_skills(workspace, self._settings, slug=self._slug)
-
         # THR-103: fast-forward-refresh every cloned repo so the agent has
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
         refresh_workspace_repos(workspace)
-
-        # System-contract injection was done above by ensure_system_contracts_materialized
-        # (TASK-2511). Do NOT call inject_system_contracts here — it would be a
-        # redundant second injection.
-
-        # Managed-catalog skill injection (THR-055 Phase 4).
-        # Resolves the two-gated catalog + eligibility policy and injects
-        # managed skills (reflection, manage-agent, manage-repo) into the
-        # workspace alongside system contracts.
-        try:
-            from runtime.orchestrator.prompt_loader import load_agent
-            agent_def = load_agent(self._paths, agent_name)
-            team = agent_def.team if agent_def else "engineering"
-        except Exception:
-            team = "engineering"
-        skills_root = self._settings.project_root / "runtime" / "skills"
-        org_root = self._paths.root
-        inject_managed_skills(
-            workspace, self._settings,
-            slug=self._slug,
-            agent_name=agent_name,
-            team=team,
-            skills_root=skills_root,
-            org_root=org_root,
-            db=self.db,
-        )
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
         protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)
@@ -816,6 +866,23 @@ class Orchestrator:
             self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
+
+        # THR-091 Slice 2: emit exactly one memory_digest_impression audit
+        # event per non-empty digest injected into the agent prompt, AFTER
+        # the trusted session binding exists but BEFORE executor launch.
+        # The impression carries the shown digest's memory IDs plus agent,
+        # task_id, and session_id.  No digest text, titles, or bodies.
+        # Empty/None digest => no impression event.
+        if memory_digest:
+            digest_ids = AuditLogger._extract_digest_ids(memory_digest)
+            if digest_ids:
+                self._audit.log_memory_digest_impression(
+                    agent=agent_name,
+                    task_id=task_id,
+                    session_id=session_id,
+                    digest_ids=digest_ids,
+                    budget=budget,
+                )
 
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
@@ -847,6 +914,8 @@ class Orchestrator:
             on_started=_on_started,
             on_throttle_event=_on_throttle_event,
             model=model_name,
+            pre_launch_validator=_pre_launch_integrity_validator,
+            org_slug=self._slug,
         )
         self._audit.log_session_end(
             task_id=task_id,

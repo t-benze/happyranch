@@ -37,7 +37,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in protocol/skills/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -54,9 +54,10 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-        skill = ws / ".claude" / "skills" / "start-task"
-        skill.mkdir(parents=True, exist_ok=True)
-        (skill / "SKILL.md").write_text("# start-task\n")
+        # Under the canonical store model, workspace skill symlinks are
+        # created by the SymlinkMaterializer during pre-spawn materialization,
+        # NOT by pre-creating ordinary directories. Creating an ordinary
+        # directory at the link path would cause ordinary_dir_at_link_path.
 
 
 def _setup_codex_workspace(runtime, agent: str) -> None:
@@ -279,32 +280,111 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     assert captured == [(task_id, "engineering_head", "sess-eh")]
 
 
-def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings):
-    """TASK-2511: Post-Phase-4 cutover, a workspace with missing source
-    protocol/skills/ raises SystemContractMaterializationError (explicit,
-    retry-eligible) instead of a bare WorkspaceNotInitialized or Errno 2."""
+def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-2511: When workspace skill materialization fails, the failure
+    propagates as a named error (SymlinkMaterializationError) before executor
+    launch — never a bare WorkspaceNotInitialized or Errno 2.
+
+    Under the canonical store model, the correct unit seam for inducing
+    a determinate missing-marker failure is to inject an explicit
+    materialization error so the readiness marker symlink is never created."""
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializer,
+        SymlinkMaterializationError,
+    )
+
+    # Setup workspace with real source skill dirs so the canonical build path
+    # has content, then inject a materialization error to prevent symlink creation.
+    _setup_workspaces(test_runtime, ["engineering_head"])
+
+    # Create source skill dirs in protocol/skills/ for the project_root temp.
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    proto_skills.mkdir(parents=True, exist_ok=True)
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+        (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+        (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
+    def _failing_materialize(self, skill_slug, version, content_hash,
+                             workspace, skills_subdir, **kwargs):
+        raise SymlinkMaterializationError(
+            "injected_failure",
+            f"Injected materialization failure for {skill_slug}",
+        )
+
+    monkeypatch.setattr(SymlinkMaterializer, "materialize_skill", _failing_materialize)
+
+    task_id = orchestrator.create_task("ping")
+    eh_workspace = test_runtime.workspaces_dir / "engineering_head"
+
+    with pytest.raises(SymlinkMaterializationError) as exc_info:
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    msg = str(exc_info.value)
+    assert "Injected materialization failure" in msg
+    assert "Errno 2" not in msg  # never bare Errno 2
+
+
+def test_run_agent_raises_system_contract_error_on_missing_source(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4173 adversarial: When a required system-contract source
+    directory is absent from protocol/skills/, materialize_workspace_skills
+    must raise SystemContractMaterializationError — NOT silently continue.
+
+    Proves:
+    - Named terminal failure (SystemContractMaterializationError)
+    - Zero executor.run calls
+    - No unsafe skill links under .claude/skills or .agents/skills
+    - Pre-existing workspace state unchanged
+    - No task success/audit/config mutation claims launch occurred
+    """
+    _setup_workspaces(test_runtime, ["engineering_head"])
+
+    # The autouse _ensure_protocol_skills fixture pre-creates ALL four
+    # contracts. We must remove start-task to simulate a real missing-source
+    # scenario.
+    import shutil
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    start_task_dir = proto_skills / "start-task"
+    if start_task_dir.exists():
+        shutil.rmtree(start_task_dir)
+    # Verify it's truly gone.
+    assert not start_task_dir.exists(), "start-task directory must be removed"
+
     from runtime.orchestrator.workspace_adapters import (
         SystemContractMaterializationError,
     )
 
-    # Remove source skills to simulate post-redeploy state
-    import shutil
-    src_skills = test_settings.get_protocol_dir() / "skills"
-    if src_skills.exists():
-        shutil.rmtree(src_skills)
-    src_skills.mkdir(parents=True, exist_ok=True)  # empty dir
-
     task_id = orchestrator.create_task("ping")
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
-    assert not eh_workspace.exists()
+
+    # Before: record existing files for later comparison.
+    pre_claude_skills = eh_workspace / ".claude" / "skills"
+    pre_agents_skills = eh_workspace / ".agents" / "skills"
+    pre_claude_existed = pre_claude_skills.exists()
+    pre_agents_existed = pre_agents_skills.exists()
 
     with pytest.raises(SystemContractMaterializationError) as exc_info:
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     msg = str(exc_info.value)
-    assert "start-task" in msg  # names the missing contract
-    assert "engineering_head" in str(eh_workspace) or str(eh_workspace) in msg
-    assert "Errno 2" not in msg  # never bare Errno 2
+    assert "start-task" in msg, (
+        f"Error must name 'start-task' as missing: {msg!r}"
+    )
+    assert "missing" in msg.lower() or "not on disk" in msg.lower(), (
+        f"Error should mention missing/not-on-disk: {msg!r}"
+    )
+
+    # No unsafe skill links were created under either root.
+    # If the workspace had no .claude/skills before, it must still not
+    # have one after the failed materialization.
+    post_claude_skills = eh_workspace / ".claude" / "skills"
+    post_agents_skills = eh_workspace / ".agents" / "skills"
+    assert post_claude_skills.exists() == pre_claude_existed, (
+        ".claude/skills state must be unchanged after failed materialization"
+    )
+    assert post_agents_skills.exists() == pre_agents_existed, (
+        ".agents/skills state must be unchanged after failed materialization"
+    )
 
 
 def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, monkeypatch):
@@ -387,9 +467,7 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "task_history.md").write_text("# Task History: engineering_head\n\n")
     (workspace / "agent.yaml").write_text("repos: {}\n")
-    skill = workspace / ".claude" / "skills" / "start-task"
-    skill.mkdir(parents=True, exist_ok=True)
-    (skill / "SKILL.md").write_text("# start-task\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
@@ -2602,3 +2680,545 @@ class TestDecisionAttachments:
             f"No new chain_auto_advance audit rows after rollback; "
             f"pre={pre_chain_audit}, post={post_chain_audit}"
         )
+
+
+def test_preflight_checks_all_contracts_before_any_canonical_build(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4175 adversarial: _materialize_unified_canonical must preflight
+    ALL required system-contract sources BEFORE any canonical package build.
+    A later missing source must not leave earlier package builds behind.
+
+    Strengthened TASK-4176 proof-gap repair:
+    - Real _build_executor spy proves executor.run is never invoked.
+    - Known unrelated trusted package seeded in same runner CanonicalSkillStore.
+    - Full canonical store snapshot (manifest/member/on-disk hashes).
+    - Both workspace roots (.claude/skills + .agents/skills) link targets.
+    - Workspace files, task status, audit-success state all verified.
+    - production _compute_dir_hash identity used throughout.
+    """
+    import shutil
+    import hashlib
+    from pathlib import Path
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError, _compute_dir_hash,
+    )
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    _setup_workspaces(test_runtime)
+
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    _setup_protocol_skills(test_settings)
+
+    # ── Seed a known unrelated trusted package in the runner's canonical ──
+    # store so we can prove it is fully untouched after the preflight failure.
+    store = CanonicalSkillStore(settings=test_settings)
+    trusted_pkg_dir = proto_skills / "jobs"  # known existing source
+    trusted_content_hash = _compute_dir_hash(trusted_pkg_dir)
+    store.build_from_source("jobs", "system", trusted_content_hash, trusted_pkg_dir)
+
+    # Snapshot the seeded package's manifest + member + on-disk hashes.
+    def _snapshot_package(pkg_root: Path) -> dict[str, str]:
+        """Snapshot manifest, members, and on-disk content hashes for a package."""
+        snap: dict[str, str] = {}
+        if not pkg_root.is_dir():
+            return snap
+        for fpath in sorted(pkg_root.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(pkg_root))
+                snap[rel] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        return snap
+
+    trusted_pkg_path = store.canonical_path("jobs", "system", trusted_content_hash)
+    trusted_snapshot_before = _snapshot_package(trusted_pkg_path)
+    assert len(trusted_snapshot_before) > 0, (
+        f"Trusted package must have content; path={trusted_pkg_path}"
+    )
+
+    # Full canonical store snapshot before failure.
+    def _snapshot_canonical_store(root: Path) -> dict[str, str]:
+        """Snapshot every entry path → on-disk hash."""
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_store(store.root)
+
+    # Compute trusted hashes for ALL contracts before failure.
+    trusted_hashes_before: dict[str, str] = {}
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+        d = proto_skills / cid
+        if d.exists():
+            trusted_hashes_before[cid] = _compute_dir_hash(d)
+
+    # ── Workshop workspace state ──────────────────────────────────────────
+    eh_workspace = test_runtime.workspaces_dir / "engineering_head"
+    # Set up repos so make-worktree contract can be resolved.
+    (eh_workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+    def _snapshot_workspace_root(ws: Path) -> dict[str, str | None]:
+        """Snapshot workspace: file hashes + symlink targets."""
+        snap: dict[str, str | None] = {}
+        if not ws.is_dir():
+            return snap
+        for p in sorted(ws.rglob("*")):
+            rel = str(p.relative_to(ws))
+            if p.is_symlink():
+                snap[rel] = f"link->{p.readlink()}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = None  # marker for directory
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace_root(eh_workspace)
+
+    # ── Snapshot task + audit state ───────────────────────────────────────
+    task_id = orchestrator.create_task("ping")
+    task_before = orchestrator._db.get_task(task_id)
+    assert task_before is not None
+    assert task_before.status == TaskStatus.PENDING, (
+        f"Task must start as PENDING; got {task_before.status}"
+    )
+    audit_before = len(orchestrator._db.get_audit_logs(task_id))
+
+    # ── Concrete _build_executor spy with reachable executor.run ───────────
+    spy_control: dict[str, bool] = {"run_called": False}
+    from runtime.orchestrator.executors import ClaudeExecutor
+    _real_build = orchestrator._build_executor
+
+    def _spy_build_executor(provider: str):
+        real_exec = _real_build(provider)
+        # Wrap .run to trap any invocation as proof of no-early-fail.
+        original_run = real_exec.run
+        def _trap_run(*args, **kwargs):
+            spy_control["run_called"] = True
+            raise AssertionError(
+                "executor.run must not be invoked when preflight fails"
+            )
+        real_exec.run = _trap_run  # type: ignore[method-assign]
+        return real_exec
+
+    monkeypatch.setattr(
+        orchestrator, "_build_executor", _spy_build_executor,
+    )
+
+    # ── Remove 'thread' (last alphabetically in TASK context contracts) ───
+    thread_dir = proto_skills / "thread"
+    assert thread_dir.exists(), "thread must exist before removal"
+    shutil.rmtree(thread_dir)
+    assert not thread_dir.exists()
+
+    # ── Trigger the real missing-source failure ──
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    msg = str(exc_info.value)
+    assert "thread" in msg, (
+        f"Error must name 'thread' as missing: {msg!r}"
+    )
+
+    # ── executor.run never invoked ───────────────────────────────────────
+    assert spy_control["run_called"] is False, (
+        "executor.run must never be invoked when preflight fails; "
+        f"spy_control={spy_control}"
+    )
+
+    # ── No canonical package was built for non-seeded contracts ──────────
+    # "jobs" was seeded by us — it should have exactly the seeded entry.
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+        pkg_base = store.root / cid / "system"
+        if cid == "jobs":
+            # Only the seeded package should exist
+            if pkg_base.exists():
+                built_entries = list(pkg_base.iterdir())
+                assert len(built_entries) == 1, (
+                    f"Seeded 'jobs' package must have exactly 1 entry; "
+                    f"got {built_entries}"
+                )
+        else:
+            if pkg_base.exists():
+                built_entries = list(pkg_base.iterdir())
+                assert len(built_entries) == 0, (
+                    f"Canonical package {cid} was built despite preflight failure. "
+                    f"Contents: {built_entries}"
+                )
+
+    # ── Canonical store fully unchanged (including trusted package) ───────
+    store_snapshot_after = _snapshot_canonical_store(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed preflight.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
+    )
+
+    trusted_snapshot_after = _snapshot_package(trusted_pkg_path)
+    assert trusted_snapshot_after == trusted_snapshot_before, (
+        f"Trusted package was mutated: "
+        f"before={set(trusted_snapshot_before)}, after={set(trusted_snapshot_after)}"
+    )
+
+    # ── Trusted source hashes unchanged ───────────────────────────────────
+    for cid in ["start-task", "jobs", "make-worktree"]:
+        if cid in trusted_hashes_before:
+            current_hash = _compute_dir_hash(proto_skills / cid)
+            assert current_hash == trusted_hashes_before[cid], (
+                f"Trusted hash for {cid} changed: "
+                f"{trusted_hashes_before[cid]} -> {current_hash}"
+            )
+
+    # ── Workspace state fully unchanged ───────────────────────────────────
+    ws_snapshot_after = _snapshot_workspace_root(eh_workspace)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+    # ── Both workspace roots unchanged ────────────────────────────────────
+    for subdir in (".claude/skills", ".agents/skills"):
+        p = eh_workspace / subdir
+        assert p.exists() == (subdir in ws_snapshot_before or (
+            subdir + "/" in ws_snapshot_before
+        )), (
+            f"{subdir} existence changed after failure"
+        )
+
+    # ── Task status + audit unchanged (no session_start reached) ──────────
+    task_after = orchestrator._db.get_task(task_id)
+    assert task_after is not None
+    assert task_after.status == TaskStatus.PENDING, (
+        f"Task must stay PENDING after direct _run_agent failure; "
+        f"got {task_after.status}"
+    )
+    audit_after = len(orchestrator._db.get_audit_logs(task_id))
+    assert audit_after == audit_before, (
+        f"No audit rows must be added for task_id={task_id}; "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_preflight_context_union_raises_on_missing_source_executor_switch(
+    orchestrator, test_runtime, test_settings, monkeypatch):
+    """TASK-4175 adversarial: _materialize_context_union must preflight
+    ALL required system-contract sources for the full six-context union
+    BEFORE any canonical build or workspace reconciliation.
+
+    This exercises the executor-switch path through the real orchestrator
+    materialize_workspace_skills_union entry point with six contexts.
+
+    Strengthened TASK-4176 proof-gap repair:
+    - Full canonical store snapshot comparison (not just root existence).
+    - Both workspace roots (.claude/skills + .agents/skills) link + file state.
+    - Known trusted package manifests/members/on-disk hashes preserved.
+    - No mutation of canonical/package/link state whatsoever.
+    - production _compute_dir_hash identity used throughout.
+    """
+    import shutil
+    import hashlib
+    from pathlib import Path
+    from runtime.orchestrator.workspace_adapters import (
+        materialize_workspace_skills_union,
+        SystemContractMaterializationError,
+        _compute_dir_hash,
+    )
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    (test_runtime.workspaces_dir / "dev_agent" / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+
+    proto_skills = test_settings.get_protocol_dir() / "skills"
+    _setup_protocol_skills(test_settings, [
+        "start-task", "jobs", "make-worktree", "thread", "dream",
+    ])
+
+    # ── Seed a known unrelated trusted package in the canonical store ─────
+    store = CanonicalSkillStore(settings=test_settings)
+    trusted_pkg_dir = proto_skills / "jobs"
+    trusted_content_hash = _compute_dir_hash(trusted_pkg_dir)
+    store.build_from_source("jobs", "system", trusted_content_hash, trusted_pkg_dir)
+
+    def _snapshot_canonical_store(root: Path) -> dict[str, str]:
+        """Snapshot every entry path → on-disk hash."""
+        snap: dict[str, str] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[str(p.relative_to(root))] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            elif p.is_dir():
+                snap[str(p.relative_to(root)) + "/"] = "<dir>"
+        return snap
+
+    store_snapshot_before = _snapshot_canonical_store(store.root)
+
+    def _snapshot_package(pkg_root: Path) -> dict[str, str]:
+        """Snapshot manifest, members, and on-disk content hashes."""
+        snap: dict[str, str] = {}
+        if not pkg_root.is_dir():
+            return snap
+        for fpath in sorted(pkg_root.rglob("*")):
+            if fpath.is_file():
+                rel = str(fpath.relative_to(pkg_root))
+                snap[rel] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        return snap
+
+    trusted_pkg_path = store.canonical_path("jobs", "system", trusted_content_hash)
+    trusted_snapshot_before = _snapshot_package(trusted_pkg_path)
+
+    # Compute trusted hashes of surviving contracts
+    trusted_hashes: dict[str, str] = {}
+    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+        d = proto_skills / cid
+        if d.exists():
+            trusted_hashes[cid] = _compute_dir_hash(d)
+
+    # ── Snapshot workspace state ──────────────────────────────────────────
+    ws = test_runtime.workspaces_dir / "dev_agent"
+    def _snapshot_workspace_root(root: Path) -> dict[str, str | None]:
+        """Snapshot workspace: file hashes + symlink targets."""
+        snap: dict[str, str | None] = {}
+        if not root.is_dir():
+            return snap
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = f"link->{p.readlink()}"
+            elif p.is_file():
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif p.is_dir():
+                snap[rel + "/"] = None
+        return snap
+
+    ws_snapshot_before = _snapshot_workspace_root(ws)
+
+    # ── Remove dream — only required by DREAM context in the union ────────
+    dream_dir = proto_skills / "dream"
+    assert dream_dir.exists()
+    shutil.rmtree(dream_dir)
+    assert not dream_dir.exists()
+
+    skills_root = test_settings.project_root / "runtime" / "skills"
+
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
+        materialize_workspace_skills_union(
+            ws, test_settings,
+            slug="test",
+            contexts=["task", "thread", "wake", "dream", "schedule", "bootstrap"],
+            provider="claude",
+            agent_name="dev_agent",
+            team="engineering",
+            skills_root=skills_root,
+        )
+
+    msg = str(exc_info.value)
+    assert "dream" in msg, (
+        f"Error must name 'dream' as missing: {msg!r}"
+    )
+
+    # ── No canonical packages were built for non-seeded contracts ──────────
+    for cid in trusted_hashes:
+        pkg_base = store.root / cid / "system"
+        if cid == "jobs":
+            # Only the seeded package should exist
+            if pkg_base.exists():
+                built = list(pkg_base.iterdir())
+                assert len(built) == 1, (
+                    f"Seeded 'jobs' package must have exactly 1 entry; "
+                    f"got {built}"
+                )
+        else:
+            if pkg_base.exists():
+                built = list(pkg_base.iterdir())
+                assert len(built) == 0, (
+                    f"Canonical package {cid} was built despite preflight failure. "
+                    f"Contents: {built}"
+                )
+
+    # ── Full canonical store unchanged ────────────────────────────────────
+    store_snapshot_after = _snapshot_canonical_store(store.root)
+    assert store_snapshot_after == store_snapshot_before, (
+        f"Canonical store was mutated by failed union preflight.\n"
+        f"Added: {set(store_snapshot_after) - set(store_snapshot_before)}\n"
+        f"Removed: {set(store_snapshot_before) - set(store_snapshot_after)}"
+    )
+
+    # ── Trusted package completely untouched ──────────────────────────────
+    trusted_snapshot_after = _snapshot_package(trusted_pkg_path)
+    assert trusted_snapshot_after == trusted_snapshot_before, (
+        f"Trusted package was mutated: "
+        f"before={set(trusted_snapshot_before)}, after={set(trusted_snapshot_after)}"
+    )
+
+    # ── Trusted source hashes unchanged ───────────────────────────────────
+    for cid, expected_hash in trusted_hashes.items():
+        current = _compute_dir_hash(proto_skills / cid)
+        assert current == expected_hash, (
+            f"Trusted hash for {cid} changed: {expected_hash} -> {current}"
+        )
+
+    # ── Workspace state fully unchanged (no link creation/deletion) ────────
+    ws_snapshot_after = _snapshot_workspace_root(ws)
+    assert ws_snapshot_after == ws_snapshot_before, (
+        f"Workspace was mutated by failed union materialization.\n"
+        f"Added: {set(ws_snapshot_after) - set(ws_snapshot_before)}\n"
+        f"Removed: {set(ws_snapshot_before) - set(ws_snapshot_after)}"
+    )
+
+
+# ── Issue #568: Task/subtask production-seam model-forwarding tests ──────
+# These drive the real Orchestrator._run_agent production seam through the
+# real executor-factory boundary, testing that executor.run receives the
+# authoritative AgentDef.model and that the task path cannot silently fall
+# through to provider default.
+
+
+def _write_agent_def_with_model(agents_dir, agent_name, model=None):
+    """Write an AgentDef frontmatter file with an optional model field."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    ad = AgentDef(
+        name=agent_name, team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent_name}.", description="",
+        model=model,
+    )
+    (agents_dir / f"{agent_name}.md").write_text(render_agent_text(ad))
+
+
+def test_task_subtask_forwards_configured_model_to_executor_run(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """When AgentDef.model is set, _run_agent passes it to executor.run(model=...).
+
+    Drives the real production seam — Orchestrator._run_agent calls
+    executor.run(model=model_name) after resolving via _resolve_model_name
+    from the authoritative org/agents/<name>.md frontmatter.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model="gpt-5.6-terra",
+    )
+
+    task_id = orchestrator.create_task("Test model forwarding")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-model")
+
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-model",
+            )
+
+    with patch.object(orchestrator, "_build_executor", return_value=_CapturingExec()):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert captured_model.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
+    )
+
+
+def test_task_subtask_no_configured_model_preserves_default(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """When AgentDef.model is absent, _run_agent passes model=None.
+
+    Proves the established model=None/default behavior through the real
+    production seam — executor.run receives None, not a fabricated default.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model=None,
+    )
+
+    task_id = orchestrator.create_task("Test no-model default")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-nodef")
+
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-nodef",
+            )
+
+    with patch.object(orchestrator, "_build_executor", return_value=_CapturingExec()):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert captured_model.get("model") is None, (
+        f"model should be None when AgentDef has no model, "
+        f"got {captured_model.get('model')!r}"
+    )
+
+
+def test_task_subtask_model_mismatch_detected_by_fake_executor(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Deterministic mismatch: fake executor fails only when gpt-5.6-terra
+    is actually forwarded, proving the task path cannot silently fall through
+    to provider default.
+
+    A fake executor that rejects gpt-5.6-terra MUST cause the task to fail
+    when the model IS configured; the failure proves the model was forwarded
+    through the full production seam. If the model silently fell through to
+    default, the fake would succeed — and this test would fail.
+    """
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    _write_agent_def_with_model(
+        test_runtime.agents_dir, "dev_agent", model="gpt-5.6-terra",
+    )
+
+    task_id = orchestrator.create_task("Test model mismatch")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-mismatch")
+
+    # Fake executor that FAILS only when gpt-5.6-terra reaches it.
+    # If the task path silently fell to provider default, this fake
+    # would return success — and the test assertion below would catch it.
+    class _MismatchDetector:
+        def __init__(self):
+            self.received_model = None
+
+        def run(self, **kwargs):
+            self.received_model = kwargs.get("model")
+            if self.received_model == "gpt-5.6-terra":
+                # Deterministic failure: model WAS forwarded correctly.
+                result = ExecutorResult(
+                    success=False,
+                    error="fake: gpt-5.6-terra intentionally rejected",
+                    duration_seconds=0, session_id="",
+                )
+                result.returncode = 1
+                return result
+            # Otherwise succeed — would be the fall-to-default case.
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id="sess-mismatch",
+            )
+
+    detector = _MismatchDetector()
+    with patch.object(orchestrator, "_build_executor", return_value=detector):
+        result, report = orchestrator._run_agent(task_id, "dev_agent", "")
+
+    # The fake MUST have received and rejected gpt-5.6-terra.
+    assert detector.received_model == "gpt-5.6-terra", (
+        f"fake executor did NOT receive the configured model; "
+        f"got {detector.received_model!r} — task path fell through to default"
+    )
+    # The executor MUST have failed (detector rejected the model).
+    assert not result.success, (
+        f"mismatch test must fail when model is forwarded; "
+        f"a success here means the model was dropped. "
+        f"error={result.error!r}"
+    )

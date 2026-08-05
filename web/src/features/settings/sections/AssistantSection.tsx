@@ -68,7 +68,7 @@ function describeRegisterError(err: unknown): string {
 }
 
 export function AssistantSection(): JSX.Element {
-  const statusQuery = useAssistantStatus();
+  const statusQuery = useAssistantStatus(true);
   const status = statusQuery.data;
 
   return (
@@ -294,6 +294,9 @@ function RegisterExecutorSection({
         Re-registering preserves the workspace — the server derives it from the
         runtime root, not from any input here — and only one executor is active
         at a time, so registering replaces the current one.
+      </p>
+      <p className="text-text-secondary text-sm">
+        Registration applies immediately; no daemon restart is required.
       </p>
 
       <div className="flex flex-col gap-1">

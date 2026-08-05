@@ -33,11 +33,10 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
-    inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
+    validate_workspace_skills_integrity,
 )
+from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
@@ -154,6 +153,9 @@ async def run_schedule(
         )
         return
 
+    # Issue #568: forward AgentDef.model to executor.run for schedule invocations.
+    model_name: str | None = agent_def.model
+
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
         org_config = load_org_config(paths)
@@ -163,44 +165,60 @@ async def run_schedule(
         paths=paths, agent_name=record.agent_name,
     )
 
-    refresh_session_skills(workspace, settings, slug=org_state.slug)
-
     _prov = _executor_name(paths, record.agent_name)
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 
-    ensure_system_contracts_materialized(
-        workspace, settings, slug=org_state.slug, context="wake",
-        provider=_prov,
-    )
-
+    # Issue #536: serialize the complete pre-spawn skill materialization
+    # transaction under a process-local workspace lock.
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        inject_managed_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
+            context=SessionContext.SCHEDULE,
+            provider=_prov,
             agent_name=record.agent_name,
             team=agent_def.team,
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
         )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=schedule_id,
+        )
     except Exception as e:
         store.update(
             schedule_id,
             status=ScheduleStatus.FAILED,
-            error=f"managed_skills_materialization_failed: {e}",
+            error=f"materialization_failed: {e}",
             updated_at=now,
         )
         org_state.db.insert_audit_log(
             task_id=schedule_id,
             agent=record.agent_name,
             action="schedule_failed",
-            payload={"reason": f"managed_skills_materialization_failed: {e}"},
+            payload={"reason": f"materialization_failed: {e}"},
         )
         return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
+    # ── Per-retry launch validator ───────────────────────────────
+    def _pre_launch_validator():
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
+            task_id=schedule_id,
+        )
 
     prompt = build_schedule_prompt(
         org_slug=org_state.slug,
@@ -239,6 +257,9 @@ async def run_schedule(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        pre_launch_validator=_pre_launch_validator,
+        org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:

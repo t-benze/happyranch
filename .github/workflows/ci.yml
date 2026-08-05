@@ -13,8 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Matrix justified by pyproject requires-python = ">=3.12,<3.15".
-        python-version: ['3.12', '3.13', '3.14']
+        # PR CI: fast feedback on 3.14 only.
+        # Push to main: full 3.12/3.13/3.14 matrix.
+        # Matrix dimensions justified by pyproject requires-python = ">=3.12,<3.15".
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.14"]') || fromJSON('["3.12", "3.13", "3.14"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -57,3 +59,50 @@ jobs:
       # Run after build so the build:registry output exists.
       - name: Test (non-watch)
         run: npx vitest run
+
+  # ── macOS canonical skill store validation (same-owner, unconditional) ──
+  # Executor and daemon share the same OS identity — same-owner is the only
+  # supported delivery mode. No distinct-account provisioning or sudo.
+  # This job verifies deterministic canonical-store behavior on real macOS.
+  macos-canonical-validation:
+    name: macOS Canonical Store Validation (macOS 15)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run canonical store + validation tests
+        env:
+          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+        run: |
+          set -eux
+          # Run canonical store and validation test suites on real macOS.
+          # These tests verify:
+          # - Canonical store build, hash-addressing, path-traversal rejection
+          # - Symlink materializer create/repair/withdrawal
+          # - Platform identity checks (same-owner: executor == daemon uid)
+          # - Direct executor launch under daemon identity
+          # - Cutover completeness (no legacy copy remains)
+          # - Skill freshness (31 tests)
+          # - Per-launch/retry pre-Popen integrity validation
+          # - Hardening failure compensation (no executor launch)
+          # - Same-owner adversarial limits (detection, not prevention)
+          uv run pytest \
+            tests/test_canonical_skill_store.py \
+            tests/test_canonical_production_bound.py \
+            tests/test_skill_cutover_completeness.py \
+            tests/test_thr070_skill_freshness.py \
+            tests/test_system_contract_materialization.py \
+            tests/test_workspace_adapters.py \
+            tests/test_prelaunch_integrity_validation.py \
+            -v --tb=short

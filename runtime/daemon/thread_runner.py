@@ -33,10 +33,10 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
-    inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
+    validate_workspace_skills_integrity,
+    WorkspaceIntegrityError,
+    SystemContractMaterializationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -505,9 +505,13 @@ async def run_invocation(
         agent_def = load_agent(paths, inv.agent_name) if paths else None
         executor_name = (agent_def.executor if agent_def else "claude").lower()
     except Exception:
+        agent_def = None
         executor_name = "claude"
     if not _is_registered_executor(executor_name):
         executor_name = "claude"
+
+    # Issue #568: forward AgentDef.model to executor.run for thread invocations.
+    model_name: str | None = agent_def.model if agent_def else None
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
@@ -538,34 +542,7 @@ async def run_invocation(
     except Exception:
         managed_skills_index = ""
 
-    # Refresh on-disk skill bodies on EVERY session (THR-070).
-    try:
-        refresh_session_skills(workspace, settings, slug=org_state.slug)
-    except Exception:
-        pass
-
-    # Explicit context-aware system-contract injection with on-disk verification
-    # (THR-055 Phase 1 + TASK-2511 hardening). This is a HARD synchronous
-    # pre-spawn precondition — if materialization fails we persist the named
-    # error and STOP before executor spawn, never proceeding with missing
-    # contract files (REVISE TASK-2525).
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-    )
-    try:
-        ensure_system_contracts_materialized(
-            workspace, settings, slug=org_state.slug, context="thread",
-            provider=executor_name,
-        )
-    except SystemContractMaterializationError as e:
-        org_state.db.fail_invocation(
-            invocation_token,
-            status=ThreadInvocationStatus.FAILED,
-            decline_reason=str(e),
-        )
-        return
-
-    # Managed-catalog skill injection (THR-055 Phase 4).
+    # Resolve agent team before the unified materialization call.
     try:
         agent_team = "engineering"
         for p in participants:
@@ -574,25 +551,50 @@ async def run_invocation(
                 break
     except Exception:
         agent_team = "engineering"
+
+    # Issue #536: serialize the complete pre-spawn skill materialization
+    # transaction under a process-local workspace lock so concurrent
+    # task/thread/wake/dream/schedule callers targeting the same workspace
+    # cannot race on the predictable .tmp.<name> cleanup/write/replace
+    # window in _copy_skills_tree.
+    #
+    # This single call replaces the previous three separate calls:
+    #   refresh_session_skills (wholesale when enabled)
+    #   ensure_system_contracts_materialized (inject + verify)
+    #   inject_managed_skills (managed-catalog + lifecycle)
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn — no half-populated skills dir may
     # pass as complete (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        inject_managed_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
+            context="thread",
+            provider=executor_name,
             agent_name=inv.agent_name,
             team=agent_team,
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
         )
-    except Exception as e:
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=inv.agent_name,
+            task_id=inv.thread_id,
+        )
+    except (SystemContractMaterializationError, Exception) as e:
+        decline_reason = str(e)
+        if not isinstance(e, SystemContractMaterializationError):
+            decline_reason = f"materialization_failed: {e}"
         org_state.db.fail_invocation(
             invocation_token,
             status=ThreadInvocationStatus.FAILED,
-            decline_reason=f"managed_skills_materialization_failed: {e}",
+            decline_reason=decline_reason,
         )
         return
 
@@ -672,10 +674,21 @@ async def run_invocation(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None):
+            def _pre_launch_validator():
+                validate_workspace_skills_integrity(
+                    workspace, expected_specs,
+                    settings=settings,
+                    db=org_state.db,
+                    agent_name=inv.agent_name,
+                    task_id=inv.thread_id,
+                )
             run_kwargs = dict(
                 workspace=Path(workspace), prompt=run_prompt,
                 session_id=None, timeout_seconds=timeout,
                 on_throttle_event=_on_throttle_event,
+                pre_launch_validator=_pre_launch_validator,
+                org_slug=org_state.slug,
+                model=model_name,
             )
             if resume:
                 run_kwargs["resume_session_id"] = resume

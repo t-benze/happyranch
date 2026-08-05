@@ -43,6 +43,160 @@ from runtime.orchestrator.adapter_store import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Traversal detection helper (shared with routes/adapters.py)
+# ---------------------------------------------------------------------------
+
+
+def _has_traversal_spelling_registry(raw_path: str) -> bool:
+    """Return True if the raw path string contains any traversal component.
+
+    Detects ``..`` directory components in the path before any normalization.
+    This catches absolute traversal bypasses such as
+    ``<daemon-home>/adapters/../adapters/<id>`` even when ``Path.resolve()``
+    would collapse them to the canonical form.
+
+    Only whole-segment ``..`` entries are flagged — a filename containing
+    ``..`` as a substring (e.g. ``foo..bar``) is NOT flagged.
+    """
+    parts = raw_path.split(os.sep)
+    return ".." in parts
+
+
+# ---------------------------------------------------------------------------
+# Canonical adapter daemon path (THR-107 seq339/340)
+# ---------------------------------------------------------------------------
+
+
+def compute_canonical_adapter_path(
+    canonical_adapter_id: str,
+    daemon_home_override: Path | None = None,
+) -> tuple[Path, Path]:
+    """Return the daemon-managed canonical adapter directory and required
+    executable path for a scoped adapter.
+
+    Derives the absolute canonical path from the daemon home and the
+    server-authoritative canonical adapter ID.  The canonical adapter ID
+    is generated from the intended profile name by ``generate_adapter_id``
+    and permits only lowercase alnum/hyphen — so the filename is safe.
+
+    Directory creation:
+      - Creates ``<daemon-home>/adapters/`` with mode 0o700 when it does
+        not yet exist (user-only, restrictive).
+      - Rejects the ``adapters/`` directory if it already exists as a
+        symlink (escape / race guard).
+      - Does NOT create or write the wrapper executable file — the
+        candidate CLI creates it.  The directory merely MUST exist so
+        the caller can create a regular file at the canonical path.
+      - GET contract-reference may call this to ensure the parent dir;
+        it MUST NOT consume or reserve the registration token.
+
+    Target rejection:
+      - If the wrapper path already exists as a symlink, raises ValueError.
+      - If the wrapper path already exists as a non-regular file, raises
+        ValueError.
+      - An existing regular file is NOT rejected at this level — it could
+        be a prior-scope-registration wrapper.  The submit route validates
+        the body.executable matches the exact canonical path.
+
+    Args:
+        canonical_adapter_id: The server-derived adapter ID (lowercase
+            alnum/hyphen only).
+        daemon_home_override: For testing only — overrides the daemon home
+            directory.  When ``None`` (normal operation), uses
+            ``runtime.runtime.daemon_home()`` which honors
+            ``HAPPYRANCH_DAEMON_HOME``.
+
+    Returns:
+        (canonical_directory, required_executable_path) — both absolute,
+        canonical (symlink-resolved) ``Path`` objects.
+    """
+    if not canonical_adapter_id or not isinstance(canonical_adapter_id, str):
+        raise ValueError(
+            f"canonical_adapter_id must be a non-empty string, got {canonical_adapter_id!r}"
+        )
+
+    # Derive the daemon home
+    if daemon_home_override is not None:
+        home = Path(daemon_home_override).resolve()
+    else:
+        from runtime.runtime import daemon_home
+        home = daemon_home().resolve()
+
+    adapters_dir = home / "adapters"
+
+    # ---- Symlink escape guard: the adapters directory itself must NOT be a
+    #      symlink (an attacker could substitute a symlink to a sensitive dir).
+    if adapters_dir.is_symlink():
+        raise ValueError(
+            f"adapters directory is a symlink: {adapters_dir}. "
+            f"The daemon-managed adapters directory must be a real directory, "
+            f"not a symlink. Remove the symlink and create a real directory at "
+            f"{adapters_dir}."
+        )
+
+    # Create the adapters directory with restrictive owner-only mode.
+    # os.makedirs with exist_ok handles the already-exists case, but we
+    # also need to set 0o700 when we are the creator.
+    if not adapters_dir.exists():
+        try:
+            adapters_dir.mkdir(mode=0o700, parents=True)
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot create adapters directory at {adapters_dir}: {exc}"
+            )
+    else:
+        # Directory already exists — verify it is a real directory (not a
+        # symlink, already checked above, but double-check after the
+        # exist-race window).
+        if adapters_dir.is_symlink():
+            raise ValueError(
+                f"adapters directory is a symlink: {adapters_dir}. "
+                f"Remove the symlink and create a real directory at "
+                f"{adapters_dir}."
+            )
+        if not adapters_dir.is_dir():
+            raise ValueError(
+                f"{adapters_dir} exists but is not a directory."
+            )
+        # Ensure 0o700 even when the directory already existed (correct
+        # a prior world-readable creation).
+        try:
+            adapters_dir.chmod(0o700)
+        except OSError:
+            pass  # best-effort
+
+    # The canonical executable path — check for symlink BEFORE resolving
+    wrapper_unresolved = adapters_dir / canonical_adapter_id
+
+    # ---- Symlink escape guard: the wrapper path must NOT be a symlink.
+    #      Check on the UNRESOLVED path so symlinks are detected even when
+    #      their target exists.  resolve() follows symlinks.
+    if wrapper_unresolved.is_symlink():
+        raise ValueError(
+            f"Wrapper path is a symlink: {wrapper_unresolved}. "
+            f"The scoped adapter wrapper must be a regular file at its "
+            f"canonical path, not a symlink."
+        )
+
+    # If the wrapper path already exists (pre-resolve), it must be a regular
+    # file (or not exist yet — the candidate CLI creates it).
+    if wrapper_unresolved.exists() and not wrapper_unresolved.is_file():
+        raise ValueError(
+            f"Wrapper path {wrapper_unresolved} exists but is not a regular file. "
+            f"The canonical adapter path must be a regular executable file."
+        )
+
+    # Now resolve to canonical form for the returned required path
+    wrapper_path = wrapper_unresolved.resolve()
+
+    # Also check the resolved adapters_dir for symlink (it was already checked
+    # above, but resolve it now for the return value)
+    resolved_dir = adapters_dir.resolve()
+
+    return (resolved_dir, wrapper_path)
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -457,6 +611,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     3. Sends the input JSON via stdin.
     4. Reads stdout (capped at 1 MB), parses as ``AdapterOutput`` JSON.
     5. Validates the output against the contract.
+    6. Verifies ``adapter_metadata.adapter`` exactly equals the canonical
+       server-derived adapter ID (``adapter_name``) — provenance invariant.
 
     Returns the parsed ``AdapterOutput`` on success.
 
@@ -467,6 +623,7 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
       - The stdout is not valid JSON
       - The JSON does not validate as ``AdapterOutput``
       - The ``adapter_metadata.contract_version`` is missing or unknown
+      - The ``adapter_metadata.adapter`` does not match the canonical adapter ID
 
     ZERO durable residue is left on failure — this is a pure validation step.
     """
@@ -631,6 +788,18 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"Error: {capped_error}. Stderr tail: {stderr_tail[:500]}"
         )
 
+    # THR-107 seq268: provenance invariant — adapter_metadata.adapter MUST
+    # exactly equal the stable server-derived canonical adapter ID (adapter_name),
+    # never a display name, provider string, or arbitrary identity.
+    if output.adapter_metadata.adapter != adapter_name:
+        raise ValueError(
+            f"Conformance probe adapter identity mismatch: expected "
+            f"{adapter_name!r} (the canonical server-derived adapter ID), "
+            f"got {output.adapter_metadata.adapter!r}. The adapter wrapper's "
+            f"adapter_metadata.adapter MUST exactly equal the stable submitted/"
+            f"approved adapter ID — never a display name or provider string."
+        )
+
     return output
 
 
@@ -718,6 +887,50 @@ def register_custom_adapter(
     Raises ``ValueError`` at the first validation failure — ZERO durable
     residue is left before the persistence step.
     """
+    # Step 0: Scoped-path enforcement (THR-107 seq339/340) — MUST happen
+    # BEFORE validate_executable_path (which calls resolve()) and before
+    # any conformance probe, hash computation, or durable persistence.
+    # Compare the RAW caller-provided string in its original lexical form
+    # to the server-derived canonical path.
+    if intended_profile_name is not None:
+        if not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
+            raise ValueError("intended_profile_name must be a non-empty string")
+        intended_profile_name = intended_profile_name.strip()
+
+        _scoped_id = generate_adapter_id(f"{intended_profile_name}-adapter")
+        _canonical_dir, _required_path = compute_canonical_adapter_path(_scoped_id)
+        _required_str = str(_required_path)
+
+        # Pre-resolve checks on the RAW caller-provided string.
+        if not executable or not os.path.isabs(executable):
+            raise ValueError(
+                f"executable must be an absolute path, got {executable!r}. "
+                f"The scoped adapter wrapper must be created at the exact "
+                f"canonical path: {_required_str}. The token was NOT consumed "
+                f"and remains retryable."
+            )
+
+        if _has_traversal_spelling_registry(executable):
+            raise ValueError(
+                f"executable path contains traversal spelling: "
+                f"{executable!r}. The scoped adapter wrapper must be "
+                f"created at exactly the canonical path: {_required_str}. "
+                f"No '..' components, symlinks, or alternate locations "
+                f"are accepted. The token was NOT consumed and remains "
+                f"retryable."
+            )
+
+        if executable != _required_str:
+            raise ValueError(
+                f"Scoped adapter {_scoped_id!r} requires the executable at the "
+                f"server-owned canonical path: {_required_str}. "
+                f"Received: {executable!r}. "
+                f"Create your adapter wrapper at exactly the required "
+                f"executable path returned by GET /runtime/adapters/"
+                f"contract-reference. The token was NOT consumed and "
+                f"remains retryable."
+            )
+
     # Step 1–4: Validate inputs (no side effects)
     executable_path = validate_executable_path(executable)
     version = validate_version(version)
@@ -726,11 +939,10 @@ def register_custom_adapter(
     capabilities = validate_capabilities(capabilities)
     workspace_adapter = validate_workspace_adapter(workspace_adapter)
 
-    # Validate intended_profile_name if provided
+    # Validate intended_profile_name (already validated above if set)
     if intended_profile_name is not None:
-        if not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
-            raise ValueError("intended_profile_name must be a non-empty string")
-        intended_profile_name = intended_profile_name.strip()
+        # already validated in Step 0 above
+        pass
 
     # Step 5: Validate dependency manifest (seq244 — before any durable work)
     dep_manifest_version, normalized_deps = validate_dependency_manifest(
@@ -745,6 +957,25 @@ def register_custom_adapter(
     if intended_profile_name is not None:
         adapter_id = generate_adapter_id(f"{intended_profile_name}-adapter")
         adapter_name = intended_profile_name
+
+        # Scoped-path enforcement (THR-107 seq339/340) recheck: the
+        # executable MUST be at the daemon-managed canonical location.
+        # This is the registration-seam recheck — even if the route-layer
+        # check is somehow bypassed, this critical boundary rejects foreign
+        # paths.  The pre-resolve check (Step 0 above) already caught
+        # traversal and non-absolute forms; this post-resolve recheck
+        # guards against path-equivalence bypasses via validate_executable_path.
+        _canonical_dir, _required_path = compute_canonical_adapter_path(adapter_id)
+        if str(executable_path) != str(_required_path):
+            raise ValueError(
+                f"Scoped adapter {adapter_id!r} requires the executable at the "
+                f"server-owned canonical path: {_required_path}. "
+                f"Received: {executable_path}. "
+                f"Create your adapter wrapper at exactly the required "
+                f"executable path returned by GET /runtime/adapters/"
+                f"contract-reference. The token was NOT consumed and "
+                f"remains retryable."
+            )
     else:
         adapter_name = Path(executable).name  # Use filename as default name
         adapter_id = generate_adapter_id(adapter_name)

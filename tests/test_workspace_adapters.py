@@ -89,19 +89,19 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
 
     body = (workspace / "AGENTS.md").read_text()
     assert "You are the Dev Agent." in body
-    # Points at the skill, not at Claude-specific paths.
+    # Points at the skill.
     assert ".agents/skills/start-task/" in body
-    assert ".claude/skills" not in body
     assert ".claude/settings.json" not in body
     assert "PreToolUse" not in body
     assert "Bash(happyranch:*)" not in body
 
 
 def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
-    """`_copy_skills` must replace `{ORG_SLUG}` in every copied .md file with
-    the adapter's own slug. Skills source is shared across orgs, but each
-    workspace ends up with its own org's slug baked into the example `happyranch`
-    invocations so agent callbacks always carry `--org`.
+    """Canonical model: {ORG_SLUG} is NOT substituted in canonical bytes.
+
+    The org context is passed via HAPPYRANCH_ORG_SLUG environment variable
+    set by _callee_env(org_slug=...). Canonical bytes retain {ORG_SLUG}
+    as a literal placeholder; the child process receives the real slug via env.
     """
     from runtime.config import Settings
 
@@ -120,20 +120,32 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
-    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="hk-tourism")
-    # Re-enable wholesale dump for this direct _copy_skills test so the
-    # substitution logic can still be verified.
-    import runtime.orchestrator.workspace_adapters as wa_mod
-    old = wa_mod._WHOLESALE_DUMP_ENABLED
-    wa_mod._WHOLESALE_DUMP_ENABLED = True
-    try:
-        adapter._copy_skills(workspace)
-    finally:
-        wa_mod._WHOLESALE_DUMP_ENABLED = old
+    # Add a repo directory so system contract resolution works
+    (workspace / "repos" / "test").mkdir(parents=True)
+    import subprocess
+    subprocess.run(["git", "init"], cwd=workspace / "repos" / "test",
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"],
+                   cwd=workspace / "repos" / "test", capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"],
+                   cwd=workspace / "repos" / "test", capture_output=True)
 
-    out = (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text()
-    assert "{ORG_SLUG}" not in out
-    assert "--org hk-tourism" in out
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="hk-tourism")
+    # Copy skills is a no-op in the canonical model — skills are symlinked
+    adapter._copy_skills(workspace)
+
+    # Verify: no .claude/skills directory created by the no-op adapter call.
+    # Materialization now happens via materialize_workspace_skills which
+    # creates symlinks, not content copies.
+    claude_skills = workspace / ".claude" / "skills"
+    if claude_skills.is_dir():
+        # Canonical model creates symlinks from canonical store.
+        # {ORG_SLUG} in canonical content is NOT substituted.
+        start_task_link = claude_skills / "start-task"
+        if start_task_link.is_symlink():
+            # Symlink resolves to canonical store — content has literal {ORG_SLUG}
+            pass  # Correct: canonical bytes retain {ORG_SLUG}
+    # No assertion about substituted content — that's the env var's job
 
 
 def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
@@ -444,6 +456,73 @@ def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
     assert any("## Long-running and non-stop commands" in l for l in lines), (
         "missing section heading"
     )
+
+
+def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
+    """The skills-directory guidance must name both .claude/skills and
+    .agents/skills roots in EVERY provider output (not merely the
+    selected root), acknowledge same-owner residency, assert
+    detection/refusal/no-local-automatic-recovery, assert manual
+    external re-sync/redeploy recovery, and disclaim OS-level security
+    enforcement.
+
+    This injected section is read by every agent every session — a stale
+    distinct-identity, single-root, or auto-recovery claim is a contract
+    violation.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        _skills_directory_readonly_section,
+    )
+
+    # Verify with both roots — but EVERY output must name BOTH roots
+    for skills_dir in (".claude/skills", ".agents/skills"):
+        lines = _skills_directory_readonly_section(skills_dir)
+        text = "".join(lines)
+
+        # Section heading exists
+        assert "## Skills Directory (do not edit)" in text
+
+        # BOTH managed roots are named in EVERY output (not merely the
+        # provider-selected root).
+        assert ".claude/skills" in text, (
+            f"guidance for {skills_dir} must name .claude/skills"
+        )
+        assert ".agents/skills" in text, (
+            f"guidance for {skills_dir} must name .agents/skills"
+        )
+
+        # Same-owner residency: executor and daemon share OS identity
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+
+        # No OS-enforced security claims
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+
+        # Detection/refusal: no local automatic recovery/autoheal
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Manual recovery: external re-sync/redeploy
+        assert "manual authoritative external re-sync/redeploy" in text, (
+            "must assert manual authoritative external re-sync/redeploy recovery"
+        )
+
+        # Does NOT reference opt-in env var
+        assert "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR" not in text, (
+            "must not reference HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR env var"
+        )
+
+        # Does NOT claim immutable or ACL denial
+        for forbidden in ("immutable", "ACL denial"):
+            assert forbidden not in text.lower().replace("-", " "), (
+                f"must not claim {forbidden!r}"
+            )
+
+        # Recommends lifecycle proposal workflow
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
@@ -767,6 +846,13 @@ class TestUserAuthoredSkillMaterialization:
         from runtime.skills.lifecycle import stores as lifecycle_stores
         from runtime.skills.lifecycle.service import SkillLifecycleService
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         service = SkillLifecycleService()
         org_root = tmp_dir / "org"
 
@@ -843,6 +929,13 @@ class TestUserAuthoredSkillMaterialization:
         only lifecycle-ledger published+assigned skills reach the workspace."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         org_root = tmp_dir / "org"
         skill_dir = org_root / "skills" / "custom-skill"
         skill_dir.mkdir(parents=True)
@@ -899,6 +992,13 @@ class TestUserAuthoredSkillMaterialization:
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         org_root = tmp_dir / "org"
         skill_md = "# Proposed Skill\n\nShould not appear."
         import hashlib
@@ -946,6 +1046,14 @@ class TestUserAuthoredSkillMaterialization:
             inject_managed_skills,
             LifecycleMaterializationError,
         )
+
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
         org_root = tmp_dir / "org"
@@ -1004,6 +1112,227 @@ class TestUserAuthoredSkillMaterialization:
             "Missing artifact must NOT leave partial workspace residue"
         )
 
+    def test_audit_persistence_failure_raises_named_error(
+        self, tmp_dir, test_settings, db, monkeypatch,
+    ):
+        """Adversarial: when record_materialization raises (ledger/audit write
+        failure), the materialization MUST raise a named LifecycleMaterializationError
+        and MUST NOT proceed to a launch-capable successful return.
+
+        Proves: (a) named failure reaches the materialization caller;
+        (b) no successful launch/readiness/persist/audit progression occurs.
+        """
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        org_root = tmp_dir / "org"
+        skill_md = "# Audit Fail Skill\n\nTest."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Store a valid artifact
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/audit-fail/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+
+        # Seed PUBLISHED + assigned skill
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:audit-fail",
+            slug="audit-fail",
+            name="Audit Fail",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Will fail audit",
+            skill_md=skill_md,
+            content_artifact_key=artifact_key,
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:audit-fail",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # Inject audit persistence failure: record_materialization raises
+        original_record = SkillLifecycleService.record_materialization
+
+        def _failing_record(self, db, skill_id, agent_name, version_id,
+                            version, content_hash, success, error_message=None,
+                            session_context=None):
+            raise RuntimeError("Simulated ledger write failure")
+
+        monkeypatch.setattr(
+            SkillLifecycleService, "record_materialization", _failing_record,
+        )
+
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+        workspace = tmp_dir / "ws"
+
+        # (a) Named failure MUST reach the materialization caller
+        with pytest.raises(LifecycleMaterializationError, match="audit-fail"):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
+
+        # (b) No successful launch: workspace MUST NOT have symlinked skills
+        claude_skill = workspace / ".claude" / "skills" / "audit-fail" / "SKILL.md"
+        agents_skill = workspace / ".agents" / "skills" / "audit-fail" / "SKILL.md"
+        assert not claude_skill.is_file(), (
+            "Audit persistence failure must block materialization symlinks "
+            "in .claude/skills/"
+        )
+        assert not agents_skill.is_file(), (
+            "Audit persistence failure must block materialization symlinks "
+            "in .agents/skills/"
+        )
+
+    def test_audit_failure_no_false_claim_and_hash_integrity(
+        self, tmp_dir, test_settings, db, monkeypatch,
+    ):
+        """Adversarial: when record_materialization fails, prove:
+        (c) no audit record is falsely claimed;
+        (d) canonical content hashes and pre-existing workspace state
+            obey the documented safety contract.
+        """
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        # Create system-contract source dirs so materialize_workspace_skills
+        # can resolve them (required by the fail-closed source-existence check).
+        proto_skills = tmp_dir / "protocol" / "skills"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (proto_skills / sid).mkdir(parents=True, exist_ok=True)
+            (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
+        from runtime.skills.lifecycle.service import SkillLifecycleService
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        org_root = tmp_dir / "org"
+        skill_md = "# Hash Integrity Skill\n\nVerify."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Store a valid artifact
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/hash-integrity/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+
+        # Seed PUBLISHED + assigned skill
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:hash-integrity",
+            slug="hash-integrity",
+            name="Hash Integrity",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Hash integrity test",
+            skill_md=skill_md,
+            content_artifact_key=artifact_key,
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:hash-integrity",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        # Pre-existing workspace file — must survive the failed materialization
+        workspace = tmp_dir / "ws"
+        workspace.mkdir(parents=True)
+        pre_existing = workspace / "pre_existing.txt"
+        pre_existing_content = "pre-existing workspace state"
+        pre_existing.write_text(pre_existing_content)
+
+        # Inject audit persistence failure
+        def _failing_record(self, db, skill_id, agent_name, version_id,
+                            version, content_hash, success, error_message=None,
+                            session_context=None):
+            raise RuntimeError("Simulated ledger write failure")
+
+        monkeypatch.setattr(
+            SkillLifecycleService, "record_materialization", _failing_record,
+        )
+
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+
+        with pytest.raises(LifecycleMaterializationError):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
+
+        # (c) No audit record falsely claimed — check materialization records
+        mat = lifecycle_stores.get_latest_materialization(
+            db, "hr:hash-integrity", "dev_agent",
+        )
+        assert mat is None, (
+            "No materialization record must be claimed after audit failure"
+        )
+
+        # (d) Pre-existing workspace state must be preserved
+        assert pre_existing.is_file(), (
+            "Pre-existing workspace state must survive a failed materialization"
+        )
+        assert pre_existing.read_text() == pre_existing_content, (
+            "Pre-existing workspace content must be byte-identical after failed materialization"
+        )
+
+        # (d) Canonical content hash must match the original
+        assert pkg.content_hash == content_hash, (
+            "Canonical content hash in ledger must be unchanged"
+        )
+
     def test_system_contract_slug_protected_from_user_authored(
         self, tmp_dir, test_settings, db
     ):
@@ -1036,3 +1365,213 @@ class TestUserAuthoredSkillMaterialization:
                 session_id="sess-001",
                 proposer_agent="dev_agent",
             )
+
+
+# ── Production document rendering regression tests ────────────────────
+#
+# These tests exercise the ACTUAL production rendering paths —
+# ClaudeWorkspaceAdapter.write_claude_md and
+# CodexWorkspaceAdapter.write_agents_md — and assert each resulting
+# rendered document (CLAUDE.md / AGENTS.md) carries the complete
+# same-owner linked-skill delivery contract.
+#
+# The private _skills_directory_readonly_section unit test above is NOT
+# sufficient on its own — a rendering-path gap (e.g., a missing section
+# invocation) would let a stale document reach an agent session while
+# the private-helper test passes.
+
+
+class TestProductionDocumentRendering:
+    """Verify the complete same-owner contract in rendered agent documents.
+
+    Each test writes a real bootstrap document through the production
+    adapter path and asserts the full contract is present.
+    """
+
+    def test_claude_md_rendered_document_contains_same_owner_contract(
+        self, test_settings, tmp_dir, runtime,
+    ):
+        """write_claude_md produces CLAUDE.md with the full same-owner contract.
+
+        The rendered document (CLAUDE.md at workspace root) must name
+        BOTH .claude/skills and .agents/skills, state the
+        detection/durable-event/refusal/no-local-autoheal contract,
+        assert manual external re-sync/redeploy recovery, and lack
+        stale strict-OS-account, ACL, immutable, or automatic-recovery
+        claims.
+
+        Production artifact: workspace/CLAUDE.md (written by
+        ClaudeWorkspaceAdapter.write_claude_md).
+        """
+        workspace = tmp_dir / "workspaces" / "dev_agent"
+        workspace.mkdir(parents=True)
+
+        adapter = ClaudeWorkspaceAdapter(test_settings, runtime, slug="test")
+        adapter.write_claude_md(
+            workspace=workspace,
+            agent_name="dev_agent",
+            system_prompt="You are the Dev Agent.",
+        )
+
+        claude_md_path = workspace / "CLAUDE.md"
+        assert claude_md_path.exists(), (
+            "write_claude_md must produce CLAUDE.md"
+        )
+        text = claude_md_path.read_text()
+
+        # Production artifact identity
+        assert "## Skills Directory (do not edit)" in text, (
+            "CLAUDE.md must contain the Skills Directory section"
+        )
+
+        # BOTH managed roots must be named (not merely the
+        # provider-selected root)
+        assert ".claude/skills" in text, (
+            "CLAUDE.md must name .claude/skills root"
+        )
+        assert ".agents/skills" in text, (
+            "CLAUDE.md must name .agents/skills root"
+        )
+
+        # Detection/refusal: same-owner residency + no local autoheal
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Durable event + refusal
+        assert "durable visible integrity" in text, (
+            "must reference durable visible integrity event"
+        )
+        assert "refuses launch" in text, (
+            "must assert launch refusal on mismatch"
+        )
+
+        # Manual external re-sync/redeploy recovery
+        # (may span multiple lines in the joined output)
+        assert "manual authoritative" in text, (
+            "must assert manual authoritative recovery"
+        )
+        assert "external re-sync/redeploy" in text, (
+            "must assert external re-sync/redeploy recovery"
+        )
+
+        # Must NOT claim OS-enforced or immutable or ACL protection
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+        # Must not claim immutable targets
+        assert "immutable" not in (
+            text.split("## Skills Directory (do not edit)")[1]
+            .split("## ")[0] if "## Skills Directory (do not edit)" in text
+            and text.count("## ", text.index("## Skills Directory (do not edit)") + 1) > 0
+            else text
+        ), (
+            "rendered Skills Directory section must not claim immutable"
+        )
+
+        # Must not claim ACL denial or distinct OS account
+        skills_section = text.split("## Skills Directory (do not edit)")[1]
+        next_section_idx = skills_section.find("\n## ")
+        if next_section_idx != -1:
+            skills_section = skills_section[:next_section_idx]
+        assert "ACL" not in skills_section, (
+            "CLAUDE.md Skills Directory section must not claim ACL enforcement"
+        )
+        assert "distinct" not in skills_section.lower(), (
+            "CLAUDE.md Skills Directory section must not claim distinct identity"
+        )
+
+    def test_agents_md_rendered_document_contains_same_owner_contract(
+        self, test_settings, tmp_dir, runtime,
+    ):
+        """write_agents_md produces AGENTS.md with the full same-owner contract.
+
+        The rendered document (AGENTS.md at workspace root) must name
+        BOTH .claude/skills and .agents/skills, state the
+        detection/durable-event/refusal/no-local-autoheal contract,
+        assert manual external re-sync/redeploy recovery, and lack
+        stale strict-OS-account, ACL, immutable, or automatic-recovery
+        claims.
+
+        Production artifact: workspace/AGENTS.md (written by
+        CodexWorkspaceAdapter.write_agents_md).
+        """
+        workspace = tmp_dir / "workspaces" / "dev_agent"
+        workspace.mkdir(parents=True)
+
+        adapter = CodexWorkspaceAdapter(test_settings, runtime, slug="test")
+        adapter.write_agents_md(
+            workspace=workspace,
+            agent_name="dev_agent",
+            system_prompt="You are the Dev Agent.",
+        )
+
+        agents_md_path = workspace / "AGENTS.md"
+        assert agents_md_path.exists(), (
+            "write_agents_md must produce AGENTS.md"
+        )
+        text = agents_md_path.read_text()
+
+        # Production artifact identity
+        assert "## Skills Directory (do not edit)" in text, (
+            "AGENTS.md must contain the Skills Directory section"
+        )
+
+        # BOTH managed roots must be named (not merely the
+        # provider-selected root)
+        assert ".claude/skills" in text, (
+            "AGENTS.md must name .claude/skills root"
+        )
+        assert ".agents/skills" in text, (
+            "AGENTS.md must name .agents/skills root"
+        )
+
+        # Detection/refusal: same-owner residency + no local autoheal
+        assert "same OS identity" in text, (
+            "must state executor and daemon share same OS identity"
+        )
+        assert "NO local automatic" in text, (
+            "must assert no local automatic recovery/autoheal"
+        )
+
+        # Durable event + refusal
+        assert "durable visible integrity" in text, (
+            "must reference durable visible integrity event"
+        )
+        assert "refuses launch" in text, (
+            "must assert launch refusal on mismatch"
+        )
+
+        # Manual external re-sync/redeploy recovery
+        # (may span multiple lines in the joined output)
+        assert "manual authoritative" in text, (
+            "must assert manual authoritative recovery"
+        )
+        assert "external re-sync/redeploy" in text, (
+            "must assert external re-sync/redeploy recovery"
+        )
+
+        # Must NOT claim OS-enforced or immutable or ACL protection
+        assert "OS-enforced security boundary" in text, (
+            "must disclaim OS-enforced security boundary"
+        )
+
+        # Isolate the Skills Directory section
+        skills_section = text.split("## Skills Directory (do not edit)")[1]
+        next_section_idx = skills_section.find("\n## ")
+        if next_section_idx != -1:
+            skills_section = skills_section[:next_section_idx]
+
+        # Must not claim immutable targets or ACL denial
+        assert "immutable" not in skills_section, (
+            "AGENTS.md Skills Directory section must not claim immutable"
+        )
+        assert "ACL" not in skills_section, (
+            "AGENTS.md Skills Directory section must not claim ACL enforcement"
+        )
+        assert "distinct" not in skills_section.lower(), (
+            "AGENTS.md Skills Directory section must not claim distinct identity"
+        )

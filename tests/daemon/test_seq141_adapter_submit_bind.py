@@ -73,8 +73,16 @@ def _entry_manifest(entry) -> dict:
 
 
 def _make_conformant_adapter_script(tmp_path: Path, adapter_id: str) -> Path:
-    """Create a minimal conformance-probe-passing executable adapter script."""
-    script = tmp_path / f"{adapter_id}-script"
+    """Create a minimal conformance-probe-passing executable adapter script
+    at the daemon-managed canonical path (<daemon-home>/adapters/<adapter_id>).
+
+    THR-107 seq339/340: scoped submissions MUST use the canonical location."""
+    from runtime.orchestrator.custom_adapter_registry import compute_canonical_adapter_path
+    # The daemon home is already set via HAPPYRANCH_DAEMON_HOME by route_setup
+    _, required_path = compute_canonical_adapter_path(adapter_id)
+    required_path.parent.mkdir(parents=True, exist_ok=True)
+
+    script = required_path
     content = f'''#!/usr/bin/env python3
 import json, sys
 inp = json.load(sys.stdin)
@@ -83,10 +91,10 @@ out = {{
     "returncode": 0,
     "adapter_metadata": {{
         "adapter_id": "{adapter_id}",
-        "adapter_name": "test-adapter",
+        "adapter_name": "{adapter_id}",
         "adapter_version": "1.0.0",
         "contract_version": 1,
-        "adapter": "test-adapter"
+        "adapter": "{adapter_id}"
     }},
     "stdout": "ok",
     "stderr": "",
@@ -1788,6 +1796,29 @@ class TestContractReferenceHappyPath:
         # Token is still valid (not consumed)
         assert store.validate_runtime(token) is not None
 
+    def test_contract_reference_includes_canonical_adapter_id(self, app_and_client, token_store):
+        """THR-107 seq268: contract-reference response includes canonical_adapter_id derived from token."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "kimi")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # canonical_adapter_id must be server-derived from token's intended_profile_name
+        assert data["canonical_adapter_id"] == "kimi-adapter"
+        assert "canonical_adapter_id_description" in data
+        assert "kimi-adapter" in data["canonical_adapter_id_description"]
+
+        # Self-test fixture must use the real adapter ID, not a static placeholder
+        probe = data["probe"]["self_test_fixture"]
+        assert probe["expected_output"]["adapter_metadata"]["adapter"] == "kimi-adapter"
+        assert probe["input"]["executor_context"]["provider"] == "kimi-adapter"
+
     def test_contract_reference_then_submit_still_works(self, app_and_client, route_setup, token_store):
         """Fetching contract reference does not interfere with subsequent submit."""
         app, master_token, store = app_and_client
@@ -2148,7 +2179,7 @@ class TestSubmitStrictManifestVersion:
 
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "cli-int-1")
-        script = _make_conformant_adapter_script(route_setup, "int1-adapter")
+        script = _make_conformant_adapter_script(route_setup, "cli-int-1-adapter")
 
         client = TestClient(app)
         resp = client.post(
@@ -2172,3 +2203,845 @@ class TestSubmitStrictManifestVersion:
         spy.assert_called_once()
         adapters = load_adapters()
         assert len(adapters) == 1
+
+
+# ============================================================================
+# THR-107 seq339/340 — Scoped canonical daemon-managed path tests
+# ============================================================================
+
+
+class TestContractReferenceCanonicalPath:
+    """Contract-reference response includes canonical path fields."""
+
+    def test_response_includes_canonical_directory_and_required_path(
+        self, app_and_client, token_store,
+    ):
+        """contract-reference response has canonical_directory and
+        required_executable_path with exact expected values."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "seq340-test-cli"
+        token = _mint_adapter_token(store, profile_name)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # Exact expected values
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        assert data["canonical_directory"] == str(canonical_dir)
+        assert data["required_executable_path"] == str(required_path)
+        assert data["canonical_directory"] in data["required_executable_path"]
+        assert "canonical_directory_description" in data
+        assert "required_executable_path_description" in data
+        assert "canonical" in data["required_executable_path_description"]
+
+    def test_canonical_path_is_absolute(self, app_and_client, token_store):
+        """canonical_directory and required_executable_path are absolute."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "abs-test")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        assert data["canonical_directory"].startswith("/")
+        assert data["required_executable_path"].startswith("/")
+        assert ".." not in data["required_executable_path"]
+
+    def test_canonical_path_respects_daemon_home_override(
+        self, app_and_client, token_store, monkeypatch, tmp_path,
+    ):
+        """HAPPYRANCH_DAEMON_HOME overrides the canonical path root."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+        custom_home = tmp_path / "custom-daemon-home"
+        custom_home.mkdir()
+
+        # Call the helper directly with the override
+        canonical_dir, required_path = compute_canonical_adapter_path(
+            "test-adapter", daemon_home_override=custom_home,
+        )
+        assert str(custom_home.resolve()) in str(canonical_dir)
+        assert str(custom_home.resolve()) in str(required_path)
+        assert required_path.name == "test-adapter"
+
+    def test_adapters_directory_created_with_restrictive_permissions(
+        self, tmp_path,
+    ):
+        """compute_canonical_adapter_path creates adapters dir with 0o700."""
+        import stat
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+        home = tmp_path / "daemon-home"
+        home.mkdir()
+
+        canonical_dir, required_path = compute_canonical_adapter_path(
+            "test-adapter", daemon_home_override=home,
+        )
+
+        # Directory must exist
+        assert canonical_dir.exists()
+        assert canonical_dir.is_dir()
+
+        # Must be user-only (0o700)
+        mode = canonical_dir.stat().st_mode
+        perms = stat.S_IMODE(mode)
+        assert perms == 0o700, f"Expected 0o700, got {oct(perms)}"
+
+    def test_rejects_symlink_adapters_directory(self, tmp_path):
+        """compute_canonical_adapter_path rejects a symlinked adapters dir."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+        home = tmp_path / "daemon-home"
+        home.mkdir()
+
+        # Create a real target elsewhere
+        real_dir = tmp_path / "real-adapters"
+        real_dir.mkdir()
+
+        # Symlink adapters -> real_dir
+        adapters_link = home / "adapters"
+        adapters_link.symlink_to(real_dir)
+
+        with pytest.raises(ValueError, match="symlink"):
+            compute_canonical_adapter_path("test-adapter", daemon_home_override=home)
+
+    def test_rejects_symlink_wrapper_path(self, tmp_path):
+        """compute_canonical_adapter_path rejects a symlinked wrapper."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+        home = tmp_path / "daemon-home"
+        home.mkdir()
+        adapters_dir = home / "adapters"
+        adapters_dir.mkdir(mode=0o700)
+
+        # Create a real file elsewhere and symlink to wrapper path
+        real_file = tmp_path / "real-wrapper"
+        real_file.write_text("#!/bin/sh\necho ok")
+        real_file.chmod(0o755)
+
+        wrapper_path = adapters_dir / "test-adapter"
+        wrapper_path.symlink_to(real_file)
+
+        with pytest.raises(ValueError, match="symlink"):
+            compute_canonical_adapter_path("test-adapter", daemon_home_override=home)
+
+    def test_contract_reference_not_consuming_token(self, app_and_client, token_store):
+        """contract-reference's canonical path computation does NOT consume token."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "no-consume-test")
+
+        client = TestClient(app)
+
+        # Fetch contract reference multiple times
+        for _ in range(3):
+            resp = client.get(
+                "/api/v1/runtime/adapters/contract-reference",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+
+        # Token still valid
+        assert store.validate_runtime(token) is not None
+
+
+class TestScopedCanonicalPathSubmit:
+    """Scoped submit enforces canonical path for new and re-registered adapters."""
+
+    def test_submit_rejects_foreign_path(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects adapter at a non-canonical foreign path."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "foreign-path-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        # Create script at some random tmp location, not the canonical path
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        _, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Make sure the script is NOT at the required path
+        foreign_script = route_setup / "some-other-location"
+        foreign_script.write_text("#!/usr/bin/env python3\nprint('ok')")
+        foreign_script.chmod(0o755)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(foreign_script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(foreign_script), "sha256": compute_sha256(str(foreign_script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert detail["code"] == "invalid_executable_path"
+        assert detail["required_executable_path"] == str(required_path)
+        assert str(foreign_script) in detail["message"]
+        assert str(required_path) in detail["message"]
+
+        # Token is NOT consumed — retryable
+        assert store.validate_runtime(token) is not None
+
+    def test_submit_rejects_traversal_spelling(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects a non-absolute path at route level."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "nonabs-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        # Create a dummy script for dependency validation
+        dummy = route_setup / "dummy-dep"
+        dummy.write_text("#!/bin/sh\necho ok")
+        dummy.chmod(0o755)
+
+        client = TestClient(app)
+        # Submit with a non-absolute path — fails at route level before
+        # even reaching canonical path check (validate_executable_path
+        # in register_custom_adapter rejects non-absolute paths)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": "./relative/path/wrapper",
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(dummy),
+                     "sha256": compute_sha256(str(dummy))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        # Token is NOT consumed — retryable
+        assert store.validate_runtime(token) is not None
+
+    def test_submit_rejects_absolute_traversal_bypass(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects an absolute path containing '..' traversal.
+
+        This catches the normalization bypass where
+        ``<daemon-home>/adapters/../adapters/<canonical-id>`` would resolve
+        to the canonical path via Path.resolve() but the caller's original
+        lexical form contains traversal components.  The pre-resolve check
+        rejects this before any probe, reservation, hashing, or persistence.
+        """
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "abs-traversal-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Build an absolute path with traversal: <daemon-home>/adapters/../adapters/<id>
+        traversal_path = str(canonical_dir / ".." / "adapters" / adapter_id)
+        # Verify the traversal path is different from the required path lexically
+        assert traversal_path != str(required_path)
+        # Verify resolve() WOULD normalize it to the canonical form
+        from pathlib import Path
+        assert Path(traversal_path).resolve() == Path(str(required_path)).resolve(), (
+            f"Expected {traversal_path} to resolve to {required_path} — if this "
+            f"assertion fails the test isn't exercising the bypass correctly"
+        )
+
+        # Create a dummy for dependency validation
+        dummy = route_setup / "dummy-dep-bypass"
+        dummy.write_text("#!/bin/sh\necho ok")
+        dummy.chmod(0o755)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": traversal_path,
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(dummy),
+                     "sha256": compute_sha256(str(dummy))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert detail["code"] == "invalid_executable_path"
+        assert "traversal" in detail["message"].lower()
+        assert detail["required_executable_path"] == str(required_path)
+        # Token is NOT consumed — retryable
+        assert store.validate_runtime(token) is not None
+        # No adapter entry was created
+        from runtime.orchestrator.custom_adapter_registry import get_adapter
+        assert get_adapter(adapter_id) is None
+
+    def test_submit_rejects_alternate_filename(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects a file with a different name in the correct dir."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "alt-name-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Create a file with a WRONG name in the right directory
+        wrong_path = canonical_dir / "wrong-name"
+        wrong_path.write_text("#!/usr/bin/env python3\nprint('ok')")
+        wrong_path.chmod(0o755)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(wrong_path),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(wrong_path), "sha256": compute_sha256(str(wrong_path))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert detail["code"] == "invalid_executable_path"
+        assert detail["required_executable_path"] == str(required_path)
+
+    def test_submit_rejects_symlink_escape(self, app_and_client, route_setup, token_store):
+        """Scoped submit rejects a symlink even at the canonical path location."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "symlink-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Create a real file elsewhere
+        real_file = route_setup / "real-wrapper"
+        real_file.write_text("#!/usr/bin/env python3\nprint('ok')")
+        real_file.chmod(0o755)
+
+        # Create a symlink at the canonical path -> real file
+        required_path.symlink_to(real_file)
+
+        # The submit route calls compute_canonical_adapter_path which
+        # raises ValueError for symlinks → 422 with string detail
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(required_path),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(real_file),
+                     "sha256": compute_sha256(str(real_file))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        # The error comes from compute_canonical_adapter_path's symlink check
+        assert detail["code"] == "invalid_canonical_path"
+        assert "symlink" in detail["message"].lower()
+        # Token is NOT consumed — retryable
+        assert store.validate_runtime(token) is not None
+
+    def test_submit_accepts_exact_canonical_target(self, app_and_client, route_setup, token_store, monkeypatch):
+        """Scoped submit accepts adapter at exact canonical path."""
+        from unittest.mock import MagicMock
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+            register_custom_adapter as _real,
+        )
+        app, master_token, store = app_and_client
+        profile_name = "exact-target-test"
+        token = _mint_adapter_token(store, profile_name)
+
+        adapter_id = generate_adapter_id(f"{profile_name}-adapter")
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Create the wrapper at the exact canonical path
+        required_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        script_content = f'''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {{
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {{
+        "adapter_id": "{adapter_id}",
+        "adapter_name": "{adapter_id}",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "{adapter_id}"
+    }},
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {{}}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}}
+print(json.dumps(out))
+'''
+        required_path.write_text(script_content)
+        required_path.chmod(0o755)
+
+        spy = MagicMock(wraps=_real)
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter", spy,
+        )
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(required_path),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(required_path),
+                     "sha256": compute_sha256(str(required_path))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        spy.assert_called_once()
+
+        # Verify the passed executable matches required_path
+        call_kwargs = spy.call_args.kwargs
+        assert call_kwargs["executable"] == str(required_path)
+
+
+class TestMasterBearerRegisterUnaffected:
+    """Master-bearer /register path is NOT affected by canonical path enforcement."""
+
+    def test_register_accepts_arbitrary_path(self, app_and_client, route_setup):
+        """Master-bearer /register accepts arbitrary executable paths."""
+        app, master_token, _store = app_and_client
+
+        # Create a script at any arbitrary location
+        script = route_setup / "arbitrary-adapter"
+        content = f'''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {{
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {{
+        "adapter_id": "arbitrary-adapter",
+        "adapter_name": "arbitrary-adapter",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "arbitrary-adapter"
+    }},
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {{}}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}}
+print(json.dumps(out))
+'''
+        script.write_text(content)
+        script.chmod(0o755)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/register",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(script),
+                     "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {master_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "pending"
+        # Note: intended_profile_name is None for master-bearer path
+        assert data["intended_profile_name"] is None
+
+    def test_register_accepts_existing_approved_adapter_at_arbitrary_location(
+        self, app_and_client, route_setup,
+    ):
+        """Legacy approved adapter at an arbitrary location remains
+        hash-valid and launchable via master-bearer path."""
+        app, master_token, _store = app_and_client
+
+        # Create and register at arbitrary location
+        script = route_setup / "legacy-adapter"
+        content = f'''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {{
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {{
+        "adapter_id": "legacy-adapter",
+        "adapter_name": "legacy-adapter",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "legacy-adapter"
+    }},
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {{}}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}}
+print(json.dumps(out))
+'''
+        script.write_text(content)
+        script.chmod(0o755)
+
+        client = TestClient(app)
+
+        # Register
+        resp = client.post(
+            "/api/v1/runtime/adapters/register",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(script),
+                     "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {master_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        adapter = resp.json()
+        adapter_id = adapter["id"]
+        assert adapter["status"] == "pending"
+
+        # Approve
+        snapshot = {
+            "executable": str(script),
+            "executable_hash": compute_sha256(str(script)),
+            "version": "1.0.0",
+            "capabilities": [],
+            "contract_version": 1,
+            "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [
+                {"executable": str(script),
+                 "sha256": compute_sha256(str(script))}
+            ],
+        }
+        resp = client.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/approve",
+            json=snapshot,
+            headers={"Authorization": f"Bearer {master_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "approved"
+
+        # The adapter's executable is at the original arbitrary location, not
+        # a canonical path
+        assert adapter["executable"] == str(script)
+
+    def test_register_without_intended_profile_skips_canonical_check(
+        self, monkeypatch, tmp_path,
+    ):
+        """register_custom_adapter without intended_profile_name skips
+        the canonical path validation entirely."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            generate_adapter_id,
+            register_custom_adapter,
+        )
+        from unittest.mock import MagicMock
+
+        # Spy on compute_canonical_adapter_path to verify it is NOT called
+        spy = MagicMock(wraps=compute_canonical_adapter_path)
+        monkeypatch.setattr(
+            "runtime.orchestrator.custom_adapter_registry.compute_canonical_adapter_path",
+            spy,
+        )
+
+        # Use a fixed filename so the derived adapter ID is predictable.
+        # generate_adapter_id uses the filename base for master-bearer path.
+        script_path = tmp_path / "master-bearer-test-adapter"
+        adapter_id = generate_adapter_id("master-bearer-test-adapter")
+        content = f'''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {{
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {{
+        "adapter_id": "{adapter_id}",
+        "adapter_name": "{adapter_id}",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "{adapter_id}"
+    }},
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {{}}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}}
+print(json.dumps(out))
+'''
+        script_path.write_text(content)
+        script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+        try:
+            # Register WITHOUT intended_profile_name (master-bearer path)
+            entry = register_custom_adapter(
+                executable=str(script_path),
+                version="1.0.0",
+                capabilities=[],
+                workspace_adapter="pi",
+                registered_by="test",
+                intended_profile_name=None,  # master-bearer: no profile
+                dependency_manifest_version=1,
+                dependencies=[{"executable": str(script_path),
+                                "sha256": compute_sha256(str(script_path))}],
+            )
+            # compute_canonical_adapter_path must NOT have been called
+            spy.assert_not_called()
+            assert entry.executable == str(script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+
+class TestRegistrationSeamCanonicalCheck:
+    """The register_custom_adapter seam independently rechecks canonical path."""
+
+    def test_scoped_registration_rejects_foreign_path_at_seam(self, monkeypatch):
+        """register_custom_adapter with intended_profile_name rejects foreign
+        path even if the route-layer check is bypassed."""
+        import tempfile, stat
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+
+        fd, script_path = tempfile.mkstemp(suffix="-seam-test")
+        os.close(fd)
+        script_path = Path(script_path)
+
+        # Determine the required canonical path for this adapter
+        profile_name = "seam-test"
+        adapter_id = "seam-test-adapter"
+        _, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Create script at a FOREIGN path (not the canonical one)
+        content = '''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {
+        "adapter_id": "seam-test-adapter",
+        "adapter_name": "seam-test-adapter",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "seam-test-adapter"
+    },
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}
+print(json.dumps(out))
+'''
+        script_path.write_text(content)
+        script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+        try:
+            # Ensure the paths differ
+            assert str(script_path) != str(required_path), \
+                f"Script path {script_path} must differ from canonical {required_path}"
+
+            from runtime.orchestrator.custom_adapter_registry import (
+                register_custom_adapter,
+            )
+            with pytest.raises(ValueError, match="server-owned canonical path"):
+                register_custom_adapter(
+                    executable=str(script_path),
+                    version="1.0.0",
+                    capabilities=[],
+                    workspace_adapter="pi",
+                    registered_by="test",
+                    intended_profile_name=profile_name,
+                    dependency_manifest_version=1,
+                    dependencies=[{"executable": str(script_path),
+                                    "sha256": compute_sha256(str(script_path))}],
+                )
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_scoped_registration_rejects_absolute_traversal_at_seam(self, monkeypatch):
+        """register_custom_adapter with intended_profile_name rejects an
+        absolute path containing '..' traversal before any probe/resolve."""
+        import tempfile, stat
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+        )
+
+        profile_name = "seam-traversal"
+        adapter_id = f"{profile_name}-adapter"
+        canonical_dir, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Build an absolute path with traversal: <daemon-home>/adapters/../adapters/<id>
+        traversal_path = str(canonical_dir / ".." / "adapters" / adapter_id)
+        assert traversal_path != str(required_path)
+        # Verify resolve() WOULD normalize it
+        from pathlib import Path
+        assert Path(traversal_path).resolve() == required_path.resolve()
+
+        from runtime.orchestrator.custom_adapter_registry import (
+            register_custom_adapter,
+        )
+        with pytest.raises(ValueError, match="traversal spelling"):
+            register_custom_adapter(
+                executable=traversal_path,
+                version="1.0.0",
+                capabilities=[],
+                workspace_adapter="pi",
+                registered_by="test",
+                intended_profile_name=profile_name,
+                dependency_manifest_version=1,
+                dependencies=[],
+            )
+
+    def test_scoped_registration_at_canonical_path_succeeds(self, monkeypatch):
+        """register_custom_adapter with intended_profile_name at canonical
+        path passes the seam check and proceeds to conformance."""
+        import stat
+        from runtime.orchestrator.custom_adapter_registry import (
+            compute_canonical_adapter_path,
+            register_custom_adapter,
+        )
+
+        profile_name = "canonical-pass"
+        adapter_id = f"{profile_name}-adapter"
+        _, required_path = compute_canonical_adapter_path(adapter_id)
+
+        # Create wrapper at the canonical path
+        required_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        content = f'''#!/usr/bin/env python3
+import json, sys
+inp = json.load(sys.stdin)
+out = {{
+    "success": True,
+    "returncode": 0,
+    "adapter_metadata": {{
+        "adapter_id": "{adapter_id}",
+        "adapter_name": "{adapter_id}",
+        "adapter_version": "1.0.0",
+        "contract_version": 1,
+        "adapter": "{adapter_id}"
+    }},
+    "stdout": "ok",
+    "stderr": "",
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "duration_seconds": 1,
+    "invocation_id": inp.get("invocation", {{}}).get("invocation_id", "test-id"),
+    "token_total": 0,
+    "session_id": "test-session"
+}}
+print(json.dumps(out))
+'''
+        required_path.write_text(content)
+        required_path.chmod(required_path.stat().st_mode | stat.S_IEXEC)
+
+        try:
+            entry = register_custom_adapter(
+                executable=str(required_path),
+                version="1.0.0",
+                capabilities=[],
+                workspace_adapter="pi",
+                registered_by="test",
+                intended_profile_name=profile_name,
+                dependency_manifest_version=1,
+                dependencies=[{"executable": str(required_path),
+                                "sha256": compute_sha256(str(required_path))}],
+            )
+            assert entry.executable == str(required_path)
+            assert entry.status == "pending"
+        finally:
+            required_path.unlink(missing_ok=True)

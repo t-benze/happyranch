@@ -1,35 +1,29 @@
 /**
  * PendingAdaptersSection — the Settings ▸ Executors founder-only pending
- * adapter approvals area (THR-107 seq237).
+ * adapter approvals area (THR-107 seq334).
  *
- * Rendered ABOVE Custom CLIs (CustomProfilesSection). Lists only PENDING
- * adapters with Approve/Reject controls that require explicit confirm/cancel
- * naming the exact SHA-256 snapshot.
+ * Rendered ABOVE Custom CLIs (CustomProfilesSection). Lists ONLY adapters whose
+ * status is exactly PENDING. Approved adapters — including already_bound,
+ * ready_to_bind, and recovery_ready records — no longer appear here; they are
+ * surfaced as Custom CLI rows or CLI-level recovery affordances in
+ * CustomProfilesSection instead. This keeps the approval queue as the sole
+ * founder approval surface and prevents approved Connected/recovery cards from
+ * leaking into the pending queue after refetch.
  *
  * **THR-107 seq237**: For adapters with an ``intended_profile_name``,
  * Approve now atomically approves AND creates/binds the named custom profile
- * in one server transaction. The UI shows Connected immediately after refetch
- * — no client-side Bind follow-up needed. The action truthfully "approves
- * and connects" the named profile.
- *
- * **Advanced Bind (recovery/legacy)**: Adapters without an
- * intended_profile_name (master-bearer registration path) are approved
- * without auto-binding and retain explicit advanced Bind via the shared
- * RecoveryBindCard. This is labeled as recovery/legacy.
+ * in one server transaction. After success we refetch both the adapter list
+ * (so the card leaves the pending queue) and the custom-profiles list (so the
+ * newly connected CLI appears exactly once under Custom CLIs).
  *
  * HONESTY FENCE: only fields the API returns are rendered. The server is the
  * single source of truth for eligibility and snapshot validity.
  * Onboarding NEVER renders this section — it is Settings-only.
- *
- * BIND RECOVERY (fix-forward TASK-3805): the shared RecoveryBindCard from
- * ConnectFlow is the SINGLE canonical bind implementation — this
  */
 import { useState, useCallback } from 'react';
 import { Check, XCircle, Puzzle, Trash2 } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
-import { Input } from '@/design-system/primitives/Input';
-import { Label } from '@/design-system/primitives/Label';
-import { ApiError, adapters as adaptersApi } from '@/lib/api';
+import { ApiError } from '@/lib/api';
 import {
   ADAPTERS_KEY,
   useAdapters,
@@ -37,21 +31,8 @@ import {
   useRejectAdapter,
   type AdapterEntry,
 } from '@/hooks/adapters';
+import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { useQueryClient } from '@tanstack/react-query';
-import { RecoveryBindCard } from '@/shared/connect/RecoveryBindCard';
-
-/** Extract a human-readable message from an ApiError or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
-    if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
-    }
-    return err.message;
-  }
-  if (err instanceof Error) return err.message;
-  return fallback;
-}
 
 /** Build the 6-field exact snapshot body for approval. */
 function buildApproveBody(adapter: AdapterEntry) {
@@ -73,101 +54,6 @@ function buildRejectBody(adapter: AdapterEntry) {
   return buildApproveBody(adapter);
 }
 
-/* ── Recovery bind row for no-intended adapters (advanced recovery / legacy) ── */
-
-function RecoveryBindRow({
-  adapter,
-  onBound,
-}: {
-  adapter: AdapterEntry;
-  onBound: () => void;
-}): JSX.Element {
-  const [profileName, setProfileName] = useState('');
-  const [binding, setBinding] = useState(false);
-  const [error, setError] = useState('');
-
-  const bind = async (): Promise<void> => {
-    const name = profileName.trim();
-    if (!name) return;
-    setBinding(true);
-    setError('');
-    try {
-      await adaptersApi.bindAdapterProfile(adapter.id, { profile_name: name });
-      // Server confirmed — refetch will show already_bound.
-      onBound();
-    } catch (e: unknown) {
-      setError(errMessage(e, 'Bind failed. Retry or contact the founder.'));
-      setBinding(false);
-    }
-  };
-
-  return (
-    <div
-      className="border-border-default bg-surface rounded-lg border p-4"
-      data-testid={`pending-adapter-row-${adapter.id}`}
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <Puzzle size={16} aria-hidden className="text-text-secondary shrink-0" />
-        <span className="text-text-primary font-mono text-sm font-medium">{adapter.id}</span>
-        <span className="text-mono-sm bg-surface-sunken text-text-muted inline-flex items-center rounded-full px-2 py-0.5 font-semibold">
-          legacy / recovery
-        </span>
-      </div>
-      <p className="text-text-secondary text-sm mb-3">
-        This adapter was approved without a profile. Enter a name to bind it
-        to a custom executor profile.
-      </p>
-      <div className="space-y-2">
-        <Label htmlFor={`recovery-name-${adapter.id}`}>Profile name</Label>
-        <Input
-          id={`recovery-name-${adapter.id}`}
-          value={profileName}
-          onChange={(e) => setProfileName(e.target.value)}
-          placeholder="e.g. my-custom-cli"
-          disabled={binding}
-          data-testid={`recovery-name-input-${adapter.id}`}
-        />
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          onClick={() => { void bind(); }}
-          disabled={!profileName.trim() || binding}
-          data-testid={`adapter-bind-${adapter.id}`}
-        >
-          {binding ? 'Binding…' : `Bind ${profileName.trim() || '…'}`}
-        </Button>
-      </div>
-      {error && (
-        <p className="text-feedback-danger mt-2 text-xs" role="alert" data-testid={`adapter-bind-error-${adapter.id}`}>
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/* ── Connected card for already_bound adapters (mirrors RecoveryBindCard's connected state) ── */
-
-function ConnectedAdapterCard({ adapter }: { adapter: AdapterEntry }): JSX.Element {
-  return (
-    <div
-      className="border-feedback-success/30 bg-feedback-success/5 rounded-lg border p-4"
-      data-testid={`pending-adapter-row-${adapter.id}`}
-    >
-      <div className="flex items-center gap-2">
-        <Check className="text-feedback-success h-4 w-4" />
-        <p className="text-text-primary text-sm font-medium">
-          <span className="font-mono">{adapter.intended_profile_name ?? adapter.name}</span> connected
-        </p>
-      </div>
-      <p className="text-text-muted mt-1 text-xs">
-        Profile bound to adapter{' '}
-        <span className="font-mono">{adapter.id}</span>
-      </p>
-    </div>
-  );
-}
-
 /* ── Single pending adapter row ── */
 
 function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element {
@@ -179,9 +65,12 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
   const reject = useRejectAdapter();
   const qc = useQueryClient();
 
-  // After approval succeeds, force a refetch so we pick up the new status.
-  const refetchAdapters = useCallback(() => {
+  // After approval succeeds, force a refetch of both management queries so the
+  // card leaves the pending queue AND the newly connected CLI appears under
+  // Custom CLIs (the profiles query carries a 10s staleTime).
+  const refetchLists = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
+    void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
   }, [qc]);
 
   const onApprove = async (): Promise<void> => {
@@ -191,15 +80,18 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
         id: adapter.id,
         body: buildApproveBody(adapter),
       });
-      refetchAdapters();
-      // Reset approve state — the adapter will re-render as APPROVED with
-      // the shared RecoveryBindCard.
+      refetchLists();
+      // Reset approve state — the row will be removed by the parent filter on
+      // the next render.
       setApproveConfirming(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
-        refetchAdapters();
+        refetchLists();
       } else {
-        setError(errMessage(err, 'Could not approve this adapter.'));
+        // Deliberately do not echo raw server text — it may contain
+        // implementation terms that must not appear on the ordinary
+        // Settings page. Keep the message CLI-neutral and actionable.
+        setError('Could not approve this CLI. Please try again.');
       }
     }
   };
@@ -211,72 +103,29 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
         id: adapter.id,
         body: buildRejectBody(adapter),
       });
-      refetchAdapters();
+      void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
       // Reset reject state — the adapter row will be removed by the parent
       // filtering on next render.
       setRejectConfirming(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
-        refetchAdapters();
+        void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
       } else {
-        setError(errMessage(err, 'Could not reject this adapter.'));
+        // Deliberately do not echo raw server text — it may contain
+        // implementation terms that must not appear on the ordinary
+        // Settings page. Keep the message CLI-neutral and actionable.
+        setError('Could not reject this CLI. Please try again.');
       }
     }
   };
 
-  // If adapter is already bound (server confirmed), show connected card.
-  if (adapter.eligibility === 'already_bound') {
-    return <ConnectedAdapterCard adapter={adapter} />;
-  }
-
-  // If adapter is APPROVED and ready to bind (legacy/recovery: approved but
-  // not auto-bound — e.g. master-bearer registration without intended_profile),
-  // use the shared RecoveryBindCard for explicit advanced Bind.
-  // THR-107 seq237: normal approval with intended_profile_name auto-binds,
-  // so this path is only for legacy/recovery scenarios.
-  if (adapter.status === 'approved' && adapter.eligibility === 'ready_to_bind' && adapter.intended_profile_name) {
-    return (
-      <div data-testid={`pending-adapter-row-${adapter.id}`}>
-        <div className="mb-2">
-          <span
-            className="text-mono-sm bg-surface-sunken text-text-muted inline-flex items-center rounded-full px-2 py-0.5 font-semibold"
-          >
-            recovery
-          </span>
-        </div>
-        <RecoveryBindCard
-          adapter={{
-            adapterId: adapter.id,
-            profileName: adapter.intended_profile_name,
-            executable: adapter.executable,
-            workspaceAdapter: adapter.workspace_adapter,
-          }}
-          onBindSuccess={() => {
-            // RecoveryBindCard handles its own connected state rendering.
-            // After the next refetch, the adapter will appear with
-            // eligibility='already_bound' and render as ConnectedAdapterCard.
-            refetchAdapters();
-          }}
-        />
-      </div>
-    );
-  }
-
-  // If adapter is APPROVED with no intended_profile_name (recovery_ready),
-  // show advanced recovery Bind with explicit name entry — founder provides
-  // the profile name. No auto-binding; no Approve/Reject controls.
-  if (adapter.status === 'approved' && adapter.eligibility === 'recovery_ready') {
-    return <RecoveryBindRow adapter={adapter} onBound={refetchAdapters} />;
-  }
-
-  // Default: PENDING adapter with approve/reject controls.
   return (
     <div
       className="border-border-default bg-surface rounded-lg border p-4"
       data-testid={`pending-adapter-row-${adapter.id}`}
     >
       {/* Header: id + status pill */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="mb-2 flex items-center gap-2">
         <Puzzle size={16} aria-hidden className="text-text-secondary shrink-0" />
         <span className="text-text-primary font-mono text-sm font-medium">{adapter.id}</span>
         <span
@@ -321,7 +170,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
           <span className="font-mono">{adapter.version}</span>
         </p>
         <p className="text-text-muted text-xs">
-          Workspace adapter:{' '}
+          Workspace CLI:{' '}
           <span className="font-mono">{adapter.workspace_adapter}</span>
         </p>
         {adapter.capabilities.length > 0 && (
@@ -343,11 +192,11 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
         {/* Approve (seq237: approve and connect for intended-profile adapters) */}
         {approveConfirming ? (
           <>
-            <p className="w-full text-text-secondary text-xs mb-1">
+            <p className="text-text-secondary mb-1 w-full text-xs">
               {adapter.intended_profile_name
-                ? `Confirm approval and connection of adapter — this will bind profile ${adapter.intended_profile_name}`
-                : 'Confirm approval of adapter'}{' '}
-              <code className="font-mono bg-surface-sunken rounded px-1">
+                ? `Confirm approval and connection — this will bind profile ${adapter.intended_profile_name}`
+                : 'Confirm approval'}{' '}
+              <code className="bg-surface-sunken rounded px-1 font-mono">
                 {adapter.executable_hash}
               </code>
             </p>
@@ -384,9 +233,9 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
         {/* Reject */}
         {rejectConfirming ? (
           <>
-            <p className="w-full text-text-secondary text-xs mb-1">
-              Confirm rejection of adapter{' '}
-              <code className="font-mono bg-surface-sunken rounded px-1">
+            <p className="text-text-secondary mb-1 w-full text-xs">
+              Confirm rejection{' '}
+              <code className="bg-surface-sunken rounded px-1 font-mono">
                 {adapter.executable_hash}
               </code>
             </p>
@@ -440,41 +289,43 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
 
 export function PendingAdaptersSection(): JSX.Element {
   const query = useAdapters();
+  const qc = useQueryClient();
   const adapters = query.data ?? [];
-  // Show PENDING adapters (awaiting approval), APPROVED adapters ready to
-  // bind, recovery_ready adapters (no-intended, founder names explicitly),
-  // AND already_bound adapters (durable Connected). The filter
-  // intentionally includes already_bound so the card survives refetch
-  // after a successful bind → server confirmation cycle.
-  const pending = adapters.filter(
-    (a) =>
-      a.status === 'pending' ||
-      (a.status === 'approved' &&
-        (a.eligibility === 'ready_to_bind' ||
-         a.eligibility === 'recovery_ready' ||
-         a.eligibility === 'already_bound')),
-  );
+  // seq334: the approval queue contains ONLY adapters whose status is exactly
+  // pending. Approved records (already_bound, ready_to_bind, recovery_ready)
+  // are surfaced in the Custom CLIs area, not here.
+  const pending = adapters.filter((a) => a.status === 'pending');
 
   return (
     <section className="space-y-3" data-testid="pending-adapters-section">
       <div>
-        <h3 className="text-text-primary text-sm font-semibold">Pending Adapter Approvals</h3>
+        <h3 className="text-text-primary text-sm font-semibold">Pending CLI approvals</h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Adapters awaiting founder approval. Approving a named adapter atomically
-          approves and connects its profile in one action. Legacy adapters without
-          a named profile use advanced Bind recovery after approval.
+          Custom CLIs awaiting founder approval. Approving a named custom CLI atomically
+          approves and connects its profile in one action.
         </p>
       </div>
 
       {query.isLoading && (
-        <p className="text-text-secondary text-sm">Loading adapters…</p>
+        <p className="text-text-secondary text-sm">Loading pending approvals…</p>
       )}
 
       {query.isError && (
-        <p className="text-feedback-danger text-sm" role="alert">
-          Could not load custom adapters.
-          {query.error?.message ? ` ${query.error.message}` : ''}
-        </p>
+        <div className="text-feedback-danger text-sm" role="alert">
+          Could not load pending approvals.{" "}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void qc.refetchQueries({ queryKey: ADAPTERS_KEY });
+            }}
+            disabled={query.isLoading}
+            data-testid="pending-adapters-retry"
+          >
+            Retry
+          </Button>
+        </div>
       )}
 
       {query.data &&

@@ -506,3 +506,113 @@ async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
     assert "schedule_id: SCHEDULE-004" in transcript_content
     assert "agent_name: dev_agent" in transcript_content
     assert "spawned_task_ids:" in transcript_content
+
+
+# ── Issue #568: AgentDef.model forwarding to executor.run ──────────────
+
+@pytest.mark.asyncio
+async def test_run_schedule_forwards_model_to_executor_run(tmp_path):
+    """When AgentDef.model is set, schedule runner passes it to executor.run(model=...)."""
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator._paths import OrgPaths as _OrgPaths
+    db = Database(tmp_path / "hr.db")
+    agents_dir = tmp_path / "org" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "dev_agent.md").write_text(
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\n"
+        "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
+        "You are a test agent.\n"
+    )
+    (tmp_path / "workspaces" / "dev_agent").mkdir(parents=True)
+    sched = ScheduleRecord(
+        id="SCHEDULE-MODEL-1",
+        agent_name="dev_agent",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=datetime(2026, 6, 15, 1, 0, tzinfo=timezone.utc),
+        timezone="Asia/Shanghai",
+        normalized_brief="Test scheduled task",
+        source_instruction="Test source instruction",
+        status=ScheduleStatus.FIRING,
+        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+    db.schedules.insert(sched)
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return _FakeResult()
+
+    def factory(executor_name, settings, paths):
+        return _CapturingExec()
+
+    from unittest.mock import MagicMock
+    org_state = OrgState(
+        db=db, root=tmp_path, slug="test",
+        teams=MagicMock(), settings=Settings(), orchestrator=MagicMock(),
+    )
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-MODEL-1",
+        settings=Settings(),
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") == "gpt-5.6-terra", (
+        f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_schedule_no_model_preserves_default_behavior(tmp_path):
+    """When AgentDef.model is absent, schedule runner passes model=None."""
+    from runtime.daemon.org_state import OrgState
+    db = Database(tmp_path / "hr.db")
+    agents_dir = tmp_path / "org" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "dev_agent.md").write_text(
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\n"
+        "executor: claude\n---\n\n"
+        "You are a test agent.\n"
+    )
+    (tmp_path / "workspaces" / "dev_agent").mkdir(parents=True)
+    sched = ScheduleRecord(
+        id="SCHEDULE-MODEL-2",
+        agent_name="dev_agent",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=datetime(2026, 6, 15, 1, 0, tzinfo=timezone.utc),
+        timezone="Asia/Shanghai",
+        normalized_brief="Test scheduled task",
+        source_instruction="Test source instruction",
+        status=ScheduleStatus.FIRING,
+        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+    db.schedules.insert(sched)
+    captured_model = {}
+
+    class _CapturingExec:
+        def run(self, **kwargs):
+            captured_model["model"] = kwargs.get("model")
+            return _FakeResult()
+
+    def factory(executor_name, settings, paths):
+        return _CapturingExec()
+
+    from unittest.mock import MagicMock
+    org_state = OrgState(
+        db=db, root=tmp_path, slug="test",
+        teams=MagicMock(), settings=Settings(), orchestrator=MagicMock(),
+    )
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-MODEL-2",
+        settings=Settings(),
+        executor_factory=factory,
+    )
+
+    assert captured_model.get("model") is None, (
+        f"model should be None when AgentDef has no model, "
+        f"got {captured_model.get('model')!r}"
+    )

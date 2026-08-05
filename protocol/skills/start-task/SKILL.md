@@ -60,6 +60,20 @@ Parameters:
 
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
+   **Engineering frontend readiness gate.** Before handing a frontend PR to a
+   reviewer or QA, include a concise evidence block that maps every acceptance
+   criterion/spec requirement to proof; covers loading, empty, error, and
+   populated states plus auth/permission where applicable; provides a
+   screenshot or deterministic test result; and states exactly what changed
+   since any prior review. The manager or reviewer must return an incomplete
+   handoff for completion, rather than discovering absent proof one item at a
+   time. Reuse the existing `doc-sweep-after-behavioral-change` and
+   `adversarial-browser-evidence-harness-requirements` KB checklists; this gate
+   does not replace them. At a third fix-forward round, stop and surface a
+   structural diagnosis/escalation per KB
+   `fix-forward-cascade-prevention-checklist` — never silently attempt a
+   fourth retry.
+
    If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
    If during the task you realize you need async input from another agent

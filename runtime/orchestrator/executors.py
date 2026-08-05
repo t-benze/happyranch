@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING
 from runtime.config import Settings
 from runtime.models import TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.platform.isolation import (
+    PlatformIsolationError,
+    detect_platform_isolation,
+)
 
 if TYPE_CHECKING:
     from runtime.orchestrator.throttle import OnThrottleEvent
@@ -171,11 +175,50 @@ def _resolve_binary(executor_name: str) -> str:
     )
 
 
-def _callee_env() -> dict[str, str]:
+# Environment variables inherited by the daemon that can steer package
+# installation into the canonical shared venv when a child subprocess
+# (agent executor, custom adapter, job script) runs an editable install
+# or `uv sync`. Stripped from the child environment so the shared venv
+# is never accidentally mutated from a disposable worktree.
+# See protocol/05b-agent-runtime.md § "Spawn-Environment Invariant".
+_ENV_VARS_TO_STRIP: frozenset[str] = frozenset({
+    "VIRTUAL_ENV",             # standard venv activation; directs pip/uv
+    "UV_PROJECT_ENVIRONMENT",   # uv project environment target override
+    "UV_PYTHON",                # uv --python: interpreter into which packages install
+    "UV_SYSTEM_PYTHON",         # uv --system: install into system Python environment
+})
+
+
+def _sanitize_child_env(env: dict[str, str]) -> dict[str, str]:
+    """Remove inherited venv/uv target vars from *env* in-place.
+
+    Returns *env* for chaining convenience.  Callers pass a fresh dict
+    copy (e.g. ``dict(os.environ)``) so the daemon's own environment is
+    never mutated.
+    """
+    for key in _ENV_VARS_TO_STRIP:
+        env.pop(key, None)
+    return env
+
+
+def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
     """Return a copy of ``os.environ`` suitable for passing as ``env=``
     to ``subprocess.Popen`` so the child inherits the daemon's normalized
-    PATH instead of the stripped Finder/launchd PATH."""
-    return dict(os.environ)
+    PATH instead of the stripped Finder/launchd PATH.
+
+    Strips inherited environment variables that can steer package
+    installation into the canonical shared venv (VIRTUAL_ENV,
+    UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON).  PATH and
+    required HAPPYRANCH_* runtime variables are preserved.
+
+    When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
+    subprocesses can resolve org context without literal ``{ORG_SLUG}``
+    substitution in canonical skill bodies.
+    """
+    env = _sanitize_child_env(dict(os.environ))
+    if org_slug is not None:
+        env["HAPPYRANCH_ORG_SLUG"] = org_slug
+    return env
 
 
 def _claude_canonical_model(obj: dict) -> str | None:
@@ -597,6 +640,8 @@ def _run_command(
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
+    pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -612,19 +657,38 @@ def _run_command(
 
     def _launch() -> ExecutorResult:
         start_time = time.monotonic()
+        # ── Pre-launch integrity validation ──────────────────────────
+        # Caller-provided validator runs BEFORE every Popen attempt,
+        # including throttle retries after rate-limited responses.
+        # Any exception here prevents the executor subprocess from
+        # launching — fail-closed.
+        if pre_launch_validator is not None:
+            pre_launch_validator()
         # Popen (not subprocess.run) because the daemon needs the pid handed to
         # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
         # the process mid-session. stdin=PIPE unconditionally — Codex reads its
         # prompt from stdin; Claude ignores it when nothing is written.
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(workspace),
-            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=_callee_env(),
-        )
+        # Launch directly — the executor and daemon share the same OS
+        # identity. Raises PlatformIsolationError on unsupported platform
+        # — fail-closed before any subprocess.
+        isolation = detect_platform_isolation()
+        try:
+            proc = isolation.launch_executor(
+                cmd,
+                cwd=workspace,
+                env=_callee_env(org_slug=org_slug),
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except PlatformIsolationError as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=sid,
+                error=f"Platform isolation failure: {exc}",
+            )
         if on_started is not None:
             on_started(proc.pid)
         try:
@@ -838,6 +902,8 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
@@ -869,7 +935,10 @@ class ClaudeExecutor:
             provider="claude",
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
+            pre_launch_validator=pre_launch_validator,
+        org_slug=org_slug,
         )
+
 
 
 class CodexExecutor:
@@ -940,6 +1009,8 @@ class CodexExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model)
@@ -953,7 +1024,10 @@ class CodexExecutor:
             usage_parser=_parse_codex_usage,
             provider="codex",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
+        org_slug=org_slug,
         )
+
 
 
 class OpencodeExecutor:
@@ -1029,6 +1103,8 @@ class OpencodeExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
@@ -1046,7 +1122,10 @@ class OpencodeExecutor:
             usage_parser=_parse_opencode_usage,
             provider="opencode",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
+        org_slug=org_slug,
         )
+
 
 
 class PiExecutor:
@@ -1112,6 +1191,8 @@ class PiExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(prompt=prompt, model=model)
@@ -1124,7 +1205,10 @@ class PiExecutor:
             usage_parser=_parse_pi_usage,
             provider="pi",
             on_throttle_event=on_throttle_event,
+            pre_launch_validator=pre_launch_validator,
+        org_slug=org_slug,
         )
+
 
 
 class GenericCliExecutor:
@@ -1181,6 +1265,8 @@ class GenericCliExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         # model is accepted for signature parity but not used — custom
         # profile model_arg is out of scope per founder gate (THR-067).
@@ -1215,7 +1301,10 @@ class GenericCliExecutor:
             provider=self._provider,
             on_throttle_event=on_throttle_event,
             strict_envelope_validator=strict_validator,
+            pre_launch_validator=pre_launch_validator,
+        org_slug=org_slug,
         )
+
 
 
 class CustomAdapterExecutor:
@@ -1308,6 +1397,8 @@ class CustomAdapterExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+    org_slug: str | None = None,
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
 
@@ -1391,6 +1482,10 @@ class CustomAdapterExecutor:
 
         def _launch() -> ExecutorResult:
             start_time = time.monotonic()
+
+            # ── Pre-launch integrity validation ────────────────────────
+            if pre_launch_validator is not None:
+                pre_launch_validator()
 
             # ── D7B: Verify executable integrity at EVERY actual launch attempt ──
             # This MUST be inside _launch, not pre-throttle: ProviderThrottle
@@ -1504,20 +1599,14 @@ class CustomAdapterExecutor:
                             ),
                         )
 
-            # ── THR-107 seq244: PATH-scrubbed process environment ──
-            # When a dependency manifest is declared, the adapter cannot
-            # silently rely on ambient PATH.  We construct a narrowly scoped
-            # environment with PATH scrubbed to only /usr/bin:/bin so the
-            # adapter wrapper MUST use the declared absolute child paths.
-            # Legacy entries (no manifest) retain their existing env.
-            if self._dependency_manifest_version is not None and self._dependencies:
-                base_env = _callee_env()
-                # Keep only /usr/bin:/bin as safe system directories
-                # so core system utilities (sh, env, etc.) still work.
-                base_env["PATH"] = "/usr/bin:/bin"
-                launch_env = base_env
-            else:
-                launch_env = _callee_env()
+            # ── THR-107 seq268 (seq315 correction): inherited normalized PATH ──
+            # The adapter-launched process receives the same inherited
+            # normalized environment as normal launches (_callee_env()).
+            # The adapter wrapper and every declared child dependency remain
+            # explicitly absolute and hash-pinned/revalidated — the runtime
+            # never selects an agentic CLI from ambient PATH.  Pre-Popen
+            # wrapper/dependency validation is retained exactly.
+            launch_env = _callee_env()
 
             try:
                 proc = subprocess.Popen(

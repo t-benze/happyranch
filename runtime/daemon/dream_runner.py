@@ -21,10 +21,9 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    ensure_system_contracts_materialized,
-    inject_managed_skills,
-    inject_system_contracts,
-    refresh_session_skills,
+    materialize_workspace_skills,
+    validate_workspace_skills_integrity,
+    SystemContractMaterializationError,
 )
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
@@ -139,77 +138,73 @@ async def run_dream(
         paths=paths, agent_name=dream.agent_name,
     )
 
-    # Refresh on-disk skill bodies on EVERY session (THR-070).
-    try:
-        refresh_session_skills(workspace, settings, slug=org_state.slug)
-    except Exception:
-        pass
-
     # TASK-2511: resolve executor name early for the materialization guard.
     _prov = _executor_name(paths, dream.agent_name)
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 
-    # Explicit context-aware system-contract injection with on-disk verification
-    # (THR-055 Phase 1 + TASK-2511 hardening). This is a HARD synchronous
-    # pre-spawn precondition — if materialization fails we persist the named
-    # error and STOP before executor spawn, never proceeding with missing
-    # contract files (REVISE TASK-2525).
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-    )
-    try:
-        ensure_system_contracts_materialized(
-            workspace, settings, slug=org_state.slug, context="dream",
-            provider=_prov,
-        )
-    except SystemContractMaterializationError as e:
-        org_state.db.update_dream(
-            dream_id,
-            status=DreamStatus.FAILED,
-            ended_at=datetime.now(timezone.utc),
-            error=str(e),
-        )
-        AuditLogger(org_state.db).log_dream_failed(
-            dream_id, dream.agent_name, reason=str(e),
-        )
-        return
-
-    # Managed-catalog skill injection (THR-055 Phase 4).
+    # Resolve agent team before the unified call.
     try:
         from runtime.orchestrator.prompt_loader import load_agent
         agent_def = load_agent(paths, dream.agent_name)
         agent_team = agent_def.team if agent_def else "engineering"
     except Exception:
+        agent_def = None
         agent_team = "engineering"
+
+    # Issue #568: forward AgentDef.model to executor.run for dream invocations.
+    model_name: str | None = agent_def.model if agent_def else None
+
+    # Issue #536: serialize the complete pre-spawn skill materialization
+    # transaction under a process-local workspace lock.
     # FAIL-CLOSED: a materialization error must persist a terminal failure
-    # and return BEFORE executor spawn — no half-populated skills dir may
-    # pass as complete (REVISE TASK-2829).
+    # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
-        inject_managed_skills(
+        expected_specs = materialize_workspace_skills(
             workspace, settings,
             slug=org_state.slug,
+            context="dream",
+            provider=_prov,
             agent_name=dream.agent_name,
             team=agent_team,
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
         )
+
+        # ── Pre-launch integrity validation ─────────────────────
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=dream.agent_name,
+            task_id=dream_id,
+        )
     except Exception as e:
         org_state.db.update_dream(
             dream_id,
             status=DreamStatus.FAILED,
             ended_at=datetime.now(timezone.utc),
-            error=f"managed_skills_materialization_failed: {e}",
+            error=f"materialization_failed: {e}",
         )
         AuditLogger(org_state.db).log_dream_failed(
             dream_id, dream.agent_name,
-            reason=f"managed_skills_materialization_failed: {e}",
+            reason=f"materialization_failed: {e}",
         )
         return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
+    # ── Per-retry launch validator ───────────────────────────────
+    def _pre_launch_validator():
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=dream.agent_name,
+            task_id=dream_id,
+        )
 
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
@@ -240,6 +235,9 @@ async def run_dream(
         prompt=prompt,
         session_id=None,
         timeout_seconds=settings.session_timeout_seconds,
+        pre_launch_validator=_pre_launch_validator,
+        org_slug=org_state.slug,
+        model=model_name,
     ))
 
     if getattr(result, "token_usage", None) is not None:

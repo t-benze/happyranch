@@ -63,6 +63,11 @@ export const FIELD_CLASS =
  *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
 export type ConnectTarget = 'binary' | 'profile' | 'adapter';
 
+/** Escape a string for safe single-quoted shell use (single quotes -> '\''). */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 export function buildConnectPrompt(
   name: string,
   token: string,
@@ -70,18 +75,89 @@ export function buildConnectPrompt(
   target: ConnectTarget,
 ): string {
   const base = `${origin}/api/v1`;
+  if (target === 'binary') {
+    // THR-107 seq352: strictly sequential, copy-pasteable, failure-visible.
+    // Every curl uses --fail-with-body -sS so HTTP errors abort the script
+    // AND the server error detail is still printed for the operator.
+    const TOKEN = shQuote(token);
+    const BASE = shQuote(base);
+    const BIN_NAME = shQuote(name);
+    return [
+      `# Connect the built-in ${BIN_NAME} CLI to HappyRanch.`,
+      `# Copy this whole block and run it — each command runs sequentially.`,
+      `# The script stops immediately if any curl returns an HTTP error.`,
+      ``,
+      `set -e`,
+      ``,
+      `TOKEN=${TOKEN}`,
+      `BASE=${BASE}`,
+      ``,
+      `# 1. Discover your own absolute binary path`,
+      `BIN=$(command -v ${BIN_NAME} 2>/dev/null || which ${BIN_NAME} 2>/dev/null || true)`,
+      `if [ -z "$BIN" ]; then`,
+      `  echo "ERROR: cannot find executable ${name} on PATH — install it first" >&2`,
+      `  exit 1`,
+      `fi`,
+      `if [ ! -x "$BIN" ]; then`,
+      `  echo "ERROR: $BIN exists but is not executable" >&2`,
+      `  exit 1`,
+      `fi`,
+      `echo "Found binary: $BIN"`,
+      ``,
+      `# 2. Conformance check-ins — POST each step id in order`,
+      `echo "--- workspace_access ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"workspace_access"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- loopback_reachable ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"loopback_reachable"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- cli_callback ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"cli_callback"}'`,
+      `echo ""`,
+      ``,
+      `echo "--- emit_envelope (fourth check-in) ---"`,
+      `if ! RESP=$(curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '{"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}'); then`,
+      `  echo "$RESP"`,
+      `  exit 1`,
+      `fi`,
+      `echo "$RESP"`,
+      ``,
+      `# 3. Gate: the fourth response MUST report all_complete:true`,
+      `if ! echo "$RESP" | grep -q '"all_complete":true'; then`,
+      `  echo "ERROR: conformance is not complete — see the emit_envelope response above" >&2`,
+      `  echo "Each step must be completed sequentially. Check that every curl returned" >&2`,
+      `  echo "a 200 response with arrived:true before retrying." >&2`,
+      `  exit 1`,
+      `fi`,
+      ``,
+      `# 4. Register the binary path (the kind is carried by the token)`,
+      `echo "--- register-binary ---"`,
+      `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/register-binary" \\`,
+      `  -H "Authorization: Bearer $TOKEN" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d "{\\"path\\":\\"$BIN\\"}"`,
+      `echo ""`,
+    ].join('\n');
+  }
+
+  // Profile and adapter targets — unchanged semantic behavior (THR-107 seq352).
   const intro =
-    target === 'binary'
+    target === 'profile'
       ? [
-          `# You're connecting the built-in "${name}" CLI to HappyRanch so it`,
-          `# can be launched from this machine. Do all of this in one run, then`,
-          `# stop. Send this header on every request:`,
-          `#   Authorization: Bearer ${token}`,
-          ``,
-          `# 1. Find your OWN absolute binary path — e.g. the output of`,
-          `#      command -v ${name}   (or)   which ${name}`,
-        ]
-      : [
           `# You're being connected to HappyRanch as an executor named "${name}".`,
           `# Do all of this in one run, then stop. Send this header on every request:`,
           `#   Authorization: Bearer ${token}`,
@@ -89,22 +165,18 @@ export function buildConnectPrompt(
           `# 1. Introduce yourself: work out the exact command that runs you`,
           `#    headless / single-shot, using these placeholders:`,
           `#      {prompt}  {timeout_seconds}  {workspace}`,
-        ];
-  const registerStep =
-    target === 'binary'
-      ? [
-          `# 3. Register your binary path — POST to`,
-          `#    ${base}/executors/runtime/register-binary`,
-          `#    body {"path":"<your absolute binary path>"}`,
-          `#    (the CLI kind is carried by the token — do NOT send it in the body)`,
         ]
-      : [
+      : [];
+  const registerStep =
+    target === 'profile'
+      ? [
           `# 3. Register — POST to`,
           `#    ${base}/executors/runtime/register`,
           `#    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}`,
           `#    Note: 'command' is the declared executable; argv_template[0]`,
           `#    must be the SAME executable (the one GenericCliExecutor launches).`,
-        ];
+        ]
+      : [];
   return [
     ...intro,
     ``,
@@ -209,16 +281,22 @@ export function useRuntimeConnect({
   return { state, name, token, expired, mint, start, regenerate, back };
 }
 
-/** Build the adapter-backed connect prompt (THR-107 seq184). The prompt
+/** Build the adapter-backed connect prompt (THR-107 seq184/seq339). The prompt
  *  directs the candidate CLI to FETCH the canonical contract reference
  *  FIRST (a self-contained v1 daemon endpoint with the authoritative
  *  AdapterInput/AdapterOutput JSON Schemas), build a v1 wrapper, complete
  *  the conformance challenge, and submit via POST /runtime/adapters/submit.
- *  The adapter becomes PENDING; this screen updates live. */
+ *  The adapter becomes PENDING; this screen updates live.
+ *
+ *  ``requiredExecutablePath`` is the LITERAL server-returned path from the
+ *  contract-reference response — the browser fetches it with the scoped
+ *  token after minting.  Do NOT derive, fallback, or guess this path
+ *  client-side. */
 export function buildAdapterConnectPrompt(
   name: string,
   token: string,
   origin: string,
+  requiredExecutablePath: string,
 ): string {
   const base = `${origin}/api/v1`;
   return [
@@ -231,10 +309,24 @@ export function buildAdapterConnectPrompt(
     `#    This returns the authoritative v1 AdapterInput and AdapterOutput`,
     `#    JSON Schemas (generated from the shipping Pydantic models), plus`,
     `#    version, output rules, dependency manifest schema, token-metering`,
-    `#    expectations, and submission metadata. Follow these`,
-    `#    schemas — the server-derived schema is canonical.`,
+    `#    expectations, and submission metadata. The response includes your`,
+    `#    canonical_adapter_id — you MUST use that exact value for`,
+    `#    adapter_metadata.adapter in every AdapterOutput (never a display`,
+    `#    name or provider string).`,
+    `#    The response also includes required_executable_path — the exact`,
+    `#    absolute canonical path where your wrapper MUST live. Create`,
+    `#    your executable at that path; the directory is already prepared.`,
+    `#    No other location, symlink, or alternate filename is accepted.`,
+    `#    Follow these schemas — the server-derived schema is canonical.`,
     ``,
-    `# 1. Create a v1 adapter wrapper executable. Exact I/O contract:`,
+    `# 1. Create a v1 adapter wrapper executable at exactly:`,
+    `#       ${requiredExecutablePath}`,
+    `#    This is the LITERAL server-authoritative path resolved for`,
+    `#    your adapter — it was fetched by the Settings/Onboarding flow`,
+    `#    from GET /runtime/adapters/contract-reference using your scoped`,
+    `#    adapter-purpose token.  Do NOT place the wrapper in`,
+    `#    ~/.happyranch, a project folder, or any self-chosen path.`,
+    `#    Exact I/O contract:`,
     `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
     `#    - The server prepares/creates the workspace directory — you do`,
     `#      not need to create it`,
@@ -275,10 +367,15 @@ export function buildAdapterConnectPrompt(
     ``,
     `# 3. Submit your adapter — POST to`,
     `#    ${base}/runtime/adapters/submit`,
-    `#    body {"executable":"<absolute-path-to-wrapper>","version":"1.0.0",`,
+    `#    body {"executable":"${requiredExecutablePath}","version":"1.0.0",`,
     `#         "capabilities":["token_metering"],"workspace_adapter":"pi",`,
     `#         "dependency_manifest_version":1,`,
     `#         "dependencies":[{"executable":"<absolute-path>","sha256":"<hex>"}]}`,
+    `#    The executable field is ALREADY filled in with your literal`,
+    `#    required_executable_path from the contract-reference — the`,
+    `#    server rejects any other location. Dependency records remain`,
+    `#    absolute path + SHA-256 with normal absolute-path validation`,
+    `#    (no location constraint).`,
     ``,
     `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
     `# is a separate, Settings-only step. When the founder approves, the`,
@@ -293,15 +390,17 @@ export function buildAdapterConnectPrompt(
 /** Adapter-backed connection status matching the adapter lifecycle. */
 export type AdapterState =
   | { stage: 'form' }
-  | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string }
+  | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string; requiredExecutablePath: string }
   | { stage: 'submitted'; name: string; adapterId: string; status: string }
   | { stage: 'connected'; name: string; adapterId: string };
 
 /** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
- *  Mints an adapter-purpose token → CLI creates/submits v1 adapter wrapper
- *  → UI polls adapter status → Connected when server reports already_bound.
- *  Normal intended-profile approval is atomic (seq237): the server
- *  approves and connects in one transaction — no client-side bind. */
+ *  Mints an adapter-purpose token → fetches contract reference to obtain
+ *  the literal server-derived ``required_executable_path`` → CLI
+ *  creates/submits v1 adapter wrapper → UI polls adapter status →
+ *  Connected when server reports already_bound.  Normal intended-profile
+ *  approval is atomic (seq237): the server approves and connects in one
+ *  transaction — no client-side bind. */
 export function useAdapterConnect({
   onConnected,
 }: {
@@ -313,18 +412,32 @@ export function useAdapterConnect({
   const [expiresAt, setExpiresAt] = useState(0);
 
   const mint = useMutation({
-    mutationFn: (n: string) =>
-      settingsApi.mintRuntimeRegistrationToken({
+    mutationFn: async (n: string) => {
+      const resp = await settingsApi.mintRuntimeRegistrationToken({
         name: n,
         purpose: 'adapter',
         intended_profile_name: n,
-      }),
+      });
+      // Immediately fetch the contract reference with the scoped token
+      // to obtain the literal server-derived required_executable_path.
+      // The browser is an INTENTIONAL consumer of this scoped-token endpoint.
+      const { adapters } = await import('@/lib/api');
+      const contract = await adapters.getContractReference(resp.token);
+      return { ...resp, requiredExecutablePath: contract.required_executable_path };
+    },
     onSuccess: (resp, n) => {
       const aid = `${n}-adapter`;
       setName(n);
       setToken(resp.token);
       setExpiresAt(resp.expires_at);
-      setState({ stage: 'waiting', name: n, token: resp.token, expired: false, adapterId: aid });
+      setState({
+        stage: 'waiting',
+        name: n,
+        token: resp.token,
+        expired: false,
+        adapterId: aid,
+        requiredExecutablePath: resp.requiredExecutablePath,
+      });
     },
   });
 

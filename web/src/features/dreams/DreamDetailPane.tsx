@@ -36,6 +36,7 @@ import {
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { cn } from '@/lib/utils';
 import { DREAM_STRINGS } from './strings';
+import { isValidCount } from './count-helpers';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
@@ -197,7 +198,18 @@ export function DreamDetailPane({
 
   const candidates = dream?.kb_candidates ?? [];
   const pendingCount = candidates.filter((c) => c.status === 'pending').length;
-  const isQuiet = dream?.status === 'completed' && candidates.length === 0 && (dream?.new_learnings_count ?? 0) > 0;
+  // Quiet state requires both authoritative supplied counts to be valid finite
+  // non-negative numbers. A malformed kb_candidate_count must not be replaced
+  // by candidates.length; it is unavailable and must prevent any "nothing
+  // escalated" claim, even when the candidate array happens to be empty.
+  const dreamLearnings = dream?.new_learnings_count;
+  const dreamCandidates = dream?.kb_candidate_count;
+  const isQuiet =
+    dream?.status === 'completed' &&
+    isValidCount(dreamCandidates) &&
+    dreamCandidates === 0 &&
+    isValidCount(dreamLearnings) &&
+    dreamLearnings > 0;
 
   return (
     <Drawer open onOpenChange={(o) => !o && onClose()}>

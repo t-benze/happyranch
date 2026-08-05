@@ -61,7 +61,7 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
             {q.error?.message && <> {q.error.message}</>}
           </p>
         )}
-        <AssistantSection />
+        <AssistantSection open={open} />
         {q.data && (
           <div className="mt-2 space-y-6">
             <SystemSection sys={q.data.system} />
@@ -343,13 +343,13 @@ const STATE_BADGE: Record<AssistantState, string> = {
   stale_or_broken: 'bg-feedback-danger/15 text-feedback-danger',
 };
 
-function AssistantSection(): JSX.Element {
+function AssistantSection({ open }: { open: boolean }): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   // Configuration has exactly one home: Settings → Assistant. The dialog only
   // shows a read-only glance and links out — it never mounts a second copy of
   // the init/register/repair flow, and it never points at a removed assistant surface as a registration destination.
   const settingsHref = slug ? `/orgs/${slug}/settings/assistant` : '#';
-  const statusQuery = useAssistantStatus();
+  const statusQuery = useAssistantStatus(open);
   const status = statusQuery.data;
 
   return (

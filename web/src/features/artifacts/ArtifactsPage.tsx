@@ -59,6 +59,7 @@ import { IdBadge } from '@/design-system/patterns/IdBadge';
 import {
   deriveArtifactType,
   deriveTitle,
+  formatArtifactModifiedAt,
   formatProvenanceDate,
   parseProvenance,
   type ArtifactType,
@@ -182,6 +183,7 @@ function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
 interface ArtifactCardProps {
   name: string;
   sizeBytes: number;
+  modifiedAt: string;
   slug: string;
   onDownload: (name: string) => void;
   onDelete: (name: string) => void;
@@ -191,6 +193,7 @@ interface ArtifactCardProps {
 function ArtifactCard({
   name,
   sizeBytes,
+  modifiedAt,
   slug,
   onDownload,
   onDelete,
@@ -200,6 +203,7 @@ function ArtifactCard({
   const title = deriveTitle(name);
   const prov = parseProvenance(name);
   const size = formatAttachmentSize(sizeBytes) ?? '—';
+  const modifiedDisplay = formatArtifactModifiedAt(modifiedAt);
   const hasProvenance = Boolean(prov.threadId || prov.agent);
 
   return (
@@ -215,22 +219,51 @@ function ArtifactCard({
           {title}
         </h3>
 
-        {/* Provenance — parsed from the name; omitted entirely when absent. */}
+        {/*
+          Provenance is filename-derived only. The authoritative agent/thread/time
+          is not stored by the artifact route, so we label the parsed tokens as
+          "From filename" and omit the whole block for neutral names.
+        */}
         {hasProvenance && (
           <p className="text-text-muted mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
+            <span className="sr-only">Filename-derived provenance:</span>
+            <span aria-hidden="true">From filename</span>
             {prov.threadId && (
-              <IdBadge
-                id={prov.threadId}
-                kind="thread"
-                to={`/orgs/${slug}/threads/${prov.threadId}`}
-              />
+              <>
+                <span aria-hidden="true">·</span>
+                <IdBadge
+                  id={prov.threadId}
+                  kind="thread"
+                  to={`/orgs/${slug}/threads/${prov.threadId}`}
+                />
+              </>
             )}
-            {prov.threadId && prov.agent && <span aria-hidden="true">·</span>}
-            {prov.agent && <span>{prov.agent}</span>}
-            {prov.agent && prov.date && <span aria-hidden="true">·</span>}
-            {prov.date && <span>{formatProvenanceDate(prov.date)}</span>}
+            {prov.agent && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{prov.agent}</span>
+              </>
+            )}
+            {prov.date && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{formatProvenanceDate(prov.date)}</span>
+              </>
+            )}
           </p>
         )}
+
+        {/* File modification time supplied by the API; never invented. */}
+        <p className="text-text-muted mt-1 text-xs">
+          {modifiedDisplay ? (
+            <>
+              <span className="text-text-muted">Modified</span>{' '}
+              <span>{modifiedDisplay}</span>
+            </>
+          ) : (
+            <span>Modified time unavailable</span>
+          )}
+        </p>
 
         {/* Footer: size + read actions (Download primary, Delete de-emphasised). */}
         <div className="mt-auto flex items-center justify-between gap-3 pt-3">
@@ -686,6 +719,7 @@ export function ArtifactsPage(): JSX.Element {
                         key={a.name}
                         name={a.name}
                         sizeBytes={a.size_bytes}
+                        modifiedAt={a.modified_at}
                         slug={slug}
                         onDownload={(artifactName) => {
                           setDownloadError(null);
