@@ -531,222 +531,274 @@ def test_completion_rejects_unknown_task_404(
     assert r.json()["detail"]["code"] == "unknown_task"
 
 
-class TestLocalCiEvidenceRoute:
-    """Strict wire-type validation and persistence of local_ci evidence."""
+# --- LocalCiEvidence route tests ---
 
-    BASE_PAYLOAD = {
-        "session_id": "sess-1", "agent": "dev_agent",
-        "status": "completed", "confidence": 90, "output_summary": "ok",
-    }
+VALID_LOCAL_CI = {"command": "scripts/local_ci.sh all", "exit_code": 0}
 
-    def test_accepts_valid_local_ci(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """Valid local_ci object is accepted and persisted."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 0}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        latest = org_state.db.get_latest_task_result(task_id, "dev_agent", "sess-1")
-        assert latest is not None
-        import json as _json
-        assert _json.loads(latest["local_ci"]) == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+def test_completion_with_valid_local_ci_persists(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Valid local_ci object persists and is retrievable from DB."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-1")
 
-    def test_rejects_local_ci_with_nonzero_exit_code(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """local_ci with exit_code != 0 is rejected with 400, no durable mutation."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-1", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": VALID_LOCAL_CI,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, f"Got {r.status_code}: {r.json()}"
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 1}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_invalid"
-        # No durable mutation
-        rows = org_state.db.get_task_results(task_id)
-        assert len(rows) == 0
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 1
+    stored = rows[0].get("local_ci")
+    assert stored is not None
+    import json as _json
+    parsed = _json.loads(stored)
+    assert parsed == VALID_LOCAL_CI
 
-    def test_rejects_local_ci_with_wrong_command(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """local_ci with wrong command is rejected with 400."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "wrong", "exit_code": 0}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_invalid"
-        rows = org_state.db.get_task_results(task_id)
-        assert len(rows) == 0
+def test_completion_with_local_ci_false_exit_code_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Boolean false exit_code -> 400 local_ci_invalid, ZERO durable rows."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-2")
 
-    def test_rejects_local_ci_with_missing_exit_code(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """local_ci with missing exit_code is rejected with 400."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-2", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": False},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, f"Got {r.status_code}: {r.json()}"
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid", f"Detail: {detail}"
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all"}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_invalid"
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0, f"Should have 0 rows, got {len(rows)}"
 
-    def test_rejects_local_ci_with_missing_command(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """local_ci with missing command is rejected with 400."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"exit_code": 0}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_invalid"
+def test_completion_with_local_ci_string_zero_exit_code_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """String '0' exit_code -> 400 local_ci_invalid, ZERO durable rows."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-3")
 
-    def test_rejects_local_ci_with_boolean_exit_code(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """Boolean exit_code must not silently satisfy integer — 400."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-3", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": "0"},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid"
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": True}},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_invalid"
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
 
-    def test_rejects_local_ci_not_an_object(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """local_ci that is not a dict (e.g. string) is rejected with 400."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": "not an object"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 400
-        assert r.json()["detail"]["code"] == "local_ci_not_object"
+def test_completion_with_local_ci_extra_key_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Extra key beyond command + exit_code -> 400 local_ci_invalid."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-4")
 
-    def test_local_ci_persisted_in_audit_payload(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """The local_ci object appears as a top-level field in the completion_report
-        audit payload, not just as prose or a task_result column."""
-        from runtime.infrastructure.audit_logger import AuditLogger
-        from runtime.models import CompletionReport, LocalCiEvidence
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-4", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {
+                "command": "scripts/local_ci.sh all",
+                "exit_code": 0,
+                "extra_field": "nope",
+            },
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid"
 
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
 
-        # Submit with valid local_ci
-        TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json={**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 0}},
-            headers=auth_headers,
-        )
 
-        # Reconstruct via the orchestrator's DB reader
-        report = org_state.orchestrator._read_completion_from_db(task_id, "dev_agent", "sess-1")
-        assert report is not None
-        assert report.local_ci is not None
-        assert report.local_ci.command == "scripts/local_ci.sh all"
-        assert report.local_ci.exit_code == 0
+def test_completion_with_local_ci_non_string_command_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Non-string command (int) -> 400 local_ci_invalid."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-5")
 
-        # Reconstruct from DB row directly
-        latest = org_state.db.get_latest_task_result(task_id, "dev_agent", "sess-1")
-        assert latest["local_ci"] is not None
-        import json as _json
-        assert _json.loads(latest["local_ci"]) == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-5", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {"command": 12345, "exit_code": 0},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid"
 
-        # Now call log_completion_report to verify audit payload
-        lc = LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0)
-        cr = CompletionReport(
-            task_id=task_id, agent="dev_agent", status="completed",
-            confidence=90, output_summary="ok", local_ci=lc,
-        )
-        AuditLogger(org_state.db).log_completion_report(cr)
-        # Verify the audit row carries local_ci
-        audit_rows = org_state.db.get_audit_logs(task_id)
-        completion_audits = [a for a in audit_rows if a.get("action") == "completion_report"]
-        assert len(completion_audits) >= 1
-        payload = completion_audits[-1]["payload"]
-        assert payload.get("local_ci") == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
 
-    def test_omitted_local_ci_yields_none(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """Omitting local_ci is allowed — NULL in DB, None in reconstructed report."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
 
-        r = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
-            json=self.BASE_PAYLOAD,
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        latest = org_state.db.get_latest_task_result(task_id, "dev_agent", "sess-1")
-        assert latest["local_ci"] is None
+def test_completion_with_local_ci_wrong_command_value_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Wrong command string (not 'scripts/local_ci.sh all') -> 400."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-6")
 
-        report = org_state.orchestrator._read_completion_from_db(task_id, "dev_agent", "sess-1")
-        assert report is not None
-        assert report.local_ci is None
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-6", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {"command": "wrong/command.sh", "exit_code": 0},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid"
 
-    def test_idempotent_retry_preserves_local_ci(self, tmp_home, app, daemon_state, org_state, auth_headers):
-        """An idempotent retry (same session, already persisted) returns 200
-        and the first-insert row's local_ci is not overwritten or doubled."""
-        sub = TestClient(app).post(
-            "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
-        )
-        task_id = sub.json()["task_id"]
-        org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
 
-        payload = {**self.BASE_PAYLOAD, "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 0}}
-        first = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
-        )
-        assert first.status_code == 200
 
-        second = TestClient(app).post(
-            f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
-        )
-        assert second.status_code == 200
-        rows = org_state.db.get_task_results(task_id)
-        assert len([r for r in rows if r["session_id"] == "sess-1"]) == 1
+def test_completion_with_local_ci_nonzero_exit_code_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Nonzero exit_code (1) -> 400 local_ci_invalid."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-7")
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-7", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": {"command": "scripts/local_ci.sh all", "exit_code": 1},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_invalid"
+
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
+
+
+def test_completion_with_local_ci_not_a_dict_rejects(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """local_ci must be an object, not a primitive (string)."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-8")
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-8", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "local_ci": "not_an_object",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "local_ci_not_object"
+
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 0
+
+
+def test_completion_without_local_ci_still_succeeds(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Omitted local_ci field -> 200 (backward compatible)."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks",
+        json={"brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-lc-9")
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-lc-9", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 1
+    assert rows[0].get("local_ci") is None
 
 
 def test_progress_rejects_cancelled_task(

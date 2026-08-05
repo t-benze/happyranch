@@ -2458,3 +2458,99 @@ def test_execute_nested_reentrant_no_false_wait(db, caplog):
         f"got: {wait_warnings}"
     )
     db._lock_warn_threshold_seconds = 1.0
+
+
+def test_local_ci_migration_from_legacy_schema(tmp_path):
+    """Prove additive nullable migration: seed a task_results row in the old
+    table shape (no local_ci column), open through real Database startup
+    migration, assert local_ci column was added nullable, the legacy row
+    survives, its existing field values are intact, its local_ci is NULL,
+    and a new row can persist the exact valid JSON."""
+    import sqlite3
+    from runtime.infrastructure.database import Database
+
+    db_path = tmp_path / "legacy_lc.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'pending',
+        assigned_agent TEXT,
+        team TEXT NOT NULL DEFAULT 'engineering',
+        brief TEXT NOT NULL,
+        revision_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        parent_task_id TEXT,
+        final_output_dir TEXT,
+        task_type TEXT NOT NULL DEFAULT 'task',
+        orchestration_step_count INTEGER NOT NULL DEFAULT 0,
+        revisit_of_task_id TEXT,
+        dispatched_from_thread_id TEXT,
+        block_kind TEXT,
+        blocked_on_job_ids TEXT,
+        active_chain TEXT,
+        note TEXT,
+        active_fanout TEXT
+    )""")
+    conn.execute("""CREATE TABLE task_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'completed',
+        output_summary TEXT NOT NULL DEFAULT '',
+        confidence_score INTEGER NOT NULL DEFAULT 80,
+        learnings TEXT,
+        risks_flagged TEXT,
+        duration_seconds INTEGER,
+        token_count INTEGER,
+        estimated_cost REAL,
+        output_dir TEXT,
+        created_at TEXT NOT NULL
+    )""")
+    conn.commit()
+
+    conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-LEGACY", "dev_agent", "sess-legacy",
+         "completed", "legacy row", 90, "2025-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    cols = {r[1] for r in db._conn.execute("PRAGMA table_info(task_results)").fetchall()}
+    assert "local_ci" in cols, f"Columns after migration: {cols}"
+
+    rows = db.get_task_results("TASK-LEGACY")
+    assert len(rows) == 1
+    legacy = rows[0]
+    assert legacy["task_id"] == "TASK-LEGACY"
+    assert legacy["agent"] == "dev_agent"
+    assert legacy["session_id"] == "sess-legacy"
+    assert legacy["status"] == "completed"
+    assert legacy["output_summary"] == "legacy row"
+    assert legacy["confidence_score"] == 90
+    assert legacy["created_at"] == "2025-01-01T00:00:00+00:00"
+    assert legacy.get("local_ci") is None, f"Expected NULL, got {legacy.get('local_ci')!r}"
+
+    db.insert_task_result(
+        task_id="TASK-LEGACY",
+        agent="dev_agent",
+        session_id="sess-new",
+        status="completed",
+        output_summary="with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    rows = db.get_task_results("TASK-LEGACY")
+    assert len(rows) == 2
+    new_row = [r for r in rows if r["session_id"] == "sess-new"][0]
+    assert new_row["local_ci"] == '{"command":"scripts/local_ci.sh all","exit_code":0}'
+
+    db.close()

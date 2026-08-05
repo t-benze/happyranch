@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator
 
 
 class TaskStatus(StrEnum):
@@ -207,13 +207,19 @@ class NextStep(BaseModel):
 class LocalCiEvidence(BaseModel):
     """Evidence that a pushed PR's local CI ran successfully.
 
-    Acceptance: command must be exactly "scripts/local_ci.sh all" and
-    exit_code must be exactly the integer 0. Malformed objects (boolean
-    exit_code, missing fields, extra fields, nonzero exit, or a different
-    command string) are rejected without durable mutation.
+    Wire contract — every field is strict:
+      - ``command`` MUST be the exact string "scripts/local_ci.sh all".
+        Non-string values (including null) and any other string are rejected.
+      - ``exit_code`` MUST be the exact integer 0.  Boolean (true/false) and
+        string "0" are rejected by StrictInt — Pydantic v2 strict mode does
+        NOT coerce them.
+      - Extra keys (any third field beyond command + exit_code) are forbidden
+        via model-level ``extra='forbid'``.
     """
-    command: str
-    exit_code: int
+    model_config = {"extra": "forbid"}
+
+    command: StrictStr
+    exit_code: StrictInt
 
     @field_validator("command")
     @classmethod
