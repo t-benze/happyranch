@@ -708,8 +708,8 @@ class Orchestrator:
 
         # ── Pre-launch integrity validation ─────────────────────────
         # Validate workspace skill links and canonical package integrity
-        # BEFORE executor launch. Same-owner mode removes OS-level write
-        # barriers — this is a detective check, not a preventive boundary.
+        # BEFORE executor launch. The executor shares the daemon's OS
+        # identity — this is a detective check, not a preventive boundary.
         from runtime.orchestrator.workspace_adapters import (
             WorkspaceIntegrityError as _IntegrityError,
         )
@@ -730,14 +730,17 @@ class Orchestrator:
                     "Pre-launch workspace skill integrity validation "
                     "failed — executor launch refused. "
                     "No automatic repair from same-UID local source. "
-                    "Manual recovery: (a) For broken links only: "
+                    "Recovery: FIRST perform manual authoritative "
+                    "external re-sync/redeploy of release/custom "
+                    "artifacts. THEN: (a) for broken links only — "
                     "happyranch set-executor <agent> --executor "
                     "<current-executor> (re-materializes links, does "
-                    "NOT recover corrupted bytes). "
-                    "(b) For corrupted canonical bytes: "
-                    "happyranch skills recover <slug> <version> "
-                    "<content_hash> (deletes the corrupted package; "
-                    "next materialization rebuilds from ArtifactStore)."
+                    "NOT recover corrupted bytes); (b) for corrupted "
+                    "canonical bytes — happyranch skills recover "
+                    "<slug> <version> <content_hash> (then restart "
+                    "daemon; next materialization rebuilds from "
+                    "ArtifactStore). Local same-UID sources are not "
+                    "automatically repaired or trusted."
                 ),
                 status=TaskStatus.FAILED,
             )

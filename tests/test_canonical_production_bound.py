@@ -8,7 +8,7 @@ Addresses TASK-4001 findings:
 - Finding 7: Lifecycle manifest provenance + canonical integration
 
 Tests in this file represent the production-bound expectation. Some tests
-require real OS-level same-owner mode validation (macOS only) and will
+require real OS-level same-owner operation validation (macOS only) and will
 report their prerequisite gap rather than manufacturing a false pass.
 """
 

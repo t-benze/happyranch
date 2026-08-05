@@ -1071,20 +1071,23 @@ def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
 # intact. The executor and daemon share the same OS identity — a
 # same-UID process can mutate canonical targets between checks.
 # Detection-only: no automatic repair from same-UID local sources.
-# Recovery for corrupted canonical bytes is manual:
-# `happyranch skills recover <slug> <version> <content_hash>` (after
-# authoritative external re-sync/redeploy), then restart the daemon.
-# Link-only faults may be repaired non-destructively via
-# `happyranch set-executor`.
+# Recovery: FIRST manual authoritative external re-sync/redeploy
+# of release/custom artifacts; ONLY THEN:
+# (a) for link-only faults — `happyranch set-executor <agent>
+#     --executor <current-executor>` (non-destructive re-materialize);
+# (b) for corrupted canonical bytes — `happyranch skills recover
+#     <slug> <version> <content_hash>` then restart the daemon.
+# Local same-UID sources are not automatically repaired or trusted.
 
 
 class WorkspaceIntegrityError(Exception):
     """Raised when workspace skill integrity validation fails.
 
-    Terminal — no executor launch proceeds. Recovery requires
-    human/operator intervention: `happyranch skills recover <slug>
-    <version> <content_hash>` then restart daemon.
-    Auto-repair from same-UID local sources is never performed.
+    Terminal — no executor launch proceeds. Recovery: FIRST manual
+    authoritative external re-sync/redeploy of release/custom
+    artifacts; ONLY THEN existing verified link repair / skills
+    recover / restart as applicable. Local same-UID sources are not
+    automatically repaired or trusted.
     """
 
     def __init__(
@@ -1137,10 +1140,13 @@ def validate_workspace_skills_integrity(
     agent-controlled executor can mutate canonical targets through
     workspace links between checks. The integrity check detects
     tampering at the next launch attempt and refuses the session.
-    Recovery for corrupted canonical bytes: authoritative external
-    re-sync/redeploy, then `happyranch skills recover
-    <slug> <version> <content_hash>`, then restart daemon. Link-only
-    faults: `happyranch set-executor` (never repairs bytes).
+    Recovery: FIRST manual authoritative external re-sync/redeploy
+    of release/custom artifacts; ONLY THEN (a) for link-only faults
+    — `happyranch set-executor <agent> --executor <current-executor>`
+    (never repairs bytes); (b) for corrupted canonical bytes —
+    `happyranch skills recover <slug> <version> <content_hash>`
+    then restart daemon. Local same-UID sources are not automatically
+    repaired or trusted.
 
     Args:
         workspace: Agent workspace root
@@ -1877,11 +1883,13 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     executor and daemon share the same OS identity — there is NO OS-level
     security boundary. Integrity validation detects a mismatch, records a
     durable visible integrity/operations event, and refuses launch; there
-    is NO local automatic recovery/autoheal. Recovery starts with manual
-    authoritative external re-sync/redeploy, then only the existing
-    verified repair/recover/restart path. Same-owner/same-UID writes
-    remain possible. Do NOT call the target immutable, protected, or
-    claim write/chmod/ACL denial.
+    is NO local automatic recovery/autoheal. Recovery requires FIRST
+    manual authoritative external re-sync/redeploy of release/custom
+    artifacts; ONLY THEN existing verified link repair / skills recover /
+    restart as applicable. Local same-UID sources are not automatically
+    repaired or trusted. Do NOT call the target immutable, protected, or
+    claim write/chmod/ACL denial, OS-enforced isolation, or automatic
+    same-UID repair.
     """
     return [
         "## Skills Directory (do not edit)\n",
@@ -1895,10 +1903,13 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "OS-enforced security boundary. Integrity validation detects a ",
         "mismatch, records a durable visible integrity/operations event, ",
         "and refuses launch — there is NO local automatic ",
-        "recovery/autoheal. Recovery starts with manual authoritative ",
-        "external re-sync/redeploy, then only the existing verified ",
-        "repair/recover/restart path. Do not rely on this as a security ",
-        "control or treat it as OS-enforced protection.\n",
+        "recovery/autoheal. Recovery requires FIRST manual authoritative ",
+        "external re-sync/redeploy of release/custom artifacts; ONLY ",
+        "artifacts; ONLY THEN existing verified link repair / ",
+        "skills recover / restart as applicable. Local same-UID "
+        "sources are not automatically repaired or trusted. Do not "
+        "rely on this as a security control or treat it as "
+        "OS-enforced protection.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",

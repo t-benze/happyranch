@@ -608,7 +608,7 @@ class TestPreLaunchIntegrityValidation:
 
             # The integrity check at NEXT launch would catch it,
             # but the CURRENT session is already running with stale checks.
-            # This is an explicitly documented residual risk of same-owner mode.
+            # This is an explicitly documented residual risk of same-owner operation.
         finally:
             os.environ.pop("HAPPYRANCH_CANONICAL_STORE_ROOT", None)
 
@@ -1620,7 +1620,7 @@ class TestProductionSeamLifecycleCorruptionRefusal:
         token = daemon_paths.ensure_token()
         auth_headers = {"Authorization": f"Bearer {token}"}
 
-        # ── Set up env for canonical store + same-owner mode ────────
+        # ── Set up env for canonical store + same-owner delivery ────────
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
 

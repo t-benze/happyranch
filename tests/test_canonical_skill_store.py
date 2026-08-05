@@ -616,7 +616,7 @@ class TestWriteViaLinkIsolation:
         original_content = canonical_file.read_bytes()
 
         # In a dev environment (same uid), chmod through symlink DOES work
-        # because we own the file. This is expected — same-owner mode
+        # because we own the file. This is expected — same-owner delivery
         # relies on hash-based integrity verification, not OS enforcement.
         link_path = workspace_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
         try:
@@ -2394,7 +2394,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Same-Owner Mode: Honest-Adversarial Tests
+# Same-Owner Delivery: Honest-Adversarial Tests
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -2420,7 +2420,7 @@ class TestSameOwnerAdversarialLimits:
         through workspace symlinks.
 
         This test PROVES the honest limit: there is NO os-level
-        write/chmod barrier in same-owner mode. The process running
+        write/chmod barrier in same-owner delivery. The process running
         as the daemon's identity writes through the symlink and the
         canonical package content changes. The test expects the
         write to SUCCEED — if it raised PermissionError, that would
@@ -2445,7 +2445,7 @@ class TestSameOwnerAdversarialLimits:
         assert "# Test Skill" in original
 
         # ── Adversarial write: alter canonical content through symlink ──
-        # In same-owner mode the daemon sets files non-writable, but
+        # In same-owner delivery the daemon sets files non-writable, but
         # since the executor is the same uid, it can simply chmod them
         # back to writable first. This is the honest limit: readonly
         # hardening is cosmetic when the attacker shares the daemon's uid.
@@ -2458,7 +2458,7 @@ class TestSameOwnerAdversarialLimits:
         except PermissionError:
             pytest.fail(
                 "Same-owner process was denied chmod on canonical "
-                "package file. In same-owner mode this should succeed."
+                "package file. In same-owner delivery this should succeed."
             )
 
         # Step 2: write tampered content
@@ -2468,7 +2468,7 @@ class TestSameOwnerAdversarialLimits:
             pytest.fail(
                 "Same-owner process was denied write access to "
                 "canonical package via workspace symlink. This "
-                "should NOT happen — same-owner mode means no "
+                "should NOT happen — same-owner delivery means no "
                 "OS-level isolation exists."
             )
 
@@ -2476,7 +2476,7 @@ class TestSameOwnerAdversarialLimits:
         actual_after = (link_path / "SKILL.md").read_text()
         assert actual_after == tampered_content, (
             "Canonical package content MUST reflect the adversarial "
-            "write in same-owner mode"
+            "write in same-owner delivery"
         )
 
         # The canonical store path also shows the change (same file)
