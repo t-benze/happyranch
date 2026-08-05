@@ -230,6 +230,14 @@ const DREAM_DETAIL_INVALID_COUNTS = {
   kb_candidates: [],
 } as unknown as DreamRecord;
 
+const DREAM_DETAIL_MISSING_CANDIDATE_COUNT = {
+  ...DREAM_DETAIL_RESPONSE,
+  dream_id: 'DREAM-DETAIL-MISS-C',
+  new_learnings_count: 2,
+  kb_candidate_count: undefined,
+  kb_candidates: [],
+} as unknown as DreamRecord;
+
 describe('DreamsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -687,5 +695,27 @@ describe('DreamsPage', () => {
 
     // The dream is completed with no candidates, but learnings are invalid -> not quiet.
     expect(screen.queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+  });
+
+  it('does not claim quiet in opened drawer when kb_candidate_count is invalid even with empty kb_candidates', () => {
+    // Reviewer-specified adversarial: valid positive learnings, missing/invalid
+    // candidate count, and an empty candidate array must not produce the quiet
+    // "nothing escalated" message. The authoritative count is unavailable.
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [DREAM_DETAIL_MISSING_CANDIDATE_COUNT] }),
+    );
+    mockDream.mockReturnValue(loaded(DREAM_DETAIL_MISSING_CANDIDATE_COUNT));
+
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-DETAIL-MISS-C').closest('button')!;
+    fireEvent.click(card);
+
+    // The drawer's count strip must render the unavailable copy, not a factual
+    // zero or quiet claim (the card strip and rail may also show it).
+    const drawer = screen.getByRole('dialog');
+    expect(within(drawer).getByText('Candidates unavailable')).toBeDefined();
+    expect(within(drawer).queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+    expect(within(drawer).queryByText('0 candidates')).toBeNull();
   });
 });

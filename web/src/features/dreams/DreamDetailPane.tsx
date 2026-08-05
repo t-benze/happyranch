@@ -198,13 +198,16 @@ export function DreamDetailPane({
 
   const candidates = dream?.kb_candidates ?? [];
   const pendingCount = candidates.filter((c) => c.status === 'pending').length;
-  // Quiet state requires a valid learnings count; a malformed count must not be
-  // read as "private learning saved". The candidate list (not the stale total)
-  // is the authoritative empty signal in the detail drawer.
+  // Quiet state requires both authoritative supplied counts to be valid finite
+  // non-negative numbers. A malformed kb_candidate_count must not be replaced
+  // by candidates.length; it is unavailable and must prevent any "nothing
+  // escalated" claim, even when the candidate array happens to be empty.
   const dreamLearnings = dream?.new_learnings_count;
+  const dreamCandidates = dream?.kb_candidate_count;
   const isQuiet =
     dream?.status === 'completed' &&
-    candidates.length === 0 &&
+    isValidCount(dreamCandidates) &&
+    dreamCandidates === 0 &&
     isValidCount(dreamLearnings) &&
     dreamLearnings > 0;
 
