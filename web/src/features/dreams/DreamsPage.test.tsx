@@ -128,6 +128,25 @@ const MISSED_DREAM = {
   error: null,
 };
 
+/** Regression: backend may omit or send malformed count/date fields. */
+const DREAM_WITH_INVALID_FIELDS = {
+  dream_id: 'DREAM-0007',
+  agent_name: 'dev_agent',
+  local_date: undefined,
+  scheduled_for: 'not-a-date',
+  window_start: null,
+  window_end: '2026-06-16T03:10:00Z',
+  started_at: null,
+  ended_at: 'not-a-date',
+  status: 'completed',
+  summary: null,
+  transcript_path: null,
+  new_learnings_count: undefined,
+  kb_candidate_count: undefined,
+  founder_thread_id: null,
+  error: null,
+} as unknown as import('@/hooks/dreams').DreamRecord;
+
 const DREAM_DETAIL_RESPONSE = {
   ...DREAM_WITH_CANDIDATES,
   transcript: '## Reflection\n\nIdentified a recurring pattern.',
@@ -493,6 +512,24 @@ describe('DreamsPage', () => {
     expect(within(rail).getByText('2 reflections')).toBeDefined();
     expect(within(rail).getByText('3 learnings')).toBeDefined();
     expect(within(rail).getByText('2 candidates')).toBeDefined();
+  });
+
+  it('falls back to 0 / em-dash when dream count fields are missing or invalid', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [DREAM_WITH_INVALID_FIELDS] }),
+    );
+    renderPage(<DreamsPage />);
+
+    const card = screen.getByText('DREAM-0007').closest('button')!;
+    expect(within(card).getByText('0 learnings')).toBeDefined();
+    expect(within(card).getByText('0 candidates')).toBeDefined();
+    expect(within(card).getByText('—')).toBeDefined();
+    expect(within(card).queryByText(/NaN/)).toBeNull();
+    expect(within(card).queryByText(/undefined/)).toBeNull();
+
+    const rail = screen.getByRole('complementary', { name: /overview/i });
+    expect(within(rail).getByText('0 learnings')).toBeDefined();
+    expect(within(rail).queryByText(/NaN/)).toBeNull();
   });
 
   it('right rail shows the calm empty Knowledge-candidates state when none are backed', () => {

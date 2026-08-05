@@ -39,6 +39,22 @@ import { DREAM_STRINGS } from './strings';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
+/*  Safe date formatting — never render `Invalid Date` as factual copy */
+/* ------------------------------------------------------------------ */
+
+function safeTime(iso: string | null | undefined): string {
+  if (!iso) return DREAM_STRINGS.unavailableLabel;
+  const ts = new Date(iso);
+  return Number.isFinite(ts.getTime()) ? ts.toLocaleTimeString() : DREAM_STRINGS.unavailableLabel;
+}
+
+function safeDateTime(iso: string | null | undefined): string {
+  if (!iso) return DREAM_STRINGS.unavailableLabel;
+  const ts = new Date(iso);
+  return Number.isFinite(ts.getTime()) ? ts.toLocaleString() : DREAM_STRINGS.unavailableLabel;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Status pill                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -209,7 +225,9 @@ export function DreamDetailPane({
             <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dreamId}</span>
           </div>
           <DrawerTitle className="text-text-primary font-display mt-1 text-lg">
-            {dream ? `${dream.agent_name} · ${dream.local_date}` : DREAM_STRINGS.drawerLoading}
+            {dream
+              ? `${dream.agent_name} · ${dream.local_date ?? DREAM_STRINGS.unavailableLabel}`
+              : DREAM_STRINGS.drawerLoading}
           </DrawerTitle>
           {dream && (
             <div className="mt-1 flex items-center gap-2">
@@ -221,7 +239,7 @@ export function DreamDetailPane({
               </span>
               {dream.ended_at && (
                 <span className="text-text-muted text-xs">
-                  {new Date(dream.ended_at).toLocaleTimeString()}
+                  {safeTime(dream.ended_at)}
                 </span>
               )}
               {dream.error && (
@@ -285,10 +303,10 @@ export function DreamDetailPane({
 
               {/* Stat strip — font-mono tabular-nums */}
               <div className="text-text-muted border-border-default flex items-center gap-4 border-b pb-3 font-mono text-xs tabular-nums">
-                <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
+                <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count ?? 0)}</span>
                 <span>·</span>
                 <span>
-                  {DREAM_STRINGS.candidatesCount(dream.kb_candidate_count)}
+                  {DREAM_STRINGS.candidatesCount(dream.kb_candidate_count ?? 0)}
                   {pendingCount > 0 && (
                     <span className="text-accent-default ml-1 font-medium">{pendingCount} to review</span>
                   )}
@@ -296,7 +314,7 @@ export function DreamDetailPane({
                 {dream.scheduled_for && (
                   <>
                     <span>·</span>
-                    <span>Scheduled {new Date(dream.scheduled_for).toLocaleString()}</span>
+                    <span>Scheduled {safeDateTime(dream.scheduled_for)}</span>
                   </>
                 )}
               </div>
