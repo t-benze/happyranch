@@ -1,23 +1,20 @@
 # Orchestrator: Routing, Permissions & State
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4195):** The skill materialization model
-> described in §4.6–§4.10 has been superseded by the **canonical skill
-> store + workspace symlink architecture**. The legacy wholesale-copy model
-> (``_WHOLESALE_DUMP_ENABLED``, ``_copy_skills_tree``, ``refresh_session_skills``,
-> direct copy/injection helpers) is REMOVED as an executable path. See
-> ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace symlinks"
-> for the current canonical model including same-owner opt-in mode
-> (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR``) and pre-launch integrity
-> validation. All skill delivery now routes through
-> ``materialize_workspace_skills``, which creates validated relative symlinks to
-> hash-addressed canonical packages. In distinct-identity mode, packages are
-> read-only (0444) for the distinct executor uid. In same-owner mode
-> (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``), a same-UID executor CAN mutate
-> targets — integrity is enforced by synchronous pre-launch hash detection
-> against ledger-declared member hashes with DETECTION-ONLY, FAIL-CLOSED refusal
-> (no automatic repair from same-UID local source).
-> **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections below
-> are preserved for historical reference.
+> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4195/TASK-4346):** The skill
+> materialization model described in §4.6–§4.10 has been superseded by the
+> **canonical skill store + workspace symlink architecture**. The legacy
+> wholesale-copy model (``_WHOLESALE_DUMP_ENABLED``, ``_copy_skills_tree``,
+> ``refresh_session_skills``, direct copy/injection helpers) is REMOVED as an
+> executable path. See ``protocol/05b-agent-runtime.md`` § "Canonical skill
+> store + workspace symlinks" for the current canonical model. All skill
+> delivery now routes through ``materialize_workspace_skills``, which creates
+> validated relative symlinks to hash-addressed canonical packages under
+> BOTH ``.claude/skills`` and ``.agents/skills``. The executor and daemon
+> share the same OS identity — integrity is enforced by synchronous pre-launch
+> hash detection against ledger-declared member hashes with DETECTION-ONLY,
+> FAIL-CLOSED refusal (no automatic repair from same-UID local source).
+> **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections
+> below are preserved for historical reference.
 
 The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 
@@ -1087,9 +1084,10 @@ are permanently removed from source. The explicit injection paths —
 ``inject_system_contracts`` (§4.7) and ``inject_managed_skills`` (§4.10) —
 route through the canonical skill store + workspace symlink architecture.
 All skill delivery now goes through ``materialize_workspace_skills``, which
-creates validated relative symlinks to daemon-owned hash-addressed canonical
-packages. In distinct-identity mode packages are read-only for the executor uid;
-in same-owner mode integrity is enforced by synchronous pre-launch hash detection.
+creates validated relative symlinks to hash-addressed canonical packages
+under BOTH ``.claude/skills`` and ``.agents/skills``. The executor and daemon share the same OS identity; integrity is enforced
+by synchronous
+pre-launch hash detection against ledger-declared member hashes.
 
 **Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
 ADDITIVELY alongside the wholesale dump. This was the safety net proved correct

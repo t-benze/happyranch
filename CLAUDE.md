@@ -19,15 +19,14 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 ## Architecture: Canonical Skill Store + Workspace Symlinks (macOS-only)
 
-Skill delivery uses a **canonical skill store** — daemon-owned, hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed. In distinct-identity mode targets are OS-enforced read-only (0444); in same-owner mode the executor shares the daemon uid and bytes are logically governed by ledger-declared hashes (detective, not preventive).
+Skill delivery uses a **canonical skill store** — hash-addressed packages outside executor workspaces — with **workspace symlinks** to exact approved package versions under both `.claude/skills` and `.agents/skills`. The legacy per-session wholesale copy is permanently removed. The executor runs under the same OS identity as the daemon — linked, validated relative skill links live under BOTH `.claude/skills` and `.agents/skills`; every user-facing and executor-facing guidance surface names both roots, never only the provider-selected root. Guidance is operational, not a technical security boundary.
 
 - **Platform:** macOS (darwin) only. Linux and Windows explicitly fail closed.
-- **Two modes:**
-  - **Strict distinct-identity (default):** Separate daemon/materializer and restricted executor macOS identities with filesystem ownership and ACL enforcement. Canonical content is daemon-owned, read-only (0444). Executors cannot write, chmod, or mutate through workspace symlinks — enforced by Unix user/group permissions.
-  - **Same-owner (opt-in, `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`):** Executor runs under daemon's OS identity. NO OS-level isolation. A same-UID process may mutate, race validation, and affect active/overlapping sessions. This is a detective pre-launch check, NOT a preventive security boundary. Do NOT claim immutable, protected, read-only, or OS-enforced isolation.
-- **Integrity verification:** Before each launch the daemon validates every resolved package member's bytes against the immutable ledger-declared SHA-256 hashes. A mismatched existing canonical package is NEVER automatically rebuilt, copied, replaced, or healed from same-UID local source. First-ever materialization of an absent package remains allowed; valid existing packages may be reused. But a detected-corruption package is rejected: the durable integrity/operations event is emitted and the session is refused. Recovery is manual, operator-invoked only: `happyranch skills recover <slug> <version> <content_hash>` (validates ledger provenance and all member SHA-256 hashes against ArtifactStore before deletion; refuses already-valid targets). No automatic repair from same-UID local source. `set-executor` may repair links only after byte integrity passes — it never repairs bytes.
+- **Delivery model:** The executor and daemon share the same OS identity. There is NO OS-level isolation. A same-UID process may mutate, race validation, and affect active/overlapping sessions. Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal — do NOT claim immutable, protected, read-only, OS-enforced isolation, or automatic repair.
+- **Integrity verification:** Before each launch the daemon validates every resolved package member's bytes against the ledger-declared SHA-256 hashes. Pre-launch and retry-time manifest/member-hash plus both-root link validation occurs at real Popen/run seams. On mismatch the daemon emits a durable visible integrity event and refuses the session before Popen/retry. A mismatched existing canonical package is NEVER automatically rebuilt, copied, replaced, or healed from same-UID local source. First-ever materialization of an absent package remains allowed; valid existing packages may be reused. Recovery is manual, operator-invoked only: `happyranch skills recover <slug> <version> <content_hash>` (validates ledger provenance and all member SHA-256 hashes against ArtifactStore before deletion; refuses already-valid targets). This command requires a preceding authoritative external re-sync/redeploy of release or custom artifacts. No automatic repair from same-UID local source. `set-executor` may repair links only after byte integrity passes — it never repairs bytes. Policy withdrawal and atomic link repair remain safe.
 - **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/refuse boundary before launch. System-contract links are unioned across all ordinary session contexts so a later single-context launch never withdraws a valid link belonging to another context; release-managed and lifecycle links remain policy-reconciled and withdrawable.
 - **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
+- **Residual risk:** Same-UID TOCTOU, active, and overlapping-session residual risk is accurately noted. Do not describe byte targets, local sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted, executor-only writable/unwritable, or automatically recovered.
 - **Serving deployment** is independently verified after merge.
 
 Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + workspace symlinks", `protocol/05c-orchestrator.md`, `docs/agent-guides/agent-executors-and-permissions.md`.
@@ -107,7 +106,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TASK-4376** (34671 symbols, 82652 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -130,10 +129,10 @@ This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/happyranch/clusters` | All functional areas |
-| `gitnexus://repo/happyranch/processes` | All execution flows |
-| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/TASK-4376/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TASK-4376/clusters` | All functional areas |
+| `gitnexus://repo/TASK-4376/processes` | All execution flows |
+| `gitnexus://repo/TASK-4376/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

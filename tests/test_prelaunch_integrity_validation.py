@@ -34,15 +34,10 @@ class TestPreLaunchIntegrityValidation:
     """Adversarial: same-owner process mutates canonical targets;
     next launch detects mismatch BEFORE executor; no auto-repair.
 
-    These tests require same-owner mode because they exercise the
-    chmod+mutate+restore attack pattern that is only relevant when
-    the executor shares the daemon's UID.
+    The executor and daemon share the same OS identity — there is NO
+    OS-level isolation. These tests exercise the chmod+mutate+restore
+    attack pattern.
     """
-
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        """Enable same-owner mode for all tests in this class."""
-        pass
 
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
@@ -59,12 +54,11 @@ class TestPreLaunchIntegrityValidation:
     # ── Hash-based detection tests (Finding 1) ────────────────────
 
     def test_same_owner_mutation_detected_by_hash(self, tmp_path):
-        """Same-owner mutates content, restores 0444 — hash catches it.
+        """Same-UID mutates content, restores permissions — hash catches it.
 
-        In same-owner mode _verify_recursive_readonly allows owner-writable
-        files. An attacker who chmods 0o644, mutates content, then restores
-        0o444 would evade mode-only checks. The tree hash comparison in
-        verify_package() catches the content change.
+        A mutator who chmods writable, mutates content, then restores
+        non-writable would evade permission-only checks. The tree hash
+        comparison in the integrity validation catches the content change.
         """
         canonical_root = tmp_path / "canonical"
         os.environ["HAPPYRANCH_CANONICAL_STORE_ROOT"] = str(canonical_root)
@@ -154,15 +148,14 @@ class TestPreLaunchIntegrityValidation:
             os.environ.pop("HAPPYRANCH_CANONICAL_STORE_ROOT", None)
 
     def test_mode_restore_evades_mode_check_but_hash_catches(self, tmp_path):
-        """Mutate content + restore 0o444 → mode check passes, hash fails.
+        """Mutate content + restore 0o444 → permission check passes, hash fails.
 
-        This is the canonical adversary scenario: same-owner executor:
+        This is the canonical adversary scenario: same-UID executor:
         1. chmod 0644 (owner writable)
         2. Mutate content
         3. chmod 0444 (restore compliant mode)
-        → _verify_recursive_readonly passes (same-owner allows owner-writable),
-          but tree hash validation in validate_workspace_skills_integrity
-          detects the content change.
+        → permission-only check can be evaded, but tree hash validation in
+          validate_workspace_skills_integrity detects the content change.
         """
         canonical_root = tmp_path / "canonical"
         os.environ["HAPPYRANCH_CANONICAL_STORE_ROOT"] = str(canonical_root)
@@ -615,7 +608,106 @@ class TestPreLaunchIntegrityValidation:
 
             # The integrity check at NEXT launch would catch it,
             # but the CURRENT session is already running with stale checks.
-            # This is an explicitly documented residual risk of same-owner mode.
+            # This is an explicitly documented residual risk of same-owner operation.
+        finally:
+            os.environ.pop("HAPPYRANCH_CANONICAL_STORE_ROOT", None)
+
+
+    def test_recovery_command_ordering_authoritative_redeploy_first(self, tmp_path):
+        """Recovery payload ordering: FIRST authoritative external re-sync/redeploy
+        before EVERY set-executor, skills recover, and restart instruction.
+
+        The emitted WorkspaceIntegrityError recovery_command is the operator-visible
+        guidance string. It MUST order steps correctly:
+        1. FIRST manual authoritative external re-sync/redeploy of release/custom
+           artifacts (the prerequisite).
+        2. ONLY THEN verified link repair (set-executor) OR skills recover + restart.
+        3. Local same-UID sources are not automatically repaired or trusted.
+
+        This test drives the real mismatch/refusal path and asserts positional
+        ordering in the emitted payload.
+        """
+        canonical_root = tmp_path / "canonical"
+        os.environ["HAPPYRANCH_CANONICAL_STORE_ROOT"] = str(canonical_root)
+        try:
+            store = CanonicalSkillStore(root=canonical_root)
+            import stat
+            src = tmp_path / "src"
+            src.mkdir()
+            (src / "SKILL.md").write_text("# Ordering Skill\n")
+            (src / "SKILL.md").chmod(0o644)
+
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            (ws / ".claude" / "skills").mkdir(parents=True)
+            (ws / ".agents" / "skills").mkdir(parents=True)
+
+            specs = self._build_and_materialize(
+                store, ws, "order", "1.0.0", src,
+                [".claude/skills", ".agents/skills"],
+            )
+
+            # Initial validation passes
+            validate_workspace_skills_integrity(ws, specs, agent_name="a")
+
+            # Corrupt canonical content to trigger mismatch
+            target = store.canonical_path("order", "1.0.0", specs[0]["content_hash"])
+            skill_md = target / "SKILL.md"
+            skill_md.chmod(0o644)
+            skill_md.write_bytes(b"corrupted!")
+            skill_md.chmod(0o444)
+
+            # Drive the mismatch/refusal path
+            with pytest.raises(WorkspaceIntegrityError) as exc:
+                validate_workspace_skills_integrity(ws, specs, agent_name="a")
+
+            assert exc.value.code == "integrity_mismatch"
+
+            recovery = exc.value.recovery_command or ""
+            assert recovery, "Recovery command must be non-empty"
+
+            # ── Positional ordering assertions ──────────────────
+            # FIRST authoritative external re-sync/redeploy appears
+            # before EVERY repair/recover/restart action.
+            assert "FIRST" in recovery, (
+                f"Recovery command must lead with FIRST: {recovery[:80]}..."
+            )
+            assert "ONLY THEN" in recovery, (
+                f"Recovery command must have ONLY THEN gate: {recovery[:80]}..."
+            )
+
+            # Authoritative external re-sync/redeploy appears BEFORE set-executor
+            authoritative_pos = recovery.index(
+                "authoritative external re-sync/redeploy")
+            set_executor_pos = recovery.index("set-executor")
+            assert authoritative_pos < set_executor_pos, (
+                f"authoritative external re-sync/redeploy (pos {authoritative_pos}) "
+                f"must precede set-executor (pos {set_executor_pos})"
+            )
+
+            # Authoritative external re-sync/redeploy appears BEFORE skills recover
+            recover_pos = recovery.index("skills recover")
+            assert authoritative_pos < recover_pos, (
+                f"authoritative external re-sync/redeploy (pos {authoritative_pos}) "
+                f"must precede skills recover (pos {recover_pos})"
+            )
+
+            # Authoritative external re-sync/redeploy appears BEFORE restart
+            restart_pos = recovery.index("restart daemon")
+            assert authoritative_pos < restart_pos, (
+                f"authoritative external re-sync/redeploy (pos {authoritative_pos}) "
+                f"must precede restart daemon (pos {restart_pos})"
+            )
+
+            # ── No automatic/trusted local same-UID repair ──────
+            assert "not automatically repaired" in recovery, (
+                f"Recovery must state local same-UID sources are not "
+                f"automatically repaired: {recovery[-120:]}"
+            )
+            assert "not automatically" in recovery and "trusted" in recovery, (
+                f"Recovery must state local same-UID sources are not trusted: "
+                f"{recovery[-120:]}"
+            )
         finally:
             os.environ.pop("HAPPYRANCH_CANONICAL_STORE_ROOT", None)
 
@@ -636,13 +728,7 @@ class TestLifecycleManifestSelfRatificationPrevention:
     With the fix: each member's artifact bytes are validated against the
     immutable ledger-declared SHA-256 BEFORE computing the expected tree
     hash. This breaks the self-ratification chain.
-
-    These tests require same-owner mode.
     """
-
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        pass
 
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
@@ -1077,7 +1163,6 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         rt = RuntimeDir.init(tmp_path / "runtime-dir")
         org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
@@ -1634,10 +1719,9 @@ class TestProductionSeamLifecycleCorruptionRefusal:
         token = daemon_paths.ensure_token()
         auth_headers = {"Authorization": f"Bearer {token}"}
 
-        # ── Set up env for canonical store + same-owner mode ────────
+        # ── Set up env for canonical store + same-owner delivery ────────
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         # ── Set up protocol skills source ───────────────────────────
         protocol_skills = tmp_path / "protocol" / "skills"

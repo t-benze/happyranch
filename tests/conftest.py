@@ -9,11 +9,11 @@ from runtime.runtime import RuntimeDir
 
 
 # ── Test-mode platform isolation ──────────────────────────────────────
-# In test environments, we don't have provisioned macOS executor accounts.
+# Test environments may not have distinct macOS executor accounts.
 # This fixture monkeypatches detect_platform_isolation to return a
 # test-mode isolation that permits same-owner launches (the user running
 # the tests IS both daemon and executor). Real isolation tests against
-# provisioned accounts live in test_canonical_production_bound.py.
+# available accounts live in test_canonical_production_bound.py.
 
 _TEST_ISOLATION_FIXTURE_ACTIVE = True
 
@@ -31,14 +31,12 @@ def _test_mode_platform_isolation(monkeypatch):
         return
 
     from runtime.platform.isolation import (
-        PlatformIdentity,
         PlatformIsolation,
         PlatformIsolationError,
         _MacOSPlatformIsolation as _RealMacOSIsolation,
         detect_platform_isolation as _real_detect,
     )
     import os
-    import stat
     import subprocess
     import sys
 
@@ -50,57 +48,11 @@ def _test_mode_platform_isolation(monkeypatch):
         _real_isolation = None
 
     class _TestMacOSIsolation(PlatformIsolation):
-        """Test-mode macOS isolation: permits same-owner for unit tests.
+        """Test-mode macOS isolation for unit tests.
 
-        Inherits from _RealMacOSIsolation but overrides the executor identity
-        probe to return the current user as both daemon and executor.
+        The test process runs as both daemon and executor — the executor
+        and daemon share the same OS identity.
         """
-
-        def __init__(self) -> None:
-            self._daemon_uid = os.getuid()
-            self._daemon_gid = os.getgid()
-            # In test mode, executor IS the daemon (same user running tests)
-            self._executor_identity = PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=False,
-                is_restricted=True,  # Treat as restricted for contract conformance
-            )
-
-        def current_identity(self) -> PlatformIdentity:
-            return PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=True,
-                is_restricted=False,
-            )
-
-        def executor_identity(self):
-            return self._executor_identity
-
-        @property
-        def is_same_owner_mode(self) -> bool:
-            # Test mode IS same-owner (executor runs as the same user)
-            return True
-
-        def _assert_executor_distinct(self) -> None:
-            # Test mode: allow same-owner launches
-            pass
-
-        def provision_canonical_store(self, path: Path) -> None:
-            path.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                         | stat.S_IROTH | stat.S_IXOTH)
-            except OSError:
-                pass
-
-        def verify_canonical_ownership(self, path: Path) -> None:
-            if not path.exists():
-                raise PlatformIsolationError(
-                    "canonical_missing",
-                    f"Canonical path does not exist: {path}",
-                )
 
         def create_relative_symlink(
             self, target: Path, link_path: Path,
@@ -155,16 +107,6 @@ def _test_mode_platform_isolation(monkeypatch):
             except OSError:
                 return False
 
-        def make_file_readonly(self, path: Path) -> None:
-            if path.exists():
-                os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-
-        def make_dir_readonly_executor(self, path: Path) -> None:
-            if path.exists() and path.is_dir():
-                os.chmod(path, stat.S_IRUSR | stat.S_IXUSR
-                         | stat.S_IRGRP | stat.S_IXGRP
-                         | stat.S_IROTH | stat.S_IXOTH)
-
         def launch_executor(
             self,
             cmd: list[str],
@@ -204,10 +146,7 @@ def _test_mode_platform_isolation(monkeypatch):
     # `from X import Y` creates module-local names that are NOT updated
     # when X.Y is monkeypatched.  Sweep runtime.* modules for every
     # detect_platform_isolation reference that still points at the
-    # original (_real_detect) and patch each one.  We deliberately
-    # exclude tests.* — test_canonical_production_bound needs the real
-    # detector for OS-provisioned-isolation tests (those are macOS-only
-    # and already skip on non-darwin).
+    # original (_real_detect) and patch each one.
     for _mod_name, _mod in list(sys.modules.items()):
         if not _mod_name.startswith("runtime."):
             continue
@@ -223,24 +162,6 @@ def _test_mode_platform_isolation(monkeypatch):
         "runtime.orchestrator.executors.detect_platform_isolation",
         _test_detect,
     )
-    yield
-
-
-@pytest.fixture
-def same_owner_mode():
-    """Fixture: request same-owner test isolation for this test.
-
-    Use this ON tests that need same-owner mode:
-    - Adversarial prelaunch integrity tests (mutation detection)
-    - Mutation feasibility proofs (technical possibility of chmod+write)
-    - Specific canonical store tests that exercise same-owner code paths
-
-    Without this fixture, the default test isolation models distinct-
-    identity, matching production behavior for provisioned deployments.
-    """
-    # In the merged test framework, same-owner is the default test mode
-    # (the test process IS both daemon and executor). This fixture exists
-    # as a documented marker the test explicitly requests.
     yield
 
 

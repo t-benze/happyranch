@@ -37,10 +37,11 @@ def _resolve_skills_src(settings: Settings) -> Path:
 
 
 # ── Canonical skill store + symlink materializer ──────────────────
-# The daemon-owned canonical store replaces per-session content copying.
-# Skills are built once into immutable hash-addressed packages under
+# The canonical store replaces per-session content copying.
+# Skills are built once into hash-addressed packages under
 # <daemon-home>/canonical-skills/ and workspace symlinks are atomically
-# created/repaired to point at the exact approved package version.
+# created/repaired to point at the exact approved package version under
+# BOTH .claude/skills and .agents/skills.
 
 from runtime.skills.canonical_store import CanonicalSkillStore, parse_strict_sha256_hash
 from runtime.skills.symlink_materializer import (
@@ -1066,23 +1067,27 @@ def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
 # ── Pre-launch integrity validation ────────────────────────────────
 # Before every executor launch, validate that workspace skill links
 # resolve to the expected canonical packages and that canonical package
-# integrity (ownership, permissions, member hashes for lifecycle
-# packages) is intact. This is a detective control — same-owner mode
-# removes OS-level write barriers, so an agent-controlled executor can
-# mutate canonical targets between checks. Detection-only: no automatic
-# repair from same-UID local sources. Recovery for corrupted canonical
-# bytes is manual: `happyranch skills recover <slug> <version>
-# <content_hash>` then restart the daemon. Link-only faults may be
-# repaired non-destructively via `happyranch set-executor`.
+# integrity (tree hashes, member hashes for lifecycle packages) is
+# intact. The executor and daemon share the same OS identity — a
+# same-UID process can mutate canonical targets between checks.
+# Detection-only: no automatic repair from same-UID local sources.
+# Recovery: FIRST manual authoritative external re-sync/redeploy
+# of release/custom artifacts; ONLY THEN:
+# (a) for link-only faults — `happyranch set-executor <agent>
+#     --executor <current-executor>` (non-destructive re-materialize);
+# (b) for corrupted canonical bytes — `happyranch skills recover
+#     <slug> <version> <content_hash>` then restart the daemon.
+# Local same-UID sources are not automatically repaired or trusted.
 
 
 class WorkspaceIntegrityError(Exception):
     """Raised when workspace skill integrity validation fails.
 
-    Terminal — no executor launch proceeds. Recovery requires
-    human/operator intervention: `happyranch skills recover <slug>
-    <version> <content_hash>` then restart daemon.
-    Auto-repair from same-UID local sources is never performed.
+    Terminal — no executor launch proceeds. Recovery: FIRST manual
+    authoritative external re-sync/redeploy of release/custom
+    artifacts; ONLY THEN existing verified link repair / skills
+    recover / restart as applicable. Local same-UID sources are not
+    automatically repaired or trusted.
     """
 
     def __init__(
@@ -1116,7 +1121,7 @@ def validate_workspace_skills_integrity(
     """Validate workspace skill links and canonical package integrity.
 
     For EVERY expected spec, validates:
-    - The canonical package exists and has correct ownership/permissions
+    - The canonical package exists and is non-empty
     - The canonical tree hash matches the expected value computed from
       ledger-declared member hashes (lifecycle) or the source tree hash
       (system contracts)
@@ -1131,12 +1136,17 @@ def validate_workspace_skills_integrity(
     also raises (fail-closed — no launch proceeds unrecorded).
 
     This is a DETECTIVE control, not a preventive security boundary.
-    In same-owner mode, an agent-controlled executor can mutate canonical
-    targets through workspace links between checks. The integrity check
-    detects tampering at the next launch attempt and refuses the session.
-    Recovery for corrupted canonical bytes: `happyranch skills recover
-    <slug> <version> <content_hash>` then restart daemon. Link-only
-    faults: `happyranch set-executor` (never repairs bytes).
+    The executor and daemon share the same OS identity, so an
+    agent-controlled executor can mutate canonical targets through
+    workspace links between checks. The integrity check detects
+    tampering at the next launch attempt and refuses the session.
+    Recovery: FIRST manual authoritative external re-sync/redeploy
+    of release/custom artifacts; ONLY THEN (a) for link-only faults
+    — `happyranch set-executor <agent> --executor <current-executor>`
+    (never repairs bytes); (b) for corrupted canonical bytes —
+    `happyranch skills recover <slug> <version> <content_hash>`
+    then restart daemon. Local same-UID sources are not automatically
+    repaired or trusted.
 
     Args:
         workspace: Agent workspace root
@@ -1179,20 +1189,19 @@ def validate_workspace_skills_integrity(
         version = spec["version"]
         content_hash = spec["content_hash"]
 
-        # 1. Verify canonical package integrity (presence, ownership, mode)
+        # 1. Verify canonical package exists and is non-empty.
         try:
             store.verify_package(slug, version, content_hash)
         except CanonicalStoreError as exc:
             findings.append(
-                f"Canonical package integrity failure for {slug}@{version}: {exc}"
+                f"Canonical package missing/empty for {slug}@{version}: {exc}"
             )
             continue
 
         # 1b. Verify package tree hash matches the expected value.
-        #     In same-owner mode, the executor shares the daemon uid and can
-        #     chmod+mutate+restore canonical targets. The mode check above
-        #     allows owner-writable files in that mode, so we MUST also
-        #     validate actual content integrity via tree hash.
+        #     The executor shares the daemon's OS identity and can
+        #     chmod+mutate+restore canonical targets, so we validate
+        #     actual content integrity via tree hash.
         expected_tree_hash = spec.get("tree_hash", content_hash)
         actual_tree_hash = store.compute_tree_hash(slug, version, content_hash)
         if actual_tree_hash != expected_tree_hash:
@@ -1303,7 +1312,7 @@ def validate_workspace_skills_integrity(
                 break
 
     # ── Fail closed ────────────────────────────────────────────
-    # Recovery guidance (mode-qualified):
+    # Recovery guidance:
     # - Broken/missing/wrong workspace links → re-materialize via
     #   executor switch (happyranch set-executor) which rebuilds links
     #   from the canonical store (links ONLY — does NOT recover
@@ -1314,15 +1323,16 @@ def validate_workspace_skills_integrity(
     #   recover <slug> <version> <content_hash>`. Validates ledger
     #   provenance and member hashes before deletion; refuses already-
     #   valid targets. Next materialization rebuilds from ArtifactStore.
-    #   There is NO trusted immutable same-UID repair source and
+    #   There is NO automatic same-UID local source repair and
     #   NO automatic recovery from any local same-UID source.
     recovery = (
-        "For broken/missing links: happyranch set-executor <agent> "
-        "--executor <current-executor>. "
-        "For corrupted canonical bytes: happyranch skills recover "
-        "<slug> <version> <content_hash> (then restart daemon; next "
-        "materialization rebuilds from ArtifactStore). "
-        "No automatic repair from same-UID local sources."
+        "FIRST manual authoritative external re-sync/redeploy "
+        "of release/custom artifacts; ONLY THEN: "
+        "for link-only faults — happyranch set-executor <agent> "
+        "--executor <current-executor> (non-destructive re-materialize); "
+        "for corrupted canonical bytes — happyranch skills recover "
+        "<slug> <version> <content_hash> then restart daemon. "
+        "Local same-UID sources are not automatically repaired or trusted."
     )
 
     raise WorkspaceIntegrityError(
@@ -1865,31 +1875,42 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
 def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     """System-injected operational guidance: do not edit managed skill links.
 
-    Skill entries under *skills_dir* (``.claude/skills`` or
-    ``.agents/skills``, per executor) are daemon-materialized from the
-    canonical skill store. This section directs agents NOT to edit these
-    managed links and to use the lifecycle/proposal workflow instead.
+    Skill entries under BOTH ``.claude/skills`` and ``.agents/skills`` are
+    daemon-materialized from the canonical skill store. This section
+    directs agents NOT to edit these managed links and to use the
+    lifecycle/proposal workflow instead.
 
-    **IMPORTANT:** This is operational guidance, NOT enforcement. On
-    deployments running in same-owner mode
-    (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``, see
-    ``runtime/platform/isolation.py``) there is NO security boundary —
-    the executor runs under the daemon's own OS identity and CAN write
-    through these symlinks. The daemon performs best-effort integrity
-    verification before each launch to detect and recover from accidental
-    corruption, but this is NOT an attacker-independent security guarantee.
+    **IMPORTANT:** This is operational guidance, NOT enforcement. The
+    executor and daemon share the same OS identity — there is NO OS-level
+    security boundary. Integrity validation detects a mismatch, records a
+    durable visible integrity/operations event, and refuses launch; there
+    is NO local automatic recovery/autoheal. Recovery requires FIRST
+    manual authoritative external re-sync/redeploy of release/custom
+    artifacts; ONLY THEN existing verified link repair / skills recover /
+    restart as applicable. Local same-UID sources are not automatically
+    repaired or trusted. Do NOT call the target immutable, protected, or
+    claim write/chmod/ACL denial, OS-enforced isolation, or automatic
+    same-UID repair.
     """
     return [
         "## Skills Directory (do not edit)\n",
-        f"`{skills_dir}/` is materialized by the daemon from the canonical",
-        "skill store. DO NOT author, edit, move, or delete anything under",
-        "it, even if a task seems to call for it. Treat it as read-only.\n",
-        "**Same-owner mode:** if ``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1``",
-        "is set on this deployment, the filesystem CAN be written through",
-        "these symlinks — there is no OS-enforced security boundary.",
-        "The daemon performs best-effort integrity checks before each",
-        "launch to detect and recover from accidental corruption, but",
-        "this is NOT a guarantee. Do not rely on it as a security control.\n",
+        "`.claude/skills/` and `.agents/skills/` are materialized by the ",
+        "daemon from the canonical skill store under BOTH managed roots. ",
+        "DO NOT author, edit, move, or delete anything under either ",
+        "directory, even if a task seems to call for it. Treat them as ",
+        "read-only.\n",
+        "The executor and daemon share the same OS identity — the ",
+        "filesystem CAN be written through these symlinks; there is no ",
+        "OS-enforced security boundary. Integrity validation detects a ",
+        "mismatch, records a durable visible integrity/operations event, ",
+        "and refuses launch — there is NO local automatic ",
+        "recovery/autoheal. Recovery requires FIRST manual authoritative ",
+        "external re-sync/redeploy of release/custom ",
+        "artifacts; ONLY THEN existing verified link repair / ",
+        "skills recover / restart as applicable. Local same-UID "
+        "sources are not automatically repaired or trusted. Do not "
+        "rely on this as a security control or treat it as "
+        "OS-enforced protection.\n",
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",

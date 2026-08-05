@@ -1,12 +1,14 @@
-"""Immutable canonical skill package store.
+"""Canonical skill package store.
 
-Daemon-owned, hash-addressed immutable storage outside executor workspaces.
-Canonical packages are built atomically from verified source/manifest members.
-Files are read-only after build — the executor identity can only read, never
-write, delete, rename, chmod, or chown.
+Hash-addressed storage outside executor workspaces. Canonical packages are
+built atomically from verified source/manifest members. The executor and
+daemon share the same OS identity — do NOT describe byte targets, local
+sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted,
+executor-only writable/unwritable, or automatically recovered.
 
 Package resolution maps a package identity (slug, version, content_hash) to
-an exact canonical path. Workspace links point to these paths.
+an exact canonical path. Workspace links point to these paths under BOTH
+``.claude/skills`` and ``.agents/skills``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ from typing import Optional
 
 from runtime.platform.isolation import (
     PlatformIsolation,
-    PlatformIsolationError,
     detect_platform_isolation,
 )
 
@@ -45,124 +46,17 @@ class CanonicalStoreError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
-def _verify_recursive_readonly(
-    pkg_path: Path, *, same_owner: bool = False,
-) -> None:
-    """Recursively verify the package root and every file and directory
-    under *pkg_path* is NOT group-writable or other-writable.
+def _apply_readonly_hardening(pkg_path: Path) -> None:
+    """Apply cosmetic readonly hardening to a published canonical package.
 
-    When *same_owner* is False (strict distinct-identity mode), owner-writable
-    is also rejected — every entry must be fully read-only.
+    Sets all files non-writable (0444) and all directories read+traverse
+    (0755). This runs AFTER os.replace has published the package at its
+    final location.
 
-    When *same_owner* is True, directories MAY be owner-writable (0755) because
-    the daemon owner must retain write to create new packages in
-    subdirectories.  This matches the shipping macOS same-owner hardening
-    behavior (``make_dir_readonly_executor`` produces 0755 directories).
-    ALL files must still be non-writable regardless of mode.
-
-    An insufficiently hardened package (hardening failed after os.replace)
-    will fail these checks.  This prevents is_built() from returning True
-    for a package whose readonly protection was never fully applied.
-
-    Raises CanonicalStoreError on any forbidden writable bit found.
-    """
-    # Check the root directory itself first
-    try:
-        root_stat = pkg_path.stat()
-    except OSError:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Cannot stat package root: {pkg_path}",
-        )
-    root_mode = stat.S_IMODE(root_stat.st_mode)
-    _check_directory_writability(
-        pkg_path, root_mode, same_owner=same_owner, label=f"Package root",
-    )
-    # Check all members recursively
-    for entry in sorted(pkg_path.rglob("*")):
-        try:
-            entry_stat = entry.stat()
-        except OSError:
-            continue
-        mode = stat.S_IMODE(entry_stat.st_mode)
-        if entry.is_dir():
-            _check_directory_writability(
-                entry, mode, same_owner=same_owner,
-                label=f"Package member",
-            )
-        else:
-            _check_file_writability(entry, mode)
-
-
-def _check_directory_writability(
-    path: Path, mode: int, *, same_owner: bool, label: str,
-) -> None:
-    """Check a directory's writability bits.
-
-    In strict mode (same_owner=False): ALL write bits are forbidden.
-    In same-owner mode (same_owner=True): owner-writable is permitted
-    (matching the shipping 0755 hardening), but group/other-writable
-    is still rejected.
-    """
-    if same_owner:
-        # Same-owner mode: directories may be owner-writable (0755 expected)
-        if mode & stat.S_IWGRP:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is group-writable: {path}",
-            )
-        if mode & stat.S_IWOTH:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is world-writable: {path}",
-            )
-    else:
-        # Strict distinct-identity mode: NO write bits anywhere
-        if mode & stat.S_IWUSR:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is owner-writable: {path}",
-            )
-        if mode & stat.S_IWGRP:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is group-writable: {path}",
-            )
-        if mode & stat.S_IWOTH:
-            raise CanonicalStoreError(
-                "insufficient_hardening",
-                f"{label} is world-writable: {path}",
-            )
-
-
-def _check_file_writability(path: Path, mode: int) -> None:
-    """Check a file's writability bits — ALL write bits are forbidden
-    regardless of mode (files should always be 0444)."""
-    if mode & stat.S_IWUSR:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is owner-writable: {path}",
-        )
-    if mode & stat.S_IWGRP:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is group-writable: {path}",
-        )
-    if mode & stat.S_IWOTH:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is world-writable: {path}",
-        )
-
-
-def _apply_readonly_hardening(
-    isolation: PlatformIsolation, pkg_path: Path,
-) -> None:
-    """Apply readonly hardening to a published canonical package.
-
-    Sets all files 0444 and all directories 0555 (read+traverse) for
-    the executor identity.  This runs AFTER os.replace has published
-    the package at its final location.
+    The executor and daemon share the same OS identity, so this hardening
+    is cosmetic — a same-UID process can chmod files back. It is NOT a
+    security boundary and is NOT used as a materialization or prelaunch
+    integrity gate.
 
     Raises the original OSError if hardening fails — callers must
     compensate by quarantining/removing the unsafe published package.
@@ -170,20 +64,23 @@ def _apply_readonly_hardening(
     # Make all files read-only
     for fpath in pkg_path.rglob("*"):
         if fpath.is_file():
-            isolation.make_file_readonly(fpath)
-    # Make all dirs read+traverse for executor
+            os.chmod(fpath, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    # Make all dirs read+traverse
     for dpath in pkg_path.rglob("*"):
         if dpath.is_dir():
-            isolation.make_dir_readonly_executor(dpath)
-    isolation.make_dir_readonly_executor(pkg_path)
+            os.chmod(dpath, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+                     | stat.S_IROTH | stat.S_IXOTH)
+    os.chmod(pkg_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+             | stat.S_IROTH | stat.S_IXOTH)
 
 
 def _make_writable_for_removal(pkg_path: Path) -> None:
     """Make all files and directories in *pkg_path* owner-writable
     so they can be removed by shutil.rmtree.
 
-    Canonical packages have files at 0444 and directories at 0555.
-    Before rmtree can delete them, we must restore write permission.
+    Canonical packages are stored with files non-writable and directories
+    read+traverse. Before rmtree can delete them, we must restore write
+    permission.
     """
     for entry in pkg_path.rglob("*"):
         try:
@@ -217,7 +114,7 @@ def _safe_remove_published_package(
         # store root (defense-in-depth against path manipulation)
         if not pkg_path.is_dir():
             return
-        # Make writable first — canonical packages are read-only (0444)
+        # Make writable first — canonical packages are stored non-writable
         _make_writable_for_removal(pkg_path)
         # Remove only the package directory tree
         shutil.rmtree(pkg_path)
@@ -374,15 +271,19 @@ def _compute_tree_hash_from_manifest_members(
 
 
 class CanonicalSkillStore:
-    """Daemon-owned immutable store for skill package content.
+    """Canonical store for skill package content.
 
     Package content is stored under:
         <store_root>/<slug>/<version>/<content_hash[:16]>/
 
-    Each package directory is:
-    - Owned by the daemon identity
-    - Read-only (0444 files, 0555 dirs) for executor identity
-    - Never writable through workspace symlinks
+    Packages are hash-addressed from exact verified provenance/members.
+    The executor and daemon share the same OS identity — a same-UID
+    process may mutate, race validation, and affect active/overlapping
+    sessions. Validation/detection is best-effort and fail-closed; there
+    is NO prevention of same-UID writes, NO OS-level isolation, and NO
+    local automatic repair/recovery. Do not describe byte targets, local
+    sources, ArtifactStore, or links as OS-immutable, ACL-protected,
+    trusted, executor-only writable/unwritable, or automatically recovered.
 
     The store builds packages atomically: all members are written to a temp
     directory, hashes are validated, and only then is the package atomically
@@ -405,9 +306,8 @@ class CanonicalSkillStore:
         return self._root
 
     def _ensure_store_initialized(self) -> None:
-        """Provision the canonical store root with correct ownership/ACL."""
+        """Ensure the canonical store root directory exists."""
         self._root.mkdir(parents=True, exist_ok=True)
-        self._isolation.provision_canonical_store(self._root)
 
     def canonical_path(
         self, slug: str, version: str, content_hash: str,
@@ -425,30 +325,14 @@ class CanonicalSkillStore:
     ) -> bool:
         """Check if a canonical package is already built and valid.
 
-        Validates ownership at the root, non-emptiness, AND recursively
-        verifies that hardening has been applied. In strict distinct-identity
-        mode every file and directory must be fully non-writable. In
-        same-owner mode directories at 0755 (owner-writable) are permitted
-        — matching the shipping macOS same-owner hardening behavior — but
-        group/other-writable entries are still rejected.
+        Validates existence and non-emptiness only. File permission
+        modes are cosmetic (the executor shares the daemon's OS identity)
+        and are NOT used as a materialization or prelaunch integrity gate.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
             return False
-        # Verify root ownership
-        try:
-            self._isolation.verify_canonical_ownership(pkg_path)
-        except PlatformIsolationError:
-            return False
         if not any(pkg_path.iterdir()):
-            return False
-        # Recursively verify hardening. Strict mode rejects all write bits;
-        # same-owner mode permits owner-writable directories (0755) but
-        # rejects group/other writability and all writability on files.
-        try:
-            same_owner = self._isolation.is_same_owner_mode
-            _verify_recursive_readonly(pkg_path, same_owner=same_owner)
-        except CanonicalStoreError:
             return False
         return True
 
@@ -520,7 +404,7 @@ class CanonicalSkillStore:
 
         # ── Detection: existing but invalid canonical package ────────
         # If the canonical directory exists but is_built() is False,
-        # the package is CORRUPTED (wrong modes/ownership, partial
+        # the package is CORRUPTED (partial
         # hardening failure, etc.) — NOT an absent first-build scenario.
         # Refuse with content_corruption instead of deleting and
         # rebuilding from same-UID local source.
@@ -529,8 +413,7 @@ class CanonicalSkillStore:
                 "content_corruption",
                 f"Canonical package {slug}@{version} exists at {pkg_path} "
                 f"but integrity check failed (is_built=False). "
-                f"Package may have wrong permissions/ownership or be "
-                f"incompletely hardened. "
+                f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
@@ -570,10 +453,8 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
 
-            # Provision ownership on temp before atomic replace.
-            # (Do NOT make readonly yet — on macOS, rename() requires
+            # (Do NOT make readonly yet — macOS rename() requires
             # write permission on the source directory.)
-            self._isolation.provision_canonical_store(tmp)
 
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
@@ -587,7 +468,7 @@ class CanonicalSkillStore:
             # If hardening fails after os.replace has already published
             # pkg_path, we must compensate — the package must not remain
             # as a candidate for later reuse.
-            _apply_readonly_hardening(self._isolation, pkg_path)
+            _apply_readonly_hardening(pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s (hash=%s) at %s",
@@ -675,7 +556,7 @@ class CanonicalSkillStore:
         pkg_path = self.canonical_path(slug, version, content_hash)
 
         # If already built, verify content integrity before reusing.
-        # In same-owner mode an executor could tamper with the package
+        # An executor could tamper with the package
         # bytes; this check detects that and REFUSES reuse — NO automatic
         # rebuild from same-UID ArtifactStore source.
         if self.is_built(slug, version, content_hash):
@@ -694,7 +575,7 @@ class CanonicalSkillStore:
 
         # ── Detection: existing but invalid canonical package ────────
         # If the canonical directory exists but is_built() is False,
-        # the package is CORRUPTED (wrong modes/ownership, partial
+        # the package is CORRUPTED (partial
         # hardening failure, etc.) — NOT an absent first-build scenario.
         # Refuse with content_corruption instead of deleting and
         # rebuilding from same-UID local source.
@@ -703,8 +584,7 @@ class CanonicalSkillStore:
                 "content_corruption",
                 f"Canonical package {slug}@{version} exists at {pkg_path} "
                 f"but integrity check failed (is_built=False). "
-                f"Package may have wrong permissions/ownership or be "
-                f"incompletely hardened. "
+                f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
@@ -762,10 +642,8 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(member_bytes)
 
-            # Provision ownership on temp before atomic replace.
-            # (Do NOT make readonly yet — on macOS, rename() requires
+            # (Do NOT make readonly yet — macOS rename() requires
             # write permission on the source directory.)
-            self._isolation.provision_canonical_store(tmp)
 
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
@@ -779,7 +657,7 @@ class CanonicalSkillStore:
             # If hardening fails after os.replace has already published
             # pkg_path, we must compensate — the package must not remain
             # as a candidate for later reuse.
-            _apply_readonly_hardening(self._isolation, pkg_path)
+            _apply_readonly_hardening(pkg_path)
 
             logger.info(
                 "Built canonical package %s@%s from manifest (hash=%s) at %s",
@@ -806,12 +684,13 @@ class CanonicalSkillStore:
             ) from exc
 
     def verify_package(self, slug: str, version: str, content_hash: str) -> None:
-        """Verify a canonical package exists, has correct ownership,
-        and every member is read-only (immutable invariant enforced at
-        the materialization gate).
+        """Verify a canonical package exists and is non-empty.
 
-        Raises CanonicalStoreError if missing, tampered, or insufficiently
-        hardened.
+        File permission modes are cosmetic (the executor shares the daemon's
+        OS identity) and are NOT checked here. Package integrity is verified
+        at the hash level by callers.
+
+        Raises CanonicalStoreError if missing or empty.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -824,18 +703,6 @@ class CanonicalSkillStore:
                 "package_empty",
                 f"Canonical package is empty: {slug}@{version}",
             )
-        try:
-            self._isolation.verify_canonical_ownership(pkg_path)
-        except PlatformIsolationError as exc:
-            raise CanonicalStoreError(
-                "ownership_violation",
-                f"Canonical package ownership invalid for {slug}@{version}: {exc}",
-            ) from exc
-        # Enforce the full immutable invariant at the materialization gate.
-        # A package whose hardening failed after os.replace must never be
-        # materialized into a workspace link.
-        same_owner = self._isolation.is_same_owner_mode
-        _verify_recursive_readonly(pkg_path, same_owner=same_owner)
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).

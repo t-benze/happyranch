@@ -221,33 +221,34 @@ package versions under both `.claude/skills` and `.agents/skills` roots
 **Supported platform:** macOS (darwin) only. Linux and Windows explicitly fail
 closed before launch/materialization with a named `PlatformIsolationError`.
 
-**Two operating modes:**
+**Delivery model (same-owner):**
 
-1. **Strict distinct-identity mode (default).** The daemon/materializer and
-executor are DISTINCT macOS identities with different uid/gid. This is the
-production posture and is ALWAYS the default. Canonical packages are
-daemon-owned, read-only (0444); the executor cannot write, chmod, or chown
-canonical content through workspace symlinks — the OS enforces this via Unix
-owner/permission/ACL checks. Same-owner launch is REJECTED.
+The executor and daemon share the same OS identity on macOS. Linked,
+validated relative skill links live under BOTH ``.claude/skills`` and
+``.agents/skills`` (including Codex, Opencode, Pi, and mapped custom
+profiles). Every user-facing and executor-facing guidance surface names
+both roots, never only the provider-selected root. Guidance is operational,
+not a technical security boundary.
 
-2. **Same-owner mode (explicit opt-in, `HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`).**
-For single-operator setups that have decided not to provision a distinct
-`_hrexec` account. In this mode the executor runs under the SAME OS identity
-as the daemon — there is NO OS-level isolation. An agent-controlled executor
-process can read, write, chmod, or chown the canonical skill store and
-anything else the daemon account can reach. A same UID may mutate, race
-validation, and affect active/overlapping sessions. This is DETECTION-ONLY,
+The executor runs under the SAME OS identity as the daemon — there is NO
+OS-level isolation. An agent-controlled executor process can read, write,
+chmod, or chown the canonical skill store and anything else the daemon
+account can reach. A same UID may mutate, race validation, and affect
+active/overlapping sessions. Integrity checks are DETECTION-ONLY,
 FAIL-CLOSED behavior, not prevention. Do NOT call the target immutable,
 protected, trusted source, or claim write/chmod/ACL denial, a security
 boundary, or cross-agent isolation.
 
-**Detection and refusal:** Before every executor launch, every resolved
-package member's artifact bytes are validated against the immutable
-ledger-declared SHA-256 hashes. A mismatched existing canonical package is
-NEVER automatically rebuilt, copied, replaced, or healed from same-UID local
-source. The durable integrity/operations event is emitted and the session is
-refused. First-ever materialization of an absent package remains allowed;
-valid existing packages may be reused.
+**Detection and refusal:** Before every executor launch (and at retry-time
+before Popen/retry), every resolved package member's artifact bytes are
+validated against the ledger-declared SHA-256 hashes. Both ``.claude/skills``
+and ``.agents/skills`` root links are validated. A mismatched existing
+canonical package is NEVER automatically rebuilt, copied, replaced, or healed
+from same-UID local source. On mismatch, malformed/broken/malicious link,
+or event-persistence failure, the daemon
+emits a durable visible integrity event and refuses the session before
+Popen/retry. First-ever materialization of an absent package remains
+allowed; valid existing packages may be reused.
 
 **Manual recovery only:** (a) For broken links: ``happyranch set-executor
 <agent> --executor <current-executor>`` (re-materializes links only, NEVER
@@ -263,48 +264,38 @@ artifact bytes outside the compromised same-owner local source — the
 recovery route validates against ArtifactStore, which may itself be
 corrupted if the same-UID executor previously tampered with it.
 
-**Ownership and provenance:**
-- Canonical packages are daemon/materializer-owned, content-addressed trees
-from exact verified provenance/members for system, release-managed, and
-lifecycle version-pinned packages.
-- In strict mode, owner/permission/ACL checks reject identity confusion and
-mutation. Canonical targets are read-only (0444) after build; the executor
-cannot write, chmod, chown, or mutate canonical content through workspace
-symlinks.
-- In same-owner mode, the readonly hardening is cosmetic — the executor
-shares the daemon's uid and can chmod files back to writable.
+Policy withdrawal and atomic link repair remain safe.
 
-**Integrity verification (both modes):**
+**Ownership and provenance:**
+- Canonical packages are content-addressed trees from exact verified
+provenance/members for system, release-managed, and lifecycle
+version-pinned packages.
+- The readonly hardening is cosmetic — the executor shares the daemon's uid
+and can chmod files back to writable. Do not describe byte targets, local
+sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted,
+executor-only writable/unwritable, or automatically recovered.
+
+**Integrity verification:**
 Before each executor launch, the daemon compares actual canonical package
-content against the immutable ledger-declared member hashes:
+content against the ledger-declared member hashes:
 - System-contract packages: compared against the shipped source tree hash.
 - Lifecycle skills: each member's actual hash compared against the
   ArtifactStore manifest.
 On mismatch the daemon emits a durable integrity/operations event and
 refuses the session. Corrupted bytes are NEVER silently accepted as valid
 and NEVER automatically rebuilt, copied, or healed from same-UID local
-source. The ArtifactStore is NOT a trusted or immutable source in
-same-owner mode — a same-UID process may also tamper with artifact
-bytes. This is detection-only with fail-closed refusal; it is NOT an
-attacker-independent external attestation authority.
+source. The ArtifactStore is NOT a trusted or immutable source — a
+same-UID process may also tamper with artifact bytes. This is
+detection-only with fail-closed refusal; it is NOT an attacker-independent
+external attestation authority.
 
 **Isolation contract (macOS):**
-- In strict distinct-identity mode, the daemon/materializer and executor
-MUST be distinct OS identities with different uid/gid. Executor processes
-are launched via `sudo -n -u <executor>` identity handoff (non-root daemon
-model). Same-owner launch is REJECTED.
-- In same-owner mode, the executor launches directly under the daemon's
-identity with no sudo handoff. The prompt guard directs agents not to edit
-managed skill links and states that same-owner enforcement is not a security
-boundary.
-- Canonical store ownership and permissions are verified before every launch.
+- The executor launches directly under the daemon's identity. The prompt
+guard directs agents not to edit managed skill links and states that
+integrity verification is not a security boundary.
 - Ordinary directories, malicious/broken/external/wrong-version links, unsafe
-targets, failed permission check, missing account, or repair errors fail closed
-and prevent launch. Never recursively delete or follow attacker nodes.
-
-**Mode observability:** `PlatformIsolation.is_same_owner_mode` (bool property)
-makes the selected mode observable/auditable at runtime without an auth or
-schema change. The mode is recorded in daemon logs at startup.
+targets, failed permission check, or repair errors fail closed and prevent
+launch. Never recursively delete or follow attacker nodes.
 
 **Link validation and repair:**
 - Materialized links are validated relative symlinks resolving inside the
