@@ -2,9 +2,9 @@
 
 Provides macOS-only implementation for:
 - Service/daemon identity checks
-- Executor identity and launch
 - Filesystem ownership and permission checks
 - Symlink creation and validation
+- Executor process launch
 
 Linux and Windows are NOT supported in this release — explicitly fail closed.
 """

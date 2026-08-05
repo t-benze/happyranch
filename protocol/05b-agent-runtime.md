@@ -298,10 +298,6 @@ same-owner enforcement is not a security boundary.
 targets, failed permission check, or repair errors fail closed and prevent
 launch. Never recursively delete or follow attacker nodes.
 
-**Mode observability:** `PlatformIsolation.is_same_owner_mode` (bool property)
-makes the selected mode observable/auditable at runtime without an auth or
-schema change. The mode is recorded in daemon logs at startup.
-
 **Link validation and repair:**
 - Materialized links are validated relative symlinks resolving inside the
 canonical store. Stale, broken, wrong-version, non-symlink, external, or

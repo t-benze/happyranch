@@ -7,7 +7,7 @@ the canonical skill store and workspace link architecture.
 Linux and Windows are NOT supported in this release; attempts to use them
 fail closed with an explicit error.
 
-**Delivery model (same-owner):**
+**Delivery model:**
 
 The executor and daemon share the same OS identity on macOS. Linked,
 validated relative skill links live under BOTH ``.claude/skills`` and
@@ -46,10 +46,8 @@ before subprocess launch.
 
 from __future__ import annotations
 
-import grp
 import logging
 import os
-import pwd
 import stat
 import subprocess
 import sys
@@ -59,14 +57,6 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-_SAME_OWNER_ENV_VAR = "HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR"
-
-
-def _same_owner_mode_enabled() -> bool:
-    """True if the operator has explicitly opted into same-owner executors."""
-    return os.environ.get(_SAME_OWNER_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
-
 
 @dataclass(frozen=True)
 class PlatformIdentity:
@@ -78,13 +68,9 @@ class PlatformIdentity:
     uid: int
     gid: int
     is_service: bool = False  # True if this is the daemon/service account
-    is_restricted: bool = False  # True if this is a restricted executor account
 
     def __repr__(self) -> str:
-        return (
-            f"PlatformIdentity(uid={self.uid}, gid={self.gid}, "
-            f"restricted={self.is_restricted})"
-        )
+        return f"PlatformIdentity(uid={self.uid}, gid={self.gid})"
 
 
 class PlatformIsolationError(Exception):
@@ -99,32 +85,6 @@ class PlatformIsolationError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
-# ── macOS executor account probes ──────────────────────────────────
-
-
-def _probe_macos_executor_account() -> Optional[PlatformIdentity]:
-    """Check for a restricted executor account on macOS.
-
-    Looks for a system account named ``_hrexec`` or ``happyranch-exec``
-    with uid > 0 (non-root). Returns the account identity
-    if available, None otherwise.
-    """
-    for name in ("_hrexec", "happyranch-exec", "hrexec"):
-        try:
-            pw = pwd.getpwnam(name)
-            if pw.pw_uid > 0:
-                gr = grp.getgrgid(pw.pw_gid)
-                return PlatformIdentity(
-                    uid=pw.pw_uid,
-                    gid=gr.gr_gid,
-                    is_service=False,
-                    is_restricted=True,
-                )
-        except KeyError:
-            continue
-    return None
-
-
 # ── Abstract platform isolation ─────────────────────────────────────
 
 
@@ -133,24 +93,10 @@ class PlatformIsolation(ABC):
 
     macOS implementation provides:
     - Current process identity
-    - Restricted executor identity detection
     - Canonical directory ownership/permission checks
     - Workspace symlink creation and validation
-    - Executor process identity switching via launch_executor
-    - Mode observability (same-owner vs non-same-owner)
+    - Executor process launch
     """
-
-    @property
-    @abstractmethod
-    def is_same_owner_mode(self) -> bool:
-        """True if running in same-owner executor mode.
-
-        In same-owner mode there is NO OS-level isolation — the executor
-        runs under the daemon's identity. Workspace symlinks and integrity
-        checks are best-effort corruption detection only, not a security
-        boundary.
-        """
-        ...
 
     @abstractmethod
     def current_identity(self) -> PlatformIdentity:
@@ -158,15 +104,8 @@ class PlatformIsolation(ABC):
         ...
 
     @abstractmethod
-    def executor_identity(self) -> Optional[PlatformIdentity]:
-        """Return the provisioned restricted executor identity, or None."""
-        ...
-
-    @abstractmethod
     def provision_canonical_store(self, path: Path) -> None:
-        """Set ownership/permissions on canonical store so only daemon
-        identity can create/own/replace entries. Executor has traverse+read.
-        """
+        """Set ownership/permissions on canonical store."""
         ...
 
     @abstractmethod
@@ -206,16 +145,6 @@ class PlatformIsolation(ABC):
         ...
 
     @abstractmethod
-    def make_file_readonly(self, path: Path) -> None:
-        """Set file to read-only for all non-owner identities."""
-        ...
-
-    @abstractmethod
-    def make_dir_readonly_executor(self, path: Path) -> None:
-        """Set directory to read+traverse only for executor identity."""
-        ...
-
-    @abstractmethod
     def launch_executor(
         self,
         cmd: list[str],
@@ -227,17 +156,14 @@ class PlatformIsolation(ABC):
         stderr=subprocess.PIPE,
         text: bool = True,
     ) -> subprocess.Popen:
-        """Launch a subprocess as the executor identity.
+        """Launch a subprocess as the executor.
 
-        On macOS this uses ``sudo -n -u <executor>`` identity
-        handoff when a distinct executor account is available.
-        When no distinct account is configured, launches directly
-        under the daemon's identity (same-owner mode — no OS-level
-        isolation).
+        The executor launches directly under the daemon's identity — there
+        is NO OS-level isolation. Integrity verification (see module
+        docstring) runs before launch for DETECTION-ONLY corruption
+        detection with FAIL-CLOSED refusal.
 
-        Raises PlatformIsolationError if:
-        - sudo capability or authorization is unavailable
-        - executor identity is unprovisioned
+        Raises PlatformIsolationError if launch fails.
         """
         ...
 
@@ -245,198 +171,37 @@ class PlatformIsolation(ABC):
 # ── macOS implementation ────────────────────────────────────────────
 
 
-def _resolve_executor_username(identity: PlatformIdentity) -> str:
-    """Resolve the executor username from the available account.
-
-    Looks up the username for the given uid. The account must exist.
-
-    Raises PlatformIsolationError if the account cannot be resolved.
-    """
-    try:
-        pw = pwd.getpwuid(identity.uid)
-        return pw.pw_name
-    except KeyError:
-        raise PlatformIsolationError(
-            "executor_username_unresolvable",
-            f"Cannot resolve username for executor uid={identity.uid}. "
-            "Ensure the configured executor account exists.",
-        )
-
-
-def _verify_sudo_capability(username: str) -> None:
-    """Verify non-interactive sudo access to the executor account.
-
-    Runs ``sudo -n -u <username> true`` to check that:
-    - sudo is available
-    - The daemon process has passwordless sudo authority for this user
-    - The executor account exists and can execute commands
-
-    Raises PlatformIsolationError on any failure.
-    """
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "-u", username, "true"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise PlatformIsolationError(
-                "sudo_capability_failed",
-                f"sudo -n -u {username} exited {result.returncode}: "
-                f"{result.stderr.strip()}. "
-                "The daemon must have passwordless sudo authority for "
-                f"the executor account '{username}'. Provision via sudoers: "
-                f"<daemon_user> ALL=({username}) NOPASSWD: ALL",
-            )
-    except FileNotFoundError:
-        raise PlatformIsolationError(
-            "sudo_unavailable",
-            "sudo command not found. The macOS executor launch contract "
-            "requires sudo for non-root identity handoff.",
-        )
-    except subprocess.TimeoutExpired:
-        raise PlatformIsolationError(
-            "sudo_timeout",
-            "sudo -n -u command timed out. Check sudoers configuration.",
-        )
-
-
-def _drop_privileges_macos(uid: int, gid: int) -> None:
-    """preexec_fn helper: drop privileges to executor uid/gid before exec.
-
-    Sets gid first (permissions order), then uid.
-    FAIL-CLOSED: any failure to drop privileges raises PlatformIsolationError
-    BEFORE exec.
-
-    **Note:** This path requires the daemon to run with sufficient
-    privileges (root or CAP_SETUID/CAP_SETGID). For the non-root deployment
-    model, ``launch_executor`` uses ``sudo -n -u <executor>`` instead.
-    """
-    try:
-        os.setgid(gid)
-        os.setuid(uid)
-    except PermissionError as exc:
-        raise PlatformIsolationError(
-            "privilege_drop_failed",
-            f"Cannot drop privileges to uid={uid} gid={gid}: {exc}. "
-            "Executor must run as a DISTINCT restricted macOS identity. "
-            "Ensure the daemon runs with sufficient privileges (root or "
-            "CAP_SETUID/CAP_SETGID) to switch to the executor account.",
-        ) from exc
-    except OSError as exc:
-        raise PlatformIsolationError(
-            "privilege_drop_failed",
-            f"OS error dropping privileges to uid={uid} gid={gid}: {exc}",
-        ) from exc
-
-
 class _MacOSPlatformIsolation(PlatformIsolation):
     """macOS platform isolation using POSIX ownership + permissions.
 
-    The executor and daemon share the same OS identity (same-owner mode).
+    The executor and daemon share the same OS identity — there is NO
+    OS-level isolation. An agent-controlled executor process can
+    read/write/chmod the canonical skill store and anything else the
+    daemon account can reach.
+
     - Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal.
     - Do NOT claim OS-level isolation, immutable, or protected targets.
     - A same-UID process may mutate, race validation, and affect
       active/overlapping sessions.
-    - When a distinct executor account IS available, the daemon uid/gid
-      must differ from executor uid/gid (the account identity is verified).
     - Canonical store permissions are verified before each launch.
     """
 
     def __init__(self) -> None:
         self._daemon_uid = os.getuid()
         self._daemon_gid = os.getgid()
-        self._executor_identity = _probe_macos_executor_account()
-        self._same_owner_mode = False
-        if self._executor_identity is None and _same_owner_mode_enabled():
-            logger.warning(
-                "%s is set and no executor account is "
-                "configured — agent executors will run under the SAME OS "
-                "identity as the daemon (uid=%d). This removes OS-level "
-                "isolation: an agent-controlled process can read/write the "
-                "canonical skill store and anything else this account can "
-                "reach. Accepted as an explicit operator tradeoff.",
-                _SAME_OWNER_ENV_VAR, self._daemon_uid,
-            )
-            self._executor_identity = PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=False,
-                is_restricted=True,
-            )
-            self._same_owner_mode = True
-
-    @property
-    def is_same_owner_mode(self) -> bool:
-        """True if running in same-owner executor mode.
-
-        In this mode the executor runs under the daemon's own OS identity.
-        There is NO OS-level isolation — workspace symlinks, prompt guidance,
-        hashes, and integrity verification are best-effort corruption
-        detection/recovery only, not a security boundary.
-
-        This property makes the selected mode observable/auditable at runtime
-        without an auth or schema change.
-        """
-        return self._same_owner_mode
 
     def current_identity(self) -> PlatformIdentity:
         return PlatformIdentity(
             uid=self._daemon_uid,
             gid=self._daemon_gid,
             is_service=True,
-            is_restricted=False,
         )
-
-    def executor_identity(self) -> Optional[PlatformIdentity]:
-        return self._executor_identity
-
-    def _assert_executor_distinct(self) -> None:
-        """Verify executor identity is available and distinct from daemon.
-
-        Raises PlatformIsolationError if executor account is not configured
-        and same-owner mode guard is not active.
-        """
-        if self._executor_identity is None:
-            raise PlatformIsolationError(
-                "executor_unprovisioned",
-                "No restricted macOS executor account provisioned. "
-                "Create '_hrexec' or 'happyranch-exec' system account "
-                "with a distinct uid/gid from the daemon, or set "
-                f"{_SAME_OWNER_ENV_VAR}=1 to explicitly accept running "
-                "the executor under the daemon's own identity.",
-            )
-        if self._same_owner_mode:
-            return
-        if self._executor_identity.uid == self._daemon_uid:
-            raise PlatformIsolationError(
-                "executor_same_owner",
-                f"Executor identity (uid={self._executor_identity.uid}) "
-                f"is same as daemon (uid={self._daemon_uid}). "
-                "Executor must run as a DISTINCT restricted macOS identity.",
-            )
-
-    def _resolve_executor_username_for_launch(self) -> str:
-        """Resolve the executor username and verify sudo capability.
-
-        Called before every launch_executor call. Returns the username
-        of the restricted executor account.
-
-        Raises PlatformIsolationError if the account cannot be resolved
-        or passwordless sudo is not configured.
-        """
-        assert self._executor_identity is not None
-        username = _resolve_executor_username(self._executor_identity)
-        _verify_sudo_capability(username)
-        return username
 
     def provision_canonical_store(self, path: Path) -> None:
         """Set canonical store ownership to daemon uid:gid.
 
         Ancestor directories get 0755 (owner rwx, group+other rx).
-        In same-owner mode the executor runs under the daemon's uid
-        and can write through the symlinks — this is cosmetic.
+        The executor runs under the daemon's uid so this is cosmetic.
         """
         path.mkdir(parents=True, exist_ok=True)
         os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
@@ -451,9 +216,8 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         """Verify canonical store ownership and permissions.
 
         The path must be owned by daemon uid and NOT be writable by
-        group/other. In same-owner mode this is a best-effort health
-        check (the executor runs under the daemon's uid so it can
-        bypass these permissions).
+        group/other. The executor runs under the daemon's uid so it can
+        bypass these permissions — this is a best-effort health check.
 
         Raises PlatformIsolationError on any violation.
         """
@@ -564,26 +328,6 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         except OSError:
             return False
 
-    def make_file_readonly(self, path: Path) -> None:
-        """Set file to 0444 (read-only for all).
-
-        In same-owner mode this is cosmetic — the executor shares the
-        daemon's uid and can chmod the file back.
-        """
-        if path.exists():
-            os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-
-    def make_dir_readonly_executor(self, path: Path) -> None:
-        """Set dir to 0755 (owner rwx, group+other rx).
-
-        The daemon owner MUST retain write so new canonical packages can be
-        built in subdirectories. In same-owner mode this is cosmetic —
-        the executor shares the daemon's uid.
-        """
-        if path.exists() and path.is_dir():
-            os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                     | stat.S_IROTH | stat.S_IXOTH)
-
     def launch_executor(
         self,
         cmd: list[str],
@@ -595,61 +339,23 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         stderr=subprocess.PIPE,
         text: bool = True,
     ) -> subprocess.Popen:
-        """Launch a subprocess as the executor identity on macOS.
+        """Launch a subprocess as the executor on macOS.
 
-        When a distinct executor account is available, uses
-        ``sudo -n -u <executor>`` to hand off the OS identity. Before
-        construction: verifies executor identity, resolves the executor
-        username, verifies passwordless sudo capability, and constructs
-        a ``sudo -n -u <user> -- <cmd>`` invocation. If identity
-        resolution, sudo authorization, or command construction is
-        unavailable → fail closed.
-
-        When no distinct executor account is configured
-        (``HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR=1`` or same-owner mode),
-        the process launches DIRECTLY under the daemon's own identity
-        with no ``sudo`` handoff. There is NO OS-level isolation — the
-        executor can read, write, or chmod anything the daemon can reach.
-        Integrity verification (see module docstring) runs before launch
-        for DETECTION-ONLY corruption detection with FAIL-CLOSED refusal;
-        it is NOT a security boundary.
+        The executor launches DIRECTLY under the daemon's own identity —
+        there is NO OS-level isolation. The executor can read, write, or
+        chmod anything the daemon can reach. Integrity verification (see
+        module docstring) runs before launch for DETECTION-ONLY corruption
+        detection with FAIL-CLOSED refusal; it is NOT a security boundary.
 
         The provided *env* is merged on top of the daemon's current
-        environment so sudo itself always has at least PATH and HOME.
+        environment.
         """
-        self._assert_executor_distinct()
-        assert self._executor_identity is not None  # narrow type for mypy
-
         base_env = os.environ.copy()
         base_env.update(env)
 
-        if self._same_owner_mode:
-            # No distinct identity to hand off to — launch directly.
-            try:
-                return subprocess.Popen(
-                    list(cmd),
-                    cwd=str(cwd),
-                    stdin=stdin,
-                    stdout=stdout,
-                    stderr=stderr,
-                    text=text,
-                    env=base_env,
-                )
-            except subprocess.SubprocessError as exc:
-                raise PlatformIsolationError(
-                    "executor_launch_failed",
-                    f"Failed to launch same-owner executor process: {exc}",
-                ) from exc
-
-        # Resolve executor username and verify sudo access
-        executor_user = self._resolve_executor_username_for_launch()
-
-        # Build sudo invocation: sudo -n -u <executor_user> -- <cmd>
-        sudo_cmd = ["sudo", "-n", "-u", executor_user, "--"] + list(cmd)
-
         try:
             return subprocess.Popen(
-                sudo_cmd,
+                list(cmd),
                 cwd=str(cwd),
                 stdin=stdin,
                 stdout=stdout,
@@ -657,12 +363,10 @@ class _MacOSPlatformIsolation(PlatformIsolation):
                 text=text,
                 env=base_env,
             )
-        except PlatformIsolationError:
-            raise
         except subprocess.SubprocessError as exc:
             raise PlatformIsolationError(
                 "executor_launch_failed",
-                f"Failed to launch restricted executor process: {exc}",
+                f"Failed to launch executor process: {exc}",
             ) from exc
 
 

@@ -106,7 +106,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TASK-4376** (34671 symbols, 82652 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -129,10 +129,10 @@ This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/happyranch/clusters` | All functional areas |
-| `gitnexus://repo/happyranch/processes` | All execution flows |
-| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/TASK-4376/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TASK-4376/clusters` | All functional areas |
+| `gitnexus://repo/TASK-4376/processes` | All execution flows |
+| `gitnexus://repo/TASK-4376/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

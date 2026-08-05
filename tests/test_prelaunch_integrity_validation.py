@@ -34,15 +34,10 @@ class TestPreLaunchIntegrityValidation:
     """Adversarial: same-owner process mutates canonical targets;
     next launch detects mismatch BEFORE executor; no auto-repair.
 
-    These tests require same-owner mode because they exercise the
-    chmod+mutate+restore attack pattern that is only relevant when
-    the executor shares the daemon's UID.
+    The executor and daemon share the same OS identity — there is NO
+    OS-level isolation. These tests exercise the chmod+mutate+restore
+    attack pattern.
     """
-
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        """Enable same-owner mode for all tests in this class."""
-        pass
 
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
@@ -636,13 +631,7 @@ class TestLifecycleManifestSelfRatificationPrevention:
     With the fix: each member's artifact bytes are validated against the
     immutable ledger-declared SHA-256 BEFORE computing the expected tree
     hash. This breaks the self-ratification chain.
-
-    These tests require same-owner mode.
     """
-
-    @pytest.fixture(autouse=True)
-    def _enable_same_owner(self, same_owner_mode):
-        pass
 
     # ── helpers ────────────────────────────────────────────────────
     @staticmethod
@@ -1077,7 +1066,6 @@ class TestProductionSeamLifecycleCorruptionRefusal:
 
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         rt = RuntimeDir.init(tmp_path / "runtime-dir")
         org_paths = OrgPaths(root=rt.orgs_dir / "test-org")
@@ -1637,7 +1625,6 @@ class TestProductionSeamLifecycleCorruptionRefusal:
         # ── Set up env for canonical store + same-owner mode ────────
         monkeypatch.setenv(
             "HAPPYRANCH_CANONICAL_STORE_ROOT", str(canonical_root))
-        monkeypatch.setenv("HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR", "1")
 
         # ── Set up protocol skills source ───────────────────────────
         protocol_skills = tmp_path / "protocol" / "skills"

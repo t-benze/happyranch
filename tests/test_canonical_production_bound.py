@@ -30,8 +30,6 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 from runtime.platform.isolation import (
     PlatformIsolationError,
-    _probe_macos_executor_account,
-    _resolve_executor_username,
     detect_platform_isolation,
 )
 # Module-attribute access so the conftest monkeypatch on
@@ -194,16 +192,14 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 # ── Finding 4: Real restricted-process evidence ─────────────────────
 
 class TestPlatformIsolationIdentities:
-    """Production-bound platform identity tests.
+    """REMOVED — strict distinct-identity and executor probing are obsolete.
 
-    Tests verify same-owner mode detection and identity resolution.
-    Tests report their prerequisite gap rather than manufacturing a false pass.
+    The executor and daemon unconditionally share the same OS identity.
+    These tests have been removed because they test the deleted strict-mode
+    paths (is_same_owner_mode, executor_identity(), sudo handoff, etc.).
     """
 
-    @pytest.mark.skipif(
-        sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner",
-    )
+    @pytest.mark.skip(reason="REMOVED: strict distinct-identity no longer exists")
     def test_macos_executor_identity_is_distinct(self):
         """Executor identity resolution in same-owner mode.
 
@@ -239,10 +235,7 @@ class TestPlatformIsolationIdentities:
             )
             assert executor.is_restricted, "Executor identity must be marked restricted"
 
-    @pytest.mark.skipif(
-        sys.platform != "darwin",
-        reason="macOS-only; requires macOS CI runner",
-    )
+    @pytest.mark.skip(reason="REMOVED: strict distinct-identity and sudo handoff no longer exist")
     def test_macos_launch_executor_requires_distinct_identity(self):
         """launch_executor behavior depends on mode.
 
@@ -309,6 +302,7 @@ class TestPlatformIsolationIdentities:
                 )
             raise
 
+    @pytest.mark.skip(reason="REMOVED: chown-based ownership attack check no longer relevant")
     def test_canonical_ownership_rejects_wrong_owner(
         self, tmp_path: Path,
     ):
@@ -1075,6 +1069,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation attacks no longer relevant")
     def test_write_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1095,6 +1090,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation attacks no longer relevant")
     def test_write_attack_via_agents_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1115,6 +1111,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation attacks no longer relevant")
     def test_chmod_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1135,6 +1132,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation attacks no longer relevant")
     def test_chmod_attack_via_agents_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1155,6 +1153,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation ACL attacks no longer relevant")
     def test_acl_attack_via_claude_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1179,6 +1178,7 @@ else:
         sys.platform != "darwin",
         reason="macOS-only; requires macOS CI runner with distinct executor account",
     )
+    @pytest.mark.skip(reason="REMOVED: strict isolation ACL attacks no longer relevant")
     def test_acl_attack_via_agents_skills_link_blocked(
         self, test_settings: Settings,
     ):
@@ -1199,6 +1199,7 @@ else:
         )
         self._verify_hashes_unchanged(store, baseline, "after-acl/.agents/skills")
 
+    @pytest.mark.skip(reason="REMOVED: strict distinct-UID child process no longer relevant")
     def test_child_process_runs_as_distinct_uid(self):
         """Child process launched via PlatformIsolation.launch_executor
         must actually run as a distinct uid from the daemon identity.
@@ -1258,6 +1259,7 @@ else:
             f"executor uid ({executor_identity.uid})"
         )
 
+    @pytest.mark.skip(reason="REMOVED: strict executor identity contract no longer relevant")
     def test_executor_identity_contract_required(
         self,
     ):
