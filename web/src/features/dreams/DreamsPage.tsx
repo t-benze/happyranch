@@ -57,11 +57,14 @@ function statusPill(status: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Relative time helper                                               */
+/*  Relative time helper — guards invalid/missing timestamps           */
 /* ------------------------------------------------------------------ */
 
-function relativeAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
+function relativeAge(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return '';
+  const ms = Date.now() - ts;
   const min = Math.round(ms / 60000);
   if (min < 1) return 'just now';
   if (min < 60) return `${min}m`;
@@ -86,7 +89,9 @@ function DreamCard({
   active: boolean;
   onClick: () => void;
 }): JSX.Element {
-  const isQuiet = dream.status === 'completed' && dream.kb_candidate_count === 0 && dream.new_learnings_count > 0;
+  const learningsCount = dream.new_learnings_count ?? 0;
+  const candidatesCount = dream.kb_candidate_count ?? 0;
+  const isQuiet = dream.status === 'completed' && candidatesCount === 0 && learningsCount > 0;
 
   return (
     <li>
@@ -132,17 +137,20 @@ function DreamCard({
 
         {/* Stat strip — font-mono tabular-nums for counts */}
         <div className="text-text-muted flex items-center gap-3 font-mono text-xs tabular-nums">
-          <span>{dream.local_date}</span>
+          <span>{dream.local_date ?? DREAM_STRINGS.unavailableLabel}</span>
           <span>·</span>
-          <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
+          <span>{DREAM_STRINGS.learningsCount(learningsCount)}</span>
           <span>·</span>
-          <span>{DREAM_STRINGS.candidatesCount(dream.kb_candidate_count)}</span>
-          {dream.ended_at && (
-            <>
-              <span>·</span>
-              <span>{relativeAge(dream.ended_at)} ago</span>
-            </>
-          )}
+          <span>{DREAM_STRINGS.candidatesCount(candidatesCount)}</span>
+          {(() => {
+            const age = relativeAge(dream.ended_at);
+            return age ? (
+              <>
+                <span>·</span>
+                <span>{age} ago</span>
+              </>
+            ) : null;
+          })()}
         </div>
 
         {/* Error indicator */}
@@ -207,8 +215,8 @@ function LoadingSkeleton(): JSX.Element {
  * omitted because no field on the dreams payload backs it.
  */
 function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
-  const totalLearnings = dreams.reduce((sum, d) => sum + d.new_learnings_count, 0);
-  const totalCandidates = dreams.reduce((sum, d) => sum + d.kb_candidate_count, 0);
+  const totalLearnings = dreams.reduce((sum, d) => sum + (d.new_learnings_count ?? 0), 0);
+  const totalCandidates = dreams.reduce((sum, d) => sum + (d.kb_candidate_count ?? 0), 0);
 
   return (
     <aside
@@ -264,7 +272,8 @@ export function DreamsPage(): JSX.Element {
   const dreams = dreamsQ.data?.dreams ?? [];
   // Honest distinct-night count for the header eyebrow, derived client-side
   // from the loaded feed's local_date values (mirrors KB-02 / THREADS-04).
-  const nightCount = new Set(dreams.map((d) => d.local_date)).size;
+  // Falsy dates are ignored so missing data is not counted as a night.
+  const nightCount = new Set(dreams.map((d) => d.local_date).filter(Boolean)).size;
 
   return (
     <>

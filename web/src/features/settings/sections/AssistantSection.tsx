@@ -295,6 +295,10 @@ function RegisterExecutorSection({
         runtime root, not from any input here — and only one executor is active
         at a time, so registering replaces the current one.
       </p>
+      <p className="text-text-muted text-xs">
+        The assistant process must be restarted before the new executor takes
+        effect.
+      </p>
 
       <div className="flex flex-col gap-1">
         <Label htmlFor="assistant-executor">Executor</Label>

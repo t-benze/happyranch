@@ -35,10 +35,20 @@ export const DREAM_STRINGS = {
     `from dream · proposed by ${agentName} · dismissed`,
   acceptButton: 'Accept',
   dismissButton: 'Dismiss',
-  /** Learnings */
-  learningsCount: (n: number) => `${n} learning${n === 1 ? '' : 's'}`,
-  candidatesCount: (n: number) => `${n} candidate${n === 1 ? '' : 's'}`,
-  reflectionsCount: (n: number) => `${n} reflection${n === 1 ? '' : 's'}`,
+  /** Learnings — coerce missing/invalid counts to 0 so the UI never prints
+   *  raw `undefined` or `NaN` as factual copy. */
+  learningsCount: (n: number | null | undefined) => {
+    const safe = n ?? 0;
+    return `${safe} learning${safe === 1 ? '' : 's'}`;
+  },
+  candidatesCount: (n: number | null | undefined) => {
+    const safe = n ?? 0;
+    return `${safe} candidate${safe === 1 ? '' : 's'}`;
+  },
+  reflectionsCount: (n: number | null | undefined) => {
+    const safe = n ?? 0;
+    return `${safe} reflection${safe === 1 ? '' : 's'}`;
+  },
   /** Right-side overview rail (DREAMS-02) — data-backed totals + calm sections */
   railOverviewTitle: 'Overview',
   railCandidatesTitle: 'Knowledge candidates',
@@ -51,6 +61,7 @@ export const DREAM_STRINGS = {
   noReflectionThread: 'No reflection thread opened',
   /** Misc */
   retry: 'Retry',
+  unavailableLabel: '—',
   /** Status map for display */
   statusLabel: (status: string): string => {
     const map: Record<string, string> = {

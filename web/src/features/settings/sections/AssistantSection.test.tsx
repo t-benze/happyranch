@@ -45,6 +45,8 @@ describe('AssistantSection (Settings → Assistant)', () => {
     expect(screen.getByRole('region', { name: /Register executor/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Register$/i })).toBeInTheDocument();
 
+    // Restart-required caveat is shown without changing authority or runtime behavior.
+    expect(screen.getByText(/must be restarted before the new executor takes effect/i)).toBeInTheDocument();
   });
 
   test('uninitialized: Initialize prepares the workspace and shows self-registration steps', async () => {
