@@ -1761,7 +1761,10 @@ class TestPrePushHookBlocksFailingCI:
             assert os.access(str(pre_push), os.X_OK)
 
             # Make local_ci.sh fail (persist proof target was exactly 'all')
+            # AND prove GIT_DIR contamination is sanitized by the hook via a
+            # disposable git init that must succeed under hook-scoped env.
             target_log = tmp_path / "local_ci_target_arg.txt"
+            disposable_proof = tmp_path / "disposable-proof"
             local_ci = wt / "scripts" / "local_ci.sh"
             local_ci.write_text(
                 "#!/usr/bin/env bash\n"
@@ -1772,6 +1775,12 @@ class TestPrePushHookBlocksFailingCI:
                 "if [ \"$1\" != \"all\" ]; then\n"
                 "    echo \"ERROR: local_ci.sh received unexpected target: $1 (expected 'all')\"\n"
                 "    exit 2\n"
+                "fi\n"
+                "# Prove hook-scoped Git env is sanitized: disposable git init\n"
+                "mkdir -p " + shlex.quote(str(disposable_proof)) + " || exit 3\n"
+                "if ! git init \"" + shlex.quote(str(disposable_proof)) + "\" >/dev/null 2>&1; then\n"
+                "    echo \"GIT_DIR_LEAK: git init failed in hook context\" >&2\n"
+                "    exit 4\n"
                 "fi\n"
                 "# Simulate a test failure (to verify hook blocks push)\n"
                 "exit 1\n"
@@ -1824,8 +1833,9 @@ class TestPrePushHookBlocksFailingCI:
     def test_passing_local_ci_allows_push(
         self, happyranch_repo, bare_remote, tmp_path
     ):
-        """When local_ci.sh passes, the push succeeds and the ref appears on
-        the remote."""
+        """When local_ci.sh passes under hook-scoped Git environment, the
+        push succeeds and the ref appears on the remote.  Proves GIT_DIR
+        contamination is sanitized via a disposable git init."""
         # Add the bare remote to the primary
         _run(["git", "-C", str(happyranch_repo), "remote", "add", "origin", str(bare_remote)])
 
@@ -1841,6 +1851,31 @@ class TestPrePushHookBlocksFailingCI:
                 primary_root=str(happyranch_repo),
                 task_id="TASK-PASS-PUSH",
             )
+
+            # Replace default local_ci.sh with one that validates the 'all'
+            # target AND proves GIT_DIR sanitization via a disposable git init
+            # under hook-scoped environment, then exits 0 (passing CI).
+            target_log = tmp_path / "local_ci_target_arg.txt"
+            disposable_proof = tmp_path / "disposable-proof"
+            local_ci = wt / "scripts" / "local_ci.sh"
+            local_ci.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo \"local_ci called with target: ${1:-all}\"\n"
+                "echo \"${1:-all}\" > " + shlex.quote(str(target_log)) + "\n"
+                "if [ \"$1\" != \"all\" ]; then\n"
+                "    echo \"ERROR: local_ci.sh received unexpected target: $1 (expected 'all')\"\n"
+                "    exit 2\n"
+                "fi\n"
+                "# Prove hook-scoped Git env is sanitized: disposable git init\n"
+                "mkdir -p " + shlex.quote(str(disposable_proof)) + " || exit 3\n"
+                "if ! git init \"" + shlex.quote(str(disposable_proof)) + "\" >/dev/null 2>&1; then\n"
+                "    echo \"GIT_DIR_LEAK: git init failed in hook context\" >&2\n"
+                "    exit 4\n"
+                "fi\n"
+                "# Simulate a CI pass\n"
+                "exit 0\n"
+            )
+            local_ci.chmod(0o755)
 
             # Make a commit
             (wt / "feature.txt").write_text("passing feature\n")
@@ -1861,6 +1896,16 @@ class TestPrePushHookBlocksFailingCI:
             assert "task/TASK-PASS-PUSH" in remote_refs, (
                 f"Target ref should be on the remote after successful push.\n"
                 f"Refs on remote: {remote_refs}"
+            )
+
+            # Verify the real installed hook passed exactly 'all' as first arg
+            assert target_log.is_file(), (
+                f"Target log not persisted by fake local_ci.sh: {target_log}"
+            )
+            recorded_target = target_log.read_text().strip()
+            assert recorded_target == "all", (
+                f"Installed pre-push hook must invoke local_ci.sh with target 'all', "
+                f"got: {recorded_target!r}"
             )
 
         finally:

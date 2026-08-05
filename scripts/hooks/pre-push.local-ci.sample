@@ -21,4 +21,18 @@ set -euo pipefail
 # git metadata directory (git rev-parse --git-dir), relative-path tricks
 # break. Using git rev-parse --show-toplevel always resolves correctly.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Sanitize Git's hook-scoped environment variables (GIT_DIR,
+# GIT_WORK_TREE, GIT_INDEX_FILE, etc.) so child Git processes
+# inside local CI — especially disposable worktree-guard test
+# fixtures — are not contaminated.  Uses Git's own canonical
+# inventory rather than a brittle hard-coded list.
+if git_vars="$(git rev-parse --local-env-vars 2>/dev/null)"; then
+    while IFS= read -r var; do
+        [ -n "$var" ] && unset "$var"
+    done <<EOF
+$git_vars
+EOF
+fi
+
 exec "${REPO_ROOT}/scripts/local_ci.sh" all
