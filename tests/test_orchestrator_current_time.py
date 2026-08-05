@@ -20,7 +20,7 @@ from runtime.orchestrator.teams import TeamsRegistry
 _FROZEN = datetime(2026, 6, 27, 4, 47, tzinfo=timezone.utc)  # 12:47 in +08:00
 
 # System-contract IDs for "task" context with repos.
-_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"] (fix: add todos to task-context fixtures, correct SKILL.md self-target claim, and add docs parity for todos SystemContract)
+_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]
 
 
 @pytest.fixture(autouse=True)

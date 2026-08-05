@@ -37,7 +37,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in protocol/skills/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"] (fix: add todos to task-context fixtures, correct SKILL.md self-target claim, and add docs parity for todos SystemContract)
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
