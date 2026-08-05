@@ -25,7 +25,6 @@ from typing import Optional
 
 from runtime.platform.isolation import (
     PlatformIsolation,
-    PlatformIsolationError,
     detect_platform_isolation,
 )
 
@@ -387,9 +386,8 @@ class CanonicalSkillStore:
         return self._root
 
     def _ensure_store_initialized(self) -> None:
-        """Provision the canonical store root with correct ownership/ACL."""
+        """Ensure the canonical store root directory exists."""
         self._root.mkdir(parents=True, exist_ok=True)
-        self._isolation.provision_canonical_store(self._root)
 
     def canonical_path(
         self, slug: str, version: str, content_hash: str,
@@ -407,18 +405,13 @@ class CanonicalSkillStore:
     ) -> bool:
         """Check if a canonical package is already built and valid.
 
-        Validates ownership at the root, non-emptiness, AND recursively
-        verifies that hardening has been applied. Directories at 0755
-        (owner-writable) are permitted, but group/other-writable entries
-        and owner-writable files are rejected.
+        Validates non-emptiness AND recursively verifies that hardening
+        has been applied. Directories at 0755 (owner-writable) are
+        permitted, but group/other-writable entries and owner-writable
+        files are rejected.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
-            return False
-        # Verify root ownership
-        try:
-            self._isolation.verify_canonical_ownership(pkg_path)
-        except PlatformIsolationError:
             return False
         if not any(pkg_path.iterdir()):
             return False
@@ -497,7 +490,7 @@ class CanonicalSkillStore:
 
         # ── Detection: existing but invalid canonical package ────────
         # If the canonical directory exists but is_built() is False,
-        # the package is CORRUPTED (wrong modes/ownership, partial
+        # the package is CORRUPTED (partial
         # hardening failure, etc.) — NOT an absent first-build scenario.
         # Refuse with content_corruption instead of deleting and
         # rebuilding from same-UID local source.
@@ -506,8 +499,7 @@ class CanonicalSkillStore:
                 "content_corruption",
                 f"Canonical package {slug}@{version} exists at {pkg_path} "
                 f"but integrity check failed (is_built=False). "
-                f"Package may have wrong permissions/ownership or be "
-                f"incompletely hardened. "
+                f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
@@ -547,10 +539,8 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
 
-            # Provision ownership on temp before atomic replace.
-            # (Do NOT make readonly yet — on macOS, rename() requires
+            # (Do NOT make readonly yet — macOS rename() requires
             # write permission on the source directory.)
-            self._isolation.provision_canonical_store(tmp)
 
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
@@ -671,7 +661,7 @@ class CanonicalSkillStore:
 
         # ── Detection: existing but invalid canonical package ────────
         # If the canonical directory exists but is_built() is False,
-        # the package is CORRUPTED (wrong modes/ownership, partial
+        # the package is CORRUPTED (partial
         # hardening failure, etc.) — NOT an absent first-build scenario.
         # Refuse with content_corruption instead of deleting and
         # rebuilding from same-UID local source.
@@ -680,8 +670,7 @@ class CanonicalSkillStore:
                 "content_corruption",
                 f"Canonical package {slug}@{version} exists at {pkg_path} "
                 f"but integrity check failed (is_built=False). "
-                f"Package may have wrong permissions/ownership or be "
-                f"incompletely hardened. "
+                f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
                 f"Recovery: use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
@@ -739,10 +728,8 @@ class CanonicalSkillStore:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(member_bytes)
 
-            # Provision ownership on temp before atomic replace.
-            # (Do NOT make readonly yet — on macOS, rename() requires
+            # (Do NOT make readonly yet — macOS rename() requires
             # write permission on the source directory.)
-            self._isolation.provision_canonical_store(tmp)
 
             # Atomic replace: move temp → final canonical path first,
             # then apply readonly to the final location.
@@ -783,9 +770,8 @@ class CanonicalSkillStore:
             ) from exc
 
     def verify_package(self, slug: str, version: str, content_hash: str) -> None:
-        """Verify a canonical package exists, has correct ownership,
-        and every member is non-writable (hardening check enforced at
-        the materialization gate).
+        """Verify a canonical package exists and every member is
+        non-writable (hardening check enforced at the materialization gate).
 
         Raises CanonicalStoreError if missing, tampered, or insufficiently
         hardened.
@@ -801,13 +787,6 @@ class CanonicalSkillStore:
                 "package_empty",
                 f"Canonical package is empty: {slug}@{version}",
             )
-        try:
-            self._isolation.verify_canonical_ownership(pkg_path)
-        except PlatformIsolationError as exc:
-            raise CanonicalStoreError(
-                "ownership_violation",
-                f"Canonical package ownership invalid for {slug}@{version}: {exc}",
-            ) from exc
         # Enforce the hardening invariant at the materialization gate.
         # A package whose hardening failed after os.replace must never be
         # materialized into a workspace link.

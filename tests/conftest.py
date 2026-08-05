@@ -31,14 +31,12 @@ def _test_mode_platform_isolation(monkeypatch):
         return
 
     from runtime.platform.isolation import (
-        PlatformIdentity,
         PlatformIsolation,
         PlatformIsolationError,
         _MacOSPlatformIsolation as _RealMacOSIsolation,
         detect_platform_isolation as _real_detect,
     )
     import os
-    import stat
     import subprocess
     import sys
 
@@ -55,32 +53,6 @@ def _test_mode_platform_isolation(monkeypatch):
         The test process runs as both daemon and executor — the executor
         and daemon share the same OS identity.
         """
-
-        def __init__(self) -> None:
-            self._daemon_uid = os.getuid()
-            self._daemon_gid = os.getgid()
-
-        def current_identity(self) -> PlatformIdentity:
-            return PlatformIdentity(
-                uid=self._daemon_uid,
-                gid=self._daemon_gid,
-                is_service=True,
-            )
-
-        def provision_canonical_store(self, path: Path) -> None:
-            path.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                         | stat.S_IROTH | stat.S_IXOTH)
-            except OSError:
-                pass
-
-        def verify_canonical_ownership(self, path: Path) -> None:
-            if not path.exists():
-                raise PlatformIsolationError(
-                    "canonical_missing",
-                    f"Canonical path does not exist: {path}",
-                )
 
         def create_relative_symlink(
             self, target: Path, link_path: Path,

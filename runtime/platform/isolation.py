@@ -1,7 +1,7 @@
 """macOS platform isolation for the canonical skill store.
 
-Provides narrowly scoped OS-level identity, ownership, and permissions for
-the canonical skill store and workspace link architecture.
+Provides narrowly scoped platform operations for the canonical skill store
+and workspace link architecture.
 
 **SUPPORTED: macOS (darwin) only.**
 Linux and Windows are NOT supported in this release; attempts to use them
@@ -48,29 +48,12 @@ from __future__ import annotations
 
 import logging
 import os
-import stat
 import subprocess
 import sys
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-@dataclass(frozen=True)
-class PlatformIdentity:
-    """OS-level identity of a process or account.
-
-    On macOS: uid + gid.
-    """
-
-    uid: int
-    gid: int
-    is_service: bool = False  # True if this is the daemon/service account
-
-    def __repr__(self) -> str:
-        return f"PlatformIdentity(uid={self.uid}, gid={self.gid})"
 
 
 class PlatformIsolationError(Exception):
@@ -92,29 +75,9 @@ class PlatformIsolation(ABC):
     """Abstract platform isolation layer.
 
     macOS implementation provides:
-    - Current process identity
-    - Canonical directory ownership/permission checks
     - Workspace symlink creation and validation
     - Executor process launch
     """
-
-    @abstractmethod
-    def current_identity(self) -> PlatformIdentity:
-        """Return the identity of the current process."""
-        ...
-
-    @abstractmethod
-    def provision_canonical_store(self, path: Path) -> None:
-        """Set ownership/permissions on canonical store."""
-        ...
-
-    @abstractmethod
-    def verify_canonical_ownership(self, path: Path) -> None:
-        """Verify canonical store ownership.
-
-        Raises PlatformIsolationError if ownership/permissions are wrong.
-        """
-        ...
 
     @abstractmethod
     def create_relative_symlink(
@@ -172,7 +135,7 @@ class PlatformIsolation(ABC):
 
 
 class _MacOSPlatformIsolation(PlatformIsolation):
-    """macOS platform isolation using POSIX ownership + permissions.
+    """macOS platform isolation.
 
     The executor and daemon share the same OS identity — there is NO
     OS-level isolation. An agent-controlled executor process can
@@ -183,71 +146,7 @@ class _MacOSPlatformIsolation(PlatformIsolation):
     - Do NOT claim OS-level isolation, immutable, or protected targets.
     - A same-UID process may mutate, race validation, and affect
       active/overlapping sessions.
-    - Canonical store permissions are verified before each launch.
     """
-
-    def __init__(self) -> None:
-        self._daemon_uid = os.getuid()
-        self._daemon_gid = os.getgid()
-
-    def current_identity(self) -> PlatformIdentity:
-        return PlatformIdentity(
-            uid=self._daemon_uid,
-            gid=self._daemon_gid,
-            is_service=True,
-        )
-
-    def provision_canonical_store(self, path: Path) -> None:
-        """Set canonical store ownership to daemon uid:gid.
-
-        Ancestor directories get 0755 (owner rwx, group+other rx).
-        The executor runs under the daemon's uid so this is cosmetic.
-        """
-        path.mkdir(parents=True, exist_ok=True)
-        os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                 | stat.S_IROTH | stat.S_IXOTH)
-        try:
-            os.chown(path, self._daemon_uid, self._daemon_gid)
-        except PermissionError:
-            # Non-root may not be able to chown — acceptable for dev/test.
-            pass
-
-    def verify_canonical_ownership(self, path: Path) -> None:
-        """Verify canonical store ownership and permissions.
-
-        The path must be owned by daemon uid and NOT be writable by
-        group/other. The executor runs under the daemon's uid so it can
-        bypass these permissions — this is a best-effort health check.
-
-        Raises PlatformIsolationError on any violation.
-        """
-        if not path.exists():
-            raise PlatformIsolationError(
-                "canonical_missing",
-                f"Canonical path does not exist: {path}",
-            )
-        st = path.stat()
-
-        # Permission check: must NOT be group-writable or other-writable
-        mode = stat.S_IMODE(st.st_mode)
-        if mode & stat.S_IWGRP:
-            raise PlatformIsolationError(
-                "canonical_group_writable",
-                f"Canonical path is group-writable: {path}",
-            )
-        if mode & stat.S_IWOTH:
-            raise PlatformIsolationError(
-                "canonical_other_writable",
-                f"Canonical path is world-writable: {path}",
-            )
-
-        # Ownership check: daemon must be the owner
-        if st.st_uid != self._daemon_uid:
-            raise PlatformIsolationError(
-                "canonical_wrong_owner",
-                f"Canonical path {path} is owned by uid={st.st_uid}, "
-                f"expected daemon uid={self._daemon_uid}",
-            )
 
     def create_relative_symlink(
         self, target: Path, link_path: Path,

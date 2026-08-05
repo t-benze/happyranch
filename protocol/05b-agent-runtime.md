@@ -293,7 +293,6 @@ external attestation authority.
 - The executor launches directly under the daemon's identity. The prompt
 guard directs agents not to edit managed skill links and states that
 same-owner enforcement is not a security boundary.
-- Canonical store ownership and permissions are verified before every launch.
 - Ordinary directories, malicious/broken/external/wrong-version links, unsafe
 targets, failed permission check, or repair errors fail closed and prevent
 launch. Never recursively delete or follow attacker nodes.

@@ -27,7 +27,6 @@ from runtime.orchestrator.workspace_adapters import (
     _compute_dir_hash,
 )
 from runtime.platform.isolation import (
-    PlatformIdentity,
     PlatformIsolation,
     PlatformIsolationError,
     _MacOSPlatformIsolation,
@@ -104,27 +103,6 @@ class TestPlatformDetection:
         """detect_platform_isolation returns a working implementation."""
         iso = isolation.detect_platform_isolation()
         assert isinstance(iso, PlatformIsolation)
-
-    def test_current_identity(self):
-        """current_identity returns process uid/gid."""
-        iso = isolation.detect_platform_isolation()
-        identity = iso.current_identity()
-        assert identity.uid >= 0
-        assert identity.gid >= 0
-
-    def test_provision_canonical_store_creates_dir(self, tmp_path):
-        """provision_canonical_store creates directory with proper perms."""
-        iso = isolation.detect_platform_isolation()
-        store_dir = tmp_path / "test-store"
-        iso.provision_canonical_store(store_dir)
-        assert store_dir.is_dir()
-
-    def test_verify_canonical_ownership_missing(self, tmp_path):
-        """verify_canonical_ownership raises for missing path."""
-        iso = isolation.detect_platform_isolation()
-        missing = tmp_path / "nonexistent"
-        with pytest.raises(PlatformIsolationError, match="canonical_missing"):
-            iso.verify_canonical_ownership(missing)
 
 
 class TestSymlinkOperations:
@@ -1369,7 +1347,7 @@ class TestHardeningFailureAfterPublication:
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
         assert ve.value.code in (
-            "insufficient_hardening", "ownership_violation"), (
+            "insufficient_hardening"), (
             f"verify_package must reject on readonly invariant, got {ve.value.code}"
         )
 
@@ -1433,7 +1411,7 @@ class TestHardeningFailureAfterPublication:
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("mf-skill", "1.0.0", content_hash)
         assert ve.value.code in (
-            "insufficient_hardening", "ownership_violation"), (
+            "insufficient_hardening"), (
             f"verify_package must reject on readonly invariant, got {ve.value.code}"
         )
 
@@ -1629,7 +1607,7 @@ class TestHardeningFailureAfterPublication:
         with pytest.raises(CanonicalStoreError) as ve:
             store.verify_package("test-skill", "1.0.0", content_hash)
         assert ve.value.code in (
-            "insufficient_hardening", "ownership_violation"), (
+            "insufficient_hardening"), (
             f"verify_package must reject on readonly invariant, "
             f"got {ve.value.code}"
         )
@@ -1826,7 +1804,7 @@ class TestHardeningFailureAfterPublication:
             store.verify_package(
                 "fail-mf", "1.0.0", failing_content_hash)
         assert ve.value.code in (
-            "insufficient_hardening", "ownership_violation"), (
+            "insufficient_hardening"), (
             f"verify_package must reject on readonly invariant, "
             f"got {ve.value.code}"
         )
@@ -2183,7 +2161,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                 with pytest.raises(CanonicalStoreError) as ve:
                     store.verify_package(sid, "system", content_h)
                 assert ve.value.code in (
-                    "insufficient_hardening", "ownership_violation",
+                    "insufficient_hardening",
                     "not_found", "package_missing",
                 ), (
                     f"verify_package must reject {sid} on runner store, "
@@ -2510,7 +2488,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                 with pytest.raises(CanonicalStoreError) as ve:
                     store.verify_package(sid, "system", content_h)
                 assert ve.value.code in (
-                    "insufficient_hardening", "ownership_violation",
+                    "insufficient_hardening",
                     "not_found", "package_missing",
                 ), (
                     f"verify_package must reject {sid} on runner store, "
