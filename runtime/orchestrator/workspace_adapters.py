@@ -1904,7 +1904,7 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "mismatch, records a durable visible integrity/operations event, ",
         "and refuses launch — there is NO local automatic ",
         "recovery/autoheal. Recovery requires FIRST manual authoritative ",
-        "external re-sync/redeploy of release/custom artifacts; ONLY ",
+        "external re-sync/redeploy of release/custom ",
         "artifacts; ONLY THEN existing verified link repair / ",
         "skills recover / restart as applicable. Local same-UID "
         "sources are not automatically repaired or trusted. Do not "
