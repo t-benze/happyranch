@@ -1072,7 +1072,7 @@ daemon routes are added.
 ### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4)
 
 System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
-``dream`` — are mandatory operating-contract skills injected by the runtime based
+``dream``, ``todos`` — are mandatory operating-contract skills injected by the runtime based
 on session/context type. They are defined in the single-source-of-truth module
 ``runtime/skills/system_contracts.py`` and are OUTSIDE the toggleable managed
 catalog (they are NOT displayed by ``skills catalog list`` and are never
