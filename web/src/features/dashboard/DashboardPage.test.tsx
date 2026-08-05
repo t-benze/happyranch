@@ -714,4 +714,104 @@ describe('DashboardPage', () => {
     expect(numeral).toHaveClass('text-text-primary');
     expect(numeral).not.toHaveClass('text-tier-green');
   });
+
+  test('#573: ignores a stale escalated_open counter when the escalation list is empty', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 3;
+    // Stale summary counter claims a waiting escalation, but the routable list
+    // is empty — every visible attention signal must follow the list.
+    s.narrative_counts.escalated_open = 1;
+    s.escalations = [];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    await waitFor(() => {
+      expect(screen.getByText(/All clear/i)).toBeInTheDocument();
+    });
+    // Greeting, card, and TODAY narrative all agree: nothing is waiting.
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      /all caught up/i,
+    );
+    expect(screen.queryByText(/questions? waiting on you/i)).not.toBeInTheDocument();
+  });
+
+  test('#573: surfaces a routable escalation row even when the summary counter is zero', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 3;
+    // Stale summary counter says zero, but the list contains a real row.
+    s.narrative_counts.escalated_open = 0;
+    s.escalations = [
+      {
+        task_id: 'TASK-573',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Mismatch escalation',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Waiting on you · 1/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Mismatch escalation/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      /1 thing needs you/i,
+    );
+    expect(screen.getByText(/1 question waiting on you/i)).toBeInTheDocument();
+
+    // The row remains a canonical route to the task record/action.
+    const link = screen.getByRole('link', { name: /TASK-573/i });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-573`);
+  });
+
+  test('#573: card title, greeting, and TODAY narrative agree for many routable escalations', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 2;
+    s.narrative_counts.escalated_open = 5; // stale counter
+    s.escalations = [
+      {
+        task_id: 'TASK-101',
+        agent: 'a1',
+        team: 'engineering',
+        question: 'Q1',
+        raised_at: '2026-05-30T10:00:00Z',
+        age_seconds: 3600,
+      },
+      {
+        task_id: 'TASK-102',
+        agent: 'a2',
+        team: 'engineering',
+        question: 'Q2',
+        raised_at: '2026-05-30T10:00:00Z',
+        age_seconds: 3600,
+      },
+      {
+        task_id: 'TASK-103',
+        agent: 'a3',
+        team: 'engineering',
+        question: 'Q3',
+        raised_at: '2026-05-30T10:00:00Z',
+        age_seconds: 3600,
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Waiting on you · 3/i)).toBeInTheDocument();
+    });
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      /3 things need you/i,
+    );
+    expect(screen.getByText(/3 questions waiting on you/i)).toBeInTheDocument();
+  });
 });
