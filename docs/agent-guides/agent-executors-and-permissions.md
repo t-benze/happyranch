@@ -13,7 +13,7 @@
 > retention semantics, integrity verification, and the compatibility-fallback
 > boundary. Linux and Windows are NOT supported — explicitly fail closed.
 >
-> **SAME-OWNER HONESTY NOTICE:** Do NOT call canonical targets immutable,
+> **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
 > protected, or claim write/chmod/ACL denial. The prompt guard is operational
 > guidance, not enforcement. Integrity verification is DETECTION-ONLY with
 > FAIL-CLOSED refusal — NO automatic repair from same-UID local source. A

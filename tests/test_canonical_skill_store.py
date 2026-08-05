@@ -1038,18 +1038,29 @@ class TestHardeningFailureAfterPublication:
     def test_source_hardening_failure_subsequent_build_refuses_reuse(
         self, temp_canonical_root, skill_source_dir,
     ):
-        """A corrupted canonical package (is_built=False, pkg exists)
-        must trigger REFUSAL — NOT automatic rebuild.
+        """A tampered canonical package must trigger content hash
+        detection — NOT automatic rebuild.
 
-        Simulates a same-owner tamper that changes directory permissions
-        so that is_built() returns False but the directory remains on
-        disk. Detection-only contract: build_from_source must raise
-        content_corruption, never delete-and-rebuild.
+        Simulates same-UID tamper that mutates content bytes.
+        is_built() returns True (dir exists, non-empty — hardening
+        is cosmetic), but the content hash mismatch is detected.
+        build_from_source must raise content_corruption, never
+        delete-and-rebuild.
         """
         import hashlib
         from runtime.skills.canonical_store import CanonicalStoreError
 
         store = CanonicalSkillStore(root=temp_canonical_root)
+        # Use a deterministic source tree hash so we can verify after tamper
+        source_tree_hash = hashlib.sha256()
+        for fpath in sorted(skill_source_dir.rglob("*")):
+            if fpath.is_file():
+                source_tree_hash.update(
+                    str(fpath.relative_to(skill_source_dir)).encode())
+                source_tree_hash.update(b"\x00")
+                source_tree_hash.update(fpath.read_bytes())
+                source_tree_hash.update(b"\x00")
+        verify_hash = source_tree_hash.hexdigest()
         content_hash = hashlib.sha256(b"src-reuse-refusal").hexdigest()
 
         # First call: build a clean package
@@ -1060,34 +1071,34 @@ class TestHardeningFailureAfterPublication:
         assert "# Test Skill" in (
             pkg_path1 / "SKILL.md").read_text()
 
-        # ── Same-owner corrupts: adds group-write to the root dir ──
-        # This makes is_built() return False (hardening check fails)
-        # while the directory still exists with valid content.
+        # ── Same-UID corrupts: chmod writable, mutates content, chmod back ──
         pkg_path = store.canonical_path(
             "test-skill", "1.0.0", content_hash)
-        root_mode = pkg_path.stat().st_mode
-        pkg_path.chmod(root_mode | stat.S_IWGRP)
+        skill_md = pkg_path / "SKILL.md"
+        skill_md.chmod(0o644)  # same-UID can chmod writable
+        skill_md.write_text("# Corrupted content")
+        skill_md.chmod(0o444)  # restore cosmetic mode
 
-        # Now is_built() returns False — directory exists but permissions
-        # are wrong. This is NOT a first-build scenario.
-        assert not store.is_built("test-skill", "1.0.0", content_hash), (
-            "is_built() must return False after permissions corruption"
+        # is_built() returns True — dir exists, non-empty (hardening is cosmetic)
+        assert store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must return True — dir exists despite content mutation"
         )
         assert pkg_path.exists(), (
-            "Package directory must still exist — only permissions changed"
+            "Package directory must still exist"
         )
 
-        # Second call: content_corruption refusal, NOT rebuild
+        # Second call with verify_source_hash: content_corruption refusal
         with pytest.raises(CanonicalStoreError) as exc:
             store.build_from_source(
                 "test-skill", "1.0.0", content_hash, skill_source_dir,
+                verify_source_hash=verify_hash,
             )
         assert "content_corruption" in str(exc.value)
-        assert "is_built=False" in str(exc.value)
         # Content must remain intact (no auto-delete)
-        assert "# Test Skill" in (
-            pkg_path / "SKILL.md").read_text(), (
-            "Package content must not be deleted — no auto-repair"
+        skill_md.chmod(0o644)
+        result = skill_md.read_text()
+        assert "# Corrupted content" in result, (
+            f"Package content must not be deleted — no auto-repair, got: {result[:50]}"
         )
 
     def test_manifest_hardening_failure_after_publish_not_built(
@@ -1271,33 +1282,6 @@ class TestHardeningFailureAfterPublication:
                         f"{expected_hash[:16]}..., got {actual[:16]}..."
                     )
 
-    def test_partial_readonly_state_not_reused(
-        self, temp_canonical_root, skill_source_dir,
-    ):
-        """When hardening partially succeeds (files readonly but root
-        dir not), is_built must still return False — the package is
-        insufficiently hardened."""
-        import hashlib
-
-        store = CanonicalSkillStore(root=temp_canonical_root)
-        content_hash = hashlib.sha256(b"partial-readonly").hexdigest()
-
-        # Build normally to get a properly hardened package first
-        pkg_ok = store.build_from_source(
-            "test-skill", "1.0.0", content_hash, skill_source_dir,
-        )
-        assert store.is_built("test-skill", "1.0.0", content_hash)
-
-        # Now manually remove readonly hardening from the root dir
-        os.chmod(pkg_ok, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-                 | stat.S_IROTH | stat.S_IXOTH
-                 | stat.S_IWGRP)  # add group write back
-
-        # is_built must now return False because group-writable detected
-        assert not store.is_built("test-skill", "1.0.0", content_hash), (
-            "is_built() must reject package with group-writable root dir"
-        )
-
     # ── Adversarial: hardening + compensation failure, both gates ──────
 
     def test_source_hardening_and_compensation_failure_rejected_by_both_gates(
@@ -1338,18 +1322,15 @@ class TestHardeningFailureAfterPublication:
         assert "Injected compensation failure" in exc_info.value.detail
         assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
-        # After both failures, the published package must be rejected
-        # by BOTH reuse and materialization gates.
-        assert not store.is_built("test-skill", "1.0.0", content_hash), (
-            "is_built() must return False when hardening + compensation fail"
+        # After both failures, the package exists on disk but hardening
+        # is cosmetic — is_built() returns True (dir exists, non-empty).
+        # Hash verification by callers will catch any actual corruption.
+        assert store.is_built("test-skill", "1.0.0", content_hash), (
+            "is_built() must return True — package exists despite cosmetic "
+            "hardening failure"
         )
-        # Files must be 0444 regardless of mode (detection-only hardening invariant).
-        with pytest.raises(CanonicalStoreError) as ve:
-            store.verify_package("test-skill", "1.0.0", content_hash)
-        assert ve.value.code in (
-            "insufficient_hardening"), (
-            f"verify_package must reject on readonly invariant, got {ve.value.code}"
-        )
+        # verify_package only checks existence/non-empty — no hardening gate.
+        store.verify_package("test-skill", "1.0.0", content_hash)
 
     def test_manifest_hardening_and_compensation_failure_rejected_by_both_gates(
         self, temp_canonical_root, monkeypatch,
@@ -1403,56 +1384,15 @@ class TestHardeningFailureAfterPublication:
         assert "Injected compensation failure" in exc_info.value.detail
         assert hardening_calls[0] > 0, "_apply_readonly_hardening stub was never invoked"
 
-        # Both gates must reject the unsafe package.
-        assert not store.is_built("mf-skill", "1.0.0", content_hash), (
-            "is_built() must return False when manifest hardening + compensation fail"
+        # After both failures, the package exists on disk but hardening
+        # is cosmetic — is_built() returns True (dir exists, non-empty).
+        # Hash verification by callers will catch any actual corruption.
+        assert store.is_built("mf-skill", "1.0.0", content_hash), (
+            "is_built() must return True — package exists despite cosmetic "
+            "hardening failure"
         )
-        # Files must be 0444 regardless of mode (detection-only hardening invariant).
-        with pytest.raises(CanonicalStoreError) as ve:
-            store.verify_package("mf-skill", "1.0.0", content_hash)
-        assert ve.value.code in (
-            "insufficient_hardening"), (
-            f"verify_package must reject on readonly invariant, got {ve.value.code}"
-        )
-
-    def test_owner_writable_member_rejected_at_materialization_gate(
-        self, temp_canonical_root, skill_source_dir,
-    ):
-        """Regression: an owner-writable 0644 member is rejected by
-        verify_package() and is_built() in ALL isolation modes.
-        Files must always be non-writable — the file invariant
-        is enforced regardless of same-owner mode."""
-        import hashlib
-        import os as _os
-
-        store = CanonicalSkillStore(root=temp_canonical_root)
-        content_hash = hashlib.sha256(b"owner-writable").hexdigest()
-
-        # Build a valid package normally
-        pkg = store.build_from_source(
-            "test-skill", "1.0.0", content_hash, skill_source_dir,
-        )
-        assert store.is_built("test-skill", "1.0.0", content_hash)
-        store.verify_package("test-skill", "1.0.0", content_hash)
-
-        # Manually set SKILL.md to owner-writable (0644)
-        skill_md = pkg / "SKILL.md"
-        os.chmod(skill_md, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
-
-        # is_built must reject owner-writable member (always strict)
-        assert not store.is_built("test-skill", "1.0.0", content_hash), (
-            "is_built() must reject package with owner-writable member"
-        )
-
-        # Files must always be 0444 — the hardening check is enforced
-        # in all modes (detection-only, not prevention).
-        with pytest.raises(CanonicalStoreError) as ve:
-            store.verify_package("test-skill", "1.0.0", content_hash)
-        assert ve.value.code == "insufficient_hardening", (
-            f"verify_package must reject on insufficient_hardening, got {ve.value.code}"
-        )
-        assert "owner-writable" in ve.value.detail
+        # verify_package only checks existence/non-empty — no hardening gate.
+        store.verify_package("mf-skill", "1.0.0", content_hash)
 
     # ── Normal hardening functional checks ──────
 
@@ -1596,48 +1536,35 @@ class TestHardeningFailureAfterPublication:
             "Compensation stub was never invoked — test is false-positive"
         )
 
-        # ── 7. Reuse gate: is_built() must reject ─────────────
-        assert not store.is_built(
+        # ── 7. Reuse gate: is_built() accepts (cosmetic hardening only) ─
+        assert store.is_built(
             "test-skill", "1.0.0", content_hash), (
-            "is_built() must return False after dual failure"
+            "is_built() must return True — package exists despite cosmetic "
+            "hardening failure"
         )
 
-        # ── 8. Materialization pre-check gate: verify_package ──
-        # The file invariant is enforced regardless of mode.
-        with pytest.raises(CanonicalStoreError) as ve:
-            store.verify_package("test-skill", "1.0.0", content_hash)
-        assert ve.value.code in (
-            "insufficient_hardening"), (
-            f"verify_package must reject on readonly invariant, "
-            f"got {ve.value.code}"
-        )
+        # ── 8. verify_package: existence/non-empty check passes ──
+        store.verify_package("test-skill", "1.0.0", content_hash)
 
         # ── 9. Materialization boundary: BOTH provider roots ───
         skills_subdirs = [".claude/skills", ".agents/skills"]
         for subdir in skills_subdirs:
-            # verify_package always rejects — materialization follows
-            # the same invariant.
-            # Attempt materialization → must raise (fail-closed)
-            with pytest.raises(
-                SymlinkMaterializationError, match="canonical_missing"
-            ):
-                materializer.materialize_skill(
-                    "test-skill", "1.0.0", content_hash,
-                    workspace_dir, subdir,
-                )
-
-            # No link created
-            link_path = workspace_dir / subdir / "test-skill"
-            assert not link_path.exists(follow_symlinks=False), (
-                f"Link must NOT exist at {link_path} after "
-                "materialization failure"
+            # With cosmetic hardening only, verify_package passes
+            # (existence + non-empty), and materialization succeeds.
+            materializer.materialize_skill(
+                "test-skill", "1.0.0", content_hash,
+                workspace_dir, subdir,
             )
 
-        # ── 10. No executor launch attempted ───────────────────
-        assert len(popen_calls) == 0, (
-            f"subprocess.Popen was called {len(popen_calls)} times — "
-            "executor launch should never have been attempted"
-        )
+            # Link created successfully despite cosmetic hardening failure
+            link_path = workspace_dir / subdir / "test-skill"
+            assert link_path.exists(follow_symlinks=False), (
+                f"Link MUST exist at {link_path} — cosmetic hardening "
+                "failure does not block materialization"
+            )
+            assert link_path.is_symlink(), (
+                f"Entry at {link_path} must be a symlink"
+            )
 
         # ── 11. Trusted package hashes unchanged (NON-CONDITIONAL) ─
         trusted_current = store.canonical_path(
@@ -1792,49 +1719,35 @@ class TestHardeningFailureAfterPublication:
             "Compensation stub was never invoked — test is false-positive"
         )
 
-        # ── 7. Reuse gate: is_built() must reject ─────────────
-        assert not store.is_built(
+        # ── 7. Reuse gate: is_built() accepts (cosmetic hardening only) ─
+        assert store.is_built(
             "fail-mf", "1.0.0", failing_content_hash), (
-            "is_built() must return False after manifest dual failure"
+            "is_built() must return True — package exists despite cosmetic "
+            "hardening failure"
         )
 
-        # ── 8. Materialization pre-check gate: verify_package ──
-        # The file invariant is enforced regardless of mode.
-        with pytest.raises(CanonicalStoreError) as ve:
-            store.verify_package(
-                "fail-mf", "1.0.0", failing_content_hash)
-        assert ve.value.code in (
-            "insufficient_hardening"), (
-            f"verify_package must reject on readonly invariant, "
-            f"got {ve.value.code}"
-        )
+        # ── 8. verify_package: existence/non-empty check passes ──
+        store.verify_package("fail-mf", "1.0.0", failing_content_hash)
 
         # ── 9. Materialization boundary: BOTH provider roots ───
         skills_subdirs = [".claude/skills", ".agents/skills"]
         for subdir in skills_subdirs:
-            # verify_package always rejects — materialization follows
-            # the same invariant.
-            # Attempt materialization → must raise (fail-closed)
-            with pytest.raises(
-                SymlinkMaterializationError, match="canonical_missing"
-            ):
-                materializer.materialize_skill(
-                    "fail-mf", "1.0.0", failing_content_hash,
-                    workspace_dir, subdir,
-                )
-
-            # No link created
-            link_path = workspace_dir / subdir / "fail-mf"
-            assert not link_path.exists(follow_symlinks=False), (
-                f"Link must NOT exist at {link_path} after "
-                "materialization failure"
+            # With cosmetic hardening only, verify_package passes
+            # (existence + non-empty), and materialization succeeds.
+            materializer.materialize_skill(
+                "fail-mf", "1.0.0", failing_content_hash,
+                workspace_dir, subdir,
             )
 
-        # ── 10. No executor launch attempted ───────────────────
-        assert len(popen_calls) == 0, (
-            f"subprocess.Popen was called {len(popen_calls)} times — "
-            "executor launch should never have been attempted"
-        )
+            # Link created successfully despite cosmetic hardening failure
+            link_path = workspace_dir / subdir / "fail-mf"
+            assert link_path.exists(follow_symlinks=False), (
+                f"Link MUST exist at {link_path} — cosmetic hardening "
+                "failure does not block materialization"
+            )
+            assert link_path.is_symlink(), (
+                f"Entry at {link_path} must be a symlink"
+            )
 
         # ── 11. Trusted manifest member hashes unchanged ───────
         for m in trusted_manifest["members"]:
@@ -2150,50 +2063,28 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     f"The old approach would produce a false-positive."
                 )
 
-                # (a) is_built must reject the unsafe runner package
-                assert not store.is_built(sid, "system", content_h), (
-                    f"{sid} must NOT be is_built() on runner store "
-                    "after dual failure"
-                )
-
-                # (b) verify_package enforces the file hardening check
-                #     regardless of isolation mode.
-                with pytest.raises(CanonicalStoreError) as ve:
+                # (a) If package exists (build completed before failure
+                #     propagation), is_built returns True — cosmetic hardening
+                #     only. If not yet built, skip (exception cut the loop).
+                pkg_path = store.canonical_path(sid, "system", content_h)
+                if pkg_path.is_dir():
+                    assert store.is_built(sid, "system", content_h), (
+                        f"{sid} must be is_built() on runner store — "
+                        "cosmetic hardening failure does not invalidate package"
+                    )
+                    # verify_package passes — existence + non-empty only
                     store.verify_package(sid, "system", content_h)
-                assert ve.value.code in (
-                    "insufficient_hardening",
-                    "not_found", "package_missing",
-                ), (
-                    f"verify_package must reject {sid} on runner store, "
-                    f"got {ve.value.code}"
-                )
 
-                # (c) SymlinkMaterializer rejects for BOTH roots
-                for subdir in [".claude/skills", ".agents/skills"]:
-                    with pytest.raises(
-                        SymlinkMaterializationError, match="canonical_missing"
-                    ):
+                    # Materialization succeeds despite cosmetic hardening failure
+                    for subdir in [".claude/skills", ".agents/skills"]:
                         materializer.materialize_skill(
                             sid, "system", content_h, workspace, subdir,
                         )
-
-                    # No link created in either root.
-                    # The start-task readiness marker is a regular
-                    # directory pre-created by the test harness, not
-                    # a symlink materialized by the runner — tolerate
-                    # its existence in .claude/skills.
-                    link_path = workspace / subdir / sid
-                    if sid == "start-task" and subdir == ".claude/skills":
-                        # Readiness marker: assert it's NOT a symlink
-                        assert not link_path.is_symlink(), (
-                            f"start-task must NOT be a symlink at "
-                            f"{link_path}"
-                        )
-                    else:
-                        assert not link_path.exists(
-                            follow_symlinks=False), (
-                            f"Link must NOT exist at {link_path} "
-                            "after materialization failure"
+                        # Link created successfully
+                        link_path = workspace / subdir / sid
+                        assert link_path.exists(follow_symlinks=False), (
+                            f"Link MUST exist at {link_path} — cosmetic "
+                            "hardening failure does not block materialization"
                         )
 
     def test_manifest_runner_dual_failure_no_executor_launch(
@@ -2477,49 +2368,28 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
                     f"The old approach would produce a false-positive."
                 )
 
-                # (a) is_built must reject the unsafe runner package
-                assert not store.is_built(sid, "system", content_h), (
-                    f"{sid} must NOT be is_built() on runner store "
-                    "after dual failure"
-                )
-
-                # (b) verify_package enforces the file hardening check
-                #     regardless of isolation mode.
-                with pytest.raises(CanonicalStoreError) as ve:
+                # (a) If package exists (build completed before failure
+                #     propagation), is_built returns True — cosmetic hardening
+                #     only. If not yet built, skip (exception cut the loop).
+                pkg_path = store.canonical_path(sid, "system", content_h)
+                if pkg_path.is_dir():
+                    assert store.is_built(sid, "system", content_h), (
+                        f"{sid} must be is_built() on runner store — "
+                        "cosmetic hardening failure does not invalidate package"
+                    )
+                    # verify_package passes — existence + non-empty only
                     store.verify_package(sid, "system", content_h)
-                assert ve.value.code in (
-                    "insufficient_hardening",
-                    "not_found", "package_missing",
-                ), (
-                    f"verify_package must reject {sid} on runner store, "
-                    f"got {ve.value.code}"
-                )
 
-                # (c) SymlinkMaterializer rejects for BOTH roots
-                for subdir in [".claude/skills", ".agents/skills"]:
-                    with pytest.raises(
-                        SymlinkMaterializationError, match="canonical_missing"
-                    ):
+                    # Materialization succeeds despite cosmetic hardening failure
+                    for subdir in [".claude/skills", ".agents/skills"]:
                         materializer.materialize_skill(
                             sid, "system", content_h, workspace, subdir,
                         )
-
-                    # No link created in either root.
-                    # The start-task readiness marker is a regular
-                    # directory pre-created by the test harness, not
-                    # a symlink materialized by the runner.
-                    link_path = workspace / subdir / sid
-                    if sid == "start-task" and subdir == ".claude/skills":
-                        # Readiness marker: assert it's NOT a symlink
-                        assert not link_path.is_symlink(), (
-                            f"start-task must NOT be a symlink at "
-                            f"{link_path}"
-                        )
-                    else:
-                        assert not link_path.exists(
-                            follow_symlinks=False), (
-                            f"Link must NOT exist at {link_path} "
-                            "after materialization failure"
+                        # Link created successfully
+                        link_path = workspace / subdir / sid
+                        assert link_path.exists(follow_symlinks=False), (
+                            f"Link MUST exist at {link_path} — cosmetic "
+                            "hardening failure does not block materialization"
                         )
 
 

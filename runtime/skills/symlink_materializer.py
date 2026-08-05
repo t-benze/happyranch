@@ -74,7 +74,7 @@ class SymlinkMaterializer:
         """Ensure a workspace symlink exists pointing to the canonical package.
 
         Steps:
-        1. Verify canonical package exists and has valid ownership.
+        1. Verify canonical package exists and is non-empty.
         2. Resolve workspace link path: <workspace>/<skills_subdir>/<skill_slug>
         3. Compute relative target from link to canonical package dir.
         4. If existing link is valid → no-op.

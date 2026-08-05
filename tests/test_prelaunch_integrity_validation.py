@@ -54,12 +54,11 @@ class TestPreLaunchIntegrityValidation:
     # ── Hash-based detection tests (Finding 1) ────────────────────
 
     def test_same_owner_mutation_detected_by_hash(self, tmp_path):
-        """Same-owner mutates content, restores permissions — hash catches it.
+        """Same-UID mutates content, restores permissions — hash catches it.
 
-        In same-owner mode _verify_recursive_readonly allows owner-writable
-        files. A mutator who chmods writable, mutates content, then restores
-        non-writable would evade mode-only checks. The tree hash comparison in
-        verify_package() catches the content change.
+        A mutator who chmods writable, mutates content, then restores
+        non-writable would evade permission-only checks. The tree hash
+        comparison in the integrity validation catches the content change.
         """
         canonical_root = tmp_path / "canonical"
         os.environ["HAPPYRANCH_CANONICAL_STORE_ROOT"] = str(canonical_root)
@@ -149,15 +148,14 @@ class TestPreLaunchIntegrityValidation:
             os.environ.pop("HAPPYRANCH_CANONICAL_STORE_ROOT", None)
 
     def test_mode_restore_evades_mode_check_but_hash_catches(self, tmp_path):
-        """Mutate content + restore 0o444 → mode check passes, hash fails.
+        """Mutate content + restore 0o444 → permission check passes, hash fails.
 
-        This is the canonical adversary scenario: same-owner executor:
+        This is the canonical adversary scenario: same-UID executor:
         1. chmod 0644 (owner writable)
         2. Mutate content
         3. chmod 0444 (restore compliant mode)
-        → _verify_recursive_readonly passes (same-owner allows owner-writable),
-          but tree hash validation in validate_workspace_skills_integrity
-          detects the content change.
+        → permission-only check can be evaded, but tree hash validation in
+          validate_workspace_skills_integrity detects the content change.
         """
         canonical_root = tmp_path / "canonical"
         os.environ["HAPPYRANCH_CANONICAL_STORE_ROOT"] = str(canonical_root)

@@ -1067,14 +1067,15 @@ def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
 # ── Pre-launch integrity validation ────────────────────────────────
 # Before every executor launch, validate that workspace skill links
 # resolve to the expected canonical packages and that canonical package
-# integrity (ownership, permissions, member hashes for lifecycle
-# packages) is intact. This is a detective control — same-owner mode
-# removes OS-level write barriers, so an agent-controlled executor can
-# mutate canonical targets between checks. Detection-only: no automatic
-# repair from same-UID local sources. Recovery for corrupted canonical
-# bytes is manual: `happyranch skills recover <slug> <version>
-# <content_hash>` then restart the daemon. Link-only faults may be
-# repaired non-destructively via `happyranch set-executor`.
+# integrity (tree hashes, member hashes for lifecycle packages) is
+# intact. The executor and daemon share the same OS identity — a
+# same-UID process can mutate canonical targets between checks.
+# Detection-only: no automatic repair from same-UID local sources.
+# Recovery for corrupted canonical bytes is manual:
+# `happyranch skills recover <slug> <version> <content_hash>` (after
+# authoritative external re-sync/redeploy), then restart the daemon.
+# Link-only faults may be repaired non-destructively via
+# `happyranch set-executor`.
 
 
 class WorkspaceIntegrityError(Exception):
@@ -1117,7 +1118,7 @@ def validate_workspace_skills_integrity(
     """Validate workspace skill links and canonical package integrity.
 
     For EVERY expected spec, validates:
-    - The canonical package exists and has correct ownership/permissions
+    - The canonical package exists and is non-empty
     - The canonical tree hash matches the expected value computed from
       ledger-declared member hashes (lifecycle) or the source tree hash
       (system contracts)
@@ -1132,11 +1133,13 @@ def validate_workspace_skills_integrity(
     also raises (fail-closed — no launch proceeds unrecorded).
 
     This is a DETECTIVE control, not a preventive security boundary.
-    In same-owner mode, an agent-controlled executor can mutate canonical
-    targets through workspace links between checks. The integrity check
-    detects tampering at the next launch attempt and refuses the session.
-    Recovery for corrupted canonical bytes: `happyranch skills recover
-    <slug> <version> <content_hash>` then restart daemon. Link-only
+    The executor and daemon share the same OS identity, so an
+    agent-controlled executor can mutate canonical targets through
+    workspace links between checks. The integrity check detects
+    tampering at the next launch attempt and refuses the session.
+    Recovery for corrupted canonical bytes: authoritative external
+    re-sync/redeploy, then `happyranch skills recover
+    <slug> <version> <content_hash>`, then restart daemon. Link-only
     faults: `happyranch set-executor` (never repairs bytes).
 
     Args:
@@ -1180,20 +1183,19 @@ def validate_workspace_skills_integrity(
         version = spec["version"]
         content_hash = spec["content_hash"]
 
-        # 1. Verify canonical package integrity (presence, ownership, mode)
+        # 1. Verify canonical package exists and is non-empty.
         try:
             store.verify_package(slug, version, content_hash)
         except CanonicalStoreError as exc:
             findings.append(
-                f"Canonical package integrity failure for {slug}@{version}: {exc}"
+                f"Canonical package missing/empty for {slug}@{version}: {exc}"
             )
             continue
 
         # 1b. Verify package tree hash matches the expected value.
-        #     In same-owner mode, the executor shares the daemon uid and can
-        #     chmod+mutate+restore canonical targets. The mode check above
-        #     allows owner-writable files in that mode, so we MUST also
-        #     validate actual content integrity via tree hash.
+        #     The executor shares the daemon's OS identity and can
+        #     chmod+mutate+restore canonical targets, so we validate
+        #     actual content integrity via tree hash.
         expected_tree_hash = spec.get("tree_hash", content_hash)
         actual_tree_hash = store.compute_tree_hash(slug, version, content_hash)
         if actual_tree_hash != expected_tree_hash:
@@ -1304,7 +1306,7 @@ def validate_workspace_skills_integrity(
                 break
 
     # ── Fail closed ────────────────────────────────────────────
-    # Recovery guidance (mode-qualified):
+    # Recovery guidance:
     # - Broken/missing/wrong workspace links → re-materialize via
     #   executor switch (happyranch set-executor) which rebuilds links
     #   from the canonical store (links ONLY — does NOT recover

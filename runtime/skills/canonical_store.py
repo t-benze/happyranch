@@ -46,97 +46,17 @@ class CanonicalStoreError(Exception):
         super().__init__(f"[{code}] {detail}")
 
 
-def _verify_recursive_readonly(pkg_path: Path) -> None:
-    """Recursively verify the package root and every file and directory
-    under *pkg_path* is NOT group-writable or other-writable.
-
-    Directories MAY be owner-writable (0755) because the daemon owner must
-    retain write to create new packages in subdirectories. ALL files must
-    be non-writable.
-
-    An insufficiently hardened package (hardening failed after os.replace)
-    will fail these checks.  This prevents is_built() from returning True
-    for a package whose hardening was never fully applied.
-
-    Raises CanonicalStoreError on any forbidden writable bit found.
-    """
-    # Check the root directory itself first
-    try:
-        root_stat = pkg_path.stat()
-    except OSError:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Cannot stat package root: {pkg_path}",
-        )
-    root_mode = stat.S_IMODE(root_stat.st_mode)
-    _check_directory_writability(
-        pkg_path, root_mode, label=f"Package root",
-    )
-    # Check all members recursively
-    for entry in sorted(pkg_path.rglob("*")):
-        try:
-            entry_stat = entry.stat()
-        except OSError:
-            continue
-        mode = stat.S_IMODE(entry_stat.st_mode)
-        if entry.is_dir():
-            _check_directory_writability(
-                entry, mode,
-                label=f"Package member",
-            )
-        else:
-            _check_file_writability(entry, mode)
-
-
-def _check_directory_writability(
-    path: Path, mode: int, *, label: str,
-) -> None:
-    """Check a directory's writability bits.
-
-    Directory may be owner-writable (0755), but group/other-writable
-    is rejected.
-    """
-    if mode & stat.S_IWGRP:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"{label} is group-writable: {path}",
-        )
-    if mode & stat.S_IWOTH:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"{label} is world-writable: {path}",
-        )
-
-
-def _check_file_writability(path: Path, mode: int) -> None:
-    """Check a file's writability bits — ALL write bits are forbidden
-    regardless of mode (files should always be non-writable)."""
-    if mode & stat.S_IWUSR:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is owner-writable: {path}",
-        )
-    if mode & stat.S_IWGRP:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is group-writable: {path}",
-        )
-    if mode & stat.S_IWOTH:
-        raise CanonicalStoreError(
-            "insufficient_hardening",
-            f"Package member is world-writable: {path}",
-        )
-
-
 def _apply_readonly_hardening(pkg_path: Path) -> None:
-    """Apply readonly hardening to a published canonical package.
+    """Apply cosmetic readonly hardening to a published canonical package.
 
     Sets all files non-writable (0444) and all directories read+traverse
     (0755). This runs AFTER os.replace has published the package at its
     final location.
 
     The executor and daemon share the same OS identity, so this hardening
-    is cosmetic — a same-UID process can chmod files back.
+    is cosmetic — a same-UID process can chmod files back. It is NOT a
+    security boundary and is NOT used as a materialization or prelaunch
+    integrity gate.
 
     Raises the original OSError if hardening fails — callers must
     compensate by quarantining/removing the unsafe published package.
@@ -405,20 +325,14 @@ class CanonicalSkillStore:
     ) -> bool:
         """Check if a canonical package is already built and valid.
 
-        Validates non-emptiness AND recursively verifies that hardening
-        has been applied. Directories at 0755 (owner-writable) are
-        permitted, but group/other-writable entries and owner-writable
-        files are rejected.
+        Validates existence and non-emptiness only. File permission
+        modes are cosmetic (the executor shares the daemon's OS identity)
+        and are NOT used as a materialization or prelaunch integrity gate.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
             return False
         if not any(pkg_path.iterdir()):
-            return False
-        # Recursively verify hardening.
-        try:
-            _verify_recursive_readonly(pkg_path)
-        except CanonicalStoreError:
             return False
         return True
 
@@ -642,7 +556,7 @@ class CanonicalSkillStore:
         pkg_path = self.canonical_path(slug, version, content_hash)
 
         # If already built, verify content integrity before reusing.
-        # In same-owner mode an executor could tamper with the package
+        # An executor could tamper with the package
         # bytes; this check detects that and REFUSES reuse — NO automatic
         # rebuild from same-UID ArtifactStore source.
         if self.is_built(slug, version, content_hash):
@@ -770,11 +684,13 @@ class CanonicalSkillStore:
             ) from exc
 
     def verify_package(self, slug: str, version: str, content_hash: str) -> None:
-        """Verify a canonical package exists and every member is
-        non-writable (hardening check enforced at the materialization gate).
+        """Verify a canonical package exists and is non-empty.
 
-        Raises CanonicalStoreError if missing, tampered, or insufficiently
-        hardened.
+        File permission modes are cosmetic (the executor shares the daemon's
+        OS identity) and are NOT checked here. Package integrity is verified
+        at the hash level by callers.
+
+        Raises CanonicalStoreError if missing or empty.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -787,10 +703,6 @@ class CanonicalSkillStore:
                 "package_empty",
                 f"Canonical package is empty: {slug}@{version}",
             )
-        # Enforce the hardening invariant at the materialization gate.
-        # A package whose hardening failed after os.replace must never be
-        # materialized into a workspace link.
-        _verify_recursive_readonly(pkg_path)
 
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).
