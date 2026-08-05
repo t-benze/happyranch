@@ -38,18 +38,6 @@ export const useSkillDetail: ReturnType<
 >['skills']['useSkillDetail'] = (skillId) =>
   useData().skills.useSkillDetail(skillId);
 
-export const useCreateSkill: ReturnType<
-  typeof useData
->['skills']['useCreateSkill'] = () => useData().skills.useCreateSkill();
-
-export const useValidateSkill: ReturnType<
-  typeof useData
->['skills']['useValidateSkill'] = () => useData().skills.useValidateSkill();
-
-export const useEditSkill: ReturnType<
-  typeof useData
->['skills']['useEditSkill'] = () => useData().skills.useEditSkill();
-
 export const useSkillStatus: ReturnType<
   typeof useData
 >['skills']['useSkillStatus'] = (skillId) =>
@@ -65,16 +53,3 @@ export const useSkillValidation: ReturnType<
   useData().skills.useSkillValidation(params);
 
 export { ApiError } from '@/lib/api/client';
-export type {
-  ClaimProposalV2Request,
-  ReviewProposalRequest,
-  SubmitReviewProposalRequest,
-  ValidateProposalRequest,
-};
-
-// ── THR-055 Slice 3A: Proposal Queue ───────────────────────────────────
-
-export const useProposalsQueue: ReturnType<
-  typeof useData
->['skills']['useProposalsQueue'] = (params) =>
-  useData().skills.useProposalsQueue(params);

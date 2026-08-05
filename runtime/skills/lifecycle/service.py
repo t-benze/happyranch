@@ -458,10 +458,13 @@ class SkillLifecycleService:
         # ── Check for duplicate content hash (idempotency) ───────────
         existing = stores.get_package_version_by_hash(db, skill_id, content_hash)
         if existing is not None:
-            # Idempotent — if already PUBLISHED, return as-is.
-            # If still PROPOSED (legacy), return as-is (caller sees the
-            # actual status).
-            return existing
+            # Already PUBLISHED — idempotent, return as-is.
+            if existing.status == LifecycleStatus.PUBLISHED:
+                return existing
+            # Legacy non-PUBLISHED row (PROPOSED/DRAFT/etc.) — preserve it
+            # unchanged and create a distinct PUBLISHED version with the
+            # same immutable artifact/hash and current verified provenance.
+            # Fall through to the atomic ledger write below.
 
         # ── Atomic ledger write: package + validation + publication ──
         conn = _get_raw_connection(db)
@@ -1274,6 +1277,60 @@ class SkillLifecycleService:
                 status_code=404,
             )
         return detail
+
+    def get_version_provenance(self, db, version_id: int) -> dict:
+        """Read-only immutable-version provenance for audit (THR-136 Fix 2).
+
+        Returns the package version record with its immutable content hash
+        and append-only lifecycle events.  No assignments, materializations,
+        SKILL.md content, or mutable artifact resolution.
+        """
+        pkg = stores.get_package_version(db, version_id)
+        if pkg is None:
+            raise LifecycleError(
+                code="not_found",
+                detail=f"No package version found with version_id {version_id}.",
+                status_code=404,
+            )
+        events = stores.list_lifecycle_events(db, skill_id=pkg.skill_id, limit=200)
+        # Filter to events for this exact version.
+        version_events = [e for e in events if e.package_version_id == version_id]
+        version_events.sort(key=lambda e: e.id or 0)
+        return {
+            "version_id": pkg.id,
+            "skill_id": pkg.skill_id,
+            "slug": pkg.slug,
+            "name": pkg.name,
+            "version": pkg.version,
+            "content_hash": pkg.content_hash,
+            "content_artifact_key": pkg.content_artifact_key,
+            "status": pkg.status.value if pkg.status else None,
+            "policy_class": pkg.policy_class,
+            "description": pkg.description,
+            "created_by": pkg.created_by,
+            "proposer_agent": pkg.proposer_agent,
+            "proposal_task_id": pkg.proposal_task_id,
+            "proposal_session_id": pkg.proposal_session_id,
+            "publisher": pkg.publisher,
+            "published_at": pkg.published_at.isoformat() if pkg.published_at else None,
+            "created_at": pkg.created_at.isoformat() if pkg.created_at else None,
+            "events": [
+                {
+                    "id": e.id,
+                    "event_type": e.event_type,
+                    "actor": e.actor,
+                    "actor_role": e.actor_role,
+                    "previous_status": e.previous_status,
+                    "new_status": e.new_status,
+                    "content_hash": e.content_hash,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                    "metadata": e.metadata,
+                    "task_id": e.task_id,
+                    "session_id": e.session_id,
+                }
+                for e in version_events
+            ],
+        }
 
     def check_concurrency(
         self, db, version_id: int, expected_event_id: int,

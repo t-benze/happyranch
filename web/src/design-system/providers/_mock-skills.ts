@@ -23,13 +23,8 @@ import type {
   AssignSkillRequest,
   AssignSkillResponse,
   CatalogSkillItem,
-  CreateSkillRequest,
-  CreateSkillResponse,
-  EditSkillRequest,
-  EditSkillResponse,
   SkillDetail,
   SkillStatusResponse,
-  ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
@@ -64,74 +59,6 @@ function mockMutation<TArgs, TResult>(
 // failed-validation draft; everything else validates. This lets the prototype
 // and the screenshot harness render BOTH the success and the failure result
 // (spec v3 §9.1: a failure still persists an editable draft).
-const BUNDLED_SLUGS = new Set(['kb-curation', 'web-fidelity-loop', 'jobs']);
-
-function wantsFailure(slug: string): boolean {
-  const s = slug.trim().toLowerCase();
-  return s.includes('fail') || BUNDLED_SLUGS.has(s);
-}
-
-function mockCreateResponse(body: CreateSkillRequest): CreateSkillResponse {
-  const skillId = `hr:${body.slug.trim() || 'draft'}`;
-  if (wantsFailure(body.slug)) {
-    return {
-      skill_id: skillId,
-      source: 'user_authored',
-      validation_state: 'in_catalog',
-      validation: {
-        ok: false,
-        errors: [
-          "slug collides with release skill 'kb-curation'",
-          'The references/pricing.md asset could not be resolved.',
-        ],
-      },
-    };
-  }
-  return {
-    skill_id: skillId,
-    source: 'user_authored',
-    validation_state: 'validated',
-    validation: { ok: true, errors: [] },
-  };
-}
-
-// Slice-4 edit fixture. A body whose name/skill_md opts into the failure path
-// (contains `fail`) returns the failed-validation draft; everything else
-// validates. The response echoes the submitted version so a bumped version
-// drives the edited-effective (takes-effect-next-session) result state
-// (spec v3 §9.5). A failure still persists an editable draft (§9.1a).
-function mockEditResponse(
-  skillId: string,
-  body: EditSkillRequest,
-): EditSkillResponse {
-  const version = (body.version ?? '').trim() || '0.0.0';
-  const optsFail = `${body.name ?? ''} ${body.skill_md ?? ''}`
-    .toLowerCase()
-    .includes('fail');
-  if (optsFail) {
-    return {
-      skill_id: skillId,
-      source: 'user_authored',
-      validation_state: 'in_catalog',
-      validation: {
-        ok: false,
-        errors: [
-          'SKILL.md is missing a required version field.',
-          'The references/pricing.md asset could not be resolved.',
-        ],
-      },
-      version,
-    };
-  }
-  return {
-    skill_id: skillId,
-    source: 'user_authored',
-    validation_state: 'validated',
-    validation: { ok: true, errors: [] },
-    version,
-  };
-}
-
 const FIXTURES: CatalogSkillItem[] = [
   {
     skill_id: 'sk-founder-escalation-protocol',
@@ -587,25 +514,6 @@ export const mockSkillsApi: SkillsApi = {
     const detail = DETAILS[skillId];
     return detail ? ok(detail) : notFound<SkillDetail>();
   },
-  useCreateSkill: () =>
-    mockMutation<CreateSkillRequest, CreateSkillResponse>(mockCreateResponse),
-  useValidateSkill: () =>
-    mockMutation<{ skillId: string }, ValidateSkillResponse>(({ skillId }) => {
-      // Re-validation mirrors create: a slug embedded in the id opts into the
-      // failure path, otherwise it validates clean.
-      const failed = wantsFailure(skillId);
-      return {
-        skill_id: skillId,
-        validation_state: failed ? 'in_catalog' : 'validated',
-        validation: failed
-          ? { ok: false, errors: ['The references/pricing.md asset could not be resolved.'] }
-          : { ok: true, errors: [] },
-      };
-    }),
-  useEditSkill: () =>
-    mockMutation<{ skillId: string; body: EditSkillRequest }, EditSkillResponse>(
-      ({ skillId, body }) => mockEditResponse(skillId, body),
-    ),
   useSkillStatus: (skillId) => {
     if (!skillId) return notFound<SkillStatusResponse>();
     const status = STATUS[skillId];

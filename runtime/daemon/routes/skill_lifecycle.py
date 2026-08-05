@@ -748,31 +748,32 @@ def publish(
     )
 
 
-@dual_router.post("/assign", dependencies=[Depends(_require_human)], status_code=410)
+@dual_router.post("/assign", dependencies=[Depends(_require_human)])
 def assign_skill(
     slug: str,
     org: OrgDep,
     body: AssignRequest,
 ) -> dict:
-    """[RETIRED — THR-136] Assignment route retired.
+    """Per-agent assignment (THR-136 — catalog/detail enablement).
 
-    Skill assignment is now managed exclusively through the catalog/detail
-    per-agent assignment control surface. The proposal-specific assignment
-    route is retired.
+    Founders assign a published skill version to an agent. This is the
+    canonical enablement path — direct admission publishes, but only
+    explicit assignment materializes the skill into an agent's session.
     """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "route_retired_thr136",
-            "detail": "The proposal assignment route is retired (THR-136). "
-                      "Skill assignment is now managed through the catalog/detail "
-                      "per-agent assignment control.",
-            "replacement": "Catalog/detail per-agent assignment control",
-        },
+    service = SkillLifecycleService()
+    result = service.assign(
+        _get_db(org), "human", body.skill_id, body.agent_name, body.version_id,
     )
+    return {
+        "skill_id": result.skill_id,
+        "agent_name": result.agent_name,
+        "version": result.version,
+        "content_hash": result.content_hash,
+        "assigned_at": result.assigned_at.isoformat() if result.assigned_at else None,
+    }
 
 
-@dual_router.post("/rollback", dependencies=[Depends(_require_human)], status_code=410)
+@dual_router.post("/rollback", dependencies=[Depends(_require_human)])
 def rollback(
     slug: str,
     org: OrgDep,
@@ -780,45 +781,27 @@ def rollback(
     reason: str = Query(""),
     target_version_id: int | None = Query(None),
 ) -> dict:
-    """[RETIRED — THR-136] Rollback route retired.
+    """Rollback/deactivate all assignments for a skill (THR-136).
 
-    Skill assignment deactivation is now managed through the catalog/detail
-    per-agent assignment control surface.
+    Emergency deactivation — part of the catalog/detail assignment control.
     """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "route_retired_thr136",
-            "detail": "The rollback route is retired (THR-136). "
-                      "Assignment deactivation is now managed through the "
-                      "catalog/detail per-agent assignment control.",
-            "replacement": "Catalog/detail per-agent assignment control",
-        },
-    )
+    service = SkillLifecycleService()
+    return service.rollback(_get_db(org), "human", skill_id, reason, target_version_id)
 
 
-@dual_router.post("/retire", dependencies=[Depends(_require_human)], status_code=410)
+@dual_router.post("/retire", dependencies=[Depends(_require_human)])
 def retire(
     slug: str,
     org: OrgDep,
     skill_id: str = Query(...),
     reason: str = Query(""),
 ) -> dict:
-    """[RETIRED — THR-136] Retire route retired.
+    """Retire a skill (THR-136 — catalog/detail assignment control).
 
-    Skill lifecycle management is now handled through the catalog/detail
-    per-agent assignment control surface.
+    Marks the skill as retired and deactivates all active assignments.
     """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "route_retired_thr136",
-            "detail": "The retire route is retired (THR-136). "
-                      "Skill lifecycle management is now handled through the "
-                      "catalog/detail per-agent assignment control.",
-            "replacement": "Catalog/detail per-agent assignment control",
-        },
-    )
+    service = SkillLifecycleService()
+    return service.retire(_get_db(org), "human", skill_id, reason)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1082,3 +1065,32 @@ def rollback_proposal(
             "replacement": "Catalog/detail per-agent assignment control",
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Read-only immutable-version provenance (THR-136 Fix 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dual_router.get(
+    "/provenance/{version_id}",
+    dependencies=[Depends(_require_human)],
+)
+def get_version_provenance(
+    slug: str,
+    version_id: int,
+    org: OrgDep,
+) -> dict:
+    """Read-only immutable-version lifecycle provenance for audit (THR-136).
+
+    Returns the package version record, immutable content hash/artifact key,
+    and append-only lifecycle events.  No SKILL.md content, assignments,
+    materializations, or mutable state.  Founder/human only; agents denied.
+    """
+    service = SkillLifecycleService()
+    try:
+        return service.get_version_provenance(_get_db(org), version_id)
+    except LifecycleError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "detail": e.detail},
+        )

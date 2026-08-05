@@ -21,7 +21,6 @@ import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
-import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
