@@ -901,3 +901,103 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
             pass
         loop.call_soon_threadsafe(loop.stop)
         bg_thread.join(timeout=2.0)
+
+
+# ── Orphaned result local_ci reconstruction ──────────────────────────────
+
+def test_sweep_orphaned_result_preserves_local_ci_in_audit_and_consumption(tmp_path):
+    """An orphaned task_result with valid local_ci must be carried into
+    the CompletionReport consumed by the sweep. The audit event must contain
+    the exact local_ci object, and the task must reach COMPLETED."""
+    from runtime.models import LocalCiEvidence
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+
+    db.insert_task(TaskRecord(
+        id="TASK-ORPH-LC", brief="x", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        task_type="task",
+    ))
+    db.update_task("TASK-ORPH-LC", current_session_id="sess-orph-lc")
+
+    db.insert_task_result(
+        task_id="TASK-ORPH-LC",
+        agent="dev_agent",
+        session_id="sess-orph-lc",
+        status="completed",
+        output_summary="Done with CI evidence",
+        confidence_score=95,
+        decision_json='{"action":"done","summary":"Done with CI evidence"}',
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    t = db.get_task("TASK-ORPH-LC")
+    assert t.status == TaskStatus.COMPLETED, (
+        f"expected COMPLETED, got {t.status}"
+    )
+
+    # Verify the audit payload contains the exact local_ci.
+    logs = db.get_audit_logs("TASK-ORPH-LC")
+    completion_audits = [r for r in logs if r["action"] == "completion_report"]
+    assert len(completion_audits) >= 1, (
+        f"expected at least one completion_report audit; got {logs}"
+    )
+    payload = completion_audits[0]["payload"]
+    assert payload.get("local_ci") == {
+        "command": "scripts/local_ci.sh all",
+        "exit_code": 0,
+    }, f"audit payload missing local_ci: {payload}"
+
+
+def test_sweep_orphaned_result_malformed_local_ci_does_not_crash(tmp_path):
+    """An orphaned task_result with malformed local_ci JSON must not crash
+    the sweep or alter its preexisting restart behavior. The task is still
+    consumed; local_ci is None."""
+    import json as _json
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+
+    db.insert_task(TaskRecord(
+        id="TASK-ORPH-MAL", brief="x", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        task_type="task",
+    ))
+    db.update_task("TASK-ORPH-MAL", current_session_id="sess-orph-mal")
+
+    # Use insert_task_result without local_ci_json, then directly set
+    # malformed JSON via the connection to bypass normal serialization.
+    db.insert_task_result(
+        task_id="TASK-ORPH-MAL",
+        agent="dev_agent",
+        session_id="sess-orph-mal",
+        status="completed",
+        output_summary="Done with bad CI evidence",
+        confidence_score=95,
+        decision_json='{"action":"done","summary":"Done with bad CI evidence"}',
+    )
+    db._conn.execute(
+        "UPDATE task_results SET local_ci = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        ("NOT VALID JSON", "TASK-ORPH-MAL", "sess-orph-mal"),
+    )
+    db._conn.commit()
+
+    # Must not crash.
+    _sweep_on_startup(db, queue, "test", orch)
+
+    t = db.get_task("TASK-ORPH-MAL")
+    assert t.status == TaskStatus.COMPLETED, (
+        f"expected COMPLETED (malformed local_ci should not block consumption), "
+        f"got {t.status}"
+    )
+
+    # The audit payload must still exist but with local_ci as null/absent.
+    logs = db.get_audit_logs("TASK-ORPH-MAL")
+    completion_audits = [r for r in logs if r["action"] == "completion_report"]
+    assert len(completion_audits) >= 1
+    payload = completion_audits[0]["payload"]
+    assert payload.get("local_ci") is None, (
+        f"malformed local_ci should degrade to None; got {payload.get('local_ci')}"
+    )

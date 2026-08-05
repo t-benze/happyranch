@@ -3092,7 +3092,7 @@ class Database:
         Used by the chain-advance logic in run_step to read the just-completed
         child's verdict without requiring the caller to know agent/session_id.
         """
-        from runtime.models import CompletionReport
+        from runtime.models import CompletionReport, LocalCiEvidence
         row = self._conn.execute(
             "SELECT * FROM task_results WHERE task_id = ? "
             "ORDER BY id DESC LIMIT 1",
@@ -3101,6 +3101,18 @@ class Database:
         if row is None:
             return None
         keys = row.keys()
+        # Safely parse local_ci from the task_results row.
+        # A missing legacy column, NULL, empty/malformed JSON, wrong shape,
+        # or JSON failing the strict LocalCiEvidence contract → None.
+        _local_ci_raw = row["local_ci"] if "local_ci" in keys else None
+        _local_ci: LocalCiEvidence | None = None
+        if _local_ci_raw:
+            try:
+                _parsed = json.loads(_local_ci_raw)
+                if isinstance(_parsed, dict):
+                    _local_ci = LocalCiEvidence(**_parsed)
+            except Exception:
+                pass
         return CompletionReport(
             task_id=task_id,
             agent=row["agent"],
@@ -3119,6 +3131,7 @@ class Database:
                 if "waiting_on_job_ids" in keys and row["waiting_on_job_ids"]
                 else []
             ),
+            local_ci=_local_ci,
         )
 
     # --- Session Token Usage ---

@@ -517,3 +517,126 @@ def test_fingerprint_with_waiting_on_job_ids_no_typeerror(db: Database):
         # Verify the CompletionReport has the correct waiting_on_job_ids.
         called_report = mock_consume.call_args[0][2]
         assert called_report.waiting_on_job_ids == job_ids
+
+
+# ── local_ci reconstruction in zombie fingerprint consumption ────────────
+
+def test_consume_zombie_fingerprint_local_ci_reaches_report(db: Database):
+    """When a fingerprinted task_result contains valid local_ci, the
+    consumed CompletionReport must carry that exact LocalCiEvidence."""
+    from runtime.models import LocalCiEvidence
+
+    task_id = "T-ZLC"
+    agent = "dev_agent"
+    session_id = "sess-zlc"
+
+    _insert_zombie_candidate(db, task_id,
+                             last_heartbeat=_stale_hb(),
+                             executor_pid=ZOMBIE_PID,
+                             current_session_id=session_id,
+                             assigned_agent=agent)
+
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90,
+        output_summary="done with local_ci",
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+
+    fingerprint = db.get_latest_task_result(task_id, agent, session_id)
+    assert fingerprint is not None
+    assert fingerprint["local_ci"] == '{"command":"scripts/local_ci.sh all","exit_code":0}'
+
+    mock_orch = MagicMock()
+    mock_orch._db = db
+    task = db.get_task(task_id)
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as mock_consume:
+        _consume_zombie_fingerprint(db, task_id, fingerprint, task, mock_orch)
+        mock_consume.assert_called_once()
+        called_report = mock_consume.call_args[0][2]
+        assert called_report.local_ci is not None
+        assert called_report.local_ci.command == "scripts/local_ci.sh all"
+        assert called_report.local_ci.exit_code == 0
+
+
+def test_consume_zombie_fingerprint_malformed_local_ci_returns_none(db: Database):
+    """Malformed local_ci in a zombie fingerprint degrades to None without
+    crashing or changing the existing recovery/flag semantics."""
+    task_id = "T-ZMAL"
+    agent = "dev_agent"
+    session_id = "sess-zmal"
+
+    _insert_zombie_candidate(db, task_id,
+                             last_heartbeat=_stale_hb(),
+                             executor_pid=ZOMBIE_PID,
+                             current_session_id=session_id,
+                             assigned_agent=agent)
+
+    # Insert a task_result, then corrupt the local_ci column directly.
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90,
+        output_summary="done with bad ci",
+    )
+    db._conn.execute(
+        "UPDATE task_results SET local_ci = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        ("NOT VALID JSON", task_id, session_id),
+    )
+    db._conn.commit()
+
+    fingerprint = db.get_latest_task_result(task_id, agent, session_id)
+    assert fingerprint is not None
+    assert fingerprint["local_ci"] == "NOT VALID JSON"
+
+    mock_orch = MagicMock()
+    mock_orch._db = db
+    task = db.get_task(task_id)
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as mock_consume:
+        _consume_zombie_fingerprint(db, task_id, fingerprint, task, mock_orch)
+        mock_consume.assert_called_once()
+        called_report = mock_consume.call_args[0][2]
+        assert called_report.local_ci is None, (
+            f"malformed local_ci should be None; got {called_report.local_ci}"
+        )
+
+
+def test_consume_zombie_fingerprint_absent_local_ci_returns_none(db: Database):
+    """A fingerprint without local_ci (NULL/unset) safely returns None."""
+    task_id = "T-ZNUL"
+    agent = "dev_agent"
+    session_id = "sess-znul"
+
+    _insert_zombie_candidate(db, task_id,
+                             last_heartbeat=_stale_hb(),
+                             executor_pid=ZOMBIE_PID,
+                             current_session_id=session_id,
+                             assigned_agent=agent)
+
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90,
+        output_summary="done without local_ci",
+    )
+
+    fingerprint = db.get_latest_task_result(task_id, agent, session_id)
+    assert fingerprint is not None
+    assert fingerprint.get("local_ci") is None
+
+    mock_orch = MagicMock()
+    mock_orch._db = db
+    task = db.get_task(task_id)
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as mock_consume:
+        _consume_zombie_fingerprint(db, task_id, fingerprint, task, mock_orch)
+        mock_consume.assert_called_once()
+        called_report = mock_consume.call_args[0][2]
+        assert called_report.local_ci is None

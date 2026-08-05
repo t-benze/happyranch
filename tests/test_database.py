@@ -2554,3 +2554,137 @@ def test_local_ci_migration_from_legacy_schema(tmp_path):
     assert new_row["local_ci"] == '{"command":"scripts/local_ci.sh all","exit_code":0}'
 
     db.close()
+
+
+# ── get_latest_completion_report local_ci reconstruction ─────────────────
+
+def test_get_latest_completion_report_reconstructs_local_ci(db):
+    """A task_result row with a valid local_ci JSON reconstructs into
+    the returned CompletionReport.local_ci field with exact equality."""
+    db.insert_task_result(
+        task_id="TASK-LC",
+        agent="dev_agent",
+        session_id="sess-lc",
+        status="completed",
+        output_summary="with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    report = db.get_latest_completion_report("TASK-LC")
+    assert report is not None
+    assert report.local_ci is not None
+    assert report.local_ci.command == "scripts/local_ci.sh all"
+    assert report.local_ci.exit_code == 0
+
+
+def test_get_latest_completion_report_local_ci_null_returns_none(db):
+    """A row without local_ci_json (stored NULL) returns local_ci=None."""
+    db.insert_task_result(
+        task_id="TASK-NULL",
+        agent="dev_agent",
+        session_id="sess-null",
+        status="completed",
+        output_summary="no local_ci",
+        confidence_score=95,
+    )
+    report = db.get_latest_completion_report("TASK-NULL")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_malformed_returns_none(db):
+    """Malformed JSON in local_ci degrades to None and never crashes."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-MAL", "dev_agent", "sess-mal", "completed", "malformed",
+         95, "NOT JSON", datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-MAL")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_wrong_shape_returns_none(db):
+    """JSON that parses but is the wrong shape (not a dict) returns None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-SHAPE", "dev_agent", "sess-shape", "completed", "wrong shape",
+         95, '[1,2,3]', datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-SHAPE")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_invalid_values_returns_none(db):
+    """Valid JSON dict with values failing the strict LocalCiEvidence contract
+    (non-zero exit_code) degrades to None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-INV", "dev_agent", "sess-inv", "completed", "invalid values",
+         95, '{"command":"bad","exit_code":1}',
+         datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-INV")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_extra_key_returns_none(db):
+    """Valid JSON dict with an extra key (forbidden by extra='forbid')
+    degrades to None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-EXTRA", "dev_agent", "sess-extra", "completed", "extra key",
+         95,
+         '{"command":"scripts/local_ci.sh all","exit_code":0,"extra":true}',
+         datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-EXTRA")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_returns_latest_row_local_ci(db):
+    """When multiple task_results exist, the latest row's local_ci is used."""
+    db.insert_task_result(
+        task_id="TASK-MULTI",
+        agent="dev_agent",
+        session_id="sess-first",
+        status="completed",
+        output_summary="first",
+        confidence_score=95,
+    )
+    db.insert_task_result(
+        task_id="TASK-MULTI",
+        agent="dev_agent",
+        session_id="sess-second",
+        status="completed",
+        output_summary="second with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    report = db.get_latest_completion_report("TASK-MULTI")
+    assert report is not None
+    assert report.local_ci is not None
+    assert report.output_summary == "second with local_ci"
