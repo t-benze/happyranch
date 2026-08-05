@@ -841,7 +841,7 @@ class TestCallPathManagedSkillsIndex:
 
         # TASK-2511: pre-create protocol/skills/ source dirs so
         # ensure_system_contracts_materialized can inject + verify.
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
             src = test_settings.get_protocol_dir() / "skills" / sid
             src.mkdir(parents=True, exist_ok=True)
             (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
