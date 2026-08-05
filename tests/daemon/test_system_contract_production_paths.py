@@ -267,6 +267,7 @@ async def test_wake_spawn_succeeds_when_contracts_present(org_state, tmp_path, m
     _make_skill_dir(proto_skills, "make-worktree")
     _make_skill_dir(proto_skills, "thread")
     _make_skill_dir(proto_skills, "dream")
+    _make_skill_dir(proto_skills, "todos")
 
     executor_spawned = False
 
@@ -290,6 +291,15 @@ async def test_wake_spawn_succeeds_when_contracts_present(org_state, tmp_path, m
     # Wake with contracts present → executor SHOULD spawn.
     assert executor_spawned, (
         "executor was NOT spawned even though contracts were present"
+    )
+
+    # Prove the now-universal todos SystemContract materialized through
+    # the real production wake path (review finding 1, TASK-4319).
+    todos_marker = ws / ".agents" / "skills" / "todos" / "SKILL.md"
+    assert todos_marker.is_file(), (
+        f"todos skill not materialized at {todos_marker}; "
+        f"workspace skills dir contents: "
+        f"{list((ws / '.agents' / 'skills').rglob('*')) if (ws / '.agents' / 'skills').is_dir() else 'missing'}"
     )
 
 

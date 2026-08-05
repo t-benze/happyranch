@@ -2,11 +2,11 @@
 SessionContext, and context-predicate resolution.
 
 TDD coverage:
-- All 5 system contracts have correct context predicates
+- All 6 system contracts have correct context predicates
 - resolve_system_contracts_for_session returns correct contracts per context
 - Repo-capable check: with/without repos under workspace/repos/
 - SessionContext enum values match caller semantics
-- list_system_contracts returns all 5 (single source of truth)
+- list_system_contracts returns all 6 (single source of truth)
 """
 
 from __future__ import annotations
@@ -103,14 +103,14 @@ class TestSystemContractDataclass:
 
 
 class TestSystemContractsTuple:
-    """Verify the 5 system contracts are correctly defined."""
+    """Verify the 6 system contracts are correctly defined."""
 
-    def test_exactly_five_contracts(self):
-        assert len(SYSTEM_CONTRACTS) == 5
+    def test_exactly_six_contracts(self):
+        assert len(SYSTEM_CONTRACTS) == 6
 
-    def test_all_five_ids(self):
+    def test_all_six_ids(self):
         ids = {sc.id for sc in SYSTEM_CONTRACTS}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"}
 
     def test_no_requires_repo_except_make_worktree(self):
         for sc in SYSTEM_CONTRACTS:
@@ -118,6 +118,22 @@ class TestSystemContractsTuple:
                 assert sc.requires_repo is True
             else:
                 assert sc.requires_repo is False
+
+    def test_todos_universal_contexts(self):
+        sc = _get("todos")
+        assert set(sc.contexts) == {
+            SessionContext.TASK,
+            SessionContext.THREAD,
+            SessionContext.WAKE,
+            SessionContext.DREAM,
+            SessionContext.SCHEDULE,
+            SessionContext.BOOTSTRAP,
+        }
+        assert sc.requires_repo is False
+
+    def test_todos_source_path(self):
+        sc = _get("todos")
+        assert sc.source_path == "protocol/skills/todos/SKILL.md"
 
     def test_start_task_contexts(self):
         sc = _get("start-task")
@@ -166,11 +182,11 @@ class TestSystemContractsTuple:
         assert SessionContext.THREAD not in sc.contexts
         assert SessionContext.WAKE not in sc.contexts
 
-    def test_list_system_contracts_returns_all_five(self):
+    def test_list_system_contracts_returns_all_six(self):
         result = list_system_contracts()
-        assert len(result) == 5
+        assert len(result) == 6
         assert {sc.id for sc in result} == {
-            "start-task", "jobs", "make-worktree", "thread", "dream",
+            "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
         }
 
 
@@ -217,6 +233,13 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "thread" in ids
 
+    def test_task_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.TASK, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_task_context_no_dream(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.TASK, workspace=workspace_with_repos,
@@ -229,14 +252,14 @@ class TestResolveSystemContracts:
             SessionContext.TASK, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos"}
 
     def test_task_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.TASK, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "thread"}
+        assert ids == {"start-task", "jobs", "thread", "todos"}
 
     # -- THREAD context --
 
@@ -268,19 +291,26 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "dream" not in ids
 
+    def test_thread_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.THREAD, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_thread_context_with_repos_exact_ids(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.THREAD, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "make-worktree", "thread"}
+        assert ids == {"jobs", "make-worktree", "thread", "todos"}
 
     def test_thread_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.THREAD, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "thread"}
+        assert ids == {"jobs", "thread", "todos"}
 
     # -- WAKE context --
 
@@ -312,19 +342,26 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "dream" not in ids
 
+    def test_wake_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.WAKE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_wake_context_with_repos_exact_ids(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.WAKE, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos"}
 
     def test_wake_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.WAKE, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "thread"}
+        assert ids == {"start-task", "jobs", "thread", "todos"}
 
     # -- DREAM context --
 
@@ -356,19 +393,26 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "thread" not in ids
 
+    def test_dream_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.DREAM, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_dream_context_with_repos_exact_ids(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.DREAM, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "make-worktree", "dream"}
+        assert ids == {"jobs", "make-worktree", "dream", "todos"}
 
     def test_dream_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.DREAM, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "dream"}
+        assert ids == {"jobs", "dream", "todos"}
 
     # -- SCHEDULE context --
 
@@ -400,19 +444,26 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "dream" not in ids
 
+    def test_schedule_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.SCHEDULE, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_schedule_context_with_repos_exact_ids(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.SCHEDULE, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos"}
 
     def test_schedule_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.SCHEDULE, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "thread"}
+        assert ids == {"start-task", "jobs", "thread", "todos"}
 
     # -- BOOTSTRAP context --
 
@@ -444,19 +495,26 @@ class TestResolveSystemContracts:
         ids = {sc.id for sc in result}
         assert "dream" not in ids
 
+    def test_bootstrap_context_gets_todos(self, workspace_with_repos):
+        result = resolve_system_contracts_for_session(
+            SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
+        )
+        ids = {sc.id for sc in result}
+        assert "todos" in ids
+
     def test_bootstrap_context_with_repos_exact_ids(self, workspace_with_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.BOOTSTRAP, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "make-worktree", "thread"}
+        assert ids == {"jobs", "make-worktree", "thread", "todos"}
 
     def test_bootstrap_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.BOOTSTRAP, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"jobs", "thread"}
+        assert ids == {"jobs", "thread", "todos"}
 
 
 # ── Repo detection ────────────────────────────────────────────────────

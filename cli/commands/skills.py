@@ -526,7 +526,7 @@ def _print_system_contracts_section(
 ) -> None:
     """Print the system-contracts section for ``skills effective``.
 
-    Always shows all 5 system contracts with their context predicates and
+    Always shows all 6 system contracts with their context predicates and
     repo requirement. When ``--context`` is provided, marks which contracts
     would be injected for that session context (respecting the repo check
     if ``--workspace`` is also given).
