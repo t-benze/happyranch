@@ -3,25 +3,32 @@
  *
  * Honesty principle: only counted facts. No "ran hot", no "(all on PR-review)",
  * no pattern claims.
+ *
+ * The escalation claim is driven by the live, routable `escalations` list
+ * length passed in as `escalationCount`, not by the summary counter, so the
+ * TODAY narrative never contradicts the "Waiting on you" card.
  */
 import type { NarrativeCounts } from '@/lib/api/types';
 
 interface NarrativeParagraphProps {
   counts: NarrativeCounts;
+  /** Length of the rendered `escalations` list — the single source of truth
+   *  for whether anything is actually waiting on the founder. */
+  escalationCount: number;
 }
 
 export function NarrativeParagraph({
   counts,
+  escalationCount,
 }: NarrativeParagraphProps): JSX.Element {
   const {
     completed_today,
     failed_today,
-    escalated_open,
     kb_added_today,
   } = counts;
 
   const allClear =
-    completed_today === 0 && failed_today === 0 && escalated_open === 0;
+    completed_today === 0 && failed_today === 0 && escalationCount === 0;
 
   if (allClear) {
     return (
@@ -43,11 +50,11 @@ export function NarrativeParagraph({
           </span>
         </>
       )}
-      {escalated_open > 0 && (
+      {escalationCount > 0 && (
         <>
           {', '}
           <span className="text-tier-yellow font-medium">
-            {escalated_open} {escalated_open === 1 ? 'question' : 'questions'}{' '}
+            {escalationCount} {escalationCount === 1 ? 'question' : 'questions'}{' '}
             waiting on you
           </span>
         </>
