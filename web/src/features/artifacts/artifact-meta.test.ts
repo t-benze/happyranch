@@ -3,6 +3,7 @@ import {
   baseName,
   deriveArtifactType,
   deriveTitle,
+  formatArtifactModifiedAt,
   formatProvenanceDate,
   parseProvenance,
 } from './artifact-meta';
@@ -133,5 +134,25 @@ describe('formatProvenanceDate', () => {
     expect(formatProvenanceDate('2026-06-16')).toBe('Jun 16, 2026');
     expect(formatProvenanceDate('2026-01-01')).toBe('Jan 1, 2026');
     expect(formatProvenanceDate('2026-12-31')).toBe('Dec 31, 2026');
+  });
+});
+
+describe('formatArtifactModifiedAt', () => {
+  test('formats a valid ISO-8601 modified_at string', () => {
+    const out = formatArtifactModifiedAt('2026-06-20T14:30:00Z');
+    expect(out).toBeTruthy();
+    expect(out).not.toBe('Invalid Date');
+    expect(out).toMatch(/2026/);
+  });
+
+  test('returns null for a missing value', () => {
+    expect(formatArtifactModifiedAt(null)).toBeNull();
+    expect(formatArtifactModifiedAt(undefined)).toBeNull();
+    expect(formatArtifactModifiedAt('')).toBeNull();
+  });
+
+  test('returns null for an invalid date so callers render an explicit fallback', () => {
+    expect(formatArtifactModifiedAt('not-a-date')).toBeNull();
+    expect(formatArtifactModifiedAt('2026-13-45T99:00:00Z')).toBeNull();
   });
 });

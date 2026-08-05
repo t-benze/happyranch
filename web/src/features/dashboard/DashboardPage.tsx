@@ -190,12 +190,14 @@ export function DashboardPage(): JSX.Element {
   const now = new Date(s.server_now);
   const nowHour = now.getUTCHours();
 
-  // First-run empty state for a brand-new org with no activity.
+  // First-run empty state for a brand-new org with no activity. The waiting
+  // signal must come from the same routable escalation list that feeds the
+  // "Waiting on you" card, not the summary counter (THR-140 #573).
   if (
     s.org_age_days === 0 &&
     s.narrative_counts.completed_today === 0 &&
     s.narrative_counts.failed_today === 0 &&
-    s.narrative_counts.escalated_open === 0
+    s.escalations.length === 0
   ) {
     return (
       <div className="mx-auto max-w-2xl p-8">
@@ -328,7 +330,10 @@ export function DashboardPage(): JSX.Element {
             <Panel title="Today" meta="last 24h">
               <Heartbeat data={s.heartbeat} nowIdx={nowHour} />
               <div className="mt-3">
-                <NarrativeParagraph counts={s.narrative_counts} />
+                <NarrativeParagraph
+                  counts={s.narrative_counts}
+                  escalationCount={pendingCount}
+                />
               </div>
               {/* Counter tiles — ds.css display-num / mono pattern */}
               <div className="border-border-default mt-5 grid grid-cols-5 gap-3 border-t pt-4">

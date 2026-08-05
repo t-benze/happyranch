@@ -295,6 +295,9 @@ function RegisterExecutorSection({
         runtime root, not from any input here — and only one executor is active
         at a time, so registering replaces the current one.
       </p>
+      <p className="text-text-secondary text-sm">
+        Registration applies immediately; no daemon restart is required.
+      </p>
 
       <div className="flex flex-col gap-1">
         <Label htmlFor="assistant-executor">Executor</Label>

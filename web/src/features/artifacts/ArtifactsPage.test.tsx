@@ -404,6 +404,131 @@ describe('ArtifactsPage', () => {
   });
 
   /* ------------------------------------------------------------------ */
+  /*  Modified-at provenance (issue #574)                                */
+  /* ------------------------------------------------------------------ */
+
+  test('renders supplied modified_at as labeled file modification time for a convention filename', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            {
+              name: 'dev_agent-2026-06-16-THR-030-handoff.md',
+              size_bytes: 1024,
+              modified_at: '2026-06-20T14:30:00Z',
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    // deriveTitle keeps the THR token in the slug.
+    await screen.findByText('THR-030-handoff.md');
+
+    // Filename-derived provenance is visibly labeled, not claimed as authoritative.
+    expect(screen.getByText('From filename')).toBeInTheDocument();
+    expect(screen.getByText('THR-030')).toBeInTheDocument();
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+    expect(screen.getByText('Jun 16, 2026')).toBeInTheDocument();
+
+    // The runtime-supplied modified_at is shown as a labeled file modification time.
+    const modifiedLine = screen.getByText(
+      (_, node) =>
+        Boolean(node?.textContent?.includes('Modified') && node?.textContent?.includes('2026')),
+      { selector: 'p' },
+    );
+    expect(modifiedLine).toBeInTheDocument();
+    expect(modifiedLine.textContent).not.toMatch(/Modified time unavailable/);
+
+    // Actions remain reachable.
+    expect(screen.getByRole('button', { name: /Download/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Delete dev_agent-2026-06-16-THR-030-handoff\.md/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('renders supplied modified_at and omits filename-derived provenance for neutral filenames', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            {
+              name: 'report.pdf',
+              size_bytes: 1024,
+              modified_at: '2026-06-09T08:15:00Z',
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('report.pdf');
+
+    // No fabricated provenance and no bare placeholder.
+    expect(screen.queryByText('From filename')).not.toBeInTheDocument();
+    expect(screen.queryByText('THR-')).not.toBeInTheDocument();
+    expect(screen.queryByText(/dev_agent/)).not.toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
+
+    // Modified time is still rendered from the API value.
+    const modifiedLine = screen.getByText(
+      (_, node) =>
+        Boolean(node?.textContent?.includes('Modified') && node?.textContent?.includes('2026')),
+      { selector: 'p' },
+    );
+    expect(modifiedLine).toBeInTheDocument();
+    expect(modifiedLine.textContent).not.toMatch(/Modified time unavailable/);
+
+    // Actions remain reachable.
+    expect(screen.getByRole('button', { name: /Download/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Delete report\.pdf/i })).toBeInTheDocument();
+  });
+
+  test('shows an explicit fallback when modified_at is missing or invalid', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            {
+              name: 'dev_agent-2026-06-16-notes.md',
+              size_bytes: 1024,
+              modified_at: 'not-a-date',
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('notes.md');
+
+    // Filename-derived provenance still renders for a convention name.
+    expect(screen.getByText('From filename')).toBeInTheDocument();
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+
+    // Invalid runtime data falls back to an explicit unavailable label.
+    expect(screen.getByText('Modified time unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Invalid Date')).not.toBeInTheDocument();
+
+    // Actions remain reachable.
+    expect(screen.getByRole('button', { name: /Download/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Delete dev_agent-2026-06-16-notes\.md/i }),
+    ).toBeInTheDocument();
+  });
+
+  /* ------------------------------------------------------------------ */
   /*  Filter + sort (ART-02)                                             */
   /* ------------------------------------------------------------------ */
 

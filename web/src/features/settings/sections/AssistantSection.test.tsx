@@ -42,9 +42,11 @@ describe('AssistantSection (Settings → Assistant)', () => {
     expect(within(statusCard).getByText('/rt/system/assistant/workspace')).toBeInTheDocument();
 
     // The full register flow now lives here.
-    expect(screen.getByRole('region', { name: /Register executor/i })).toBeInTheDocument();
+    const registerRegion = screen.getByRole('region', { name: /Register executor/i });
+    expect(registerRegion).toBeInTheDocument();
+    expect(within(registerRegion).getByText(/Registration applies immediately/i)).toBeInTheDocument();
+    expect(within(registerRegion).getByText(/no daemon restart is required/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Register$/i })).toBeInTheDocument();
-
   });
 
   test('uninitialized: Initialize prepares the workspace and shows self-registration steps', async () => {
@@ -71,6 +73,11 @@ describe('AssistantSection (Settings → Assistant)', () => {
     await user.click(await screen.findByRole('button', { name: /Initialize workspace/i }));
 
     expect(await screen.findByText(/Self-registration/i)).toBeInTheDocument();
+
+    // Register mode (no current executor) still surfaces the no-restart caveat.
+    const registerRegion = screen.getByRole('region', { name: /Register executor/i });
+    expect(within(registerRegion).getByText(/Registration applies immediately/i)).toBeInTheDocument();
+    expect(within(registerRegion).getByText(/no daemon restart is required/i)).toBeInTheDocument();
   });
 
   test('stale_or_broken: shows the detail and a Repair action', async () => {
