@@ -36,6 +36,7 @@ import {
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { cn } from '@/lib/utils';
 import { DREAM_STRINGS } from './strings';
+import { isValidCount } from './count-helpers';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
@@ -197,7 +198,15 @@ export function DreamDetailPane({
 
   const candidates = dream?.kb_candidates ?? [];
   const pendingCount = candidates.filter((c) => c.status === 'pending').length;
-  const isQuiet = dream?.status === 'completed' && candidates.length === 0 && (dream?.new_learnings_count ?? 0) > 0;
+  // Quiet state requires a valid learnings count; a malformed count must not be
+  // read as "private learning saved". The candidate list (not the stale total)
+  // is the authoritative empty signal in the detail drawer.
+  const dreamLearnings = dream?.new_learnings_count;
+  const isQuiet =
+    dream?.status === 'completed' &&
+    candidates.length === 0 &&
+    isValidCount(dreamLearnings) &&
+    dreamLearnings > 0;
 
   return (
     <Drawer open onOpenChange={(o) => !o && onClose()}>
