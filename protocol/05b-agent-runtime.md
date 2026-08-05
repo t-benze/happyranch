@@ -325,12 +325,18 @@ repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
 These are resolved via the `SkillRegistry` and unioned with system contracts;
 release and system-contract slugs win on collision.
 
-**Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
-custom skills are governed exclusively by the immutable lifecycle ledger
-(`skill_lifecycle_packages`, `skill_lifecycle_assignments`). Only PUBLISHED
-skills with an active version-pinned assignment for the target agent are
-materialized. Proposed, draft, validated, approved-but-unpublished, rolled_back,
-retired, and legacy-quarantined content never reaches the workspace.
+**Lifecycle-ledger custom skills (THR-136, supersedes THR-055).**
+User-authored/operator-authored custom skills are governed exclusively by
+the immutable lifecycle ledger (``skill_lifecycle_packages``,
+``skill_lifecycle_assignments``). Agent-authored proposals are
+**synchronously validated and published** via
+``POST /skill-lifecycle/proposals/agent`` — they enter at ``published``
+status immediately after deterministic content validation with fixed
+validator ``THR-136/1.0.0``. Only PUBLISHED skills with an active
+version-pinned assignment for the target agent are materialized.
+Rejected, retired, rolled_back, and legacy-quarantined content never
+reaches the workspace. The multi-step Founder review chain (THR-055)
+is retired; all review routes return 410 Gone.
 
 **Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
 (`<org_root>/skills/`) is retired and quarantined. During migration, legacy
@@ -404,7 +410,7 @@ plus a human-only legacy route:
 
 All identity derives exclusively from the server's verified context.
 
-**Agent-id × canonical-slug pilot policy (THR-055 seq 127 corrective).** The
+**Agent-id × canonical-slug pilot policy (THR-136).** The
 agent-only route enforces a fixed server-side policy BEFORE any artifact
 creation or ledger write. The policy does NOT inspect team membership,
 prompts, org config/YAML eligibility, request metadata, or body identity
@@ -416,18 +422,14 @@ claims:
 | ``product_lead`` | ``product-manager-prd`` (lowercase) |
 
 Every other agent is denied (403). Either permitted agent with the wrong slug
-is denied (403). Human/founder lifecycle authority (claim, draft, edit, validate,
-submit-review, review, publish, assign, retire, rollback, all eligibility/
-permission/config mutations) remains unchanged and returns 403 for agent
-invocations. Proposals remain immutable and task/session-provenanced,
-``standard_operational`` only, with content excluded from catalog/effective
-resolution/materialization until founder publication.
+is denied (403). Submission synchronously validates and publishes the proposal
+with no human review gate. Proposals are immutable and task/session-provenanced,
+``standard_operational`` only.
 
 Human/founder lifecycle mutations (claim, validate, review, publish, assign,
-rollback, retire) require the master bearer token and are gated behind
-bearer-only routes with no agent path. Agent callers receive server-side
-403 for all lifecycle mutations other than their own active pilot
-task/session-bound proposal submission.
+rollback, retire) are RETIRED (THR-136). All review routes return 410 Gone
+for authorized callers while preserving existing agent-vs-human auth behavior.
+Agent callers receive 403 for human-only routes.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated

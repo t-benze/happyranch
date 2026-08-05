@@ -362,6 +362,214 @@ class SkillLifecycleService:
 
         return pkg
 
+    # ── Agent-direct proposal submission (THR-136) ───────────────────
+
+    # Validator version/key for deterministic agent-submitted proposal validation.
+    # Agents submit proposals that are synchronously validated and published
+    # with this fixed validator identity — no human review gate.
+    _AGENT_VALIDATOR_VERSION = "THR-136/1.0.0"
+    _AGENT_VALIDATOR_KEY = "THR-136/1.0.0"
+
+    def submit_proposal_agent_direct(
+        self,
+        db,
+        slug: str,
+        name: str,
+        description: str,
+        skill_md: str,
+        version: str = "0.1.0",
+        policy_class: str = "standard_operational",
+        references: dict[str, str] | None = None,
+        assets: dict[str, str] | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        proposer_agent: str | None = None,
+        purpose: str = "",
+        target_agent_suggestion: str = "",
+        protected_slugs: frozenset | None = None,
+        org_root: Path | str | None = None,
+    ) -> PackageVersion:
+        """Agent-direct proposal submission → synchronous validation → PUBLISHED (THR-136).
+
+        Replaces the legacy multi-step review chain (proposed → draft →
+        validated → in_review → approved → published) with a single atomic
+        validated-published admission for agent-authored proposals.
+
+        Deterministic validation:
+        - Validates content safety (non-empty SKILL.md, safe paths, policy class)
+        - Runs with fixed validator version/key (THR-136/1.0.0)
+        - Records append-only validation + publication events
+        - NEVER creates assignment rows, eligibility/config writes,
+          workspace links, materializations, or prompt-index/session
+          exposure
+        - NEVER invokes assignment/resolver/materialization
+
+        This is mechanical admission, NOT implicit Founder approval.
+        The already-shipped Skills catalog/detail per-agent assignment
+        control is the ONLY enablement path.
+        """
+        # ── Content validation (same guards as submit_proposal) ──────
+        self._ensure_non_empty(skill_md, "skill_md")
+        self._ensure_protected_slug(slug, protected_slugs)
+        self._ensure_policy_class(policy_class)
+
+        refs = references or {}
+        asts = assets or {}
+        self._validate_safe_paths(slug, refs, asts)
+
+        # Agent proposals require verified task/session binding.
+        if not task_id or not session_id:
+            raise LifecycleError(
+                code="missing_session_binding",
+                detail="Agent proposals require verified task_id + session_id binding.",
+                status_code=400,
+            )
+
+        skill_id = f"hr:{slug}"
+
+        # ── Persist to ArtifactStore (same as submit_proposal) ───────
+        content_artifact_key: str | None = None
+        content_hash: str
+        new_artifact_keys: list[str] = []
+        if org_root is not None:
+            try:
+                from runtime.infrastructure.artifact_store import ArtifactStore
+                from runtime.orchestrator._paths import OrgPaths
+
+                org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+                artifact_store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
+
+                content_hash, content_artifact_key, new_artifact_keys = (
+                    _persist_package_to_artifact_store(
+                        artifact_store, slug, skill_md, refs, asts,
+                    )
+                )
+            except LifecycleError:
+                raise
+            except Exception as exc:
+                raise LifecycleError(
+                    code="artifact_store_failed",
+                    detail=f"Failed to persist proposal to artifact store: {exc}",
+                    status_code=500,
+                ) from exc
+        else:
+            content_hash = PackageVersion.compute_content_hash(skill_md)
+
+        # ── Check for duplicate content hash (idempotency) ───────────
+        existing = stores.get_package_version_by_hash(db, skill_id, content_hash)
+        if existing is not None:
+            # Idempotent — if already PUBLISHED, return as-is.
+            # If still PROPOSED (legacy), return as-is (caller sees the
+            # actual status).
+            return existing
+
+        # ── Atomic ledger write: package + validation + publication ──
+        conn = _get_raw_connection(db)
+        prev_isolation = getattr(conn, 'isolation_level', 'auto')
+        try:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+
+            now = utcnow()
+
+            # Create the package version record — status PUBLISHED directly.
+            pkg = PackageVersion(
+                skill_id=skill_id,
+                slug=slug,
+                name=name,
+                version=version,
+                content_hash=content_hash,
+                policy_class=policy_class,
+                description=description,
+                skill_md="",  # Artifact store is canonical
+                content_artifact_key=content_artifact_key,
+                status=LifecycleStatus.PUBLISHED,
+                created_by=proposer_agent or "",
+                proposal_task_id=task_id,
+                proposal_session_id=session_id,
+                proposer_agent=proposer_agent,
+                publisher=proposer_agent or "",
+                published_at=now,
+            )
+
+            version_id = stores.insert_package_version(db, pkg)
+            pkg.id = version_id
+
+            # Event 1: Proposal creation (authored event).
+            stores.insert_lifecycle_event(db, LifecycleEvent(
+                skill_id=skill_id,
+                package_version_id=version_id,
+                event_type="proposed",
+                actor=proposer_agent or "",
+                actor_role="agent",
+                previous_status=None,
+                new_status=LifecycleStatus.PUBLISHED.value,
+                content_hash=content_hash,
+                metadata={
+                    "purpose": purpose,
+                    "target_agent_suggestion": target_agent_suggestion,
+                    "content_artifact_key": content_artifact_key,
+                },
+                task_id=task_id,
+                session_id=session_id,
+            ))
+
+            # Event 2: Deterministic validation event.
+            stores.insert_lifecycle_event(db, LifecycleEvent(
+                skill_id=skill_id,
+                package_version_id=version_id,
+                event_type="validated",
+                actor="validator",
+                actor_role="service",
+                previous_status=LifecycleStatus.PUBLISHED.value,
+                new_status=LifecycleStatus.PUBLISHED.value,
+                content_hash=content_hash,
+                metadata={
+                    "validator_version": self._AGENT_VALIDATOR_VERSION,
+                    "validator_key": self._AGENT_VALIDATOR_KEY,
+                    "content_hash": content_hash,
+                    "findings": [],
+                },
+            ))
+
+            # Event 3: Publication event.
+            stores.insert_lifecycle_event(db, LifecycleEvent(
+                skill_id=skill_id,
+                package_version_id=version_id,
+                event_type="published",
+                actor=proposer_agent or "",
+                actor_role="agent",
+                previous_status=LifecycleStatus.PUBLISHED.value,
+                new_status=LifecycleStatus.PUBLISHED.value,
+                content_hash=content_hash,
+            ))
+
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            # Clean up artifacts ONLY we created (never delete pre-existing).
+            if org_root is not None:
+                try:
+                    org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+                    from runtime.infrastructure.artifact_store import ArtifactStore
+                    from runtime.orchestrator._paths import OrgPaths
+                    cleanup_store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
+                    for key in new_artifact_keys:
+                        try:
+                            cleanup_store.delete(key)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            raise
+        finally:
+            conn.isolation_level = prev_isolation
+
+        return pkg
+
     def _validate_safe_paths(
         self, slug: str, references: dict[str, str], assets: dict[str, str],
     ) -> None:

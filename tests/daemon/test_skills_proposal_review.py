@@ -70,7 +70,7 @@ def _submit_agent_proposal(app, org_state, slug: str = "frontend-development", s
 
 
 def _claim_proposal(client: TestClient, version_id: int, **kwargs) -> dict:
-    """Founder claims a proposal via v2 route."""
+    """[THR-136] Retired route — returns 410 Gone for authorized callers."""
     r = client.post(
         "/api/v1/orgs/alpha/skill-lifecycle/proposals/claim",
         headers=_founder_headers(),
@@ -79,8 +79,15 @@ def _claim_proposal(client: TestClient, version_id: int, **kwargs) -> dict:
     return r
 
 
+def _assert_retired_route(r, code: str = "route_retired_thr136"):
+    """Assert a response is 410 Gone from a THR-136 retired route."""
+    assert r.status_code == 410, f"Expected 410, got {r.status_code}: {r.json() if r.text else 'empty'}"
+    detail = r.json().get("detail", {})
+    assert detail.get("code") == code, f"Expected code={code}, got {detail}"
+
+
 def _validate_proposal(client: TestClient, version_id: int, expected_event_id: int) -> dict:
-    """Validate via v2 route."""
+    """[THR-136] Retired route."""
     r = client.post(
         f"/api/v1/orgs/alpha/skill-lifecycle/proposals/{version_id}/validate",
         headers=_founder_headers(),

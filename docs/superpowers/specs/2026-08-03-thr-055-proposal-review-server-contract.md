@@ -1,6 +1,17 @@
 # THR-055 Skill Proposal Review — Server Contract & UI Slices
 
-**Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
+**Status:** SUPERSEDED by THR-136 (2026-08-05) — the multi-step Founder review
+chain, all review routes, proposal queue/detail UI, and proposal-specific
+assignment are retired. Agent-authored proposals are now synchronously
+validated and published via `POST /skill-lifecycle/proposals/agent`.
+Historical proposal rows remain immutable for provenance.
+
+See `protocol/05c-orchestrator.md` §4.5 (THR-136) for the current lifecycle
+model. This document is preserved for historical reference only.
+
+---
+
+**Original status (pre-THR-136):** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
 
 **Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), TASK-4154 (Slice 3A), TASK-4312 (THR-136 bounded review actions), protocol/05c-orchestrator.md §4.5.
 

@@ -22,11 +22,7 @@ import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
 import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
-import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
-import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
-import { ProposalsQueuePage } from '@/features/skills/ProposalsQueuePage';
-import { ProposalDetailPage } from '@/features/skills/ProposalDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -113,15 +109,15 @@ export function AppRoutes(): JSX.Element {
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
-          {/* THR-055 Slice 3A — Proposal Queue / Detail (before :skillId
-              so React Router doesn't treat "proposals" as a skillId). */}
-          <Route path="skills/proposals" element={<ProposalsQueuePage />} />
-          <Route path="skills/proposals/:versionId" element={<ProposalDetailPage />} />
-          {/* Static `new`/`validation` rank above the dynamic `:skillId` in
-              react-router v6, but keep them declared first for readability. */}
-          <Route path="skills/new" element={<SkillCreatePage />} />
-          <Route path="skills/validation" element={<SkillValidationPage />} />
-          <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
+          {/* THR-136: Proposal queue/detail routes retired — redirect to
+              the Skills catalog. Agent-authored proposals are now
+              synchronously validated and published. */}
+          <Route path="skills/proposals" element={<SkillsCatalogRedirect />} />
+          <Route path="skills/proposals/:versionId" element={<SkillsCatalogRedirect />} />
+          {/* THR-136: Skill create/edit routes retired — direct proposal
+              creation would strand proposals with no review path. */}
+          <Route path="skills/new" element={<SkillsCatalogRedirect />} />
+          <Route path="skills/:skillId/edit" element={<SkillsCatalogRedirect />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
@@ -170,6 +166,11 @@ function WorkHoursSurface(): JSX.Element {
 }
 
 /** Redirect the retired /schedule surface to the Work Hours Wakes view. */
+function SkillsCatalogRedirect(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  return <Navigate to={`/orgs/${slug}/skills`} replace />;
+}
+
 function ScheduleRedirect(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   return <Navigate to={`/orgs/${slug}/work-hours?view=wakes`} replace />;

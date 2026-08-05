@@ -114,7 +114,7 @@ class TestProposalRouteE2E:
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["status"] == "proposed"
+        assert data["status"] == "published"
         assert data["skill_id"] == "hr:frontend-development"
         assert data["version"] == "0.1.0"
         assert "content_hash" in data
@@ -371,29 +371,31 @@ class TestProposalRouteE2E:
         # ── Prove exact four-part provenance directly from stored record ──
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
-        # 1. Exactly one immutable proposed package version
+        # 1. Exactly one immutable PUBLISHED package version
         packages = lifecycle_stores.list_package_versions(org.db, skill_id=skill_id)
         assert len(packages) == 1, (
-            f"Expected exactly 1 proposed package, got {len(packages)}"
+            f"Expected exactly 1 published package, got {len(packages)}"
         )
         pkg = packages[0]
-        assert pkg.status.value == "proposed"
+        assert pkg.status.value == "published"
         assert pkg.proposal_task_id == "TASK-PROV"
         assert pkg.proposer_agent == "frontend_engineer"
         assert pkg.proposal_session_id == "sess-prov", (
             f"Stored proposal_session_id mismatch: expected sess-prov, got {pkg.proposal_session_id}"
         )
 
-        # 2. Exactly one lifecycle event (proposed)
+        # 2. Three lifecycle events: proposed, validated, published (THR-136)
         events = lifecycle_stores.list_lifecycle_events(org.db, skill_id=skill_id)
-        assert len(events) == 1, (
-            f"Expected exactly 1 lifecycle event, got {len(events)}"
+        assert len(events) == 3, (
+            f"Expected exactly 3 lifecycle events, got {len(events)}: "
+            f"{[e.event_type for e in events]}"
         )
-        event = events[0]
-        assert event.event_type == "proposed"
-        assert event.actor == "frontend_engineer"
+        event_types = {e.event_type for e in events}
+        assert event_types == {"proposed", "validated", "published"}, (
+            f"Expected proposed+validated+published, got {event_types}"
+        )
 
-        # 3. Zero materialization before founder publication
+        # 3. Zero materialization without explicit assignment (THR-136)
         mat = lifecycle_stores.get_latest_materialization(
             org.db, skill_id, "frontend_engineer"
         )
@@ -439,7 +441,7 @@ class TestProposalRouteE2E:
         # Verify zero residue across ALL persistence surfaces:
         # package versions, lifecycle events, materializations, and
         # ArtifactStore (not just catalog invisibility which would miss
-        # proposed-but-not-published packages).
+        # proposed-but-now-published packages).
         _assert_zero_residue(org)
 
     # ── Cross-org denial ──
@@ -578,7 +580,7 @@ class TestAgentOnlyProposalRoute:
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["status"] == "proposed"
+        assert data["status"] == "published"
 
         # Verify stored provenance via the lifecycle status route
         client.headers["Authorization"] = f"Bearer {_read_test_token()}"
