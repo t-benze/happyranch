@@ -2,14 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | draft — decision-ready for Founder and Engineering review |
+| Status | Authoritative — Founder-authorized implementation contract (THR-055 seq 187, 200, 205), dated 2026-08-05 |
 | Owner | Product Lead |
 | Date | 2026-08-05 |
 | Source Links | THR-055 seq. 187–190; PR #555 `2026-08-04-skills-governance-prd.md`; TASK-3380; TASK-3436 / PR #507; TASK-3509 / PR #511; THR-092 Skill Management web-module brief |
-| Commitment Boundary | analysis-only — this resets custom-skill product scope and authorizes neither implementation nor a delivery timeline. |
-| Founder Decisions | Ruled: custom skills may be created by agents through `create-skill` and by humans through the web editor; eligibility is configured per agent, team, or organization; skills remain guidance-only. Required: editor/eligibility authority model and first release cutline (Section 12). |
+| Commitment Boundary | Implementation contract — this is an authoritative product contract; implementation proceeds under THR-055 seq 187, 200, and 205 without requiring further Founder decisions. |
+| Founder Decisions | All required decisions for v1 are closed below (Section 12). Ruled: (a) humans who create, edit, validate, version, and retire custom skills and write eligibility are Founder-only via the pre-existing bearer-authenticated path; no named org/team administrators exist in v1; (b) agents create and update only their originated custom skills using verified active task/session identity; (c) default eligibility is hidden; (d) v1 is standard_operational only; (e) migration preserves useful legacy provenance/history while atomically retiring obsolete proposal-only/direct mutation routes and returning stable compatibility errors for those old writers. No implementation is blocked on further Founder rulings. |
 
-## Recommendation
+## Implementation contract
 
 Make **custom-skill creation** the primary Skills workflow. A custom skill may originate in either of two ways:
 
@@ -49,14 +49,13 @@ An operator can answer four questions without reconstructing history manually:
 | User | Primary need | Allowed product action |
 | --- | --- | --- |
 | Agent author | Capture reusable guidance discovered in a task. | Create or update its own custom-skill content through `create-skill`; submit for validation; view its own result. |
-| Human author/editor | Create, edit, validate, inspect history, and retire custom guidance. | Use the web editor within server-authorized organization scope. |
-| Eligibility administrator | Decide where approved custom guidance is visible. | Set organization, team, and agent allow/deny policy; preview impact; roll back/unassign visibility within authorized scope. |
+| Founder (human author/editor/eligibility administrator) | Create, edit, validate, inspect history, retire, and set eligibility for custom guidance. | Use the web editor via the pre-existing bearer-authenticated human path. No separate org-admin or team-admin roles exist in v1; all human custom-skill writes are Founder-only. |
 | Recipient agent | Use relevant guidance. | Receive only the version resolved for a new session; cannot alter the skill or its eligibility merely because it can see it. |
 | Engineering/support | Diagnose bad or missing materialization. | Read provenance, policy explanation, validation, version, and materialization evidence. |
 
 System contracts (`start-task`, `thread`, `jobs`, `make-worktree`, `dream`) remain runtime-owned, context-gated, and non-toggleable. First-party shipped skills remain release-managed. Global CLI/plugin skills remain outside HappyRanch custom-skill management. A custom skill never grants tools, credentials, network access, filesystem scope, sandbox changes, allow rules, executor configuration, or command authority.
 
-The exact human authority model is intentionally open: the recommended default is Founder plus explicitly authorized organization administrators for custom-skill editing and organization-wide eligibility, with team administrators limited to their own team and its agents. The server—not button visibility—must enforce whichever model the Founder rules.
+The human authority model is closed for v1: the pre-existing bearer-authenticated path is Founder-only for all human custom-skill writes (create, edit, validate, version, retire, restore) and eligibility writes (org/team/agent scope). No named organization administrators, team administrators, or delegated human roles exist in this version. The server enforces this via the existing bearer-authentication channel; no new auth, RBAC, membership storage, or permission model is introduced.
 
 ## Goals
 
@@ -86,7 +85,7 @@ Every custom skill has a stable organization-scoped slug, metadata, a current ed
 | Path | Initiator | Required outcome | Not permitted |
 | --- | --- | --- | --- |
 | Agent `create-skill` | Verified active agent task/session | Create a new custom skill or a new version with task/session/agent provenance; run deterministic validation; surface errors. | Eligibility writes, assignment, permission changes, protected-slug edits, system/first-party changes. |
-| Human web editor | Authorized human in Skills console | Create/import, edit, validate, save a new version, inspect diff/history, retire/restore. | System/first-party changes, unsupported package contents, authority outside server scope. |
+| Human web editor | Founder (bearer-authenticated) in Skills console | Create/import, edit, validate, save a new version, inspect diff/history, retire/restore. | System/first-party changes, unsupported package contents, eligibility or publication writes from an agent path. |
 
 Both paths converge on the same editable custom-skill record. An agent-created skill is not second-class and does not require an artificial publish transition. It remains non-effective until eligibility exposes it.
 
@@ -101,7 +100,7 @@ Both paths converge on the same editable custom-skill record. An agent-created s
 
 ### Eligibility and runtime flow
 
-1. An authorized human opens a custom skill's **Eligibility** surface.
+1. The Founder opens a custom skill's **Eligibility** surface (bearer-authenticated).
 2. They set scoped policy rules: organization baseline, team additions/restrictions, and agent-specific overrides. Effective policy is additive; explicit deny wins. A rule can be saved only after impact preview and server validation.
 3. The resolver evaluates the current valid, non-retired version plus eligibility. It returns visible/hidden status and the winning provenance for an agent.
 4. A recipient agent receives a compact `hr:` skill index only when the policy resolves the skill as visible. Full body materialization occurs at its next session spawn; no existing session changes mid-run.
@@ -166,7 +165,7 @@ This PRD does not prescribe endpoint names, but it requires separate server-auth
 - catalog/detail/effective-skills/materialization/audit read projections; and
 - migration/cutover from current proposal-only and retired legacy custom-skill routes.
 
-Engineering must validate the source-of-truth split before build: release-owned first-party catalog versus runtime-writable organization custom-skill content and eligibility configuration. The custom package store and eligibility store need atomic writes, rollback-safe history, and server-side scope checks. Any new human identity/RBAC model, delegated administration model, database schema change, or expansion of agent mutation authority needs Engineering design review and the Founder decision in Section 12 before implementation.
+Engineering must validate the source-of-truth split before build: release-owned first-party catalog versus runtime-writable organization custom-skill content and eligibility configuration. The custom package store and eligibility store need atomic writes, rollback-safe history, and server-side scope checks. No new human identity/RBAC model, delegated administration, or expansion of agent mutation authority is authorized; the human path remains the existing bearer-authenticated Founder channel. Database schema changes and migration/cutover plans require normal Engineering design review.
 
 ## Success signal
 
@@ -189,7 +188,7 @@ Initial measures:
 - `create-skill` system skill and supported verified-session agent authoring path.
 - Human web create/edit/validate/version-history/retire/restore for custom `standard_operational` skills.
 - Protected slug/source enforcement and deterministic package validation.
-- Per-custom-skill eligibility editor at organization, team, and agent scope; additive inheritance plus explicit deny; server-authorized atomic save; impact preview and effective-skills explanation.
+- Per-custom-skill eligibility editor at organization, team, and agent scope; additive inheritance plus explicit deny; Founder-only atomic save; impact preview and effective-skills explanation.
 - Source/task/session provenance, validation/version history, policy audit, next-session-only messaging, and materialization evidence.
 - A migration/cutover that makes this the only supported custom-skill authoring path and preserves existing evidence.
 
@@ -205,23 +204,23 @@ Initial measures:
 1. A permitted agent can use `create-skill` in an active task to create a valid custom `standard_operational` skill with server-derived task/session/agent/org provenance and clear validation output.
 2. A permitted human can create, edit, validate, save a new version, view an immutable prior-version diff, retire, and restore a custom skill through the web console.
 3. An agent-created and a human-created skill use the same custom-skill detail, version, validation, and eligibility model; neither becomes visible merely because it was created.
-4. An agent cannot create/edit a system or first-party skill, shadow a protected slug, change eligibility, assign a skill, alter a permission, or spoof task/agent/org provenance; direct attempts receive server denials and leave no partial policy/config mutation.
+4. An agent cannot create/edit a system or first-party skill, shadow a protected slug, write eligibility, assign a skill, alter a permission, or spoof task/agent/org provenance; direct attempts receive server denials and leave no partial policy/config mutation.
 5. A valid custom skill can be allowed at organization scope, restricted at team scope, and explicitly denied at agent scope; deny wins, resolver provenance names the winning rule, and a preview accurately lists the changed agents.
 6. An authorized eligibility change is atomic, audit-recorded, and takes effect only for new sessions. Existing sessions retain their already materialized version/hash.
 7. Agent Effective Skills truthfully distinguishes valid-but-hidden, visible-but-not-yet-materialized, and successfully materialized, with version/hash and policy explanation.
 8. Invalid or retired custom versions cannot become newly visible or materialize; validation failures remain actionable and recorded against the exact hash/validator version.
-9. The console presents loading, empty, populated, validation failure, conflict/stale-action, server error/retry, and server-denied states accessibly across editor and eligibility workflows.
+9. The console presents loading, empty, populated, validation failure, conflict/stale-action, server error/retry, and forbidden states accessibly across editor and eligibility workflows.
 10. Existing proposal, validation, version, assignment/eligibility, and materialization evidence is preserved through the migration, and no old proposal-only or legacy direct-write route remains a parallel mutation path.
 
-## Open questions, risks, and Founder decisions
+## Closed decisions (v1 authority ruled)
 
-### Founder decisions required before engineering build planning
+All Founder decisions for v1 are closed by THR-055 seq 187, 200, and 205:
 
-1. **Human authority model.** May the Founder alone edit custom skills and set eligibility, or may explicitly authorized organization/team administrators do so within scope? **Recommendation:** Founder + named organization administrators for org-wide content/policy; team administrators limited to their own team and direct agents. Server enforcement is mandatory.
-2. **Agent update authority.** May an agent update only a custom skill it originally created, or may it propose a new version of any non-protected organization custom skill? **Recommendation:** v1 permits creation plus a new version only of the agent's own skill; human editors can update any authorized custom skill. This keeps provenance and ownership clear.
-3. **Default eligibility.** What should happen immediately after creation? **Recommendation:** default hidden (no eligibility rules). The author or editor must make an explicit policy change to expose it.
-4. **v1 content class.** Does v1 remain `standard_operational` only? **Recommendation:** yes. Custom high-impact doctrine requires a separate governance decision.
-5. **Migration disposition.** Should the existing two pilot proposals be converted to ordinary custom skills and retained with provenance, or be archived as superseded evidence? **Recommendation:** migrate their submitted content/history into custom-skill records, default hidden, then retire the proposal-only workflow.
+1. **Human authority model.** All human custom-skill writes (create, edit, validate, version, retire, restore) and eligibility writes (org/team/agent scope) are Founder-only via the pre-existing bearer-authenticated path. No named organization administrators, team administrators, or delegated human roles exist in v1. Server enforcement is mandatory via the existing bearer channel.
+2. **Agent update authority.** Agents may create and update only their own originated custom skills using verified active task/session identity. Agents cannot update skills originated by other agents or humans.
+3. **Default eligibility.** Default hidden (no eligibility rules). The Founder must make an explicit policy change to expose a custom skill.
+4. **v1 content class.** `standard_operational` only. Custom high-impact doctrine requires a separate governance decision and is out of scope for v1.
+5. **Migration disposition.** Migrate existing proposal content/history into custom-skill records preserving useful provenance, default hidden; atomically retire the proposal-only workflow and legacy direct mutation routes; return stable compatibility errors for those old writers.
 
 ### Risks and mitigations
 
@@ -232,4 +231,4 @@ Initial measures:
 - **Overbroad org rules:** require impact preview and explicit confirmation for organization scope; show deny precedence and affected-agent count before save.
 - **False runtime claims:** show materialization evidence, not merely an assignment/policy save, before claiming a version is effective.
 
-No implementation is authorized by this PRD until the Founder decisions above are ruled and Engineering validates the authority, data-model, migration, and API plan.
+Implementation is authorized under THR-055 seq 187, 200, and 205 per the closed v1 authority decisions above. No further Founder rulings are required before Engineering proceeds with the authority, data-model, migration, and API plan.
