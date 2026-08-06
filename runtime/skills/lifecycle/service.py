@@ -256,6 +256,15 @@ class SkillLifecycleService:
                 detail="Agent proposals require verified task_id + session_id binding.",
                 status_code=400,
             )
+        # Agent proposals require source task brief digest — fail closed.
+        if actor_kind == "agent" and (not brief_digest or not brief_digest.strip()):
+            raise LifecycleError(
+                code="brief_unavailable",
+                detail="Agent proposals require the source task brief digest. "
+                        "The task's brief must be non-empty for provenance tracking.",
+                status_code=400,
+            )
+
 
         skill_id = f"hr:{slug}"
 
@@ -264,7 +273,15 @@ class SkillLifecycleService:
             self._enforce_originator(db, skill_id, proposer_agent)
 
         # ── Content scanning for prohibited guidance ──────────────────
-        self._scan_for_prohibited_content(skill_md, slug)
+        # Scan ALL text members (SKILL.md, references, assets) before any
+        # artifact creation/persistence. The offending member is identified
+        # in the actionable error detail.
+        self._scan_for_prohibited_content(skill_md, slug, member="SKILL.md")
+        for ref_name, ref_content in refs.items():
+            self._scan_for_prohibited_content(ref_content, slug, member=f"references/{ref_name}")
+        for asset_name, asset_content in asts.items():
+            self._scan_for_prohibited_content(asset_content, slug, member=f"assets/{asset_name}")
+
 
         # Persist all package members to ArtifactStore under content-addressed
         # immutable keys, then build a manifest artifact. The manifest's hash
@@ -476,24 +493,30 @@ class SkillLifecycleService:
         ("user instruction", "user instruction changes"),
     )
 
-    def _scan_for_prohibited_content(self, skill_md: str, slug: str) -> None:
-        """Scan skill guidance for prohibited capability claims.
+    def _scan_for_prohibited_content(self, text: str, slug: str, member: str = "SKILL.md") -> None:
+        """Scan text content for prohibited capability claims.
 
         A custom skill is *guidance only*. Content that claims to grant
         or configure tools, credentials, permissions, sandbox, executor,
         eligibility, or rewrite system/developer/user instructions is
         rejected before any persistence occurs.
+
+        The `member` parameter identifies the specific package member
+        (e.g. "SKILL.md", "references/guide.md", "assets/diagram.svg")
+        that triggered the rejection, so the caller receives an actionable
+        error identifying the offending member.
         """
-        lowered = skill_md.lower()
+        lowered = text.lower()
         for pattern, category in self._PROHIBITED_CONTENT_PATTERNS:
             if pattern in lowered:
                 raise LifecycleError(
                     code="prohibited_content",
                     detail=(
-                        f"Skill guidance for '{slug}' contains prohibited content: "
-                        f"'{category}'. Custom skills are guidance only and must "
-                        f"not claim to grant or configure tools, credentials, "
-                        f"permissions, sandbox, executor, or instruction authority."
+                        f"Skill guidance for '{slug}' member '{member}' contains "
+                        f"prohibited content: '{category}'. Custom skills are "
+                        f"guidance only and must not claim to grant or configure "
+                        f"tools, credentials, permissions, sandbox, executor, "
+                        f"or instruction authority."
                     ),
                     status_code=400,
                 )

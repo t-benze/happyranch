@@ -832,7 +832,7 @@ Human/founder lifecycle authority remains as merged.
 submission workflow is described in §4.5 "Agent authority" above. The single
 shipping CLI form is::
 
-    happyranch skills propose --from-file <proposal.json> \
+    happyranch skills create --from-file <payload.json> \
       --session-id <session-id> [--org <slug>]
 
 There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags

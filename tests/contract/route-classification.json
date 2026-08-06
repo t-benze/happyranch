@@ -185,6 +185,7 @@
 
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055)",
 
-    "POST /api/v1/orgs/{slug}/skills/recover": "operator CLI-only recovery route; not in SPA"
+    "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — opaque session-binding create-skill route, not exercised from the Web UI (THR-055)",
+
   }
 }

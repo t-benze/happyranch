@@ -187,13 +187,14 @@ and no eligibility mutation.
 
 ## Scope and future
 
-This is the **B1 slice** of custom-skill creation. What is NOT yet available
-(and what you must not attempt):
+This is the **B1 slice** of custom-skill creation. What IS available:
+- Creating a new custom skill from an active task session.
+- Appending a new version to an existing custom skill you created (same author-originated agent only).
 
-- Editing an existing custom skill (appending a new version).
+What is NOT yet available (and must not be attempted):
+- Editing a custom skill created by a different agent.
 - Retiring or restoring a custom skill.
 - Human authoring/editor via the web console (B2).
-- Eligibility policy configuration of any kind (B2).
 - Materialization into agent sessions (requires eligibility + B2 backend
   contract freeze).
 - Any web console surface for custom skills beyond the read-only catalog.

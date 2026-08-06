@@ -1544,14 +1544,13 @@ _AGENT_SKILL_BROAD_REJECT: frozenset[str] = frozenset({
 def _check_any_bearer(
     authorization: str | None = Header(default=None, include_in_schema=False),
 ) -> bool:
-    """Return True iff ANY Authorization header is present, regardless of validity.
+    """Return True iff ANY Authorization header is present, regardless of value.
 
-    Agent-only routes reject the mere presence of a bearer token —
-    valid or invalid — because that path is exclusively session-binding.
-    This is stricter than _check_optional_token which only detects the
-    master token match.
+    Agent-only routes reject the mere PRESENCE of an Authorization header —
+    valid, invalid, empty, Basic, Token, or any bearer form. The path is
+    exclusively session-binding and MUST NOT carry any Authorization token.
     """
-    return bool(authorization and authorization.startswith("Bearer "))
+    return authorization is not None
 
 
 class CreateSkillRequestBody(BaseModel):
@@ -1674,6 +1673,17 @@ def create_skill_agent_only(
             },
         )
 
+    # Pre-lease test seam: pause AFTER context resolution but BEFORE
+    # binding-lease acquisition. Tests use this to prove terminal-wins
+    # interleavings (clear/set_active win before the route acquires
+    # the lease). None in production — zero runtime overhead.
+    pre_lease = org.sessions._pre_lease_barrier
+    if pre_lease is not None:
+        reached = org.sessions._pre_lease_barrier_reached
+        if reached is not None:
+            reached.set()
+        pre_lease.wait()
+
     # Re-verify session is CURRENT under binding lease
     binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
     with binding_lease:
@@ -1687,30 +1697,55 @@ def create_skill_agent_only(
                 },
             )
 
+        # Post-authorization test seam: pause AFTER session revalidation
+        # but BEFORE persistence. Tests use this to prove proposal-wins
+        # interleavings. None in production.
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
+
+        # Build protected-slug set: system contracts + first-party shipped skills.
+        # Use the canonical release registry mechanism; fail closed on load errors
+        # rather than silently skipping protection.
         protected_slugs = _build_protected_slugs()
+        # Load first-party shipped skills from the release registry
+        # (runtime/skills/ — the canonical managed-catalog directory).
+        # Includes standard_operational skills like 'reflection' in addition
+        # to high_impact_policy skills.
+        release_registry = _release_registry(org)
+        for entry in release_registry.list_all():
+            stripped = entry.id.replace("hr:", "")
+            protected_slugs = protected_slugs | frozenset({stripped})
 
-        # Collect additional protected slugs from the release catalog
-        try:
-            release_registry = SkillRegistry(
-                skills_root=org.settings.get_protocol_dir() / "skills",
-            )
-            for entry in release_registry.list_all():
-                if entry.policy_class == PolicyClass.SYSTEM_CONTRACT:
-                    protected_slugs = protected_slugs | frozenset({entry.id.replace("hr:", "")})
-        except Exception:
-            pass  # Registry might not be available; system-contract slugs suffice
-
-        # Compute task brief digest for immutable provenance
+        # Compute task brief digest for immutable provenance.
+        # This is MANDATORY for the agent-create route — fail closed when
+        # unavailable or empty, with zero persistence/artifact residue.
         import hashlib
-        brief_digest: str | None = None
-        try:
-            task_record = org.db.get_task(task_id)
-            if task_record and task_record.brief:
-                brief_digest = hashlib.sha256(
-                    task_record.brief.encode("utf-8")
-                ).hexdigest()
-        except Exception:
-            pass  # Non-critical provenance — don't block creation
+        task_record = org.db.get_task(task_id)
+        if task_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "task_not_found",
+                    "detail": f"Task '{task_id}' not found. The source task must exist "
+                              "for agent skill creation.",
+                },
+            )
+        if not task_record.brief or not task_record.brief.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "brief_unavailable",
+                    "detail": "Source task brief is unavailable or empty. "
+                              "Agent skill creation requires a task with a non-empty brief.",
+                },
+            )
+        brief_digest = hashlib.sha256(
+            task_record.brief.encode("utf-8")
+        ).hexdigest()
 
         try:
             pkg = _create_skill_service.submit_proposal(
@@ -1753,5 +1788,6 @@ def create_skill_agent_only(
             "task_id": task_id,
             "session_id": session_id,
             "org": verified_org,
+            "brief_digest": brief_digest,
         },
     }
