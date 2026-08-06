@@ -1504,3 +1504,198 @@ def skill_recover(
             f"release source for same-owner deployments)."
         ),
     }
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Agent-only create-skill route (THR-055 B1 — FR-1 / FR-2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from fastapi import Depends, Header, Body as RequestBody
+from runtime.daemon.auth import _check_optional_token
+from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
+from runtime.skills.system_contracts import SYSTEM_CONTRACTS as _SYSTEM_CONTRACTS
+
+# Dedicated router for agent-only route (no bearer dependency)
+agent_skills_router = APIRouter()
+
+_create_skill_service = SkillLifecycleService()
+
+# Prohibited body keys — same set as the agent proposal route
+_AGENT_SKILL_PROHIBITED_KEYS: frozenset[str] = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+class CreateSkillRequestBody(BaseModel):
+    """Request body for agent create-skill submission."""
+    slug: str
+    name: str
+    description: str
+    skill_md: str
+    version: str = "0.1.0"
+    purpose: str = ""
+    references: dict[str, str] | None = None
+    assets: dict[str, str] | None = None
+
+
+def _build_protected_slugs() -> frozenset:
+    """Build the protected-slug set from system contracts ONLY.
+
+    System contract ids are the runtime-protected namespace.
+    First-party shipped skill slugs are validated by the lifecycle
+    service's own protected-slug enforcement against the release catalog.
+    """
+    protected: set[str] = set()
+    for sc in _SYSTEM_CONTRACTS:
+        protected.add(sc.id)
+    return frozenset(protected)
+
+
+@agent_skills_router.post("/skills/agent", status_code=201)
+def create_skill_agent_only(
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Skill package (no identity/authority fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Create a custom skill via opaque agent-session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, agent, task, and session from the
+    SessionTracker context.
+
+    Returns 401 for bearer token present, 403 for unknown/cross-org/
+    mismatched sessions, and 403 for any prohibited body key.
+
+    The created skill is default-hidden. Eligibility is a separate
+    Founder-only operation.
+    """
+    # Reject bearer token — agent-session ONLY
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session creation only. "
+                          "Use the web console for bearer-authenticated skill creation.",
+            },
+        )
+
+    # Reject ANY prohibited body key BEFORE Pydantic parsing or persistence
+    for key in _AGENT_SKILL_PROHIBITED_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the request body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the sanitized body through Pydantic
+    body = CreateSkillRequestBody(**body_raw)
+
+    # Resolve (org_slug, task_id, agent_name) from opaque session
+    context = org.sessions.get_context_by_session(session_id)
+    if context is None:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'.",
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context.",
+            },
+        )
+
+    verified_org, task_id, agent_name = context
+
+    # Cross-check: path-selected org MUST match session's org
+    slug = org.slug
+    if verified_org != slug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "cross_org_session",
+                "detail": f"Session {session_id} belongs to org '{verified_org}', not '{slug}'.",
+            },
+        )
+
+    # Re-verify session is CURRENT under binding lease
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session.",
+                },
+            )
+
+        protected_slugs = _build_protected_slugs()
+
+        # Collect additional protected slugs from the release catalog
+        try:
+            release_registry = SkillRegistry(
+                skills_root=org.settings.get_protocol_dir() / "skills",
+            )
+            for entry in release_registry.list_all():
+                if entry.policy_class == PolicyClass.SYSTEM_CONTRACT:
+                    protected_slugs = protected_slugs | frozenset({entry.id.replace("hr:", "")})
+        except Exception:
+            pass  # Registry might not be available; system-contract slugs suffice
+
+        try:
+            pkg = _create_skill_service.submit_proposal(
+                db=org.db,
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class="standard_operational",
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion="",
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "content_hash": pkg.content_hash,
+        "policy_class": pkg.policy_class,
+        "provenance": {
+            "agent": agent_name,
+            "task_id": task_id,
+            "session_id": session_id,
+            "org": verified_org,
+        },
+    }

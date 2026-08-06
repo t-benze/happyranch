@@ -849,7 +849,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -932,7 +932,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -995,7 +995,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -1050,7 +1050,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -1125,7 +1125,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
         from runtime.orchestrator.workspace_adapters import (
@@ -1234,7 +1234,7 @@ class TestUserAuthoredSkillMaterialization:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_dir / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
         from runtime.skills.lifecycle.service import SkillLifecycleService

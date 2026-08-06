@@ -176,6 +176,21 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.BOOTSTRAP,
         ),
     ),
+    SystemContract(
+        id="create-skill",
+        name="Create Skill",
+        description=(
+            "Agent-authored custom skill creation: package shape, validation, "
+            "hard boundaries, and supported submission command. Custom skills "
+            "are default-hidden; eligibility is a separate Founder-only operation."
+        ),
+        when_to_use=(
+            "Use when you want to capture reusable guidance as a custom skill "
+            "from an active task session."
+        ),
+        source_path="protocol/skills/create-skill/SKILL.md",
+        contexts=(SessionContext.TASK,),
+    ),
 )
 
 

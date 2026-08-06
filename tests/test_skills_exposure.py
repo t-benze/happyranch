@@ -245,13 +245,14 @@ class TestReflectionSkillNotInSystemContracts:
         contracts = list_system_contracts()
         ids = {sc.id for sc in contracts}
         assert "reflection" not in ids
-        # The 6 system contracts remain intact
+        # The 7 system contracts remain intact
         assert "start-task" in ids
         assert "jobs" in ids
         assert "make-worktree" in ids
         assert "thread" in ids
         assert "dream" in ids
         assert "todos" in ids
+        assert "create-skill" in ids
 
 
 # ══════════════════════════════════════════════════════════════════════════
