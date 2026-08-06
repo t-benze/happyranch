@@ -199,6 +199,28 @@ Custom-adapter profiles do **not** require a separate ``executors.json`` record
 keyed by their profile name — the approved adapter's absolute path IS the launch
 artifact, verified by hash at every launch.
 
+**THR-107 v9 Slice 1 — COMMITTED-only launch eligibility.** As of v9,
+custom-adapter profiles additionally require a durable COMMITTED
+direct-connect operation in the SQLite operation journal. An adapter with
+APPROVED/hash-verified binding but no COMMITTED direct-connect record is
+**not launchable**. The eligibility check fails closed with an actionable,
+non-secret error before any executor subprocess (Popen) is reachable.
+The direct-connect operation journal is the sole authority source; YAML
+profile/adapter stores and the transient registry are materialized projections
+only. This is an interim serial boundary — the full submit/commit API,
+artifact binding tables, and cutover remain deferred to Slice 2/3.
+
+**Failure modes (Slice 1 interim boundary):**
+- No COMMITTED operation → ``ValueError`` with message
+  ``"no durable COMMITTED direct-connect operation found"`` — retryable after
+  completing the direct-connect flow.
+- Store unavailable (daemon not fully started) → fail closed, same error.
+- The error message is actionable and contains no secret token material.
+
+This guide describes the current Slice-1 behavior. The final D7B policy (Slice
+2/3) will include: direct submit/commit HTTP routes, artifact binding tables,
+dependency observation history, reconciler/cutover, and updated OpenAPI/UI.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during

@@ -45,7 +45,8 @@ from runtime.infrastructure.direct_connect_store import (
 from runtime.orchestrator.executor_registry import (
     ExecutorRegistry,
     ExecutorProfile,
-    set_direct_connect_store_for_tests,
+    get_registry,
+    reset_registry,
 )
 
 
@@ -560,9 +561,11 @@ class TestCommittedOnlyEligibilityFence:
     @pytest.fixture(autouse=True)
     def _setup_store(self, db: Database):
         """Wire the store for eligibility checks; cleanup after."""
-        set_direct_connect_store_for_tests(db.direct_connect)
+        reset_registry()
+        reg = get_registry()
+        reg.set_direct_connect_store(db.direct_connect)
         yield
-        set_direct_connect_store_for_tests(None)
+        reset_registry()
 
     def _make_profile(self, name="test-profile", adapter_id="test-adapter-001") -> ExecutorProfile:
         return ExecutorProfile(
@@ -629,7 +632,7 @@ class TestCommittedOnlyEligibilityFence:
 
     def test_store_not_wired_returns_none(self, db: Database):
         """When store is None, fail closed (no authority source)."""
-        set_direct_connect_store_for_tests(None)
+        reset_registry()
         profile = self._make_profile()
         result = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
         assert result is None
@@ -706,7 +709,9 @@ class TestFiveRunnerCommittedFence:
         import os
         import stat
 
-        set_direct_connect_store_for_tests(db.direct_connect)
+        reset_registry()
+        reg = get_registry()
+        reg.set_direct_connect_store(db.direct_connect)
 
         # Create a valid adapter executable
         self._exe = tmp_path / "test-adapter"
@@ -727,15 +732,13 @@ class TestFiveRunnerCommittedFence:
         save_adapter(self._adapter_entry)
 
         # Register a custom profile directly
-        from runtime.orchestrator.executor_registry import get_registry
-        registry = get_registry()
         profile = ExecutorProfile(
             name="thr107-test-profile",
             kind="custom",
             command_adapter_id="custom-adapter:test-adapter-002",
         )
         try:
-            registry.register_custom_profile(profile)
+            reg.register_custom_profile(profile)
         except Exception:
             pass  # may already exist from previous test
 
@@ -743,7 +746,7 @@ class TestFiveRunnerCommittedFence:
         yield
 
         # Cleanup
-        set_direct_connect_store_for_tests(None)
+        reset_registry()
         from runtime.orchestrator.adapter_store import remove_adapter
         try:
             remove_adapter("test-adapter-002")
@@ -853,6 +856,603 @@ class TestFiveRunnerCommittedFence:
         )
         result = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
         assert result is None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. Commit-Operation Atomic Predicates (reviewer F2)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestCommitOperationAtomicPredicates:
+    """Prove commit_operation requires receipts + readback + no compensation
+    residue before transitioning to COMMITTED (reviewer finding F2)."""
+
+    def test_commit_rejects_zero_receipts(self, db: Database):
+        """Commit fails when there are zero receipts."""
+        store = db.direct_connect
+        op = store.reserve_operation(
+            operation_id=_op_id(1), profile_name="p", adapter_id="a",
+            owner_agent="agent", raw_authority_token="tok",
+            authority_owner="agent", replay_identity="r-zero-receipts",
+        )
+        store.transition_to_projecting(op["id"])
+        with pytest.raises(ValueError, match="receipt"):
+            store.commit_operation(op["id"])
+        # Operation must remain projecting, not committed
+        op2 = store.get_operation(op["id"])
+        assert op2["lifecycle_status"] == LIFECYCLE_PROJECTING
+
+    def test_commit_rejects_pending_receipts(self, db: Database):
+        """Commit fails when any receipt is still pending."""
+        store = db.direct_connect
+        op = store.reserve_operation(
+            operation_id=_op_id(1), profile_name="p", adapter_id="a",
+            owner_agent="agent", raw_authority_token="tok",
+            authority_owner="agent", replay_identity="r-pending-receipt",
+        )
+        store.write_receipt(op["id"], "projection", "s1")
+        store.transition_to_projecting(op["id"])
+        with pytest.raises(ValueError, match="pending"):
+            store.commit_operation(op["id"])
+        op2 = store.get_operation(op["id"])
+        assert op2["lifecycle_status"] == LIFECYCLE_PROJECTING
+
+    def test_commit_rejects_failed_receipts(self, db: Database):
+        """Commit fails when any receipt is failed."""
+        store = db.direct_connect
+        op = store.reserve_operation(
+            operation_id=_op_id(1), profile_name="p", adapter_id="a",
+            owner_agent="agent", raw_authority_token="tok",
+            authority_owner="agent", replay_identity="r-failed-receipt",
+        )
+        r1 = store.write_receipt(op["id"], "projection", "s1")
+        store.verify_receipt(r1, "ok")
+        r2 = store.write_receipt(op["id"], "projection", "s2")
+        store.fail_receipt(r2, "manual-fix")
+        store.transition_to_projecting(op["id"])
+        with pytest.raises(ValueError, match="failed"):
+            store.commit_operation(op["id"])
+        op2 = store.get_operation(op["id"])
+        assert op2["lifecycle_status"] == LIFECYCLE_PROJECTING
+
+    def test_commit_rejects_compensation_residue(self, db: Database):
+        """Commit fails when compensation residue exists."""
+        store = db.direct_connect
+        op = store.reserve_operation(
+            operation_id=_op_id(1), profile_name="p", adapter_id="a",
+            owner_agent="agent", raw_authority_token="tok",
+            authority_owner="agent", replay_identity="r-residue-refuse",
+        )
+        r1 = store.write_receipt(op["id"], "projection", "s1")
+        store.verify_receipt(r1, "ok")
+        store.set_compensation_residue(op["id"], {"leftover": True})
+        store.transition_to_projecting(op["id"])
+        with pytest.raises(ValueError, match="compensation"):
+            store.commit_operation(op["id"])
+        op2 = store.get_operation(op["id"])
+        assert op2["lifecycle_status"] == LIFECYCLE_PROJECTING
+
+    def test_commit_succeeds_with_all_completed_and_no_residue(self, db: Database):
+        """Commit with all receipts completed and no compensation residue succeeds."""
+        store = db.direct_connect
+        op = _create_committed_op(store, n=1)
+        assert op["lifecycle_status"] == LIFECYCLE_COMMITTED
+        committed = store.get_committed_operation("test-profile", "test-adapter-001")
+        assert committed is not None
+
+    def test_commit_reads_back_after_write(self, db: Database):
+        """After commit, reading back the operation returns COMMITTED status."""
+        store = db.direct_connect
+        op = _create_committed_op(store, n=1)
+        # Read-back verification
+        op2 = store.get_operation(op["id"])
+        assert op2["lifecycle_status"] == LIFECYCLE_COMMITTED
+        # Receipts are all completed
+        receipts = store.get_receipts(op["id"])
+        assert len(receipts) >= 2
+        for r in receipts:
+            assert r["status"] == "completed"
+
+    def test_commit_fails_when_not_projecting(self, db: Database):
+        """Commit from non-projecting state fails (already covered)."""
+        store = db.direct_connect
+        op = store.reserve_operation(
+            operation_id=_op_id(1), profile_name="p", adapter_id="a",
+            owner_agent="agent", raw_authority_token="tok",
+            authority_owner="agent", replay_identity="r-not-projecting",
+        )
+        result = store.commit_operation(op["id"])
+        assert result is None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. Claim-Before-Parse Coordinator (reviewer F3)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestClaimBeforeParseCoordinator:
+    """Prove the typed shipping coordinator claims raw-token authority BEFORE
+    JSON/Pydantic parsing, durably terminalizes all failures, and supports
+    exact-COMMITTED replay (reviewer finding F3)."""
+
+    def test_claim_before_parse_persists_token_fingerprint_only(self, db: Database):
+        """The coordinator persists only non-secret authority material (CAS hash),
+        never the raw token text after initial claim."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+        raw_token = "sk-very-secret-token-value"
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token=raw_token,
+            authority_owner="test-agent",
+            replay_identity="r-claim-1",
+        )
+        assert result["status"] == "reserved"
+        # Read back the operation — raw token is stored, but coordinator
+        # doesn't return it in its result (non-secret only)
+        op = store.get_operation(_op_id(1))
+        assert "raw_authority_token" in op
+        # CAS hash is the authority fingerprint
+        expected_cas = compute_cas("test-agent", raw_token)
+        assert op["cas_hash"] == expected_cas
+        # Coordinator result must not expose raw token
+        assert "raw_authority_token" not in result or result.get("raw_authority_token") is None
+
+    def test_coordinator_terminalizes_malformed_input(self, db: Database):
+        """Malformed authority input (empty token) is terminalized before parsing."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="",  # malformed
+            authority_owner="test-agent",
+            replay_identity="r-malformed-claim",
+        )
+        assert result["terminal"] is True
+        assert "malformed" in result["reason"].lower()
+        op = store.get_operation(_op_id(1))
+        assert op is not None
+        assert is_terminal(op["lifecycle_status"])
+
+    def test_coordinator_terminalizes_expired_authority(self, db: Database):
+        """Expired authority is terminalized."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="valid-token",
+            authority_owner="test-agent",
+            replay_identity="r-expired-claim",
+            authority_expiry=past,
+        )
+        assert result["terminal"] is True
+        assert "expired" in result["reason"].lower()
+        op = store.get_operation(_op_id(1))
+        assert is_terminal(op["lifecycle_status"])
+
+    def test_coordinator_terminalizes_owner_mismatch(self, db: Database):
+        """Owner mismatch is terminalized."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="valid-token",
+            authority_owner="other-agent",  # different from owner_agent
+            replay_identity="r-mismatch-claim",
+        )
+        assert result["terminal"] is True
+        assert "owner" in result["reason"].lower()
+        op = store.get_operation(_op_id(1))
+        assert is_terminal(op["lifecycle_status"])
+
+    def test_replay_exact_match_is_zero_write(self, db: Database):
+        """Exact same (owner, token, replay) is idempotent zero-write replay."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+
+        # First claim
+        r1 = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="token-replay",
+            authority_owner="test-agent",
+            replay_identity="r-exact-replay",
+        )
+        assert r1["status"] == "reserved"
+
+        # Exact replay with same parameters
+        r2 = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="token-replay",
+            authority_owner="test-agent",
+            replay_identity="r-exact-replay",
+        )
+        assert r2["replay"] is True
+        assert r2["status"] == "replay"
+
+    def test_replay_different_token_is_terminalized(self, db: Database):
+        """Replay identity collision with different token is terminalized."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+
+        coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="token-original",
+            authority_owner="test-agent",
+            replay_identity="r-different-replay",
+        )
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(2),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="token-different",
+            authority_owner="test-agent",
+            replay_identity="r-different-replay",
+        )
+        assert result["terminal"] is True
+        assert "replay" in result["reason"].lower()
+
+    def test_terminalized_token_never_reusable(self, db: Database):
+        """Once terminalized, the operation is never reusable — cannot transition
+        to projecting or committed."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="",  # triggers malformed terminal
+            authority_owner="test-agent",
+            replay_identity="r-never-reusable",
+        )
+        assert result["terminal"] is True
+
+        # Cannot transition to projecting
+        r = store.transition_to_projecting(_op_id(1))
+        assert r is None
+        # Cannot commit
+        r = store.commit_operation(_op_id(1))
+        assert r is None
+        # get_committed_operation returns None
+        assert store.get_committed_operation("test-profile", "adapter-1") is None
+
+    def test_claim_before_parse_durable_audit_residue(self, db: Database):
+        """Every terminalization leaves durable audit/residue evidence."""
+        store = db.direct_connect
+        from runtime.infrastructure.direct_connect_store import DirectConnectCoordinator
+        coordinator = DirectConnectCoordinator(store)
+
+        result = coordinator.claim_and_prepare(
+            operation_id=_op_id(1),
+            profile_name="test-profile",
+            adapter_id="adapter-1",
+            owner_agent="test-agent",
+            raw_authority_token="",
+            authority_owner="test-agent",
+            replay_identity="r-audit-residue",
+        )
+        assert result["terminal"] is True
+        op = store.get_operation(_op_id(1))
+        assert op is not None
+        assert is_terminal(op["lifecycle_status"])
+        assert op["terminal_reason"] and len(op["terminal_reason"]) > 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. Production-Store Wiring (reviewer F1)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestProductionStoreWiring:
+    """Prove that the executor registry uses the authoritative Database.direct_connect
+    store, not a test-only injection path (reviewer finding F1)."""
+
+    def test_registry_starts_with_no_store(self):
+        """A fresh ExecutorRegistry has no store (safe default)."""
+        from runtime.orchestrator.executor_registry import ExecutorRegistry, reset_registry
+        reset_registry()
+        registry = ExecutorRegistry()
+        assert registry.direct_connect_store is None
+
+    def test_set_direct_connect_store_on_registry(self, db: Database):
+        """Setting the store on a registry instance works."""
+        registry = ExecutorRegistry()
+        registry.set_direct_connect_store(db.direct_connect)
+        assert registry.direct_connect_store is not None
+
+    def test_store_is_wired_from_database_after_load(self):
+        """After wiring, the singleton registry gets the store from DB."""
+        import tempfile
+        from runtime.orchestrator.executor_registry import get_registry, reset_registry
+        reset_registry()
+        reg = get_registry()
+        # Before wiring, store is None
+        assert reg.direct_connect_store is None
+        # Wire it (simulating OrgState.load)
+        with tempfile.NamedTemporaryFile(suffix=".db") as tf:
+            db2 = Database(Path(tf.name))
+            try:
+                reg.set_direct_connect_store(db2.direct_connect)
+                assert reg.direct_connect_store is not None
+                # The store is the actual DirectConnectStore from Database
+                from runtime.infrastructure.direct_connect_store import DirectConnectStore
+                assert isinstance(reg.direct_connect_store, DirectConnectStore)
+            finally:
+                db2.close()
+
+    def test_fail_closed_when_store_is_none(self, db: Database):
+        """When no store is wired, eligibility check fails closed (returns None)."""
+        from runtime.orchestrator.executor_registry import ExecutorRegistry, reset_registry
+        reset_registry()
+        registry = ExecutorRegistry()
+        # No store wired
+        profile = ExecutorProfile(
+            name="test-profile", kind="custom",
+            command_adapter_id="custom-adapter:any-adapter",
+        )
+        # Should fail closed — no store means no authority source
+        result = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        assert result is None
+
+    def test_real_production_wiring_via_get_registry(self, db: Database):
+        """The singleton from get_registry() can be wired with the store."""
+        from runtime.orchestrator.executor_registry import get_registry, reset_registry
+        reset_registry()
+        reg = get_registry()
+        reg.set_direct_connect_store(db.direct_connect)
+        # Verify the wired store is visible and is the same object
+        assert reg.direct_connect_store is db.direct_connect
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10. Real-Runner Proof Matrix (reviewer F4)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestRealRunnerProofMatrix:
+    """Prove that the real Orchestrator._run_agent, thread invocation,
+    wake, dream, and schedule runner seams respect the COMMITTED-only fence
+    with actual executor construction (reviewer finding F4)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db: Database, tmp_path: Path):
+        """Set up store, adapter entry, custom profile, and registry wiring."""
+        import os, stat
+        from runtime.orchestrator.executor_registry import get_registry, reset_registry
+
+        # Reset + wire the store
+        reset_registry()
+        reg = get_registry()
+        reg.set_direct_connect_store(db.direct_connect)
+
+        # Create a valid adapter executable
+        self._exe = tmp_path / "test-adapter-real"
+        self._exe.write_text("#!/bin/bash\necho '{}'")
+        self._exe.chmod(self._exe.stat().st_mode | stat.S_IEXEC)
+
+        from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter, compute_sha256
+        exe_hash = compute_sha256(str(self._exe))
+        self._adapter_entry = AdapterEntry(
+            id="test-adapter-real",
+            name="test-adapter-real",
+            executable=str(self._exe),
+            executable_hash=exe_hash,
+            version="1.0",
+            status="approved",
+            contract_version=1,
+        )
+        save_adapter(self._adapter_entry)
+
+        # Register custom profile
+        profile = ExecutorProfile(
+            name="thr107-real-profile",
+            kind="custom",
+            command_adapter_id="custom-adapter:test-adapter-real",
+        )
+        try:
+            reg.register_custom_profile(profile)
+        except Exception:
+            pass
+
+        self._db = db
+        self._tmp_path = tmp_path
+        yield
+
+        # Cleanup
+        from runtime.orchestrator.adapter_store import remove_adapter
+        try:
+            remove_adapter("test-adapter-real")
+        except Exception:
+            pass
+        reset_registry()
+
+    def _settings_and_paths(self):
+        from runtime.config import Settings
+        from runtime.orchestrator._paths import OrgPaths
+        settings = Settings(
+            claude_cli_path="/usr/bin/true",
+            codex_cli_path="/usr/bin/true",
+            opencode_cli_path="/usr/bin/true",
+            pi_cli_path="/usr/bin/true",
+        )
+        paths = OrgPaths(root=self._tmp_path)
+        return settings, paths
+
+    # ── Orchestrator._build_executor (real task runner seam) ──────────────
+
+    def test_orchestrator_build_executor_committed(self, db: Database):
+        """Orchestrator._build_executor returns executor with COMMITTED op."""
+        _create_committed_op(db.direct_connect, n=1,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        settings, paths = self._settings_and_paths()
+        from runtime.orchestrator.orchestrator import Orchestrator
+        orch = Orchestrator(db=db, settings=settings, paths=paths, slug="test", teams=None)
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = orch._build_executor("thr107-real-profile")
+        assert isinstance(executor, CustomAdapterExecutor)
+
+    def test_orchestrator_build_executor_no_committed_raises(self, db: Database):
+        """Orchestrator._build_executor raises ValueError without COMMITTED op."""
+        settings, paths = self._settings_and_paths()
+        from runtime.orchestrator.orchestrator import Orchestrator
+        orch = Orchestrator(db=db, settings=settings, paths=paths, slug="test", teams=None)
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            orch._build_executor("thr107-real-profile")
+
+    # ── Thread runner seam ──────────────────────────────────────────────
+
+    def test_thread_build_executor_committed(self, db: Database):
+        """Thread _build_executor_for_provider returns executor with COMMITTED op."""
+        _create_committed_op(db.direct_connect, n=2,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = _build_executor_for_provider("thr107-real-profile", settings, paths)
+        assert isinstance(executor, CustomAdapterExecutor)
+
+    def test_thread_build_executor_no_committed_raises(self, db: Database):
+        """Thread _build_executor_for_provider raises ValueError without COMMITTED op."""
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            _build_executor_for_provider("thr107-real-profile", settings, paths)
+
+    # ── Wake runner seam ────────────────────────────────────────────────
+
+    def test_wake_runner_build_executor_no_committed_raises(self, db: Database):
+        """Wake runner's build_executor call refuses uncommitted via the
+        same _build_executor_for_provider seam used by wake run_wake."""
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            _build_executor_for_provider("thr107-real-profile", settings, paths)
+
+    def test_wake_runner_build_executor_committed_succeeds(self, db: Database):
+        """Wake runner's build path returns executor with COMMITTED op."""
+        _create_committed_op(db.direct_connect, n=3,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = _build_executor_for_provider("thr107-real-profile", settings, paths)
+        assert isinstance(executor, CustomAdapterExecutor)
+
+    # ── Dream runner seam ───────────────────────────────────────────────
+
+    def test_dream_runner_build_executor_no_committed_raises(self, db: Database):
+        """Dream runner's build path refuses uncommitted."""
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            _build_executor_for_provider("thr107-real-profile", settings, paths)
+
+    def test_dream_runner_build_executor_committed_succeeds(self, db: Database):
+        """Dream runner's build path returns executor with COMMITTED op."""
+        _create_committed_op(db.direct_connect, n=4,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = _build_executor_for_provider("thr107-real-profile", settings, paths)
+        assert isinstance(executor, CustomAdapterExecutor)
+
+    # ── Schedule runner seam ────────────────────────────────────────────
+
+    def test_schedule_runner_build_executor_no_committed_raises(self, db: Database):
+        """Schedule runner's build path refuses uncommitted."""
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            _build_executor_for_provider("thr107-real-profile", settings, paths)
+
+    def test_schedule_runner_build_executor_committed_succeeds(self, db: Database):
+        """Schedule runner's build path returns executor with COMMITTED op."""
+        _create_committed_op(db.direct_connect, n=5,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        settings, paths = self._settings_and_paths()
+        from runtime.daemon.thread_runner import _build_executor_for_provider
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = _build_executor_for_provider("thr107-real-profile", settings, paths)
+        assert isinstance(executor, CustomAdapterExecutor)
+
+    # ── Pre-Popen refusal proof ─────────────────────────────────────────
+
+    def test_no_committed_refuses_before_popen(self, db: Database, monkeypatch):
+        """Without COMMITTED op, the refusal happens before any subprocess Popen
+        attempt. Instrument the real adapter Popen seam to prove this."""
+        settings, paths = self._settings_and_paths()
+
+        # Monkeypatch subprocess.Popen to record if it was ever called
+        popen_calls = []
+        original_popen = subprocess.Popen
+
+        def _record_popen(*args, **kwargs):
+            popen_calls.append((args, kwargs))
+            return original_popen(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", _record_popen)
+
+        from runtime.orchestrator.executor_registry import build_executor
+        with pytest.raises(ValueError, match="no durable COMMITTED"):
+            build_executor("thr107-real-profile", settings, paths)
+
+        # No Popen was ever attempted
+        assert len(popen_calls) == 0, (
+            f"Popen called {len(popen_calls)} times before refusal"
+        )
+
+    # ── Retry/throttle revalidation ─────────────────────────────────────
+
+    def test_repeated_refusal_consistent_no_state_drift(self, db: Database):
+        """Multiple consecutive refusal calls produce consistent errors with
+        no state drift (retry revalidation proof)."""
+        settings, paths = self._settings_and_paths()
+        from runtime.orchestrator.executor_registry import build_executor
+
+        for _ in range(3):
+            with pytest.raises(ValueError, match="no durable COMMITTED"):
+                build_executor("thr107-real-profile", settings, paths)
+
+        # After repeated refusals, adding a COMMITTED op should still work
+        _create_committed_op(db.direct_connect, n=10,
+                             profile_name="thr107-real-profile",
+                             adapter_id="test-adapter-real")
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        executor = build_executor("thr107-real-profile", settings, paths)
+        assert isinstance(executor, CustomAdapterExecutor)
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -704,6 +704,15 @@ class TestBuildExecutorRouting:
         )
         reset_registry()
         registry = get_registry()
+        # THR-107 v9 Slice 1: COMMITTED-only fence — wire a mock store with
+        # a committed operation so the eligibility check passes.
+        from unittest.mock import MagicMock as MM
+        mock_store = MM()
+        mock_store.get_committed_operation.return_value = {
+            "id": "DCO-TEST-0001", "profile_name": "myadapter",
+            "adapter_id": "my-adapter", "lifecycle_status": "committed",
+        }
+        registry.set_direct_connect_store(mock_store)
         profile = ExecutorProfile(
             name="myadapter",
             kind="custom",
@@ -1663,7 +1672,7 @@ class TestCentralizedAdapterEligibility:
 
     def test_approved_adapter_is_eligible(self):
         """_resolve_custom_adapter_eligibility returns binding dict when
-        adapter is APPROVED and hash-verified."""
+        adapter is APPROVED, hash-verified, and has a COMMITTED direct-connect op."""
         from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
         from runtime.orchestrator.adapter_store import AdapterEntry, compute_sha256, _save_adapter_locked, acquire_store_lock, release_store_lock
         import tempfile, os as _os
@@ -1697,6 +1706,18 @@ class TestCentralizedAdapterEligibility:
                 _save_adapter_locked(entry)
             finally:
                 release_store_lock()
+
+            # THR-107 v9 Slice 1: COMMITTED-only fence — wire a mock store with
+            # a committed operation so the eligibility check passes.
+            from unittest.mock import MagicMock as MM
+            reset_registry()
+            reg = get_registry()
+            mock_store = MM()
+            mock_store.get_committed_operation.return_value = {
+                "id": "DCO-TEST-0002", "profile_name": "test-elig",
+                "adapter_id": "test-elig-adapter", "lifecycle_status": "committed",
+            }
+            reg.set_direct_connect_store(mock_store)
 
             profile = ExecutorProfile(
                 name="test-elig",

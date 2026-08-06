@@ -129,6 +129,11 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
+        # THR-107 v9 Slice 1: wire the authoritative Database.direct_connect store
+        # to the process-wide executor registry so COMMITTED-only eligibility
+        # uses durable state, not a test-only injection path.
+        from runtime.orchestrator.executor_registry import get_registry
+        get_registry().set_direct_connect_store(db.direct_connect)
         # THR-107: the per-org executor_profiles config surface is removed
         # — the machine-global runtime store (executor_profiles.yaml under
         # daemon home) is the sole definition surface, loaded once at

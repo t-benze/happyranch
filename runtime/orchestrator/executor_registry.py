@@ -31,15 +31,10 @@ if TYPE_CHECKING:
     )
     from runtime.infrastructure.direct_connect_store import DirectConnectStore
 
-# ── THR-107 v9 Slice 1: module-level store reference for COMMITTED-only eligibility ──
-# Set by the daemon on startup; tests inject via set_direct_connect_store_for_tests.
-_direct_connect_store: "DirectConnectStore | None" = None
-
-
-def set_direct_connect_store_for_tests(store: "DirectConnectStore | None") -> None:
-    """Test seam: inject a DirectConnectStore for eligibility checks."""
-    global _direct_connect_store
-    _direct_connect_store = store
+# ── THR-107 v9 Slice 1: per-registry store reference for COMMITTED-only eligibility ──
+# The authoritative Database.direct_connect store is wired to the ExecutorRegistry
+# instance during daemon startup (OrgState.load). Tests wire via set_direct_connect_store.
+# When no store is wired, eligibility fails closed (no authority source).
 
 # ---------------------------------------------------------------------------
 # Placeholders supported in custom-profile argv templates.
@@ -238,6 +233,17 @@ class ExecutorRegistry:
     def __init__(self) -> None:
         self._profiles: dict[str, ExecutorProfile] = {}
         self._register_builtins()
+        # THR-107 v9 Slice 1: authoritative store for COMMITTED-only eligibility.
+        # Wired by OrgState.load during daemon startup. When None, eligibility
+        # fails closed (no authority source).
+        self.direct_connect_store: "DirectConnectStore | None" = None
+
+    def set_direct_connect_store(self, store: "DirectConnectStore | None") -> None:
+        """Wire the authoritative DirectConnectStore for eligibility checks.
+
+        Called by OrgState.load during daemon startup and by tests.
+        """
+        self.direct_connect_store = store
 
     def _register_builtins(self) -> None:
         """Register the four built-in executor profiles.
@@ -415,11 +421,9 @@ class ExecutorRegistry:
 
         THR-107 v9 Slice 1: COMMITTED-only launch fence. Only a durable
         matching COMMITTED direct_connect_operation grants eligibility.
-        When the module-level ``_direct_connect_store`` is available,
-        the adapter store check is gated behind a COMMITTED operation check;
-        profiles without a COMMITTED record fail closed.
+        The authoritative store is wired to the ExecutorRegistry instance
+        during daemon startup; when absent, eligibility fails closed.
         """
-        global _direct_connect_store
         cmd_adapter = profile.command_adapter_id or ""
         if not cmd_adapter.startswith("custom-adapter:"):
             return None
@@ -429,12 +433,17 @@ class ExecutorRegistry:
         # A profile must have a durable COMMITTED direct-connect operation;
         # no other state (YAML, registry, approval, pending, bind, recovery,
         # token text) is accepted as launch authority.
-        if _direct_connect_store is not None:
-            op = _direct_connect_store.get_committed_operation(
-                profile.name, adapter_id
-            )
-            if op is None:
-                return None
+        registry = get_registry()
+        store = registry.direct_connect_store
+        if store is None:
+            # No authority source wired — fail closed. This covers:
+            # - Daemon not yet fully started
+            # - Missing Database (shouldn't happen in production)
+            # - Test environments that haven't wired a store
+            return None
+        op = store.get_committed_operation(profile.name, adapter_id)
+        if op is None:
+            return None
 
         from runtime.orchestrator.custom_adapter_registry import resolve_adapter
         entry = resolve_adapter(adapter_id)
