@@ -45,8 +45,8 @@ def db():
     conn.executescript(lifecycle_stores.CREATE_LIFECYCLE_EVENTS)
     conn.executescript(lifecycle_stores.CREATE_ASSIGNMENTS)
     conn.executescript(lifecycle_stores.CREATE_MATERIALIZATIONS)
+    lifecycle_stores._migrate_add_claimed_columns(conn)
     yield conn
-    conn.close()
 
 
 @pytest.fixture

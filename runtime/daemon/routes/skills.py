@@ -1509,8 +1509,7 @@ def skill_recover(
 # ═══════════════════════════════════════════════════════════════════════════
 # Agent-only skills creation route (token-free, session-binding)
 # ═══════════════════════════════════════════════════════════════════════════
-from fastapi import Body as RequestBody, Depends
-from runtime.daemon.auth import _check_optional_token
+from fastapi import Body as RequestBody, Depends, Header
 from runtime.skills.lifecycle.models import ProposalRequest
 from runtime.skills.lifecycle.service import LifecycleError, SkillLifecycleService
 
@@ -1530,17 +1529,25 @@ _AGENT_SKILLS_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
 def _build_protected_slugs_for_agent_route(org: OrgState) -> frozenset:
     """Build the live protected-slug set from the release catalog + system contracts.
 
-    Fails closed: if the registry cannot be loaded, raises HTTP 500.
+    Fails closed: if the release registry directory is missing or unreadable,
+    raises HTTP 500 — never silently falls back to system-contracts only.
     """
-    protected = set()
-    release_dir = org.settings.project_root / "runtime" / "skills"
-    if release_dir.is_dir():
-        from runtime.skills.registry import SkillRegistry
-        registry = SkillRegistry(skills_root=release_dir)
-        for entry in registry.list_all():
-            if isinstance(entry, tuple):
-                entry = entry[0]
-            protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+    protected: set[str] = set()
+    release_dir = Path(org.settings.project_root) / "runtime" / "skills"
+    if not release_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "protected_slug_registry_unavailable",
+                "detail": f"Release registry directory not found: {release_dir}",
+            },
+        )
+    from runtime.skills.registry import SkillRegistry
+    registry = SkillRegistry(skills_root=release_dir)
+    for entry in registry.list_all():
+        if isinstance(entry, tuple):
+            entry = entry[0]
+        protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
     for sc in SYSTEM_CONTRACTS:
         protected.add(sc.id)
     return frozenset(protected)
@@ -1552,7 +1559,7 @@ def create_skill_agent(
     request: Request,
     body_raw: dict = RequestBody(..., description="Skill package metadata and content (no identity fields)"),
     session_id: str = Query(..., min_length=1),
-    has_bearer: bool = Depends(_check_optional_token),
+    authorization: str | None = Header(default=None),
 ) -> dict:
     """Create a custom skill via opaque agent-session binding.
 
@@ -1567,8 +1574,8 @@ def create_skill_agent(
     Returns 409 for protected slug collision.
     Returns 400 for validation failures.
     """
-    # Reject bearer token — this route is agent-session ONLY
-    if has_bearer:
+    # Reject ANY Authorization header — this route is agent-session ONLY
+    if authorization is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -1624,15 +1631,46 @@ def create_skill_agent(
             },
         )
 
-    # Step 2: pre-lease barrier (test seam)
-    pre_lease = org.sessions._pre_lease_barrier
-    if pre_lease is not None:
-        reached = org.sessions._pre_lease_barrier_reached
-        if reached is not None:
-            reached.set()
-        pre_lease.wait()
+    # Step 2: Compute task-brief digest and validator metadata
+    import hashlib
+    task_brief_digest: str | None = None
+    task_record = org.db.get_task(task_id)
+    if task_record and task_record.brief:
+        task_brief_digest = hashlib.sha256(
+            task_record.brief.encode("utf-8")
+        ).hexdigest()
 
-    # Step 3: Acquire per-binding lease and re-verify
+    validator_version = "THR-055/1.0.0"
+
+    # Step 3: Run deterministic validation BEFORE persistence
+    validation_findings: list[str] = []
+    if not body.slug or not body.slug.strip():
+        validation_findings.append("slug_missing: slug must be nonempty")
+    if not body.name or not body.name.strip():
+        validation_findings.append("name_missing: name must be nonempty")
+    if not body.description or not body.description.strip():
+        validation_findings.append("description_missing: description must be nonempty")
+    if not body.skill_md or not body.skill_md.strip():
+        validation_findings.append("skill_md_missing: skill_md must be nonempty")
+    if body.policy_class != "standard_operational":
+        validation_findings.append(
+            f"policy_class_invalid: {body.policy_class} — only standard_operational accepted"
+        )
+    if not task_brief_digest:
+        validation_findings.append("task_brief_digest_missing: task brief must be nonempty")
+
+    if validation_findings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "validation_failed",
+                "detail": "Skill package failed deterministic validation.",
+                "findings": validation_findings,
+                "validator_version": validator_version,
+            },
+        )
+
+    # Step 4: Acquire per-binding lease and re-verify (production SessionTracker only, no barriers)
     binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
     with binding_lease:
         expected_session = org.sessions.get_active(task_id, agent_name)
@@ -1645,14 +1683,6 @@ def create_skill_agent(
                               f"for task {task_id} agent {agent_name}.",
                 },
             )
-
-        # Step 3b: post-authorization barrier (test seam)
-        barrier = org.sessions._proposal_barrier
-        if barrier is not None:
-            reached = org.sessions._barrier_reached
-            if reached is not None:
-                reached.set()
-            barrier.wait()
 
         try:
             protected_slugs = _build_protected_slugs_for_agent_route(org)
@@ -1674,6 +1704,10 @@ def create_skill_agent(
                 target_agent_suggestion=body.target_agent_suggestion,
                 protected_slugs=protected_slugs,
                 org_root=org.root,
+                verified_org_slug=verified_org,
+                task_brief_digest=task_brief_digest,
+                validator_version=validator_version,
+                validation_findings=validation_findings,
             )
         except LifecycleError as e:
             raise HTTPException(
@@ -1689,4 +1723,8 @@ def create_skill_agent(
         "content_hash": pkg.content_hash,
         "content_artifact_key": pkg.content_artifact_key,
         "proposal_task_id": pkg.proposal_task_id,
+        "verified_org_slug": pkg.verified_org_slug,
+        "task_brief_digest": pkg.task_brief_digest,
+        "validator_version": pkg.validator_version,
+        "validation_findings": pkg.validation_findings,
     }

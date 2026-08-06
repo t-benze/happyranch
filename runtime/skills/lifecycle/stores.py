@@ -153,8 +153,22 @@ def _row_to_package_version(row: dict) -> PackageVersion:
         publisher=row.get("publisher"),
         published_at=_parse_datetime(row.get("published_at")),
         publication_decision_id=row.get("publication_decision_id"),
+        verified_org_slug=row.get("verified_org_slug"),
+        task_brief_digest=row.get("task_brief_digest"),
+        validator_version=row.get("validator_version"),
+        validation_findings=_parse_json_list(row.get("validation_findings")),
     )
 
+
+def _parse_json_list(value: str | None) -> list[str] | None:
+    """Parse a JSON-encoded list from a TEXT column, returning None for null/empty."""
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else [str(parsed)]
+    except (json.JSONDecodeError, TypeError):
+        return [value]
 
 def _parse_datetime(value: str | None) -> datetime | None:
     if value is None:
@@ -310,8 +324,20 @@ def _migrate_add_claimed_columns(db) -> None:
     except Exception:
         pass  # Column already exists
 
+    # B1 create-skill provenance columns (TASK-4589)
+    for col in ("verified_org_slug", "task_brief_digest", "validator_version"):
+        try:
+            db.execute(f"ALTER TABLE skill_lifecycle_packages ADD COLUMN {col} TEXT")
+        except Exception:
+            pass  # Column already exists
+    try:
+        db.execute("ALTER TABLE skill_lifecycle_packages ADD COLUMN validation_findings TEXT")
+    except Exception:
+        pass  # Column already exists
+
 
 # ── Package version CRUD ──────────────────────────────────────────────────
+
 
 def insert_package_version(db, pkg: PackageVersion) -> int:
     """Insert a new package version row. Returns the new row id."""
@@ -323,8 +349,10 @@ def insert_package_version(db, pkg: PackageVersion) -> int:
             description, skill_md, content_artifact_key, status, created_at, created_by,
             proposal_task_id, proposal_session_id, proposer_agent,
             reviewer, review_decision, review_rationale, reviewed_at,
-            publisher, published_at, publication_decision_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            publisher, published_at, publication_decision_id,
+            claimed_by, claimed_at,
+            verified_org_slug, task_brief_digest, validator_version, validation_findings)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             pkg.skill_id, pkg.slug, pkg.name, pkg.version, pkg.content_hash,
             pkg.policy_class, pkg.description, pkg.skill_md, pkg.content_artifact_key,
@@ -336,6 +364,12 @@ def insert_package_version(db, pkg: PackageVersion) -> int:
             pkg.publisher,
             pkg.published_at.isoformat() if pkg.published_at else None,
             pkg.publication_decision_id,
+            pkg.claimed_by,
+            pkg.claimed_at.isoformat() if pkg.claimed_at else None,
+            pkg.verified_org_slug,
+            pkg.task_brief_digest,
+            pkg.validator_version,
+            json.dumps(pkg.validation_findings) if pkg.validation_findings else None,
         ),
     )
     return row.lastrowid

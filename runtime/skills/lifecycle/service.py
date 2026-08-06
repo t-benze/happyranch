@@ -213,6 +213,10 @@ class SkillLifecycleService:
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
         org_root: Path | str | None = None,
+        verified_org_slug: str | None = None,
+        task_brief_digest: str | None = None,
+        validator_version: str | None = None,
+        validation_findings: list[str] | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound proposal.
 
@@ -313,6 +317,10 @@ class SkillLifecycleService:
                 proposal_task_id=task_id,
                 proposal_session_id=session_id,
                 proposer_agent=proposer_agent,
+                verified_org_slug=verified_org_slug,
+                task_brief_digest=task_brief_digest,
+                validator_version=validator_version,
+                validation_findings=validation_findings or [],
             )
 
             version_id = stores.insert_package_version(db, pkg)
@@ -322,15 +330,14 @@ class SkillLifecycleService:
                 skill_id=skill_id,
                 package_version_id=version_id,
                 event_type="proposed",
-                actor=proposer_agent or "",
-                actor_role="agent",
-                previous_status=None,
-                new_status=LifecycleStatus.PROPOSED.value,
-                content_hash=content_hash,
                 metadata={
                     "purpose": purpose,
                     "target_agent_suggestion": target_agent_suggestion,
                     "content_artifact_key": content_artifact_key,
+                    "verified_org_slug": verified_org_slug,
+                    "task_brief_digest": task_brief_digest,
+                    "validator_version": validator_version,
+                    "validation_findings": validation_findings or [],
                 },
                 task_id=task_id,
                 session_id=session_id,

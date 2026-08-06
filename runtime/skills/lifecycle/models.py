@@ -88,6 +88,12 @@ class PackageVersion(BaseModel):
     proposal_session_id: str | None = None
     proposer_agent: str | None = None
 
+    # B1 create-skill provenance (agent-authored proposals via verified session)
+    verified_org_slug: str | None = None  # Server-derived org slug from SessionTracker
+    task_brief_digest: str | None = None  # SHA-256 of the nonempty task brief
+    validator_version: str | None = None  # e.g. "THR-055/1.0.0"
+    validation_findings: list[str] | None = None  # Ordered list of finding strings
+
     # Review provenance
     reviewer: str | None = None
     review_decision: str | None = None  # "approved" | "rejected"

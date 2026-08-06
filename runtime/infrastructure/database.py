@@ -1121,6 +1121,20 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        # THR-055 B1 create-skill provenance columns (TASK-4589)
+        for col in ("verified_org_slug", "task_brief_digest", "validator_version"):
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE skill_lifecycle_packages ADD COLUMN {col} TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE skill_lifecycle_packages ADD COLUMN validation_findings TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # NOTE: the for-loop below contains DDL (RENAME COLUMN) that has no
         # explicit commit; the commit() following the UPDATE team='engineering'
         # block durably persists those DDLs. Don't insert returning code between.

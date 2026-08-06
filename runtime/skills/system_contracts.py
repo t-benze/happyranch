@@ -172,6 +172,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
+            SessionContext.SCHEDULE,
             SessionContext.BOOTSTRAP,
         ),
     ),
