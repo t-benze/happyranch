@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -505,6 +505,10 @@ class CompletionBody(BaseModel):
     suggested_reviewer_focus: list[str] = []
     output_dir: str | None = None
     waiting_on_job_ids: list[str] = []
+    # Push-PR local CI evidence. Optional; only contractually required for
+    # pushed-PR reports. Must be a dict with exactly {"command": "scripts/local_ci.sh all",
+    # "exit_code": 0} if present — validated server-side before durable persistence.
+    local_ci: object | None = None
 
 
 @router.get("/tasks/{task_id}/events")
@@ -587,6 +591,40 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 )
         # Persist the deduped list so run_step_impl sees the cleaned-up payload.
         body.waiting_on_job_ids = deduped
+    # Validate and normalise local_ci if explicitly present. Strict wire-type
+    # check: command must be "scripts/local_ci.sh all", exit_code must be
+    # integer 0. Boolean, missing fields, and wrong types reject with 400
+    # before any durable mutation.
+    from runtime.models import LocalCiEvidence
+
+    local_ci: LocalCiEvidence | None = None
+    if body.local_ci is not None:
+        if not isinstance(body.local_ci, dict):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "local_ci_not_object",
+                    "got_type": type(body.local_ci).__name__,
+                },
+            )
+        try:
+            local_ci = LocalCiEvidence(**body.local_ci)
+        except ValidationError as exc:
+            # exc.errors() contains ValueError objects in ctx which are
+            # not JSON-serializable — stringify for the HTTP response.
+            serializable_errors = []
+            for e in exc.errors():
+                se = {k: v for k, v in e.items() if k != "ctx"}
+                se["msg"] = str(e["msg"])
+                serializable_errors.append(se)
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "local_ci_invalid",
+                    "errors": serializable_errors,
+                },
+            )
+    local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
     decision_json = (
         _json.dumps(body.decision) if body.decision is not None else None
     )
@@ -603,6 +641,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             output_dir=body.output_dir,
             waiting_on_job_ids=body.waiting_on_job_ids or None,
             verdict=body.verdict,
+            local_ci_json=local_ci_json,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.

@@ -150,9 +150,27 @@ Parameters:
      "risks": ["<concern>"],
      "dependencies": ["<assumption>"],
      "reviewer_focus": ["<where to look hardest>"],
-     "output_dir": "output/<task_id>"
+     "output_dir": "output/<task_id>",
+     "local_ci": {
+       "command": "scripts/local_ci.sh all",
+       "exit_code": 0
+     }
    }
    ```
+
+   **Local-CI evidence.** Any completion report for a task that pushed a PR
+   MUST include the `local_ci` field with the exact command (normally
+   `scripts/local_ci.sh all`) and a zero exit status. Engineering managers
+   reject a PR completion missing this evidence. If the local-CI hook ran
+   the full real suite, state its exact command and exit code; do not claim
+   it without output. Tasks that do not push a PR may omit `local_ci`.
+
+   **GitHub CI is authoritative.** Local pre-push hooks provide feedforward
+   signal only. The full Python 3.12/3.13/3.14 matrix and nightly
+   integration runs on clean Ubuntu runners in GitHub Actions are the only
+   merge gate. Local-CI hooks CANNOT prevent `git push --no-verify` —
+   `--no-verify` bypasses hooks entirely and remains prohibited by
+   engineering policy.
 
    For a blocker, set `"status": "blocked"`, `"confidence": 0`, and put the
    reason in `summary`. Optional keys (`risks`, `dependencies`,

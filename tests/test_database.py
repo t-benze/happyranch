@@ -2458,3 +2458,233 @@ def test_execute_nested_reentrant_no_false_wait(db, caplog):
         f"got: {wait_warnings}"
     )
     db._lock_warn_threshold_seconds = 1.0
+
+
+def test_local_ci_migration_from_legacy_schema(tmp_path):
+    """Prove additive nullable migration: seed a task_results row in the old
+    table shape (no local_ci column), open through real Database startup
+    migration, assert local_ci column was added nullable, the legacy row
+    survives, its existing field values are intact, its local_ci is NULL,
+    and a new row can persist the exact valid JSON."""
+    import sqlite3
+    from runtime.infrastructure.database import Database
+
+    db_path = tmp_path / "legacy_lc.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'pending',
+        assigned_agent TEXT,
+        team TEXT NOT NULL DEFAULT 'engineering',
+        brief TEXT NOT NULL,
+        revision_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        parent_task_id TEXT,
+        final_output_dir TEXT,
+        task_type TEXT NOT NULL DEFAULT 'task',
+        orchestration_step_count INTEGER NOT NULL DEFAULT 0,
+        revisit_of_task_id TEXT,
+        dispatched_from_thread_id TEXT,
+        block_kind TEXT,
+        blocked_on_job_ids TEXT,
+        active_chain TEXT,
+        note TEXT,
+        active_fanout TEXT
+    )""")
+    conn.execute("""CREATE TABLE task_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'completed',
+        output_summary TEXT NOT NULL DEFAULT '',
+        confidence_score INTEGER NOT NULL DEFAULT 80,
+        learnings TEXT,
+        risks_flagged TEXT,
+        duration_seconds INTEGER,
+        token_count INTEGER,
+        estimated_cost REAL,
+        output_dir TEXT,
+        created_at TEXT NOT NULL
+    )""")
+    conn.commit()
+
+    conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-LEGACY", "dev_agent", "sess-legacy",
+         "completed", "legacy row", 90, "2025-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    cols = {r[1] for r in db._conn.execute("PRAGMA table_info(task_results)").fetchall()}
+    assert "local_ci" in cols, f"Columns after migration: {cols}"
+
+    rows = db.get_task_results("TASK-LEGACY")
+    assert len(rows) == 1
+    legacy = rows[0]
+    assert legacy["task_id"] == "TASK-LEGACY"
+    assert legacy["agent"] == "dev_agent"
+    assert legacy["session_id"] == "sess-legacy"
+    assert legacy["status"] == "completed"
+    assert legacy["output_summary"] == "legacy row"
+    assert legacy["confidence_score"] == 90
+    assert legacy["created_at"] == "2025-01-01T00:00:00+00:00"
+    assert legacy.get("local_ci") is None, f"Expected NULL, got {legacy.get('local_ci')!r}"
+
+    db.insert_task_result(
+        task_id="TASK-LEGACY",
+        agent="dev_agent",
+        session_id="sess-new",
+        status="completed",
+        output_summary="with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    rows = db.get_task_results("TASK-LEGACY")
+    assert len(rows) == 2
+    new_row = [r for r in rows if r["session_id"] == "sess-new"][0]
+    assert new_row["local_ci"] == '{"command":"scripts/local_ci.sh all","exit_code":0}'
+
+    db.close()
+
+
+# ── get_latest_completion_report local_ci reconstruction ─────────────────
+
+def test_get_latest_completion_report_reconstructs_local_ci(db):
+    """A task_result row with a valid local_ci JSON reconstructs into
+    the returned CompletionReport.local_ci field with exact equality."""
+    db.insert_task_result(
+        task_id="TASK-LC",
+        agent="dev_agent",
+        session_id="sess-lc",
+        status="completed",
+        output_summary="with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    report = db.get_latest_completion_report("TASK-LC")
+    assert report is not None
+    assert report.local_ci is not None
+    assert report.local_ci.command == "scripts/local_ci.sh all"
+    assert report.local_ci.exit_code == 0
+
+
+def test_get_latest_completion_report_local_ci_null_returns_none(db):
+    """A row without local_ci_json (stored NULL) returns local_ci=None."""
+    db.insert_task_result(
+        task_id="TASK-NULL",
+        agent="dev_agent",
+        session_id="sess-null",
+        status="completed",
+        output_summary="no local_ci",
+        confidence_score=95,
+    )
+    report = db.get_latest_completion_report("TASK-NULL")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_malformed_returns_none(db):
+    """Malformed JSON in local_ci degrades to None and never crashes."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-MAL", "dev_agent", "sess-mal", "completed", "malformed",
+         95, "NOT JSON", datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-MAL")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_wrong_shape_returns_none(db):
+    """JSON that parses but is the wrong shape (not a dict) returns None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-SHAPE", "dev_agent", "sess-shape", "completed", "wrong shape",
+         95, '[1,2,3]', datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-SHAPE")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_invalid_values_returns_none(db):
+    """Valid JSON dict with values failing the strict LocalCiEvidence contract
+    (non-zero exit_code) degrades to None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-INV", "dev_agent", "sess-inv", "completed", "invalid values",
+         95, '{"command":"bad","exit_code":1}',
+         datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-INV")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_local_ci_extra_key_returns_none(db):
+    """Valid JSON dict with an extra key (forbidden by extra='forbid')
+    degrades to None."""
+    from datetime import datetime, timezone
+    db._conn.execute(
+        """INSERT INTO task_results
+           (task_id, agent, session_id, status, output_summary,
+            confidence_score, local_ci, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TASK-EXTRA", "dev_agent", "sess-extra", "completed", "extra key",
+         95,
+         '{"command":"scripts/local_ci.sh all","exit_code":0,"extra":true}',
+         datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    report = db.get_latest_completion_report("TASK-EXTRA")
+    assert report is not None
+    assert report.local_ci is None
+
+
+def test_get_latest_completion_report_returns_latest_row_local_ci(db):
+    """When multiple task_results exist, the latest row's local_ci is used."""
+    db.insert_task_result(
+        task_id="TASK-MULTI",
+        agent="dev_agent",
+        session_id="sess-first",
+        status="completed",
+        output_summary="first",
+        confidence_score=95,
+    )
+    db.insert_task_result(
+        task_id="TASK-MULTI",
+        agent="dev_agent",
+        session_id="sess-second",
+        status="completed",
+        output_summary="second with local_ci",
+        confidence_score=95,
+        local_ci_json='{"command":"scripts/local_ci.sh all","exit_code":0}',
+    )
+    report = db.get_latest_completion_report("TASK-MULTI")
+    assert report is not None
+    assert report.local_ci is not None
+    assert report.output_summary == "second with local_ci"

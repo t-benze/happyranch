@@ -222,7 +222,7 @@ def _consume_zombie_fingerprint(
     normal completions).
     """
     import json as _json
-    from runtime.models import CompletionReport, NextStep
+    from runtime.models import CompletionReport, LocalCiEvidence, NextStep
 
     _raw_decision = fingerprint.get("decision_json")
     _decision: NextStep | None = None
@@ -241,6 +241,17 @@ def _consume_zombie_fingerprint(
         except Exception:
             _risks = []
 
+    # Safely parse local_ci from the fingerprint row.
+    _local_ci_raw = fingerprint.get("local_ci")
+    _local_ci: LocalCiEvidence | None = None
+    if _local_ci_raw:
+        try:
+            _parsed = _json.loads(_local_ci_raw)
+            if isinstance(_parsed, dict):
+                _local_ci = LocalCiEvidence(**_parsed)
+        except Exception:
+            pass
+
     orphaned_report = CompletionReport(
         task_id=task_id,
         agent=fingerprint.get("agent") or (task.assigned_agent or "unknown"),
@@ -252,6 +263,7 @@ def _consume_zombie_fingerprint(
         risks_flagged=_risks or [],
         waiting_on_job_ids=fingerprint.get("waiting_on_job_ids") or [],
         output_dir=fingerprint.get("output_dir"),
+        local_ci=_local_ci,
     )
     from runtime.orchestrator.run_step import _consume_completion_report
     _consume_completion_report(orchestrator, task_id, orphaned_report)

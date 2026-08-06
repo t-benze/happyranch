@@ -296,6 +296,113 @@ def test_completion_report_accepts_optional_verdict():
     assert r2.verdict is None
 
 
+# --- LocalCiEvidence model tests ---
+
+from runtime.models import LocalCiEvidence
+from pydantic import ValidationError
+
+
+def test_local_ci_evidence_valid_exact_object():
+    """Valid exact object passes validation."""
+    lc = LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0)
+    assert lc.command == "scripts/local_ci.sh all"
+    assert lc.exit_code == 0
+
+
+def test_local_ci_evidence_rejects_wrong_command():
+    """Command must be exactly 'scripts/local_ci.sh all'."""
+    with pytest.raises(ValidationError) as exc_info:
+        LocalCiEvidence(command="scripts/local_ci.sh python", exit_code=0)
+    assert "must be 'scripts/local_ci.sh all'" in str(exc_info.value)
+
+
+def test_local_ci_evidence_rejects_nonzero_exit_code():
+    """Exit code must be 0."""
+    with pytest.raises(ValidationError) as exc_info:
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=1)
+    assert "exit_code must be 0" in str(exc_info.value)
+
+
+def test_local_ci_evidence_rejects_boolean_exit_code():
+    """StrictInt rejects boolean false — no coercion."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=False)
+
+
+def test_local_ci_evidence_rejects_string_exit_code():
+    """StrictInt rejects string '0' — no coercion."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code="0")
+
+
+def test_local_ci_evidence_rejects_boolean_true_exit_code():
+    """StrictInt rejects boolean true."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=True)
+
+
+def test_local_ci_evidence_rejects_extra_key():
+    """Extra keys beyond command + exit_code are forbidden."""
+    with pytest.raises(ValidationError) as exc_info:
+        LocalCiEvidence(
+            command="scripts/local_ci.sh all",
+            exit_code=0,
+            extra_field="should_not_be_here",
+        )
+    assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_local_ci_evidence_rejects_missing_command():
+    """Missing required field is rejected."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(exit_code=0)
+
+
+def test_local_ci_evidence_rejects_missing_exit_code():
+    """Missing required field is rejected."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command="scripts/local_ci.sh all")
+
+
+def test_local_ci_evidence_rejects_non_string_command():
+    """StrictStr rejects non-string command (e.g. int, bool)."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command=123, exit_code=0)
+
+
+def test_local_ci_evidence_rejects_none_command():
+    """StrictStr rejects None command."""
+    with pytest.raises(ValidationError):
+        LocalCiEvidence(command=None, exit_code=0)
+
+
+def test_completion_report_accepts_optional_local_ci():
+    """CompletionReport accepts an optional local_ci field."""
+    report = CompletionReport(
+        task_id="TASK-001",
+        agent="dev_agent",
+        status="completed",
+        confidence=90,
+        output_summary="ok",
+        local_ci=LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0),
+    )
+    assert report.local_ci is not None
+    assert report.local_ci.command == "scripts/local_ci.sh all"
+    assert report.local_ci.exit_code == 0
+
+
+def test_completion_report_accepts_none_local_ci():
+    """CompletionReport with None local_ci (backward compatible)."""
+    report = CompletionReport(
+        task_id="TASK-001",
+        agent="dev_agent",
+        status="completed",
+        confidence=90,
+        output_summary="ok",
+    )
+    assert report.local_ci is None
+
+
 def test_dream_status_values() -> None:
     from runtime.models import DreamStatus
 

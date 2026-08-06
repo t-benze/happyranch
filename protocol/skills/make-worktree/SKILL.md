@@ -54,6 +54,11 @@ fi
 
 # 4. Activate the worktree-root guard — this snapshots the primary checkout
 #    state so later steps can detect accidental primary-checkout edits.
+#    For HappyRanch repos (containing scripts/local_ci.sh and
+#    scripts/hooks/pre-push.local-ci.sample), setup also AUTOMATICALLY
+#    installs a mandatory pre-push hook via git config --worktree
+#    core.hooksPath scoped to this linked worktree only. See the
+#    "Pre-push hook (automatic)" section below.
 python "$GUARD" setup \
     --worktree-root "$WORKTREE_ROOT" \
     --primary-root "$PRIMARY_ROOT" \
@@ -93,6 +98,37 @@ safe `git diff` inspection and `patch` application — no destructive
 The guard does NOT inspect the task worktree diff — a zero-diff task
 passes when the primary checkout is unchanged. Edits in the task
 worktree are expected and never falsely accused.
+
+## Pre-push hook (automatic)
+
+For HappyRanch repos — those containing both `scripts/local_ci.sh` and
+`scripts/hooks/pre-push.local-ci.sample` — `cmd_setup` automatically
+installs a mandatory pre-push hook as part of worktree provisioning.
+
+**Scope and safety:**
+- The hook is installed ONLY for this linked worktree via `git config
+  --worktree core.hooksPath`. The primary/normal checkout's existing
+  hook or hooks path is never touched, overwritten, or reconfigured.
+- The hook lives under the worktree's Git metadata directory
+  (`git rev-parse --git-dir` → `happyranch-hooks/pre-push`), not
+  `.git/hooks` and not in the tracked repository tree.
+- Setup fails closed with an actionable diagnostic if any mandatory
+  step (hook directory creation, file copy, chmod, or config write)
+  cannot complete.
+- Outside HappyRanch repos, `cmd_setup` is a no-op for hook
+  installation — behavior is unchanged.
+
+**What the hook runs:** `scripts/local_ci.sh all` (python + web, mirrors
+GitHub PR CI). It does NOT run integration tests. If any step fails the
+push is blocked.
+
+**Engineering constraints:**
+- The hook CANNOT prevent `git push --no-verify`, which engineering
+  policy prohibits. `--no-verify` bypasses hooks, not the gate policy.
+- GitHub CI remains the authoritative clean-environment / matrix gate.
+  Local-CI is pre-push feedback only.
+- Human normal-checkout installation remains opt-in via manual copy of
+  the sample hook.
 
 ## Concurrency
 

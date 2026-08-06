@@ -87,6 +87,27 @@ def test_log_completion_report(db):
     assert db.get_task_results("TASK-001") == []
 
 
+def test_log_completion_report_includes_local_ci(db):
+    """local_ci appears as a top-level field in the completion_report audit payload."""
+    from runtime.models import LocalCiEvidence
+    logger = AuditLogger(db)
+    lc = LocalCiEvidence(command="scripts/local_ci.sh all", exit_code=0)
+    report = CompletionReport(
+        task_id="TASK-001",
+        agent="dev_agent",
+        status="completed",
+        confidence=85,
+        output_summary="Implemented feature",
+        local_ci=lc,
+    )
+    logger.log_completion_report(report)
+    logs = db.get_audit_logs("TASK-001")
+    assert len(logs) == 1
+    assert logs[0]["action"] == "completion_report"
+    payload = logs[0]["payload"]
+    assert payload.get("local_ci") == {"command": "scripts/local_ci.sh all", "exit_code": 0}
+
+
 def test_log_review_verdict(db):
     logger = AuditLogger(db)
     logger.log_review_verdict(

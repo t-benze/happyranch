@@ -1206,6 +1206,10 @@ class Database:
             # next leg without consuming the manager's orchestration_step_count.
             # NULL for non-chain or non-verdict workers.
             "ALTER TABLE task_results ADD COLUMN verdict TEXT",
+            # Push-PR local CI evidence (additive, nullable). A JSON object
+            # with command + exit_code persisted losslessly so audit and
+            # reconstruction round-trips preserve it.
+            "ALTER TABLE task_results ADD COLUMN local_ci TEXT",
             # Thread agent-session resume (issue #53). agent_session_id holds the
             # resumable agent session for this (thread, agent); NULL = none yet /
             # evicted. last_resumed_seq is the highest thread message seq the stored
@@ -2991,14 +2995,15 @@ class Database:
         decision_json: str | None = None,
         waiting_on_job_ids: list[str] | None = None,
         verdict: str | None = None,
+        local_ci_json: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
                 token_count, estimated_cost, output_dir, waiting_on_job_ids,
-                verdict, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                verdict, local_ci, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -3015,6 +3020,7 @@ class Database:
                 output_dir,
                 json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
                 verdict,
+                local_ci_json,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -3086,7 +3092,7 @@ class Database:
         Used by the chain-advance logic in run_step to read the just-completed
         child's verdict without requiring the caller to know agent/session_id.
         """
-        from runtime.models import CompletionReport
+        from runtime.models import CompletionReport, LocalCiEvidence
         row = self._conn.execute(
             "SELECT * FROM task_results WHERE task_id = ? "
             "ORDER BY id DESC LIMIT 1",
@@ -3095,6 +3101,18 @@ class Database:
         if row is None:
             return None
         keys = row.keys()
+        # Safely parse local_ci from the task_results row.
+        # A missing legacy column, NULL, empty/malformed JSON, wrong shape,
+        # or JSON failing the strict LocalCiEvidence contract → None.
+        _local_ci_raw = row["local_ci"] if "local_ci" in keys else None
+        _local_ci: LocalCiEvidence | None = None
+        if _local_ci_raw:
+            try:
+                _parsed = json.loads(_local_ci_raw)
+                if isinstance(_parsed, dict):
+                    _local_ci = LocalCiEvidence(**_parsed)
+            except Exception:
+                pass
         return CompletionReport(
             task_id=task_id,
             agent=row["agent"],
@@ -3113,6 +3131,7 @@ class Database:
                 if "waiting_on_job_ids" in keys and row["waiting_on_job_ids"]
                 else []
             ),
+            local_ci=_local_ci,
         )
 
     # --- Session Token Usage ---

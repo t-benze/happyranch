@@ -434,8 +434,23 @@ def test_ceiling_override_is_per_provider():
     assert throttle.ceiling_for("opencode") == 8
 
 
-def test_default_throttle_built_from_settings(monkeypatch):
+def test_default_throttle_built_from_settings(monkeypatch, tmp_path):
+    """The default throttle singleton is built from the approved Settings defaults.
+
+    Isolates from the host daemon config (~/.happyranch/config.yaml) by using a
+    temporary HAPPYRANCH_DAEMON_HOME so the test cannot observe a machine-local
+    override (e.g. executor_ceiling_default: 4)."""
+    import runtime.config
+    from runtime.config import Settings
     from runtime.orchestrator import throttle as throttle_mod
+
+    # Isolate from host daemon config — use a temp empty home so Settings()
+    # resolves only code defaults (no config.yaml).
+    isolated_home = tmp_path / "isolated-daemon-home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(isolated_home))
+    isolated_settings = Settings()
+    monkeypatch.setattr(runtime.config, "settings", isolated_settings)
 
     throttle_mod.reset_throttle()
     try:
@@ -448,12 +463,53 @@ def test_default_throttle_built_from_settings(monkeypatch):
         throttle_mod.reset_throttle()
 
 
-def test_settings_expose_throttle_defaults():
-    """The four approved config keys carry the founder-set defaults."""
+def test_configured_settings_propagate_to_default_throttle(monkeypatch, tmp_path):
+    """REGRESSION: a configured executor_ceiling_default (e.g. 4) must propagate
+    to the default throttle singleton. This proves the host-configuration path
+    that exposed the baseline test-the-test failure is correct production
+    behaviour — the throttle respects the operator's config.yaml, not just
+    code defaults."""
+    import runtime.config
     from runtime.config import Settings
+    from runtime.orchestrator import throttle as throttle_mod
+
+    # Write a daemon config with ceiling 4 into a temp home.
+    isolated_home = tmp_path / "configured-daemon-home"
+    isolated_home.mkdir()
+    (isolated_home / "config.yaml").write_text("executor_ceiling_default: 4\n")
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(isolated_home))
+    configured_settings = Settings()
+    assert configured_settings.executor_ceiling_default == 4  # sanity
+
+    # Patch the configured Settings into the runtime module so the throttle
+    # builder reads it instead of the module-level singleton.
+    monkeypatch.setattr(runtime.config, "settings", configured_settings)
+
+    throttle_mod.reset_throttle()
+    try:
+        built = throttle_mod.get_throttle()
+        # The throttle ceiling MUST reflect the operator's configured value.
+        assert built.ceiling_for("claude") == 4
+    finally:
+        throttle_mod.reset_throttle()
+
+
+def test_settings_expose_throttle_defaults(tmp_path):
+    """The four approved config keys carry the founder-set defaults.
+
+    Uses an isolated temporary daemon home to prevent the host config.yaml
+    from shadowing the code defaults."""
+    from runtime.config import Settings
+
+    isolated_home = tmp_path / "isolated-daemon-home"
+    isolated_home.mkdir()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(isolated_home))
 
     s = Settings()
     assert s.executor_ceiling_default == 8
     assert s.executor_ceiling_overrides == {}
     assert s.executor_launch_spacing_seconds == 1.5
     assert s.executor_rate_limit_backoff_seconds == [5, 15, 45]
+
+    monkeypatch.undo()

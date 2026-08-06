@@ -27,11 +27,30 @@ Payload shape (required keys: `task_id`, `session_id`, `agent`, `status`, `summa
   "risks": ["<concern the reviewer should look at hardest>"],
   "dependencies": ["<work this depends on or blocks>"],
   "reviewer_focus": ["<which file(s) or aspect to review first>"],
-  "output_dir": "output/<task_id>"
+  "output_dir": "output/<task_id>",
+  "local_ci": {
+    "command": "scripts/local_ci.sh all",
+    "exit_code": 0
+  }
 }
 ```
 
 `summary` is prose; the structured arrays (`risks`, `dependencies`, `reviewer_focus`) are first-class JSON keys, not subfields embedded inside `summary`. `confidence` is an integer 0–100 indicating how sure you are the work is correct (default 80 if omitted).
+
+**Local-CI evidence (required for pushed PRs).** Any worker completion report
+for a task that pushed a PR MUST include `local_ci` with the exact command
+(normally `scripts/local_ci.sh all`) and a zero exit status. Engineering
+managers reject a PR completion missing this evidence. The `local_ci` field is
+a plain object with `command` (string) and `exit_code` (integer). If the local-CI
+hook ran the full real suite, state its exact command and exit code; do not
+claim it without output. Tasks that do not push a PR (e.g., blocked tasks,
+analysis-only tasks) may omit `local_ci`.
+
+**GitHub CI is authoritative.** Local pre-push hooks provide feedforward
+signal only. The full Python 3.12/3.13/3.14 matrix and nightly integration
+runs on clean Ubuntu runners in GitHub Actions are the only merge gate.
+Local-CI hooks CANNOT prevent `git push --no-verify` — `--no-verify`
+bypasses hooks entirely and remains prohibited by engineering policy.
 
 For review/QA-type workers, optionally include a structured verdict:
 

@@ -139,7 +139,7 @@ def _sweep_on_startup(
                     task_id, t.assigned_agent, t.current_session_id,
                 )
             if orphaned_result_row is not None and orchestrator is not None:
-                from runtime.models import CompletionReport, NextStep
+                from runtime.models import CompletionReport, LocalCiEvidence, NextStep
                 import json as _json
                 _raw_decision = orphaned_result_row.get("decision_json")
                 _decision: NextStep | None = None
@@ -150,6 +150,16 @@ def _sweep_on_startup(
                             _decision = NextStep(**_parsed)
                     except Exception:
                         _decision = None
+                # Safely parse local_ci from the task_result row.
+                _local_ci_raw = orphaned_result_row.get("local_ci")
+                _local_ci: LocalCiEvidence | None = None
+                if _local_ci_raw:
+                    try:
+                        _parsed = _json.loads(_local_ci_raw)
+                        if isinstance(_parsed, dict):
+                            _local_ci = LocalCiEvidence(**_parsed)
+                    except Exception:
+                        pass
                 orphaned_report = CompletionReport(
                     task_id=task_id,
                     agent=orphaned_result_row.get("agent") or (t.assigned_agent or "unknown"),
@@ -161,6 +171,7 @@ def _sweep_on_startup(
                     risks_flagged=orphaned_result_row.get("risks_flagged") or [],
                     output_dir=orphaned_result_row.get("output_dir"),
                     waiting_on_job_ids=orphaned_result_row.get("waiting_on_job_ids") or [],
+                    local_ci=_local_ci,
                 )
                 # Audit: log the completion report so the consumed result is
                 # visible — the original session's log_completion_report call
