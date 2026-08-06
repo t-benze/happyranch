@@ -195,6 +195,10 @@ class SkillLifecycleService:
 
     # ── Agent proposal submission ─────────────────────────────────────────
 
+    # ── Validator version ───────────────────────────────────────────────
+
+    _VALIDATOR_VERSION = "THR-055/1.1.0"  # B1 revised validator
+
     def submit_proposal(
         self,
         db,
@@ -210,6 +214,7 @@ class SkillLifecycleService:
         task_id: str | None = None,
         session_id: str | None = None,
         proposer_agent: str | None = None,
+        task_brief_digest: str | None = None,
         purpose: str = "",
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
@@ -235,6 +240,10 @@ class SkillLifecycleService:
         - policy_class must be standard_operational
         - task_id + session_id required for agent proposals
         - All member paths must be safe (no traversal, no absolute paths)
+        - Text members scanned for executable/credential/permission/sandbox/
+          allow-rule/executor/eligibility-indicating content
+        - Originator-only append: only the verified creator agent may append
+          a new version to their own skill
         """
         self._ensure_non_empty(skill_md, "skill_md")
         self._ensure_protected_slug(slug, protected_slugs)
@@ -253,7 +262,38 @@ class SkillLifecycleService:
                 status_code=400,
             )
 
+        # Fail closed: task brief digest required for agent proposals.
+        if actor_kind == "agent" and not task_brief_digest:
+            raise LifecycleError(
+                code="missing_task_brief_digest",
+                detail="Agent proposals require a non-empty source-task brief digest for provenance.",
+                status_code=403,
+            )
+
         skill_id = f"hr:{slug}"
+
+        # ── Originator-only append check ──────────────────────────────
+        if actor_kind == "agent" and proposer_agent:
+            existing_pkg = stores.get_latest_package_version(db, skill_id)
+            if existing_pkg is not None and existing_pkg.proposer_agent and existing_pkg.proposer_agent != proposer_agent:
+                raise LifecycleError(
+                    code="originator_only",
+                    detail=f"Skill '{skill_id}' was originated by '{existing_pkg.proposer_agent}'. "
+                           f"Only the originating agent may append a new version. "
+                           f"Current caller '{proposer_agent}' is not the originator.",
+                    status_code=403,
+                )
+
+        # ── Text-member safety scan (BEFORE artifact store writes) ────
+        validator_findings: list[dict] = []
+        try:
+            self._scan_text_member_for_prohibited_content(skill_md, "SKILL.md", validator_findings)
+            for ref_path, ref_content in sorted(refs.items()):
+                self._scan_text_member_for_prohibited_content(ref_content, f"references/{ref_path}", validator_findings)
+            for asset_path, asset_content in sorted(asts.items()):
+                self._scan_text_member_for_prohibited_content(asset_content, f"assets/{asset_path}", validator_findings)
+        except LifecycleError:
+            raise
 
         # Persist all package members to ArtifactStore under content-addressed
         # immutable keys, then build a manifest artifact. The manifest's hash
@@ -332,6 +372,13 @@ class SkillLifecycleService:
                     "purpose": purpose,
                     "target_agent_suggestion": target_agent_suggestion,
                     "content_artifact_key": content_artifact_key,
+                    "validator_version": self._VALIDATOR_VERSION,
+                    "validator_findings": validator_findings,
+                    "task_brief_digest": task_brief_digest,
+                    "verified_org_slug": slug if actor_kind == "agent" else None,
+                    "verified_task_id": task_id,
+                    "verified_session_id": session_id,
+                    "verified_agent": proposer_agent,
                 },
                 task_id=task_id,
                 session_id=session_id,
@@ -362,6 +409,55 @@ class SkillLifecycleService:
             conn.isolation_level = prev_isolation
 
         return pkg
+
+    # ── Text-member safety scanner ─────────────────────────────────────
+
+    # Patterns that indicate executable, credential, permission, sandbox,
+    # allow-rule, executor, or eligibility content in text members.
+    _PROHIBITED_CONTENT_PATTERNS: list[tuple[str, str]] = [
+        # Executable / script content
+        ("executable:shebang", r"^#!"),
+        ("executable:script_block", r"```(?:bash|sh|python|node|js|ruby|perl|php)"),
+        ("executable:inline_code", r"`[^`]*(?:sudo|chmod|chown|setuid|setgid)[^`]*`"),
+        # Credential / secret patterns
+        ("credential:api_key", r"(?:api[_-]?key|apikey|secret[_-]?key)\s*[=:]\s*['\"][^'\"]{8,}['\"]"),
+        ("credential:token", r"(?:bearer|auth[_-]?token|access[_-]?token)\s*[=:]\s*['\"][^'\"]{8,}['\"]"),
+        ("credential:password", r"password\s*[=:]\s*['\"][^'\"]+['\"]"),
+        # Permission / sandbox patterns
+        ("permission:allow_rule", r"(?:allow[_-]?rules?|allowed[_-]?tools?)\s*[=:]"),
+        ("permission:sandbox", r"(?:sandbox[_-]?(?:mode|type|config)|network[_-]?access)\s*[=:]"),
+        # Executor configuration
+        ("executor:config", r"(?:executor[_-]?(?:config|selection|profile|model))\s*[=:]"),
+        ("executor:custom_cli", r"(?:command[_-]?adapter|custom[_-]?executor)\s*[=:]"),
+        # Eligibility / assignment
+        ("eligibility:rule", r"(?:eligibility|assignment|publish|activate)\s*[=:]"),
+    ]
+
+    def _scan_text_member_for_prohibited_content(
+        self, content: str, member_path: str, findings: list[dict],
+    ) -> None:
+        """Scan a single text member for prohibited content patterns.
+
+        Raises LifecycleError on the first match found (fail-fast).
+        Appends finding to ``findings`` on clean pass.
+        """
+        import re as _re
+        for pattern_id, pattern in self._PROHIBITED_CONTENT_PATTERNS:
+            if _re.search(pattern, content, _re.IGNORECASE | _re.MULTILINE):
+                raise LifecycleError(
+                    code="prohibited_content",
+                    detail=f"Member '{member_path}' contains prohibited content matching "
+                           f"pattern '{pattern_id}': {pattern}",
+                    status_code=403,
+                )
+        findings.append({
+            "member": member_path,
+            "result": "clean",
+            "patterns_checked": len(self._PROHIBITED_CONTENT_PATTERNS),
+        })
+
+
+    # ── Validation guards ──────────────────────────────────────────────
 
     def _validate_safe_paths(
         self, slug: str, references: dict[str, str], assets: dict[str, str],

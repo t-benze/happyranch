@@ -73,33 +73,21 @@ object:
 | `references` | No | `{<path>: "<text>"}`; each ≤128 KiB; safe paths only; ≤32 entries |
 | `assets` | No | `{<path>: "<text>"}`; each ≤256 KiB; safe paths only; ≤16 entries |
 
-The body MUST NOT contain any of these prohibited identity/authority keys:
+The body MUST NOT contain any of these prohibited identity/authority/config keys:
 `org`, `org_slug`, `agent`, `agent_name`, `task_id`, `task`, `session_id`,
 `session`, `proposer_agent`, `proposer`, `actor`, `eligibility`, `permission`,
-`permissions`. Their presence (including empty values) is rejected with
-HTTP 403 before any persistence.
+`permissions`, `allow_rules`, `allow_rule`, `sandbox_mode`, `sandbox`,
+`executor`, `executor_config`, `credential`, `credentials`,
+`network_access`, `filesystem_scope`, `command_authority`,
+`config`, `configuration`, `settings`, `owner`.
+Their presence (including empty values) is rejected with HTTP 403 before
+any persistence. ANY unknown field not listed above is also strictly
+rejected — the body shape is exact.
 
-## Submission command
-
-The EXACT supported submission form is:
-
-```
-happyranch skills create --from-file <path> --session-id <session-id>
-```
-
-Where:
-- `<path>` is a local JSON file containing the package metadata and content
-  as described above. It MUST NOT contain any identity/authority field.
-- `<session-id>` is the opaque active session identifier from the current
-  task context (available as the `session_id` parameter injected at task
-  start).
-
-The CLI builds a token-free transport (no bearer token) using only the
-daemon port. It resolves the org slug via the standard `resolve_org_slug`
-convention. The daemon independently derives org, agent, task, and session
-from the verified SessionTracker context — never from the body, query,
-environment, CLI flags, task lookup, team membership, or client-asserted
-identity.
+Additionally, all text members (SKILL.md, every reference, every asset)
+are scanned for executable, credential, permission, sandbox, allow-rule,
+executor, and eligibility-indicating content BEFORE any artifact write or
+ledger row. Matches are rejected with HTTP 403 and produce zero residue.
 
 ## Submission result
 
@@ -170,7 +158,9 @@ After creation, a custom skill is in `proposed` status:
 - It is visible in the founder's lifecycle queue.
 - It is NOT visible to any agent (including its creator).
 - It does NOT materialize in any workspace.
-- Subsequent versions by the same agent append to the same skill record
-  (same `skill_id`, new `version_id` and `content_hash`).
+- Subsequent versions by the same originating agent append to the same skill record
+  (same `skill_id`, new `version_id` and `content_hash`). Originator-only
+  enforcement: the server rejects version appends from any agent other than
+  the verified creator.
 - The agent cannot edit, validate, claim, publish, assign, retire, or
   rollback the skill — those are human/founder-only actions.

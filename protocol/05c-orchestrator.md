@@ -779,15 +779,23 @@ states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 **Agent create-skill path (THR-055 B1).** The broader agent skill-creation
 workflow uses the dedicated ``create-skill`` system contract:
 
-- ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``
+- ``happyranch skills create --from-file <path> --session-id <session-id>``
   submits a custom ``standard_operational`` skill package to
-  ``POST /api/v1/orgs/{slug}/skills/agent``.
+  ``POST /api/v1/orgs/{slug}/skills/agent``. The org slug is resolved via
+  the standard ``resolve_org_slug`` convention.
 - The body carries only package metadata/content; all identity is derived
-  server-side from the SessionTracker context. The server rejects every
-  client-supplied identity/authority field before persistence.
+  server-side from the SessionTracker context. Any Authorization header is
+  rejected before session lookup. Unknown/extra body fields are strictly
+  forbidden. All text members are scanned for prohibited executable/credential/
+  permission/sandbox/allow-rule/executor/eligibility content before persistence.
+- Originator-only append: only the verified creator agent may submit a new
+  version for their own skill. Server-enforced via lifecycle service.
 - Protected namespace enforcement covers all runtime system contracts and
-  first-party shipped skills. Only ``standard_operational`` policy class is
-  accepted.
+  first-party shipped skills, failing closed on registry errors. Only
+  ``standard_operational`` policy class is accepted.
+- Immutable provenance recorded: task brief SHA-256 digest, verified org/agent/
+  task/session, validator version and findings, canonical content hash. Task
+  brief must be non-empty — unavailable provenance fails closed.
 - Successful creation is default-hidden; the skill remains ``proposed`` until
   a founder makes it eligible. The ``create-skill`` system contract is
   task-facing and does NOT grant tools, credentials, permissions, or

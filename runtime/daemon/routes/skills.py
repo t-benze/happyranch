@@ -1511,8 +1511,7 @@ def skill_recover(
 
 from fastapi import Body as RequestBody, Depends
 
-from runtime.daemon.auth import _check_optional_token
-from runtime.skills.lifecycle import stores as lifecycle_stores
+from runtime.daemon.auth import any_authorization_header_guard
 from runtime.skills.lifecycle.models import LifecycleStatus, PackageVersion
 from runtime.skills.lifecycle.service import (
     AgentForbiddenError,
@@ -1532,16 +1531,22 @@ _CREATE_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
     "task_id", "session_id", "proposer_agent",
     "org", "org_slug", "agent", "agent_name",
     "actor", "eligibility", "permission", "permissions",
+    "allow_rules", "allow_rule", "sandbox_mode", "sandbox",
+    "executor", "executor_config", "credential", "credentials",
+    "network_access", "filesystem_scope", "command_authority",
+    "config", "configuration", "settings", "owner",
 })
-
 
 class CreateSkillBody(BaseModel):
     """Agent-submitted custom skill package — no identity/authority fields.
 
     All org/task/agent/session identity is derived server-side from the
     verified SessionTracker context. The body carries ONLY package
-    metadata and content.
+    metadata and content. Unknown/extra fields are strictly forbidden
+    and rejected before any persistence.
     """
+    model_config = {"extra": "forbid"}
+
     slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(min_length=1, max_length=512)
@@ -1557,32 +1562,41 @@ class CreateSkillBody(BaseModel):
 def _create_get_protected_slugs(org: OrgState) -> frozenset:
     """Build the live protected-slug set from system contracts + shipped skills.
 
-    Fails closed: if the registry cannot be loaded, raises HTTP 500.
+    Fails closed: if the registry cannot be loaded or a shipped skill
+    directory exists but produces no valid entries, raises HTTP 500.
     """
     slugs: set[str] = set()
     # System contract IDs
     for sc in SYSTEM_CONTRACTS:
         slugs.add(sc.id)
-    # First-party shipped skill slugs from the release directory
+    # First-party shipped skill slugs from the release directory.
+    # Fail closed: if the shipped-skills directory exists but the registry
+    # raises or returns zero entries, that is a server misconfiguration.
     release_dir = org.settings.project_root / "runtime" / "skills"
     if release_dir.is_dir():
         from runtime.skills.registry import SkillRegistry
-        registry = SkillRegistry(skills_root=release_dir)
-        for entry in registry.list_all():
-            if isinstance(entry, tuple):
-                entry = entry[0]
-            slugs.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+        try:
+            registry = SkillRegistry(skills_root=release_dir)
+            entries = registry.list_all()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "protected_slug_registry_failed",
+                    "detail": f"Failed to load shipped-skill registry: {exc}",
+                },
+            )
+        for entry in entries:
+            slugs.add(entry.slug)
     return frozenset(slugs)
 
-
-@agent_router.post("/skills/agent", status_code=201)
+@agent_router.post("/skills/agent", status_code=201, dependencies=[Depends(any_authorization_header_guard)])
 def create_skill_agent_only(
     slug: str,
     org: OrgDep,
     request: Request,
     body_raw: dict = RequestBody(..., description="Skill package metadata and content (no identity fields)"),
     session_id: str = Query(..., min_length=1),
-    has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Create a custom skill via opaque agent-session binding.
 
@@ -1598,21 +1612,16 @@ def create_skill_agent_only(
     Returns 403 for:
     - Inactive, expired, unknown, or mismatched session
     - Cross-org session (session belongs to a different org)
-    - Bearer token present (agent path only)
+    - Any Authorization header present (agent path only)
     - Any prohibited body identity/authority key present
+    - Any unknown body field (strict shape enforcement)
     - Protected system/first-party slug
     - Non-standard_operational policy class
     """
-    # Reject bearer token
-    if has_bearer:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "bearer_not_accepted",
-                "detail": "This route is for agent-session skill creation only. "
-                          "Bearer-authenticated requests are not accepted.",
-            },
-        )
+    # NOTE: Authorization header rejection is handled by the route-level
+    # dependency any_authorization_header_guard, which runs BEFORE this
+    # handler and before any session lookup or persistence.
+
 
     # Reject ANY prohibited body identity/authority key BEFORE persistence
     for key in _CREATE_PROHIBITED_BODY_KEYS:
@@ -1625,9 +1634,19 @@ def create_skill_agent_only(
                               "Identity is derived from the server's verified session context.",
                 },
             )
-
-    # Parse the clean body through Pydantic
-    body = CreateSkillBody(**body_raw)
+    # Parse the clean body through Pydantic (strict shape, no extra fields)
+    try:
+        body = CreateSkillBody(**body_raw)
+    except Exception:
+        from pydantic import ValidationError as _ValidationError
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_body",
+                "detail": "Request body contains unknown/extra fields or invalid values. "
+                          "Only documented package fields are accepted.",
+            },
+        )
 
     # Resolve identity from opaque session
     context = org.sessions.get_context_by_session(session_id)
@@ -1697,6 +1716,20 @@ def create_skill_agent_only(
                 },
             )
 
+        # Derive task brief digest from the DB (fail closed if unavailable).
+        import hashlib as _hashlib
+        task_record = org.db.get_task(task_id)
+        if task_record is None or not task_record.brief or not task_record.brief.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "task_brief_unavailable",
+                    "detail": f"Task {task_id} brief is unavailable or empty. "
+                              "Provenance requires a non-empty source-task brief.",
+                },
+            )
+        task_brief_digest = _hashlib.sha256(task_record.brief.encode("utf-8")).hexdigest()
+
         try:
             pkg = _create_service.submit_proposal(
                 db=org.db,
@@ -1712,6 +1745,7 @@ def create_skill_agent_only(
                 task_id=task_id,
                 session_id=session_id,
                 proposer_agent=agent_name,
+                task_brief_digest=task_brief_digest,
                 purpose=body.purpose,
                 target_agent_suggestion=body.target_agent_suggestion,
                 protected_slugs=protected_slugs,

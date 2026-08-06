@@ -184,6 +184,7 @@
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
 
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055)",
+    "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B1)",
 
     "POST /api/v1/orgs/{slug}/skills/recover": "operator CLI-only recovery route; not in SPA"
   }

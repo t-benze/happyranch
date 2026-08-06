@@ -137,5 +137,47 @@ def _check_optional_token(
     return authorization.removeprefix("Bearer ").strip() == expected
 
 
+# ── Any-authorization-header guard (agent-only routes) ────────────────
+
+
+def _check_any_authorization_header(
+    authorization: str | None = Header(default=None),
+) -> bool:
+    """Return True iff ANY Authorization header is present.
+
+    Used by agent-only routes that must reject ALL forms of bearer/client
+    credential BEFORE any session lookup or persistence. This detects:
+    Bearer, Basic, Token prefixes, case variants, malformed headers,
+    and empty values. It does NOT validate the token — it merely detects
+    the presence of any Authorization header whatsoever.
+
+    Returns True when the Authorization header exists (header key present,
+    even if value is empty/whitespace). Returns False only when the header
+    is entirely absent.
+    """
+    # Header(name) returns None when NOT present at all.
+    # Empty string and whitespace-only values are still headers.
+    return authorization is not None
+
+
+async def any_authorization_header_guard(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """FastAPI dependency: raises 401 if ANY Authorization header is present.
+
+    Use as a route-level dependency:
+        @router.post("...", dependencies=[Depends(any_authorization_header_guard)])
+    """
+    if authorization is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "authorization_header_not_accepted",
+                "detail": "This route does not accept any Authorization header. "
+                          "Use the opaque session-id query parameter only.",
+            },
+        )
+
+
 def optional_bearer() -> Depends:
     return Depends(_check_optional_token)

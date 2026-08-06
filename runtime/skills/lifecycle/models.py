@@ -187,19 +187,22 @@ class MaterializationRecord(BaseModel):
 # ── API request/response models ───────────────────────────────────────────
 
 class ProposalRequest(BaseModel):
-    """Agent-submitted skill proposal — bound to task/session."""
+    """Agent-submitted skill proposal — bound to task/session.
+
+    Unknown/extra fields are strictly forbidden.
+    """
+    model_config = {"extra": "forbid"}
+
     slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(min_length=1, max_length=512)
-    version: str = "0.1.0"
-    policy_class: str = "standard_operational"
-    skill_md: str = Field(min_length=1)
-    purpose: str = ""  # Why this skill is needed
-    target_agent_suggestion: str = ""  # Informational only
-    references: dict[str, str] | None = None
-    assets: dict[str, str] | None = None
-
-    # These are validated server-side — body claims ignored
+    version: str = Field(default="0.1.0", min_length=1, max_length=32)
+    policy_class: str = Field(default="standard_operational")
+    skill_md: str = Field(min_length=1, max_length=131072)
+    purpose: str = Field(default="", max_length=1024)
+    target_agent_suggestion: str = Field(default="", max_length=128)
+    references: dict[str, str] | None = Field(default=None)
+    assets: dict[str, str] | None = Field(default=None)
     task_id: str | None = None
     session_id: str | None = None
     proposer_agent: str | None = None
