@@ -73,8 +73,12 @@ On submission the server performs **deterministic validation**:
    ``task_id``, ``session_id``, ``proposer_agent``,
    ``eligibility``, ``permission``) are rejected before persistence.
 5. **Immutable version:** On success the version is saved with a
-   deterministic content hash, validator version, validation findings,
-   and verified provenance. The version is immutable; a later edit
+   deterministic content hash and verified provenance (org, task ID,
+   agent name, session ID, task-brief digest) derived exclusively from
+   the server's SessionTracker binding. A deterministic validation
+   runs before persistence; its result (pass/fail and reason codes)
+   is recorded alongside the validator version ("B1-create-skill-route-v1")
+   in a durable lifecycle event. The version is immutable; a later edit
    always creates a new version/hash.
 
 ## Visibility
@@ -132,8 +136,9 @@ and status. On failure it prints an actionable error and exits non-zero.
 3. A human (Founder) must configure Eligibility to expose it.
 4. Once eligible, the skill is materialized into qualifying agent
    workspaces at their **next session spawn**.
-5. An agent can create a new version of its own originated skill; it
-   cannot edit skills originated by other agents or humans.
+5. The skill enters the lifecycle ledger as a PROPOSED record. The B1
+   route creates new proposals only; updating an existing custom skill
+   (creating a new version of an originated skill) is deferred to B2.
 
 ## Deferred (B2 / v1 follow-on)
 

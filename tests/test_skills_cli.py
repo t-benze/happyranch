@@ -1381,3 +1381,249 @@ class TestManageAgentManageRepoCli:
         # Catalog PASSES (status=enabled, no approval gate)
         assert data["catalog_gate"]["passed"] is True
         assert data["is_exposed"] is True
+
+
+
+
+class TestSkillsCreateCliIntegration:
+    """Production-real CLI-to-daemon integration tests.
+
+    Drives the registered literal `happyranch skills create --from-file <path>
+    --session-id <session-id> --org alpha` parser/dispatch through actual
+    httpx construction to a forwarding ASGI adapter. The adapter captures
+    and forwards the real production httpx construction unchanged.
+    """
+
+    @staticmethod
+    def _make_valid_payload(tmp_path, slug="my-test-skill"):
+        import json
+        payload = {
+            "slug": slug,
+            "name": "My Test Skill",
+            "description": "A test skill for integration testing",
+            "skill_md": "# My Test Skill\n\nThis is a test skill.",
+            "version": "0.1.0",
+            "policy_class": "standard_operational",
+        }
+        path = tmp_path / f"{slug}.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_cli_create_success_through_forwarding_adapter(
+        self, tmp_path, monkeypatch,
+    ):
+        import argparse
+        import json
+        from cli.commands.skills import cmd_skills_create
+        import httpx
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.runtime import RuntimeDir
+        from runtime.config import Settings
+        from runtime.daemon import paths as paths_mod
+
+        # Set up daemon home
+        import os
+        home = tmp_path / ".happyranch"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        # Seed an org
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True)
+        (org_root / "org").mkdir()
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        )
+
+        # Create real app with TestClient
+        daemon_state = DaemonState.from_runtime(rt, Settings())
+        app = create_app(daemon_state)
+        test_client = TestClient(app)
+        org = daemon_state.orgs["alpha"]
+
+        # Set up active session
+        org.sessions.set_active("TASK-CLI-1", "dev_agent", "sess-cli-1", org_slug="alpha")
+
+        # Create payload file
+        payload_path = self._make_valid_payload(tmp_path, slug="cli-test-skill")
+
+        # Build parsed args
+        ns = argparse.Namespace(
+            from_file=str(payload_path),
+            session_id="sess-cli-1",
+            org="alpha",
+        )
+
+        # Create temp port file
+        port_path = tmp_path / "port"
+        port_path.write_text("9999")
+
+        # Capture httpx construction via a forwarding wrapper
+        captured = {}
+
+        class ForwardingTransport(httpx.BaseTransport):
+            def handle_request(self, request):
+                captured["method"] = request.method
+                captured["url"] = str(request.url)
+                captured["headers"] = dict(request.headers)
+                captured["body"] = json.loads(request.content) if request.content else None
+
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(str(request.url))
+                path = parsed.path
+                query_params = {}
+                if parsed.query:
+                    for k, v in parse_qs(parsed.query).items():
+                        query_params[k] = v[0]
+
+                captured["path"] = path
+                captured["query_params"] = query_params
+
+                # Forward to the real TestClient
+                resp = test_client.post(
+                    path,
+                    json=json.loads(request.content) if request.content else None,
+                    params=query_params,
+                    headers=dict(request.headers),
+                )
+
+                return httpx.Response(
+                    status_code=resp.status_code,
+                    headers=list(resp.headers.items()),
+                    content=resp.content,
+                    request=request,
+                )
+
+        # Patch httpx.Client to use our captured transport
+        original_client_init = httpx.Client.__init__
+
+        captured_client_kwargs = {}
+        def patched_client_init(self, **kwargs):
+            captured_client_kwargs.update(kwargs)
+            original_client_init(self, transport=ForwardingTransport(), **kwargs)
+
+        monkeypatch.setattr(httpx.Client, "__init__", patched_client_init)
+        monkeypatch.setattr("cli.client.client.port_file", lambda: port_path)
+        monkeypatch.setattr(
+            "cli._shared.resolve_org_slug",
+            lambda args_org, available: args_org or "alpha",
+        )
+
+        # Patch the orgs GET to not make real HTTP calls
+        def fake_get(self, url, **kw):
+            if "/api/v1/orgs" in url:
+                return httpx.Response(200, json={"orgs": [{"slug": "alpha"}]})
+            return httpx.Response(404)
+        monkeypatch.setattr(httpx.Client, "get", fake_get)
+
+        # Now invoke the CLI command
+        try:
+            cmd_skills_create(ns)
+        except SystemExit:
+            pass
+
+        # Verify captured transport
+        assert captured.get("method") == "POST", f"Expected POST, got {captured.get('method')}"
+        assert captured.get("path") == "/api/v1/orgs/alpha/skills/agent", \
+            f"Expected /api/v1/orgs/alpha/skills/agent, got {captured.get('path')}"
+        assert captured.get("query_params", {}).get("session_id") == "sess-cli-1"
+        body = captured.get("body", {})
+        assert body.get("slug") == "cli-test-skill"
+        assert body.get("name") == "My Test Skill"
+
+        # Verify NO Authorization header
+        captured_headers = {k.lower(): v for k, v in captured.get("headers", {}).items()}
+        assert "authorization" not in captured_headers, \
+            f"Authorization found: {captured_headers}"
+
+        # Verify client construction args
+        assert captured_client_kwargs.get("base_url") == "http://127.0.0.1:9999"
+        client_headers = captured_client_kwargs.get("headers", {})
+        assert client_headers.get("X-HappyRanch-Surface") == "cli"
+
+    def test_cli_create_malformed_package(self, tmp_path):
+        """Malformed JSON package file -> actionable CLI error, exit=1."""
+        import argparse
+        from cli.commands.skills import cmd_skills_create
+        import pytest
+
+        bad_path = tmp_path / "bad.json"
+        bad_path.write_text("{not json")
+
+        ns = argparse.Namespace(
+            from_file=str(bad_path),
+            session_id="sess-cli-1",
+            org="alpha",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(ns)
+        assert exc_info.value.code == 1
+
+    def test_cli_create_missing_session_id(self, tmp_path):
+        """Missing --session-id -> actionable error, exit=1."""
+        import argparse
+        from cli.commands.skills import cmd_skills_create
+        import pytest
+
+        payload_path = self._make_valid_payload(tmp_path)
+        ns = argparse.Namespace(
+            from_file=str(payload_path),
+            session_id=None,
+            org="alpha",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(ns)
+        assert exc_info.value.code == 1
+
+    def test_cli_create_missing_from_file(self, tmp_path):
+        """Missing --from-file -> actionable error, exit=1."""
+        import argparse
+        from cli.commands.skills import cmd_skills_create
+        import pytest
+
+        ns = argparse.Namespace(
+            from_file=None,
+            session_id="sess-cli-1",
+            org="alpha",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(ns)
+        assert exc_info.value.code == 1
+
+    def test_cli_create_body_identity_rejected_client_side(self, tmp_path):
+        """Body containing forbidden identity field -> rejected client-side, exit=1."""
+        import argparse
+        import json
+        from cli.commands.skills import cmd_skills_create
+        import pytest
+
+        payload = {
+            "slug": "bad-skill",
+            "name": "Bad Skill",
+            "description": "Should be rejected",
+            "skill_md": "# Bad\n",
+            "task_id": "I-AM-SPOOFED",
+        }
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps(payload))
+
+        ns = argparse.Namespace(
+            from_file=str(path),
+            session_id="sess-cli-1",
+            org="alpha",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(ns)
+        assert exc_info.value.code == 1

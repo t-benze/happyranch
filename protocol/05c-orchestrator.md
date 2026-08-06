@@ -785,8 +785,11 @@ dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
    to ``POST /api/v1/orgs/{slug}/skills/agent``. Identity derivation,
    body-key rejection, cross-org enforcement, per-binding lease/re-verification,
    and zero-residue denial follow the same SessionTracker pattern as the
-   proposal path. This B1 create path replaces the proposal-review ceremony
-   for ordinary ``standard_operational`` custom skills. The B2 follow-on
+   proposal path. This B1 create path is an additional agent-authoring path alongside
+   the existing ``happyranch skills propose`` workflow; both create PROPOSED
+   lifecycle records through the same lifecycle service. The proposal-review
+   ceremony remains the existing human-review path; B1 does not replace or
+   bypass it. The B2 follow-on
    (eligibility, human web editor, migration/cutover) is explicitly deferred.
 
 

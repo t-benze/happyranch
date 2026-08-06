@@ -268,6 +268,7 @@ async def test_wake_spawn_succeeds_when_contracts_present(org_state, tmp_path, m
     _make_skill_dir(proto_skills, "thread")
     _make_skill_dir(proto_skills, "dream")
     _make_skill_dir(proto_skills, "todos")
+    _make_skill_dir(proto_skills, "create-skill")
 
     executor_spawned = False
 

@@ -86,19 +86,19 @@ _REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
 # superset to prevent cross-context withdrawal.
 SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     "task": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
         False: {"start-task", "jobs", "thread", "dream", "todos"},
     },
     "thread": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
         False: {"start-task", "jobs", "thread", "dream", "todos"},
     },
     "wake": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
         False: {"start-task", "jobs", "thread", "dream", "todos"},
     },
     "dream": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
         False: {"start-task", "jobs", "thread", "dream", "todos"},
     },
 }
