@@ -28,9 +28,9 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
-import { EligibilityEditorDialog } from '@/features/work-hours-config/EligibilityEditorDialog';
-import { SavedBanner } from '@/features/work-hours-config/components';
-import { extractServerErrors } from '@/features/work-hours-config/errors';
+import { EligibilityEditorDialog } from '@/shared/work-hours/EligibilityEditorDialog';
+import { SavedBanner } from '@/shared/work-hours/SavedBanner';
+import { extractServerErrors } from '@/shared/work-hours/extractServerErrors';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 import { useUpdateOrgSettings } from '@/hooks/settings';
 import { useAgentsList } from '@/hooks/agents';
@@ -387,9 +387,10 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       )}
 
       <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
-        <EditableRow label="Enabled" badge="Applies live">
+        <EditableRow label="Work Hours" labelId="work-hours-switch-label" badge="Applies live">
           <div className="flex items-center gap-2">
             <BooleanToggle
+              aria-labelledby="work-hours-switch-label"
               value={wh?.enabled ?? false}
               onChange={(v) => {
                 if (v) {
@@ -399,7 +400,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                 }
               }}
             />
-            <span className="text-text-muted text-xs">
+            <span className="text-text-muted text-xs" aria-hidden="true">
               {wh?.enabled ? 'ON' : 'OFF'}
             </span>
           </div>
@@ -503,16 +504,18 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
 function EditableRow({
   label,
+  labelId,
   badge,
   children,
 }: {
   label: string;
+  labelId?: string;
   badge?: string;
   children: React.ReactNode;
 }): JSX.Element {
   return (
     <div className="flex items-center justify-between px-3 py-2 text-sm">
-      <span className="text-fg-muted">{label}</span>
+      <span id={labelId} className="text-fg-muted">{label}</span>
       <span className="flex items-center gap-2">
         {children}
         {badge && (
@@ -528,16 +531,35 @@ function EditableRow({
 function BooleanToggle({
   value,
   onChange,
+  'aria-labelledby': ariaLabelledBy,
 }: {
   value: boolean;
   onChange: (v: boolean) => void;
+  'aria-labelledby'?: string;
 }): JSX.Element {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={value}
-      onClick={() => onChange(!value)}
+      aria-labelledby={ariaLabelledBy}
+      onClick={(e) => {
+        // Ignore keyboard-synthesized clicks; keyboard activation is handled
+        // in onKeyDown so Enter/Space toggle exactly once.
+        if (e.detail === 0) return;
+        onChange(!value);
+      }}
+      onKeyDown={(e) => {
+        if (
+          e.key === 'Enter' ||
+          e.key === ' ' ||
+          e.key === 'Space' ||
+          e.key === 'Spacebar'
+        ) {
+          e.preventDefault();
+          onChange(!value);
+        }
+      }}
       className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${
         value ? 'bg-accent' : 'bg-bg-raised border-border border'
       }`}

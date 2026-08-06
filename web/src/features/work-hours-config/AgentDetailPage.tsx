@@ -19,12 +19,12 @@ import {
   reconcile,
   renderLeaf,
 } from './merge';
+import { SavedBanner } from '@/shared/work-hours/SavedBanner';
 import {
   EligibilityChip,
   OnDot,
   ProvenanceBadge,
   RecoveryBanner,
-  SavedBanner,
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';
 import { useAgentTeamMap } from './useAgentTeamMap';

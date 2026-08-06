@@ -653,9 +653,9 @@ describe('SettingsPage — Organization section', () => {
       within(content).getByRole('button', { name: 'Edit eligibility' }),
     ).toBeInTheDocument();
 
-    // Work Hours deep link present
+    // Work Hours deep link present (scoped to link role to avoid the switch label)
     expect(
-      within(content).getByText('Work Hours'),
+      within(content).getByRole('link', { name: 'Work Hours' }),
     ).toBeInTheDocument();
   });
 
@@ -801,6 +801,159 @@ describe('SettingsPage — Organization section', () => {
     expect(
       within(content).getByText(/Invalid agent reference/),
     ).toBeInTheDocument();
+  });
+
+  test('Work Hours switch has accessible name and keyboard focus/confirmation flow', async () => {
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        const body = await request.json();
+        // The keyboard disable flow must send the same working_hours-only shape.
+        expect(body).toEqual({ working_hours: { enabled: false } });
+        return HttpResponse.json(SETTINGS_PAYLOAD);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    const user = userEvent.setup();
+    const whSwitch = within(content).getByRole('switch', { name: 'Work Hours' });
+    expect(whSwitch.getAttribute('aria-checked')).toBe('true');
+
+    // Focus the switch and activate with keyboard (Enter on a focused button)
+    whSwitch.focus();
+    expect(document.activeElement).toBe(whSwitch);
+    await user.keyboard('{Enter}');
+
+    // Confirmation dialog appears with an accessible title
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Disable work hours?' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Disable work hours?')).toBeInTheDocument();
+
+    // Cancel closes the dialog; focus returns to a sensible control (the switch
+    // is reachable again).
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Disable work hours?' })).not.toBeInTheDocument();
+    });
+
+    // Re-open with Space and confirm
+    whSwitch.focus();
+    await user.keyboard('{Space}');
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Disable work hours?' })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: 'Disable' }));
+
+    // Save feedback is announced via role=status
+    await waitFor(() => {
+      expect(
+        within(content).getByRole('status'),
+      ).toHaveTextContent(/Saved.*takes effect.*scheduler/);
+    });
+  });
+
+  test('eligibility editor opens, previews impact, confirms working_hours.agents-only patch, and recovers from 422', async () => {
+    // Start in whitelist mode so the include picker is visible without touching
+    // the Radix Select (jsdom lacks PointerEvent#hasPointerCapture).
+    const whitelistPayload = {
+      ...SETTINGS_PAYLOAD,
+      org: {
+        ...SETTINGS_PAYLOAD.org,
+        working_hours: {
+          ...SETTINGS_PAYLOAD.org.working_hours,
+          agents: { mode: 'whitelist' as const, include: [], exclude: [] },
+        },
+      },
+    };
+
+    let savedBody: unknown = null;
+    let attempt = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json(whitelistPayload),
+      ),
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        attempt += 1;
+        if (attempt === 1) {
+          return HttpResponse.json(
+            { detail: 'Unknown agent reference: ghost_agent' },
+            { status: 422 },
+          );
+        }
+        return HttpResponse.json(whitelistPayload);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    const user = userEvent.setup();
+    await user.click(within(content).getByRole('button', { name: 'Edit eligibility' }));
+
+    // Dialog opens with accessible title
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Edit eligibility' })).toBeInTheDocument();
+    });
+
+    // Include one agent (scope to the include picker to avoid the exclude duplicate)
+    const includeSection = screen.getByText('include').closest('div') as HTMLElement;
+    const devChip = within(includeSection).getByRole('button', { name: 'dev_agent' });
+    await user.click(devChip);
+    expect(devChip.getAttribute('aria-pressed')).toBe('true');
+
+    // Review impact shows resulting eligible set
+    await user.click(screen.getByRole('button', { name: 'Review impact…' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Resulting eligible set:/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+
+    // Confirm triggers the save and surfaces 422 without client-side authority
+    await user.click(screen.getByRole('button', { name: 'Confirm & save' }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole('alert'),
+      ).toHaveTextContent(/Unknown agent reference/);
+    });
+
+    // The first attempted payload was the existing working_hours.agents patch only
+    expect(savedBody).toEqual({
+      working_hours: { agents: { mode: 'whitelist', include: ['dev_agent'], exclude: [] } },
+    });
+
+    // Retry: review impact again, then confirm
+    await user.click(screen.getByRole('button', { name: 'Review impact…' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Confirm & save' })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: 'Confirm & save' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Edit eligibility' })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(
+        within(content).getByRole('status'),
+      ).toHaveTextContent(/Saved.*takes effect.*scheduler/);
+    });
   });
 });
 

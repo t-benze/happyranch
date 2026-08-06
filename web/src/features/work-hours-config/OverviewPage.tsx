@@ -33,12 +33,12 @@ import {
   parseRoutineTasks,
   reconcile,
 } from './merge';
+import { SavedBanner } from '@/shared/work-hours/SavedBanner';
 import {
   EligibilityChip,
   NoRoutineTasksFlag,
   OnDot,
   RecoveryBanner,
-  SavedBanner,
   WorkHoursTabs,
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';

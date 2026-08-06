@@ -36,8 +36,8 @@ import type {
   WorkingHoursPatch,
   WorkingHoursSettings,
 } from '@/lib/api/types';
-import { ErrorPanel } from './components';
-import { extractServerErrors } from './errors';
+import { ErrorPanel } from '@/shared/work-hours/ErrorPanel';
+import { extractServerErrors } from '@/shared/work-hours/extractServerErrors';
 import {
   buildLayerPatch,
   type LayerDraft,

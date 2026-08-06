@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import type { WorkHoursLayer, WorkingHoursSettings } from '@/lib/api/types';
+import { eligibleSet } from '@/shared/work-hours/eligibleSet';
 import {
   buildLayerPatch,
   cadenceSummary,
   effectiveSchedule,
-  eligibleSet,
   isEligible,
   onStatus,
   parseRoutineTasks,
