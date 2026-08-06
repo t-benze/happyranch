@@ -168,6 +168,14 @@ class AdapterEntryResponse(BaseModel):
     intended_profile_name: str | None = None
     dependency_manifest_version: int | None = None
     dependencies: list[dict] = []
+    profile_bound: dict | None = Field(
+        None,
+        description=(
+            "Profile binding result. Present when the adapter is bound to a profile. "
+            "Includes profile_name, command_adapter_id, workspace_adapter_id, kind, "
+            "status, and adapter_id."
+        ),
+    )
     eligibility: str | None = Field(
         None,
         description=(
@@ -254,7 +262,7 @@ class ContractReferenceResponse(BaseModel):
     submission: dict = Field(..., description="Submit endpoint metadata (method, path, content-type, body schema)")
     dependency_manifest: dict = Field(..., description="Dependency manifest schema and rules")
     token_metering: dict = Field(..., description="Token-metering expectations for adapters declaring the capability")
-    reapproval_rule: str = Field(..., description="Rule: any change requires re-submission and founder re-approval")
+    reapproval_rule: str = Field(..., description="Rule: re-submission uses the same submit-and-connect path for scoped tokens, or master-bearer approval for the legacy operator path")
     probe: dict = Field(..., description="Minimal self-test input/output fixture for the conformance probe")
     canonical_directory: str = Field(
         ..., description="Absolute canonical path to the daemon-managed adapters directory"
@@ -1006,7 +1014,10 @@ def submit_adapter(
     #    the profile in a single atomic operation. On ANY failure full
     #    compensation restores the pre-request state (no adapter or
     #    profile residue). The token is released so it remains retryable.
-    from runtime.orchestrator.custom_adapter_registry import submit_and_connect_adapter
+    from runtime.orchestrator.custom_adapter_registry import (
+        submit_and_connect_adapter,
+        undo_submit_and_connect,
+    )
     try:
         connected_entry = submit_and_connect_adapter(
             executable=body.executable,
@@ -1032,10 +1043,51 @@ def submit_adapter(
             detail=f"Adapter submission failed: {exc}",
         )
 
-    # Consume the token permanently on success
-    store.commit_runtime(raw_token)
+    # 9. Consume the token permanently as the final compensating step.
+    #    ``commit_runtime`` can return False (token not reserved, wrong
+    #    org, or missing record) or raise an exception.  Either way the
+    #    adapter/profile/registry/audit state is already committed —
+    #    compensate by undoing the entire submission so no residue remains.
+    audit_task_id = f"executor:{intended_profile}"
+    try:
+        committed = store.commit_runtime(raw_token)
+        if not committed:
+            undo_submit_and_connect(
+                adapter_id=scoped_adapter_id,
+                profile_name=intended_profile,
+                audit_task_id=audit_task_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Adapter registered and connected but token "
+                    "consumption failed — state has been compensated. "
+                    "Retry with a fresh token."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Token commit raised unexpectedly — compensate the adapter state.
+        undo_submit_and_connect(
+            adapter_id=scoped_adapter_id,
+            profile_name=intended_profile,
+            audit_task_id=audit_task_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Token consumption failed: {exc}. "
+                f"Adapter state has been compensated. "
+                f"Retry with a fresh token."
+            ),
+        )
 
-    return _entry_to_response(connected_entry)
+    response = _entry_to_response(connected_entry).model_dump()
+    profile_bound = getattr(connected_entry, "profile_bound", None)
+    if profile_bound is not None:
+        response["profile_bound"] = profile_bound
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1309,9 +1361,13 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
         },
         reapproval_rule=(
             "Any change to the adapter executable, its hash, declared dependencies, "
-            "or capabilities requires re-submission and founder re-approval. The "
-            "approved snapshot is immutable — a tampered or stale dependency blocks "
-            "launch with an actionable error."
+            "or capabilities requires re-submission through the same path. "
+            "For scoped tokens: re-submit via POST /runtime/adapters/submit "
+            "(the server validates the new snapshot and directly connects the "
+            "profile — no separate founder re-approval is needed). For the "
+            "master-bearer legacy path: re-register, re-conform, and obtain "
+            "founder re-approval. The approved snapshot is immutable — a "
+            "tampered or stale dependency blocks launch with an actionable error."
         ),
         probe={
             "description": (

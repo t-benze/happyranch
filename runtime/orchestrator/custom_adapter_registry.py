@@ -1108,6 +1108,27 @@ def list_adapters() -> list[AdapterEntry]:
     return list(load_adapters().values())
 
 
+
+def _cleanup_binding_audit(audit_task_id: str) -> int:
+    """Delete audit rows for a specific task_id during compensation.
+
+    Opens a fresh Database connection to runtime-audit.db, deletes any
+    rows matching ``audit_task_id``, and returns the count.  Idempotent —
+    returns 0 when no rows match.  Used by both the in-function binding
+    compensation and the post-return caller-level submit compensation.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    if not audit_db_path.exists():
+        return 0
+    db = Database(audit_db_path)
+    try:
+        return db.delete_audit_logs_by_task_id(audit_task_id)
+    finally:
+        db.close()
+
+
 def _perform_adapter_profile_binding(
     adapter_id: str,
     profile_name: str,
@@ -1211,6 +1232,8 @@ def _perform_adapter_profile_binding(
         )
 
     durable_committed = False
+    audit_committed = False
+    audit_task_id = f"executor:{profile_name}"
     try:
         # 6. Write the durable runtime store first
         save_runtime_profile(profile_name, profile_cfg)
@@ -1224,7 +1247,7 @@ def _perform_adapter_profile_binding(
         db = Database(audit_db_path)
         try:
             db.insert_audit_log_uncommitted(
-                task_id=f"executor:{profile_name}",
+                task_id=audit_task_id,
                 agent="founder",
                 action="executor_registered",
                 payload={
@@ -1235,11 +1258,18 @@ def _perform_adapter_profile_binding(
                 },
             )
             db.commit()
+            audit_committed = True
         finally:
             db.close()
     except BaseException:
         if durable_committed:
             # Compensating rollback: restore both durable and in-memory surfaces
+            if audit_committed:
+                # Delete any committed audit rows
+                try:
+                    _cleanup_binding_audit(audit_task_id)
+                except Exception:
+                    pass
             if profile_name in pre_request_profiles:
                 save_runtime_profile(profile_name, pre_request_profiles[profile_name])
             else:
@@ -1260,6 +1290,8 @@ def _perform_adapter_profile_binding(
         "kind": profile.kind,
         "status": "connected",
         "adapter_id": adapter_id,
+        "audit_committed": True,
+        "audit_task_id": audit_task_id,
     }
 
 
@@ -1627,6 +1659,8 @@ def submit_and_connect_adapter(
     profile_bound_name: str | None = None
     pre_request_profiles: dict[str, dict] = {}
     pre_request_in_memory = None
+    audit_committed = False
+    audit_task_id: str | None = None
 
     try:
         from runtime.orchestrator.runtime_executor_store import (
@@ -1774,12 +1808,17 @@ def submit_and_connect_adapter(
         _save_adapter_locked(approved_entry)
 
         # ── 4e: bind the profile ──────────────────────────────────────
+        # Set profile_bound_name BEFORE the call so that compensation
+        # can clean up the profile even when the call partially commits
+        # (durable save + audit) then raises.
+        profile_bound_name = intended_profile_name
+        audit_task_id = f"executor:{intended_profile_name}"
         profile_bind_result = _perform_adapter_profile_binding(
             adapter_id=adapter_id,
             profile_name=intended_profile_name,
             workspace_adapter=workspace_adapter,
         )
-        profile_bound_name = intended_profile_name
+        audit_committed = profile_bind_result.get("audit_committed", False)
 
         # ── Success: attach binding result ─────────────────────────────
         approved_entry.profile_bound = profile_bind_result  # type: ignore[attr-defined]
@@ -1799,6 +1838,8 @@ def submit_and_connect_adapter(
             pre_existing_entry=pre_existing_entry,
             profile_bound_name=profile_bound_name,
             pre_request_profiles=pre_request_profiles,
+            audit_committed=audit_committed,
+            audit_task_id=audit_task_id,
         )
         raise
     finally:
@@ -1811,12 +1852,20 @@ def _compensate_submit_failure(
     pre_existing_entry: AdapterEntry | None,
     profile_bound_name: str | None,
     pre_request_profiles: dict[str, dict],
+    audit_committed: bool = False,
+    audit_task_id: str | None = None,
 ) -> None:
     """Restore complete pre-request state after a submit-and-connect failure.
 
     Compensates: adapter entry, profile binding, registry, audit residues.
     Called from inside the lock scope — lock is still held.
+
+    When ``audit_committed`` is True, deletes any audit rows that were
+    committed before the failure occurred.  Audit cleanup failures are
+    logged but do not suppress the original error or block the rest of
+    in-lock compensation.
     """
+    audit_cleanup_failed = False
     try:
         from runtime.orchestrator.runtime_executor_store import (
             load_runtime_profiles,
@@ -1825,14 +1874,24 @@ def _compensate_submit_failure(
         )
         from runtime.orchestrator.executor_registry import get_registry
 
+        # 0. Delete any committed audit rows BEFORE restoring
+        #    adapter/profile state (cleanest rollback order).
+        if audit_committed and audit_task_id:
+            try:
+                _cleanup_binding_audit(audit_task_id)
+            except Exception as exc:
+                audit_cleanup_failed = True
+                logger.error(
+                    "submit_and_connect_adapter: audit cleanup failed for "
+                    "task_id=%r during compensation: %s", audit_task_id, exc,
+                )
+
         # 1. Restore the adapter entry
         if adapter_created:
             current = load_adapters()
             if pre_existing_entry is not None:
-                # Restore the pre-existing entry
                 current[adapter_id] = pre_existing_entry
             else:
-                # Remove the newly created entry
                 current.pop(adapter_id, None)
             _save_all_adapters(current)
 
@@ -1850,14 +1909,83 @@ def _compensate_submit_failure(
 
         logger.warning(
             "submit_and_connect_adapter: compensated failure for %r "
-            "(adapter_created=%s, profile_bound=%s)",
+            "(adapter_created=%s, profile_bound=%s, audit_committed=%s, "
+            "audit_cleanup_failed=%s)",
             adapter_id, adapter_created, profile_bound_name,
+            audit_committed, audit_cleanup_failed,
         )
     except Exception as exc:
         logger.error(
             "submit_and_connect_adapter: compensation itself failed for %r: %s",
             adapter_id, exc,
         )
+
+
+def undo_submit_and_connect(
+    adapter_id: str,
+    profile_name: str,
+    audit_task_id: str | None = None,
+) -> None:
+    """Undo a successfully committed submit_and_connect_adapter.
+
+    Called from the route when token finalization (``commit_runtime``)
+    returns False or raises — the adapter/profile/registry/audit state
+    is already committed but the scoped registration token was not
+    consumed.  This function compensates by removing the adapter,
+    unbinding the profile, unregistering from the in-memory registry,
+    and deleting any committed audit rows.
+
+    Acquires the adapter store lock internally — the caller does NOT
+    hold the lock (``submit_and_connect_adapter`` released it).
+
+    Failures during compensation are logged but do not raise — the
+    server will return 500 to the client with a diagnostic message.
+    """
+    from runtime.orchestrator.runtime_executor_store import (
+        load_runtime_profiles,
+        remove_runtime_profile,
+    )
+    from runtime.orchestrator.executor_registry import get_registry
+
+    logger.warning(
+        "undo_submit_and_connect: compensating adapter %r profile %r "
+        "(audit_task_id=%s)", adapter_id, profile_name, audit_task_id,
+    )
+
+    # 1. Delete audit rows (before lock — independent DB)
+    if audit_task_id:
+        try:
+            _cleanup_binding_audit(audit_task_id)
+        except Exception as exc:
+            logger.error(
+                "undo_submit_and_connect: audit cleanup failed: %s", exc,
+            )
+
+    # 2. Acquire lock and undo adapter + profile
+    acquire_store_lock()
+    try:
+        # Remove adapter entry
+        current = load_adapters()
+        current.pop(adapter_id, None)
+        _save_all_adapters(current)
+
+        # Unbind profile
+        profiles = dict(load_runtime_profiles())
+        if profile_name in profiles:
+            remove_runtime_profile(profile_name)
+        # Unregister from in-memory registry
+        try:
+            registry = get_registry()
+            registry.unregister_custom_profile(profile_name)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error(
+            "undo_submit_and_connect: adapter/profile compensation failed: %s",
+            exc,
+        )
+    finally:
+        release_store_lock()
 
 
 def _save_all_adapters(entries: dict[str, AdapterEntry]) -> None:

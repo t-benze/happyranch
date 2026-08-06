@@ -2751,6 +2751,19 @@ class Database:
                 d["payload"] = json.loads(d["payload"])
             result.append(d)
         return result
+    @_synchronized
+    def delete_audit_logs_by_task_id(self, task_id: str) -> int:
+        """Delete all audit rows for ``task_id`` and return the count.
+
+        Used for compensating rollback after a compound operation (e.g.
+        adapter submission) partially commits audit rows before a later
+        step fails.  Idempotent — returns 0 when no rows match.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM audit_log WHERE task_id = ?", (task_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount
 
     # --- Org Settings (THR-095) ---
 
