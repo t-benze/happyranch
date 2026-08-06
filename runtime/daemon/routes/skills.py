@@ -41,7 +41,7 @@ agent_skills_router = APIRouter()
 
 def _check_optional_token_dep(request: Request) -> bool:
     """Check for optional bearer token — identical to auth._check_optional_token."""
-    return _check_optional_token(request)
+    return _check_optional_token(request.headers.get("Authorization"))
 
 
 def _recover_audit_event_mandatory(
@@ -1540,23 +1540,30 @@ def _get_b1_protected_slugs(org: OrgState) -> frozenset:
     from runtime.skills.registry import SkillRegistry
 
     release_dir = org.settings.project_root / "runtime" / "skills"
+    if not release_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "protected_slugs_unavailable",
+                "detail": "Canonical release-managed skill registry is missing or unreadable. Protected-slug enforcement is mandatory.",
+            },
+        )
     protected: set[str] = set()
-    if release_dir.is_dir():
-        try:
-            registry = SkillRegistry(skills_root=release_dir)
-            for entry in registry.list_all():
-                entry_obj = entry[0] if isinstance(entry, tuple) else entry
-                slug_val = getattr(entry_obj, 'slug', None)
-                if slug_val:
-                    protected.add(slug_val)
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": "protected_slugs_unavailable",
-                    "detail": "Cannot load release-managed skill registry. Protected-slug enforcement is mandatory.",
-                },
-            )
+    try:
+        registry = SkillRegistry(skills_root=release_dir)
+        for entry in registry.list_all():
+            entry_obj = entry[0] if isinstance(entry, tuple) else entry
+            slug_val = getattr(entry_obj, 'slug', None)
+            if slug_val:
+                protected.add(slug_val)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "protected_slugs_unavailable",
+                "detail": "Cannot load release-managed skill registry. Protected-slug enforcement is mandatory.",
+            },
+        )
     # Add system contract slugs
     for sc in SYSTEM_CONTRACTS:
         protected.add(sc.id)

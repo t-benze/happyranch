@@ -697,13 +697,14 @@ class TestSkillsCliReflection:
         out = capsys.readouterr().out
         # Check system contracts section does NOT list reflection
         # reflection appears only in Effective skills / Blocked, not in System Contracts
-        # The system contracts section should show exactly 6 contracts
+        # The system contracts section should show exactly 7 contracts
         assert "System Contracts (runtime-injected):" in out
         # review should appear in effective/blocked section, not system contracts
-        # Verify the existing 6 contracts are still there
+        # Verify the existing 7 contracts are still there
         assert "start-task" in out
         assert "jobs" in out
         assert "todos" in out
+        assert "create-skill" in out
 
 
 class TestSkillsCliRegistration:
