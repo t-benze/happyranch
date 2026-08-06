@@ -219,6 +219,7 @@ class SkillLifecycleService:
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
         org_root: Path | str | None = None,
+        verified_org_slug: str | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound proposal.
 
@@ -375,7 +376,7 @@ class SkillLifecycleService:
                     "validator_version": self._VALIDATOR_VERSION,
                     "validator_findings": validator_findings,
                     "task_brief_digest": task_brief_digest,
-                    "verified_org_slug": slug if actor_kind == "agent" else None,
+                    "verified_org_slug": verified_org_slug if actor_kind == "agent" else None,
                     "verified_task_id": task_id,
                     "verified_session_id": session_id,
                     "verified_agent": proposer_agent,

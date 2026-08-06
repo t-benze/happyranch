@@ -695,7 +695,42 @@ class TestCreateSkillRouteE2E:
         assert event.metadata.get("verified_agent") == "dev_agent"
         assert event.metadata.get("verified_task_id") == "TASK-4530"
         assert event.metadata.get("validator_version") is not None
+        assert event.metadata.get("verified_org_slug") == "alpha", (
+            f"verified_org_slug should be 'alpha' (the org slug), "
+            f"not '{event.metadata.get('verified_org_slug')}'"
+        )
         assert event.metadata.get("task_brief_digest") is not None
+
+
+    def test_verified_org_slug_distinct_from_skill_slug(self, client_with_runtime):
+        """The verified_org_slug in event metadata is the org slug (alpha),
+        NOT the skill slug (my-custom-workflow)."""
+        client, org = client_with_runtime
+        _insert_test_task(org)
+        org.sessions.set_active("TASK-4530", "dev_agent", "sess-orgvslug", org_slug="alpha")
+
+        # Use a skill slug that is clearly different from the org slug
+        body = dict(_VALID_CREATE, slug="my-custom-workflow")
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skills/agent",
+            json=body,
+            params={"session_id": "sess-orgvslug"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        events = lifecycle_stores.list_lifecycle_events(org.db, skill_id=data["skill_id"])
+        assert len(events) > 0
+        event = events[0]
+        # The critical assertion: verified_org_slug is "alpha", not "my-custom-workflow"
+        assert event.metadata.get("verified_org_slug") == "alpha", (
+            f"verified_org_slug MUST be the org slug 'alpha', "
+            f"but got '{event.metadata.get('verified_org_slug')}'"
+        )
+        # Skill slug is in the response, not the event metadata
+        assert data["skill_id"] == "hr:my-custom-workflow"
 
     # ── Default-hidden assertion ────────────────────────────────────────
 
@@ -770,72 +805,257 @@ class TestCreateSkillRouteE2E:
 
     # ── SessionTracker concurrency (F6) ────────────────────────────────
 
-    def test_concurrent_session_cleared_replace_no_residue(self, client_with_runtime):
-        """Cleared and replaced session interleaving cannot persist residue."""
+
+    @staticmethod
+    def _install_pre_lease_barrier(sessions):
+        import threading
+        sessions._pre_lease_barrier = threading.Event()
+        sessions._pre_lease_barrier_reached = threading.Event()
+
+    @staticmethod
+    def _install_post_auth_barrier(sessions):
+        import threading
+        sessions._proposal_barrier = threading.Event()
+        sessions._barrier_reached = threading.Event()
+
+    @staticmethod
+    def _teardown_barriers(sessions):
+        sessions._pre_lease_barrier = None
+        sessions._pre_lease_barrier_reached = None
+        sessions._proposal_barrier = None
+        sessions._barrier_reached = None
+
+    def _wait_for_pre_lease_barrier(self, sessions, timeout=5.0):
+        reached = sessions._pre_lease_barrier_reached
+        assert reached is not None, "pre-lease barrier not installed"
+        assert reached.wait(timeout=timeout), (
+            "Timed out waiting for create to reach pre-lease barrier"
+        )
+
+    def _wait_for_post_auth_barrier(self, sessions, timeout=5.0):
+        reached = sessions._barrier_reached
+        assert reached is not None, "post-auth barrier not installed"
+        assert reached.wait(timeout=timeout), (
+            "Timed out waiting for create to reach post-auth barrier"
+        )
+
+    # ── Terminal wins: clear/set_active win before lease ───────────────
+
+    def test_terminal_clear_wins_pre_lease_403_no_residue(self, client_with_runtime):
+        """Same-binding clear() wins the race before the route acquires
+        the binding lease — deterministic interleaving via pre-lease barrier."""
+        from threading import Thread
+
         client, org = client_with_runtime
         _insert_test_task(org)
-        org.sessions.set_active("TASK-4530", "dev_agent", "sess-conc-a", org_slug="alpha")
+        org.sessions.set_active("TASK-4530", "dev_agent", "sess-race-clear", org_slug="alpha")
 
-        body = dict(_VALID_CREATE)
-        client.headers.pop("Authorization", None)
+        self._install_pre_lease_barrier(org.sessions)
+        try:
+            body = dict(_VALID_CREATE)
+            client.headers.pop("Authorization", None)
 
-        # Set up active session then clear it
-        org.sessions.clear("TASK-4530", "dev_agent")
+            result = {"status_code": None, "error": None}
 
-        # Attempt with cleared session -> should fail
-        resp = client.post("/api/v1/orgs/alpha/skills/agent", json=body,
-                           params={"session_id": "sess-conc-a"})
-        assert resp.status_code == 403
-        _assert_zero_residue(org)
+            def run_create():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skills/agent",
+                        json=body,
+                        params={"session_id": "sess-race-clear"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
 
-        # Set a new session for same task/agent
-        org.sessions.set_active("TASK-4530", "dev_agent", "sess-conc-b", org_slug="alpha")
-        resp = client.post("/api/v1/orgs/alpha/skills/agent", json=body,
-                           params={"session_id": "sess-conc-b"})
-        assert resp.status_code == 201
+            t_create = Thread(target=run_create)
+            t_create.start()
 
-    def test_session_replaced_before_lease_cannot_use_old_id(self, client_with_runtime):
-        """Session replaced under same (task_id, agent) binding: old session_id fails."""
+            self._wait_for_pre_lease_barrier(org.sessions)
+
+            # Terminal clear wins — invalidates the session
+            org.sessions.clear("TASK-4530", "dev_agent")
+
+            org.sessions._pre_lease_barrier.set()
+
+            t_create.join(timeout=5.0)
+            assert not t_create.is_alive(), "create route must finish"
+            assert result["error"] is None, f"Create error: {result['error']}"
+            assert result["status_code"] == 403, (
+                f"Expected 403 for cleared session, got {result['status_code']}"
+            )
+
+            _assert_zero_residue(org)
+            assert org.sessions.get_active("TASK-4530", "dev_agent") is None
+        finally:
+            self._teardown_barriers(org.sessions)
+
+    def test_terminal_replacement_wins_pre_lease_403_no_residue(self, client_with_runtime):
+        """Same-binding set_active() replacement wins before the route
+        acquires the lease — old session_id rejected, zero residue."""
+        from threading import Thread
+
         client, org = client_with_runtime
         _insert_test_task(org)
-        org.sessions.set_active("TASK-4530", "dev_agent", "sess-old", org_slug="alpha")
+        org.sessions.set_active("TASK-4530", "dev_agent", "sess-race-old", org_slug="alpha")
 
-        # Replace with newer session
-        org.sessions.set_active("TASK-4530", "dev_agent", "sess-new", org_slug="alpha")
+        self._install_pre_lease_barrier(org.sessions)
+        try:
+            body = dict(_VALID_CREATE)
+            client.headers.pop("Authorization", None)
 
-        body = dict(_VALID_CREATE)
-        client.headers.pop("Authorization", None)
+            result = {"status_code": None, "error": None}
 
-        # Old session id now unknown
-        resp = client.post("/api/v1/orgs/alpha/skills/agent", json=body,
-                           params={"session_id": "sess-old"})
-        assert resp.status_code == 403
-        detail = resp.json()["detail"]
-        assert detail["code"] == "unknown_session"
-        _assert_zero_residue(org)
+            def run_create():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skills/agent",
+                        json=body,
+                        params={"session_id": "sess-race-old"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
 
-        # New session works
-        resp = client.post("/api/v1/orgs/alpha/skills/agent", json=body,
-                           params={"session_id": "sess-new"})
-        assert resp.status_code == 201
+            t_create = Thread(target=run_create)
+            t_create.start()
 
-    def test_session_cleared_interleaved_with_create_no_residue(self, client_with_runtime):
-        """Interleaved clear+create: cleared path leaves zero residue."""
+            self._wait_for_pre_lease_barrier(org.sessions)
+
+            org.sessions.set_active("TASK-4530", "dev_agent", "sess-race-new", org_slug="alpha")
+            org.sessions._pre_lease_barrier.set()
+
+            t_create.join(timeout=5.0)
+            assert not t_create.is_alive()
+            assert result["error"] is None, f"Create error: {result['error']}"
+            assert result["status_code"] == 403, (
+                f"Expected 403 for replaced session, got {result['status_code']}"
+            )
+
+            _assert_zero_residue(org)
+            assert org.sessions.get_active("TASK-4530", "dev_agent") == "sess-race-new"
+        finally:
+            self._teardown_barriers(org.sessions)
+
+    # ── Proposal wins: barrier AFTER authorization, BEFORE persist ────
+
+
+
+    def test_create_at_post_auth_barrier_clear_blocks_then_commits(self, client_with_runtime):
+        """Create is held at post-auth barrier. Same-binding clear() is
+        launched in a separate thread and demonstrably blocks. On barrier
+        release, create commits; clear returns only afterward."""
+        from threading import Thread
+
         client, org = client_with_runtime
         _insert_test_task(org)
-        org.sessions.set_active("TASK-4530", "dev_agent", "sess-inter", org_slug="alpha")
+        org.sessions.set_active("TASK-4530", "dev_agent", "sess-race-wins", org_slug="alpha")
 
-        # Clear immediately
-        org.sessions.clear("TASK-4530", "dev_agent")
+        self._install_post_auth_barrier(org.sessions)
+        try:
+            body = dict(_VALID_CREATE)
+            client.headers.pop("Authorization", None)
 
-        body = dict(_VALID_CREATE)
-        client.headers.pop("Authorization", None)
+            result = {"status_code": None, "error": None}
 
-        # Cleared session rejected
-        resp = client.post("/api/v1/orgs/alpha/skills/agent", json=body,
-                           params={"session_id": "sess-inter"})
-        assert resp.status_code == 403
-        _assert_zero_residue(org)
+            def run_create():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skills/agent",
+                        json=body,
+                        params={"session_id": "sess-race-wins"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
+
+            t_create = Thread(target=run_create)
+            t_create.start()
+
+            self._wait_for_post_auth_barrier(org.sessions)
+
+            # Run clear() in a SEPARATE thread — it blocks on the binding lease
+            clear_done = {"done": False}
+
+            def run_clear():
+                org.sessions.clear("TASK-4530", "dev_agent")
+                clear_done["done"] = True
+
+            t_clear = Thread(target=run_clear)
+            t_clear.start()
+
+            # Prove clear() is blocked
+            t_clear.join(timeout=1.0)
+            assert t_clear.is_alive(), (
+                "clear() must block while create holds binding lease"
+            )
+            assert not clear_done["done"], "clear must not have finished"
+
+            # Release barrier — create commits + releases lease
+            org.sessions._proposal_barrier.set()
+
+            t_create.join(timeout=5.0)
+            assert not t_create.is_alive(), "create must finish"
+            assert result["error"] is None, f"Create error: {result['error']}"
+            assert result["status_code"] == 201, (
+                f"Expected 201 for winning create, got {result['status_code']}"
+            )
+
+            # clear() thread should now finish
+            t_clear.join(timeout=5.0)
+            assert not t_clear.is_alive(), "clear must finish after barrier release"
+            assert clear_done["done"], "clear should have completed"
+            assert org.sessions.get_active("TASK-4530", "dev_agent") is None
+        finally:
+            self._teardown_barriers(org.sessions)
+
+    def test_create_wins_clear_loses_zero_residue_for_loser(self, client_with_runtime):
+        """Loser (clear) leaves no residue; winner (create) commits successfully."""
+        from threading import Thread
+
+        client, org = client_with_runtime
+        _insert_test_task(org)
+        org.sessions.set_active("TASK-4530", "dev_agent", "sess-race-w2", org_slug="alpha")
+
+        self._install_post_auth_barrier(org.sessions)
+        try:
+            body = dict(_VALID_CREATE)
+            client.headers.pop("Authorization", None)
+
+            result = {"status_code": None, "error": None}
+
+            def run_create():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skills/agent",
+                        json=body,
+                        params={"session_id": "sess-race-w2"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
+
+            t_create = Thread(target=run_create)
+            t_create.start()
+
+            self._wait_for_post_auth_barrier(org.sessions)
+
+            # Release barrier — create commits and releases lease
+            org.sessions._proposal_barrier.set()
+
+            t_create.join(timeout=5.0)
+            assert not t_create.is_alive()
+            assert result["error"] is None
+            assert result["status_code"] == 201
+
+            from runtime.skills.lifecycle import stores as lifecycle_stores
+            packages = lifecycle_stores.list_package_versions(
+                org.db, skill_id="hr:my-custom-workflow",
+            )
+            assert len(packages) == 1, "Winner should have committed"
+        finally:
+            self._teardown_barriers(org.sessions)
+
 
 
 class TestCreateSkillCLIRealTransport:
@@ -858,67 +1078,144 @@ class TestCreateSkillCLIRealTransport:
         assert "--from-file" in result.stdout
         assert "--session-id" in result.stdout
 
-    def test_cli_create_real_transport_success(self, client_with_runtime, tmp_path):
-        """CLI 'skills create' via real TestClient transport succeeds."""
+
+
+
+    @staticmethod
+    def _mock_httpx_client_factory(test_client):
+        """Return a factory that replaces httpx.Client to route through TestClient.
+        Strips Authorization header to match token-free CLI transport."""
+        class _MockResponse:
+            def __init__(self, tc_resp):
+                self.status_code = tc_resp.status_code
+                self._tc_resp = tc_resp
+                self.text = tc_resp.text if hasattr(tc_resp, 'text') else ""
+
+            def json(self):
+                return self._tc_resp.json()
+
+        class _MockClient:
+            def __init__(_self, *args, **kwargs):
+                pass
+
+            def get(_self, path, **kwargs):
+                # Strip Authorization header for token-free CLI transport
+                save_auth = test_client.headers.get("Authorization")
+                test_client.headers.pop("Authorization", None)
+                try:
+                    resp = test_client.get(path)
+                finally:
+                    if save_auth:
+                        test_client.headers["Authorization"] = save_auth
+                return _MockResponse(resp)
+
+            def post(_self, path, json=None, params=None, **kwargs):
+                # Strip Authorization header for token-free CLI transport
+                save_auth = test_client.headers.get("Authorization")
+                test_client.headers.pop("Authorization", None)
+                try:
+                    resp = test_client.post(path, json=json, params=params)
+                finally:
+                    if save_auth:
+                        test_client.headers["Authorization"] = save_auth
+                return _MockResponse(resp)
+
+        return _MockClient
+
+    @staticmethod
+    def _make_cli_args(from_file, session_id):
+        """Build an argparse.Namespace matching what cmd_skills_create expects."""
+        import argparse
+        ns = argparse.Namespace()
+        ns.from_file = from_file
+        ns.session_id = session_id
+        ns.org = None
+        return ns
+
+    def test_cli_create_real_transport_success(self, client_with_runtime, tmp_path, monkeypatch):
+        """CLI 'skills create' via TestClient transport succeeds and prints skill info."""
         client, org = client_with_runtime
         _insert_test_task(org)
         org.sessions.set_active("TASK-4530", "dev_agent", "sess-cli-real", org_slug="alpha")
 
-        # Write payload file
         import json
         payload_path = tmp_path / "skill-payload.json"
-        payload_path.write_text(json.dumps(_VALID_CREATE))
+        payload_path.write_text(json.dumps(_VALID_CREATE), encoding="utf-8")
 
-        # Use subprocess to invoke the CLI, which talks to the daemon
-        import subprocess
-        import sys
-        import os
+        # Mock port_file + resolve_org_slug + httpx.Client
+        port_file_path = tmp_path / "daemon.port"
+        port_file_path.write_text("19999")
+        monkeypatch.setattr("cli.client.client.port_file", lambda: port_file_path)
+        monkeypatch.setattr("cli._shared.resolve_org_slug", lambda args_org, available: "alpha")
+        mock_client_cls = self._mock_httpx_client_factory(client)
+        monkeypatch.setattr("httpx.Client", mock_client_cls)
 
-        # The CLI needs to talk to the daemon. We can test the CLI function
-        # directly by calling cmd_skills_create with a mocked args, or
-        # we can use the TestClient directly
         from cli.commands.skills import cmd_skills_create
-        import argparse
-        import types
+        import io
+        import sys as _sys
+        args = self._make_cli_args(str(payload_path), "sess-cli-real")
 
-        # Create args that the CLI function expects
-        # The cmd_skills_create function reads HAPPYRANCH_DAEMON_PORT
-        # and talks to the daemon. For testing, we verify the command
-        # is registered and has correct arguments.
-        pass  # Success path verified via route e2e tests
+        # Capture stdout
+        save_stdout = _sys.stdout
+        try:
+            _sys.stdout = io.StringIO()
+            cmd_skills_create(args)
+            output = _sys.stdout.getvalue()
+        finally:
+            _sys.stdout = save_stdout
 
-    def test_cli_create_malformed_input_rejected(self, client_with_runtime, tmp_path):
-        """CLI with malformed local input -> server error."""
+        assert "Skill created successfully." in output
+        assert "skill_id:" in output
+        assert "hr:my-custom-workflow" in output
+        assert "version:" in output
+        assert "content_hash:" in output
+
+    def test_cli_create_malformed_input_rejected(self, client_with_runtime, tmp_path, monkeypatch):
+        """CLI with malformed local JSON -> exits 1 with error message."""
         client, org = client_with_runtime
         _insert_test_task(org)
         org.sessions.set_active("TASK-4530", "dev_agent", "sess-cli-mal", org_slug="alpha")
 
-        # Invalid JSON
         payload_path = tmp_path / "bad-payload.json"
-        payload_path.write_text("not json")
+        payload_path.write_text("not json", encoding="utf-8")
 
-        # Test directly via route
-        client.headers.pop("Authorization", None)
-        resp = client.post(
-            "/api/v1/orgs/alpha/skills/agent",
-            content=b"not json",
-            params={"session_id": "sess-cli-mal"},
-        )
-        assert resp.status_code in (400, 422)
+        port_file_path = tmp_path / "daemon.port"
+        port_file_path.write_text("19999")
+        monkeypatch.setattr("cli.client.client.port_file", lambda: port_file_path)
+        monkeypatch.setattr("cli._shared.resolve_org_slug", lambda args_org, available: "alpha")
+        mock_client_cls = self._mock_httpx_client_factory(client)
+        monkeypatch.setattr("httpx.Client", mock_client_cls)
+
+        from cli.commands.skills import cmd_skills_create
+        args = self._make_cli_args(str(payload_path), "sess-cli-mal")
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(args)
+        assert exc_info.value.code == 1
         _assert_zero_residue(org)
 
-    def test_cli_missing_session_id_rejected(self, client_with_runtime, tmp_path):
-        """CLI missing --session-id -> server error."""
+    def test_cli_missing_session_id_rejected(self, client_with_runtime, tmp_path, monkeypatch):
+        """CLI missing --session-id -> exits 1 with error."""
         client, org = client_with_runtime
         _insert_test_task(org)
         org.sessions.set_active("TASK-4530", "dev_agent", "sess-cli-ms", org_slug="alpha")
 
-        body = dict(_VALID_CREATE)
-        client.headers.pop("Authorization", None)
-        resp = client.post(
-            "/api/v1/orgs/alpha/skills/agent",
-            json=body,
-            # No session_id param
-        )
-        assert resp.status_code == 422
+        import json
+        payload_path = tmp_path / "skill-payload.json"
+        payload_path.write_text(json.dumps(_VALID_CREATE), encoding="utf-8")
+
+        port_file_path = tmp_path / "daemon.port"
+        port_file_path.write_text("19999")
+        monkeypatch.setattr("cli.client.client.port_file", lambda: port_file_path)
+        monkeypatch.setattr("cli._shared.resolve_org_slug", lambda args_org, available: "alpha")
+        mock_client_cls = self._mock_httpx_client_factory(client)
+        monkeypatch.setattr("httpx.Client", mock_client_cls)
+
+        from cli.commands.skills import cmd_skills_create
+        args = self._make_cli_args(str(payload_path), "")  # empty session_id
+
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_skills_create(args)
+        assert exc_info.value.code == 1
         _assert_zero_residue(org)

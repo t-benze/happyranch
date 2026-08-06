@@ -1679,6 +1679,17 @@ def create_skill_agent_only(
             },
         )
 
+
+    # Step 2 (test seam): pre-lease barrier — pause BEFORE the
+    # per-binding lease is acquired so terminal-wins concurrency
+    # tests can drive clear()/set_active() to completion while
+    # the route is still in its initial resolution phase.
+    pre_lease = org.sessions._pre_lease_barrier
+    if pre_lease is not None:
+        reached = org.sessions._pre_lease_barrier_reached
+        if reached is not None:
+            reached.set()
+        pre_lease.wait()
     # Re-verify session is current under binding lease
     binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
     with binding_lease:
@@ -1730,6 +1741,18 @@ def create_skill_agent_only(
             )
         task_brief_digest = _hashlib.sha256(task_record.brief.encode("utf-8")).hexdigest()
 
+        # Step 3c (test seam): post-authorization barrier — pause
+        # AFTER session revalidation + policy checks but BEFORE
+        # persistence.  Tests use this to prove proposal-wins
+        # interleavings: an already-authorized proposal is held
+        # pending, same-binding terminal mutations demonstrably block.
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
+
         try:
             pkg = _create_service.submit_proposal(
                 db=org.db,
@@ -1750,6 +1773,7 @@ def create_skill_agent_only(
                 target_agent_suggestion=body.target_agent_suggestion,
                 protected_slugs=protected_slugs,
                 org_root=org.root,
+                verified_org_slug=verified_org,
             )
         except LifecycleError as e:
             raise HTTPException(
