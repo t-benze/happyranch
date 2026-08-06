@@ -31,6 +31,7 @@ from runtime.models import (
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
+from runtime.infrastructure.direct_connect_store import DirectConnectStore
 
 
 def _parse_dt(value: str) -> datetime:
@@ -171,6 +172,7 @@ class Database:
         # `_synchronized`) is preserved across both surfaces.
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
+        self.direct_connect = DirectConnectStore(self._conn, self._lock)
 
     @_synchronized
     def execute(self, sql: str, parameters=()):
@@ -1076,6 +1078,54 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_lifecycle_materializations_skill_agent
                 ON skill_lifecycle_materializations(skill_id, agent_name);
+
+            -- THR-107 v9 Slice 1: authoritative non-secret direct-connect operation journal.
+            -- This is the durable source of truth for adapter launch authority;
+            -- YAML stores and transient registry are materialized projections only.
+            CREATE TABLE IF NOT EXISTS direct_connect_operations (
+                id                      TEXT PRIMARY KEY,
+                profile_name            TEXT NOT NULL,
+                adapter_id              TEXT NOT NULL,
+                owner_agent             TEXT NOT NULL,
+                raw_authority_token     TEXT NOT NULL,
+                authority_state         TEXT NOT NULL DEFAULT 'reserved',
+                authority_expiry        TEXT,
+                authority_owner         TEXT NOT NULL,
+                cas_hash                TEXT NOT NULL,
+                lifecycle_status        TEXT NOT NULL DEFAULT 'reserved',
+                replay_identity         TEXT NOT NULL,
+                receipt_count           INTEGER NOT NULL DEFAULT 0,
+                compensation_residue    TEXT,
+                audit_created_event_id  INTEGER,
+                terminal_reason         TEXT,
+                terminal_audit_event_id INTEGER,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dco_profile_adapter
+                ON direct_connect_operations(profile_name, adapter_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_dco_replay_identity
+                ON direct_connect_operations(replay_identity);
+
+            -- THR-107 v9 Slice 1: durable planned-receipt model for
+            -- projection/compensation boundaries. Every non-SQLite projection
+            -- (YAML file, registry state) requires a committed+read-back receipt
+            -- before the operation can transition to COMMITTED.
+            CREATE TABLE IF NOT EXISTS direct_connect_receipts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id        TEXT NOT NULL,
+                receipt_type        TEXT NOT NULL,
+                planned_state       TEXT NOT NULL,
+                actual_state        TEXT,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                compensation_action  TEXT,
+                audit_event_id      INTEGER,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                FOREIGN KEY (operation_id) REFERENCES direct_connect_operations(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dcr_operation
+                ON direct_connect_receipts(operation_id);
             """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite

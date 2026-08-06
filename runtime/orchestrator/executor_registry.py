@@ -29,6 +29,17 @@ if TYPE_CHECKING:
         PiExecutor,
         AgentExecutor,
     )
+    from runtime.infrastructure.direct_connect_store import DirectConnectStore
+
+# ── THR-107 v9 Slice 1: module-level store reference for COMMITTED-only eligibility ──
+# Set by the daemon on startup; tests inject via set_direct_connect_store_for_tests.
+_direct_connect_store: "DirectConnectStore | None" = None
+
+
+def set_direct_connect_store_for_tests(store: "DirectConnectStore | None") -> None:
+    """Test seam: inject a DirectConnectStore for eligibility checks."""
+    global _direct_connect_store
+    _direct_connect_store = store
 
 # ---------------------------------------------------------------------------
 # Placeholders supported in custom-profile argv templates.
@@ -401,11 +412,30 @@ class ExecutorRegistry:
 
         It performs the same exact resolve_adapter → hash check as the
         launch path without side effects.
+
+        THR-107 v9 Slice 1: COMMITTED-only launch fence. Only a durable
+        matching COMMITTED direct_connect_operation grants eligibility.
+        When the module-level ``_direct_connect_store`` is available,
+        the adapter store check is gated behind a COMMITTED operation check;
+        profiles without a COMMITTED record fail closed.
         """
+        global _direct_connect_store
         cmd_adapter = profile.command_adapter_id or ""
         if not cmd_adapter.startswith("custom-adapter:"):
             return None
         adapter_id = cmd_adapter[len("custom-adapter:"):]
+
+        # ── THR-107 v9 Slice 1: COMMITTED-only authority fence ────────────
+        # A profile must have a durable COMMITTED direct-connect operation;
+        # no other state (YAML, registry, approval, pending, bind, recovery,
+        # token text) is accepted as launch authority.
+        if _direct_connect_store is not None:
+            op = _direct_connect_store.get_committed_operation(
+                profile.name, adapter_id
+            )
+            if op is None:
+                return None
+
         from runtime.orchestrator.custom_adapter_registry import resolve_adapter
         entry = resolve_adapter(adapter_id)
         if entry is None:
@@ -799,8 +829,8 @@ def build_executor(
             adapter_id = cmd_adapter[len("custom-adapter:"):]
             raise ValueError(
                 f"Custom adapter {adapter_id!r} for profile {name!r} is not "
-                f"launchable: adapter is pending, tampered, missing, or not "
-                f"approved. Register, approve, and bind the adapter first."
+                f"launchable: no durable COMMITTED direct-connect operation found. "
+                f"Complete the direct connect flow for this adapter."
             )
         from runtime.orchestrator.executors import CustomAdapterExecutor
         executor = CustomAdapterExecutor(
