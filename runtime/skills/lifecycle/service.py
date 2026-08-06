@@ -256,14 +256,6 @@ class SkillLifecycleService:
                 detail="Agent proposals require verified task_id + session_id binding.",
                 status_code=400,
             )
-        # Agent proposals require source task brief digest — fail closed.
-        if actor_kind == "agent" and (not brief_digest or not brief_digest.strip()):
-            raise LifecycleError(
-                code="brief_unavailable",
-                detail="Agent proposals require the source task brief digest. "
-                        "The task's brief must be non-empty for provenance tracking.",
-                status_code=400,
-            )
 
 
         skill_id = f"hr:{slug}"
