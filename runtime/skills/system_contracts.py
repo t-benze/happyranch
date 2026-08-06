@@ -72,7 +72,7 @@ class SystemContract:
     requires_repo: bool = False
 
 
-# ── The 6 system contracts (single source of truth) ──────────────────
+# ── The 7 system contracts (single source of truth) ──────────────────
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
@@ -175,6 +175,18 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.SCHEDULE,
             SessionContext.BOOTSTRAP,
         ),
+    ),
+    SystemContract(
+        id="create-skill",
+        name="Create Skill",
+        description=(
+            "Author and submit a validated custom skill package from an active "
+            "task session. Derives identity from verified SessionTracker context only; "
+            "never exposes tools, permissions, or eligibility."
+        ),
+        when_to_use="Use to create or update a custom skill from a task session.",
+        source_path="protocol/skills/create-skill/SKILL.md",
+        contexts=(SessionContext.TASK,),
     ),
 )
 

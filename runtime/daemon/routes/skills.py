@@ -1504,3 +1504,231 @@ def skill_recover(
             f"release source for same-owner deployments)."
         ),
     }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Agent-only create-skill route (THR-055 B1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from fastapi import Body as RequestBody, Depends
+
+from runtime.daemon.auth import _check_optional_token
+from runtime.skills.lifecycle import stores as lifecycle_stores
+from runtime.skills.lifecycle.models import LifecycleStatus, PackageVersion
+from runtime.skills.lifecycle.service import (
+    AgentForbiddenError,
+    LifecycleError,
+    SkillLifecycleService,
+)
+
+agent_router = APIRouter()
+_create_service = SkillLifecycleService()
+
+# ── Prohibited body identity/authority keys ────────────────────────────────
+# The agent-only create-skill route MUST reject the *presence* of every
+# client-supplied trusted identity or authority field BEFORE any session
+# lookup, artifact write, or ledger/event row. Server derives the canonical
+# org/task/agent/session solely from the active SessionTracker session.
+_CREATE_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+class CreateSkillBody(BaseModel):
+    """Agent-submitted custom skill package — no identity/authority fields.
+
+    All org/task/agent/session identity is derived server-side from the
+    verified SessionTracker context. The body carries ONLY package
+    metadata and content.
+    """
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(min_length=1, max_length=512)
+    version: str = Field(default="0.1.0", min_length=1, max_length=32)
+    policy_class: str = Field(default="standard_operational")
+    skill_md: str = Field(min_length=1, max_length=131072)  # 128 KiB
+    purpose: str = Field(default="", max_length=1024)
+    target_agent_suggestion: str = Field(default="", max_length=128)
+    references: dict[str, str] | None = Field(default=None)
+    assets: dict[str, str] | None = Field(default=None)
+
+
+def _create_get_protected_slugs(org: OrgState) -> frozenset:
+    """Build the live protected-slug set from system contracts + shipped skills.
+
+    Fails closed: if the registry cannot be loaded, raises HTTP 500.
+    """
+    slugs: set[str] = set()
+    # System contract IDs
+    for sc in SYSTEM_CONTRACTS:
+        slugs.add(sc.id)
+    # First-party shipped skill slugs from the release directory
+    release_dir = org.settings.project_root / "runtime" / "skills"
+    if release_dir.is_dir():
+        from runtime.skills.registry import SkillRegistry
+        registry = SkillRegistry(skills_root=release_dir)
+        for entry in registry.list_all():
+            if isinstance(entry, tuple):
+                entry = entry[0]
+            slugs.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+    return frozenset(slugs)
+
+
+@agent_router.post("/skills/agent", status_code=201)
+def create_skill_agent_only(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Skill package metadata and content (no identity fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Create a custom skill via opaque agent-session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, task_id, agent_name, and session_id from
+    the SessionTracker context.
+
+    The created skill is standard_operational, default-hidden, and
+    does NOT automatically become visible, assign itself, or grant any
+    tool/credential/permission/executor authority.
+
+    Returns 403 for:
+    - Inactive, expired, unknown, or mismatched session
+    - Cross-org session (session belongs to a different org)
+    - Bearer token present (agent path only)
+    - Any prohibited body identity/authority key present
+    - Protected system/first-party slug
+    - Non-standard_operational policy class
+    """
+    # Reject bearer token
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session skill creation only. "
+                          "Bearer-authenticated requests are not accepted.",
+            },
+        )
+
+    # Reject ANY prohibited body identity/authority key BEFORE persistence
+    for key in _CREATE_PROHIBITED_BODY_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the request body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the clean body through Pydantic
+    body = CreateSkillBody(**body_raw)
+
+    # Resolve identity from opaque session
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        if verified_org != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{slug}'.",
+                },
+            )
+    else:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'.",
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context.",
+            },
+        )
+
+    # Re-verify session is current under binding lease
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session "
+                              f"for task {task_id} agent {agent_name}.",
+                },
+            )
+
+        # Enforce standard_operational only
+        if body.policy_class != "standard_operational":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "policy_class_not_allowed",
+                    "detail": f"Only 'standard_operational' is allowed for agent-created skills. "
+                              f"Got '{body.policy_class}'.",
+                },
+            )
+
+        # Enforce protected slugs
+        protected_slugs = _create_get_protected_slugs(org)
+        if body.slug in protected_slugs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "protected_slug",
+                    "detail": f"Slug '{body.slug}' is a protected system or first-party slug "
+                              "and cannot be used for a custom skill.",
+                },
+            )
+
+        try:
+            pkg = _create_service.submit_proposal(
+                db=org.db,
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class=body.policy_class,
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion=body.target_agent_suggestion,
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "status": pkg.status.value,
+        "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
+        "proposal_task_id": pkg.proposal_task_id,
+    }

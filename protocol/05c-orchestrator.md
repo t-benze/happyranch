@@ -776,6 +776,23 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
+**Agent create-skill path (THR-055 B1).** The broader agent skill-creation
+workflow uses the dedicated ``create-skill`` system contract:
+
+- ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``
+  submits a custom ``standard_operational`` skill package to
+  ``POST /api/v1/orgs/{slug}/skills/agent``.
+- The body carries only package metadata/content; all identity is derived
+  server-side from the SessionTracker context. The server rejects every
+  client-supplied identity/authority field before persistence.
+- Protected namespace enforcement covers all runtime system contracts and
+  first-party shipped skills. Only ``standard_operational`` policy class is
+  accepted.
+- Successful creation is default-hidden; the skill remains ``proposed`` until
+  a founder makes it eligible. The ``create-skill`` system contract is
+  task-facing and does NOT grant tools, credentials, permissions, or
+  eligibility authority.
+
 **Agent authority.** Agents may submit proposals ONLY through the dedicated
 agent-only route. The legacy dual-auth path is human/founder-only:
 

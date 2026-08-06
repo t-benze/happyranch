@@ -44,7 +44,7 @@ class TestRefreshSessionSkills:
         SessionContext values, the preflight requires every system contract
         source directory to exist on disk."""
         skills_root = settings.get_protocol_dir() / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / sid).mkdir(parents=True, exist_ok=True)
             if not (skills_root / sid / "SKILL.md").exists():
                 (skills_root / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
@@ -176,7 +176,7 @@ class TestRefreshSessionSkills:
     ):
         """_SKILLS_SRC override takes precedence over settings-derived path."""
         fake_src = tmp_path / "fake-skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (fake_src / sid).mkdir(parents=True)
             (fake_src / sid / "SKILL.md").write_text(f"# {sid}\n\nFAKE\n")
 
@@ -550,7 +550,7 @@ class TestInjectSystemContracts:
     ):
         """TASK context: start-task, jobs, make-worktree (if repos), thread."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -594,7 +594,7 @@ class TestInjectSystemContracts:
     ):
         """TASK context without repos: no make-worktree, todos present."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -617,7 +617,7 @@ class TestInjectSystemContracts:
     ):
         """DREAM context: jobs, make-worktree (if repos), dream, todos. NOT start-task or thread."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -641,7 +641,7 @@ class TestInjectSystemContracts:
     ):
         """THREAD context: jobs, make-worktree (if repos), thread, todos. NOT start-task or dream."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -665,7 +665,7 @@ class TestInjectSystemContracts:
     ):
         """WAKE context: same as TASK (start-task, jobs, make-worktree if repos, thread, todos)."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -715,7 +715,7 @@ class TestInjectSystemContracts:
         """Calling both refresh_session_skills and inject_system_contracts
         is idempotent — the same skill bodies are re-copied."""
         skills_root = test_settings.get_protocol_dir() / "skills"
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name} v1\n")
 

@@ -6,7 +6,7 @@ TDD coverage:
 - resolve_system_contracts_for_session returns correct contracts per context
 - Repo-capable check: with/without repos under workspace/repos/
 - SessionContext enum values match caller semantics
-- list_system_contracts returns all 6 (single source of truth)
+- list_system_contracts returns all 7 (single source of truth)
 """
 
 from __future__ import annotations
@@ -105,12 +105,12 @@ class TestSystemContractDataclass:
 class TestSystemContractsTuple:
     """Verify the 6 system contracts are correctly defined."""
 
-    def test_exactly_six_contracts(self):
-        assert len(SYSTEM_CONTRACTS) == 6
+    def test_exactly_seven_contracts(self):
+        assert len(SYSTEM_CONTRACTS) == 7
 
-    def test_all_six_ids(self):
+    def test_all_seven_ids(self):
         ids = {sc.id for sc in SYSTEM_CONTRACTS}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"}
 
     def test_no_requires_repo_except_make_worktree(self):
         for sc in SYSTEM_CONTRACTS:
@@ -182,13 +182,29 @@ class TestSystemContractsTuple:
         assert SessionContext.THREAD not in sc.contexts
         assert SessionContext.WAKE not in sc.contexts
 
-    def test_list_system_contracts_returns_all_six(self):
-        result = list_system_contracts()
-        assert len(result) == 6
-        assert {sc.id for sc in result} == {
-            "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
-        }
+    def test_create_skill_contexts(self):
+        sc = _get("create-skill")
+        assert set(sc.contexts) == {SessionContext.TASK}
+        assert SessionContext.THREAD not in sc.contexts
+        assert SessionContext.DREAM not in sc.contexts
+        assert SessionContext.WAKE not in sc.contexts
+        assert SessionContext.SCHEDULE not in sc.contexts
+        assert SessionContext.BOOTSTRAP not in sc.contexts
 
+    def test_create_skill_source_path(self):
+        sc = _get("create-skill")
+        assert sc.source_path == "protocol/skills/create-skill/SKILL.md"
+
+    def test_create_skill_requires_repo_false(self):
+        sc = _get("create-skill")
+        assert sc.requires_repo is False
+
+    def test_list_system_contracts_returns_all_seven(self):
+        result = list_system_contracts()
+        assert len(result) == 7
+        assert {sc.id for sc in result} == {
+            "start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill",
+        }
 
 # ── Context-predicate resolution ──────────────────────────────────────
 
@@ -252,14 +268,14 @@ class TestResolveSystemContracts:
             SessionContext.TASK, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos", "create-skill"}
 
     def test_task_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.TASK, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "thread", "todos"}
+        assert ids == {"start-task", "jobs", "thread", "todos", "create-skill"}
 
     # -- THREAD context --
 

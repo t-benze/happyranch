@@ -38,6 +38,7 @@ ALLOWED_POLICY_CLASSES = frozenset({"standard_operational"})
 
 _PROTECTED_SLUGS = frozenset({
     "start-task", "jobs", "make-worktree", "thread", "dream",
+    "todos", "create-skill",
     "reflection", "manage-agent", "manage-repo", "brainstorming",
     "dispatching-parallel-agents", "executing-plans",
     "finishing-a-development-branch", "receiving-code-review",

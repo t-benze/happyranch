@@ -368,6 +368,30 @@ Artifacts newly created during the request are cleaned up on ledger failure
 are never deleted. An ArtifactStore write failure before any ledger row
 aborts without any side effects.
 
+**Create-skill agent path (THR-055 B1).** Agents in verified active task
+sessions may use the ``create-skill`` system contract to author a new custom
+``standard_operational`` skill or append a new version to their own originated
+skill:
+
+- ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``
+  creates a custom skill via ``POST /api/v1/orgs/{slug}/skills/agent``.
+- The CLI builds a token-free transport (no bearer token) using only the
+  daemon port. The server independently derives all four identity dimensions
+  (org_slug, task_id, agent_name, active session_id) from the
+  SessionTracker's additive context index — never from body/query/env/client
+  claims.
+- The server enforces protected namespace coverage for all runtime system
+  contracts and first-party shipped skills. ``standard_operational`` only;
+  no executable/credential/permission/sandbox/allow-rule/executor content.
+- Successful creation is default-hidden; it does NOT automatically become
+  visible, assign itself, or grant any authority. The skill remains in
+  ``proposed`` status until a separate founder eligibility write.
+- Body identity/authority fields (org, agent, task, session, eligibility,
+  permission) are rejected before any persistence with HTTP 403.
+- The ``create-skill`` system contract is task-facing only and participates
+  in the canonical source/hash/materialization pipeline exactly like existing
+  system contracts.
+
 **Session-bound authority.** Agent proposal submission requires verified
 task/session binding via the SessionTracker. A single agent-only path exists,
 plus a human-only legacy route:

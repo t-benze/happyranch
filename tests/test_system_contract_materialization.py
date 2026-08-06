@@ -45,7 +45,7 @@ def _make_skill_dir(src_root: Path, skill_id: str) -> Path:
 
 
 def _make_all_system_contract_dirs(src_root: Path) -> set[str]:
-    """Create all 6 system-contract protocol/skills/<id>/ dirs."""
+    """Create all 7 system-contract protocol/skills/<id>/ dirs."""
     ids = set()
     for sc in SYSTEM_CONTRACTS:
         _make_skill_dir(src_root, sc.id)
@@ -648,7 +648,7 @@ class TestConcurrentMaterialization:
         from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -717,10 +717,10 @@ class TestConcurrentMaterialization:
         import runtime.orchestrator.workspace_adapters as wa
 
         src = tmp_path / "protocol" / "skills"
-        # All 6 system contracts must be present now that
+        # All 7 system contracts must be present now that
         # _materialize_unified_canonical unions across all ordinary
         # contexts (dream is DREAM-only but still in the union).
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -851,7 +851,7 @@ class TestConcurrentMaterialization:
 
         # Create source skills so the adapter has something to copy
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -946,7 +946,7 @@ class TestConcurrentMaterialization:
 
         # ── Create source skills ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")
@@ -1057,7 +1057,7 @@ class TestCrossContextSystemContractRetention:
 
         # ── Create all 5 system-contract source dirs ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1180,7 +1180,7 @@ class TestCrossContextSystemContractRetention:
         from runtime.skills.canonical_store import CanonicalSkillStore
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1280,7 +1280,7 @@ class TestCrossContextSystemContractRetention:
         )
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1336,7 +1336,7 @@ class TestCrossContextSystemContractRetention:
 
         # ── System-contract source dirs (all 5 required for union) ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1462,7 +1462,7 @@ class TestCrossContextSystemContractRetention:
 
         # ── System-contract source dirs ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1591,7 +1591,7 @@ class TestCrossContextSystemContractRetention:
                 f"Lifecycle skill {skill_slug} must be withdrawn in {subd}"
             )
         # System contracts survive as symlinks in BOTH roots
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             for subd in [".claude/skills", ".agents/skills"]:
                 link_dir = workspace / subd / sid
                 assert link_dir.is_symlink(), (
@@ -1635,7 +1635,7 @@ class TestUnknownContextNoOp:
         )
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1678,7 +1678,7 @@ class TestUnknownContextNoOp:
         )
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1715,7 +1715,7 @@ class TestUnknownContextNoOp:
         from runtime.skills.canonical_store import CanonicalSkillStore
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1792,7 +1792,7 @@ class TestUnknownContextNoOp:
         )
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")

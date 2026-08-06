@@ -2081,7 +2081,7 @@ def test_set_executor_claude_to_codex_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Claude→Codex switch leaves .agents/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 6
+    contracts any future session context could need (union across all 7
     contexts: task, thread, wake, dream, schedule, bootstrap).
     Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
@@ -2106,7 +2106,7 @@ def test_set_executor_claude_to_codex_materializes_skills(
         "materialization_errors field must not be present on success"
     )
 
-    # Union of all 6 contexts: task, thread, wake, dream, schedule, bootstrap
+    # Union of all 7 contexts: task, thread, wake, dream, schedule, bootstrap
     all_contracts: set[str] = set()
     for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
         all_contracts |= _system_contract_ids_for_context(ctx, workspace)
@@ -2123,7 +2123,7 @@ def test_set_executor_codex_to_claude_materializes_skills(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Codex→Claude switch leaves .claude/skills/<id>/SKILL.md for all
-    contracts any future session context could need (union across all 6
+    contracts any future session context could need (union across all 7
     contexts: task, thread, wake, dream, schedule, bootstrap).
     Files exist BEFORE any new session starts."""
     _seed_active_agent(org_state, "dev_agent", executor="codex")
