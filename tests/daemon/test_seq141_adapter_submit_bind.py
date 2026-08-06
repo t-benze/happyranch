@@ -1848,6 +1848,57 @@ class TestContractReferenceHappyPath:
         )
         assert resp.status_code == 200, resp.text
 
+    def test_contract_reference_dependencies_field_preserves_inherited_path(
+        self, app_and_client, token_store
+    ):
+        """seq370: dependency field says PATH is inherited, NOT scrubbed."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "path-test")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # The dependencies description in submission body_schema
+        deps_desc = data["submission"]["body_schema"]["fields"]["dependencies"]
+        assert isinstance(deps_desc, str)
+        deps_lower = deps_desc.lower()
+
+        # MUST say HappyRanch never selects via ambient PATH
+        assert "never selects" in deps_lower or "ambient path" in deps_lower, (
+            f"Should state HappyRanch never selects via ambient PATH: {deps_desc!r}"
+        )
+        # MUST say inherits normalized environment/PATH
+        assert "inherits" in deps_lower, (
+            f"Should say inherits normalized environment/PATH: {deps_desc!r}"
+        )
+        # MUST say normal utilities remain reachable
+        assert "reachable" in deps_lower or "callback" in deps_lower, (
+            f"Should mention callbacks/utilities remain reachable: {deps_desc!r}"
+        )
+        # MUST NOT say "scrubs PATH"
+        assert "scrubs" not in deps_lower, (
+            f"Must NOT say scrubs PATH: {deps_desc!r}"
+        )
+        # MUST NOT say "PATH resolution is not available"
+        assert "not available" not in deps_lower, (
+            f"Must NOT say PATH resolution not available: {deps_desc!r}"
+        )
+
+        # dependency_manifest rules must assert no_path_fallback
+        dm = data["dependency_manifest"]
+        rules = dm.get("rules", {})
+        assert rules.get("no_path_fallback") is True, (
+            f"dependency_manifest.rules.no_path_fallback must be True: {rules}"
+        )
+        assert rules.get("absolute_path_only") is True, (
+            f"dependency_manifest.rules.absolute_path_only must be True: {rules}"
+        )
+
 
 class TestContractReferenceAuth:
     """Auth scoping tests for the contract-reference endpoint."""
