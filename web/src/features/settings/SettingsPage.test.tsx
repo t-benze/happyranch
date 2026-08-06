@@ -1476,6 +1476,40 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(promptText).not.toContain('management bind');
     expect(promptText).not.toContain('After approval, the existing authenticated');
   });
+
+  test('seq370: prompt says PATH is inherited, NOT scrubbed', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ370',
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq370-path');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    // MUST say Never selects via ambient PATH
+    expect(promptText).toContain('never selects');
+    // MUST say inherits normalized environment/PATH
+    expect(promptText).toContain('inherits');
+    // MUST say callbacks remain reachable
+    expect(promptText).toContain('reachable');
+    // MUST NOT say scrubs PATH
+    expect(promptText).not.toContain('scrubs PATH');
+    expect(promptText).not.toContain('scrub PATH');
+    // MUST NOT say ambient PATH resolution is not available
+    expect(promptText).not.toContain('not available');
+  });
 });
 
 describe('SettingsPage — keyboard shortcuts', () => {
