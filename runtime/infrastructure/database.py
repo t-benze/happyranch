@@ -172,7 +172,7 @@ class Database:
         # `_synchronized`) is preserved across both surfaces.
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
-        self.direct_connect = DirectConnectStore(self._conn, self._lock)
+        self.direct_connect = DirectConnectStore(self._conn, self._lock, audit_fn=self.insert_audit_log_uncommitted)
 
     @_synchronized
     def execute(self, sql: str, parameters=()):
@@ -1087,7 +1087,6 @@ class Database:
                 profile_name            TEXT NOT NULL,
                 adapter_id              TEXT NOT NULL,
                 owner_agent             TEXT NOT NULL,
-                raw_authority_token     TEXT NOT NULL,
                 authority_state         TEXT NOT NULL DEFAULT 'reserved',
                 authority_expiry        TEXT,
                 authority_owner         TEXT NOT NULL,
@@ -1126,7 +1125,19 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_dcr_operation
                 ON direct_connect_receipts(operation_id);
-            """)
+
+            -- TASK-4639: drop raw_authority_token column from DBs created
+            -- by the previous iteration (cc4fb3cf). Best-effort: SQLite >= 3.35
+            -- supports DROP COLUMN; on older versions the column stays but is
+            -- unused by the new code (no writes).
+            """,
+        )
+        try:
+            self._conn.execute(
+                "ALTER TABLE direct_connect_operations DROP COLUMN raw_authority_token"
+            )
+        except sqlite3.OperationalError:
+            pass  # column doesn't exist (fresh DB) or SQLite < 3.35
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column

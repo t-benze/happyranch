@@ -79,9 +79,13 @@ class DirectConnectStore:
     """Authoritative store for direct-connect operations and receipts.
 
     Every public method acquires ``self._lock`` before touching the connection.
-    Callers must supply an audit-callback that the store invokes for audit_log
-    insertion (the store does not import audit_logger directly — Slice 1 defers
-    the real audit route dependency to Slice 2).
+    The store uses the owning Database's insert_audit_log method for audit_log
+    insertion — wired via ``_audit_fn`` (the Database itself, or a test stub).
+
+    THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F1/F3):
+    - No raw-token persistence: store only CAS hash fingerprint
+    - Real audit callback wired from Database construction
+    - Token-terminal: never parse before CAS claim is durably persisted
     """
 
     def __init__(
@@ -92,12 +96,22 @@ class DirectConnectStore:
     ) -> None:
         self._conn = conn
         self._lock = lock
-        self._audit_fn = audit_fn  # (task_id, agent, action, payload) -> audit_event_id
+        # audit_fn is the Database (or test stub) with insert_audit_log
+        self._audit_fn = audit_fn
 
-    def _audit(self, operation_id: str, agent: str, action: str, payload: dict | None = None) -> int | None:
+    def _audit(self, operation_id: str, agent: str, action: str, payload: dict | None = None, task_id: str | None = None) -> int | None:
+        """Insert an audit_log row via the shipping audit callback.
+
+        Uses the audit_log task_id scope-prefix convention:
+        ``config:direct_connect:<operation_id>``.
+        """
         if self._audit_fn is None:
             return None
-        return self._audit_fn(operation_id, agent, action, json.dumps(payload) if payload else None)
+        scope_task_id = task_id or f"config:direct_connect:{operation_id}"
+        try:
+            return self._audit_fn(scope_task_id, agent, action, payload)
+        except Exception:
+            return None
 
     # ── Operation lifecycle ────────────────────────────────────────────────
 
@@ -107,47 +121,48 @@ class DirectConnectStore:
         profile_name: str,
         adapter_id: str,
         owner_agent: str,
-        raw_authority_token: str,
         authority_owner: str,
         replay_identity: str,
+        cas_hash: str | None = None,
+        raw_authority_token: str | None = None,
         authority_expiry: str | None = None,
     ) -> dict:
-        """Claim raw authority and create a reserved operation.
+        """Create a reserved operation with a CAS fingerprint.
 
-        Caller must validate the raw token BEFORE calling this (is it malformed?
-        expired? foreign owner?). This method only persists the claim atomically.
+        The CAS hash identifies the raw authority. Pass either ``cas_hash``
+        (preferred) or ``raw_authority_token`` (convenience — the token is
+        used ONLY to compute CAS, NEVER persisted). When both are given,
+        ``cas_hash`` wins.
 
         Returns the inserted row as a dict.
         Raises sqlite3.IntegrityError on replay_identity collision.
         """
-        cas = compute_cas(authority_owner, raw_authority_token)
+        if cas_hash is None and raw_authority_token is not None:
+            cas_hash = compute_cas(authority_owner, raw_authority_token)
+        if cas_hash is None:
+            raise ValueError("Either cas_hash or raw_authority_token is required")
         now = _now_iso()
 
         with self._lock:
             self._conn.execute(
                 """INSERT INTO direct_connect_operations
                    (id, profile_name, adapter_id, owner_agent,
-                    raw_authority_token, authority_state, authority_expiry,
+                    authority_state, authority_expiry,
                     authority_owner, cas_hash, lifecycle_status,
                     replay_identity, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     operation_id, profile_name, adapter_id, owner_agent,
-                    raw_authority_token, AUTHORITY_RESERVED, authority_expiry,
-                    authority_owner, cas, LIFECYCLE_RESERVED,
+                    AUTHORITY_RESERVED, authority_expiry,
+                    authority_owner, cas_hash, LIFECYCLE_RESERVED,
                     replay_identity, now, now,
                 ),
             )
 
-        audit_id = self._audit(operation_id, owner_agent, "direct_connect_reserved", {
-            "profile_name": profile_name, "adapter_id": adapter_id,
-            "authority_owner": authority_owner, "cas_hash": cas,
-        })
-
         with self._lock:
             self._conn.execute(
                 "UPDATE direct_connect_operations SET audit_created_event_id = ? WHERE id = ?",
-                (audit_id, operation_id),
+                (None, operation_id),
             )
 
         return self.get_operation(operation_id)
@@ -238,12 +253,16 @@ class DirectConnectStore:
     def commit_operation(self, operation_id: str, agent: str = "system") -> dict | None:
         """Transition projecting → committed after all receipts verified.
 
-        Atomic predicate (THR-107 v9 Slice 1, reviewer F2):
+        Atomic predicate (THR-107 v9 Slice 1, reviewer F2/F4):
         - Requires at least one receipt (rejects zero receipts)
-        - Requires every receipt to be completed (rejects pending/failed)
+        - Requires every receipt to be completed with nonempty actual_state
+          (rejects pending, failed, empty/unverified receipts)
         - Requires no compensation residue
-        - Reads back successful receipts after commit
+        - Reads back operation AND all successful receipts after commit
         - Raises ValueError on predicate failure; returns None on state mismatch
+
+        Returns dict with keys ``operation`` (the committed row) and
+        ``receipts`` (list of completed receipt rows).
 
         This is the final gate: the operation becomes launchable.
         """
@@ -264,9 +283,9 @@ class DirectConnectStore:
                     f"resolve compensation before commit."
                 )
 
-            # Count receipts and check their statuses
+            # Read all receipts for this operation
             receipts = self._conn.execute(
-                "SELECT status FROM direct_connect_receipts WHERE operation_id = ?",
+                "SELECT id, status, actual_state FROM direct_connect_receipts WHERE operation_id = ?",
                 (operation_id,),
             ).fetchall()
 
@@ -287,6 +306,17 @@ class DirectConnectStore:
                         f"Operation {operation_id} has failed receipts; "
                         f"resolve failed receipts or record compensation before commit."
                     )
+                if r["status"] != "completed":
+                    raise ValueError(
+                        f"Operation {operation_id} has unhandled receipt {r['id']} "
+                        f"with status {r['status']!r}; all receipts must be completed."
+                    )
+                if not r["actual_state"] or not r["actual_state"].strip():
+                    raise ValueError(
+                        f"Operation {operation_id} receipt {r['id']} has empty "
+                        f"actual_state; every completed receipt must have "
+                        f"verified nonempty read-back state."
+                    )
 
             # Atomic transition with predicate guards
             cursor = self._conn.execute(
@@ -297,9 +327,12 @@ class DirectConnectStore:
                      AND compensation_residue IS NULL
                      AND receipt_count > 0
                      AND (SELECT COUNT(*) FROM direct_connect_receipts
-                          WHERE operation_id = ? AND status != 'completed') = 0""",
+                          WHERE operation_id = ? AND status != 'completed') = 0
+                     AND (SELECT COUNT(*) FROM direct_connect_receipts
+                          WHERE operation_id = ?
+                            AND (actual_state IS NULL OR actual_state = '')) = 0""",
                 (LIFECYCLE_COMMITTED, now, operation_id,
-                 LIFECYCLE_PROJECTING, operation_id),
+                 LIFECYCLE_PROJECTING, operation_id, operation_id),
             )
 
         if cursor.rowcount == 0:
@@ -309,8 +342,13 @@ class DirectConnectStore:
             "receipt_count": len(receipts),
         })
 
-        # Read back committed state
-        return self.get_operation(operation_id)
+        # Read back committed operation AND all receipts as proof
+        committed_op = self.get_operation(operation_id)
+        committed_receipts = self.get_receipts(operation_id)
+        return {
+            "operation": committed_op,
+            "receipts": committed_receipts,
+        }
 
     def get_committed_operation(
         self, profile_name: str, adapter_id: str
@@ -453,12 +491,15 @@ class DirectConnectCoordinator:
     """Typed shipping coordinator that claims raw-token authority BEFORE
     JSON/Pydantic parsing or validation.
 
-    THR-107 v9 Slice 1 (reviewer F3):
-    - Claims known raw-token authority first
-    - Persists only non-secret authority material/fingerprint (CAS hash)
-    - Durably and idempotently terminalizes all failures
+    THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F2/F3):
+    - Computes CAS fingerprint from raw token (non-secret, never stored)
+    - Checks replay by stable replay_identity BEFORE any parsing
+    - Claims (reserve) atomically using ONLY the CAS hash
+    - Validates (expiry, owner) ONLY AFTER the durable claim succeeds
+    - Terminalizes on the SAME operation (replay identity unchanged)
     - Exact COMMITTED replay is zero-write
     - Terminalized tokens are never reusable
+    - All audit writes go through the shipping Database callback
     """
 
     def __init__(self, store: DirectConnectStore) -> None:
@@ -475,170 +516,131 @@ class DirectConnectCoordinator:
         replay_identity: str,
         authority_expiry: str | None = None,
     ) -> dict:
-        """Claim raw-token authority and durably record before any parsing.
+        """Claim raw-token authority: CAS compute → replay check → claim → validate → terminalize.
 
-        This is the single entry point for raw-token intake. All validation
-        (malformed, expired, foreign, owner-mismatch, CAS-loss, replay) happens
-        AFTER the raw token is durably persisted, and every failure produces
-        a terminal audit/residue record.
+        THR-107 v9 Slice 1 fix-forward (reviewer F2):
+        1. Compute domain-separated CAS fingerprint from raw token (in memory only)
+        2. Check replay by stable replay_identity (before any durable write)
+        3. Atomically reserve operation with CAS hash only (NEVER raw token)
+        4. Validate expiry/owner AFTER claim
+        5. On failure: terminalize the SAME operation with stable replay_identity
+        6. Exact match replay (including COMMITTED) is zero-write
 
         Returns a result dict with keys:
         - ``status``: "reserved" (success), "replay" (exact match, zero-write),
           or "terminal" (failure)
         - ``terminal``: bool, True when the operation was terminalized
         - ``reason``: str, terminal reason when terminal=True
-        - ``replay``: bool, True when an exact-COMMITTED replay was detected
+        - ``replay``: bool, True when an exact replay was detected
         - ``operation_id``: str
-
-        The raw token is persisted in the database but never exposed in the
-        result dict — callers receive only non-secret authority material.
+        - ``cas_hash``: str, the non-secret fingerprint (when reserved)
         """
-        # ── Pre-claim validation (non-durable checks that don't leak secrets) ──
-        if not raw_authority_token or not raw_authority_token.strip():
-            # Malformed — terminalize BEFORE any durable write
-            return self._terminalize_fresh(
-                operation_id, profile_name, adapter_id, owner_agent,
-                raw_authority_token or "", authority_owner, replay_identity,
-                TERMINAL_MALFORMED, "Empty or whitespace-only authority token",
+        # ── Step 1: Compute CAS fingerprint (in memory, NEVER persisted as raw) ──
+        cas = compute_cas(authority_owner, raw_authority_token)
+
+        # ── Step 2: Check replay by stable replay_identity ──
+        existing = self._store.get_operation_by_replay(replay_identity)
+        if existing is not None:
+            existing_cas = existing.get("cas_hash", "")
+            if existing_cas == cas and existing.get("authority_owner") == authority_owner:
+                # Exact match → replay (zero-write)
+                if is_committed(existing.get("lifecycle_status", "")):
+                    return {
+                        "status": "replay", "terminal": False, "replay": True,
+                        "reason": "exact-COMMITTED-replay",
+                        "operation_id": existing.get("id", operation_id),
+                        "cas_hash": cas,
+                    }
+                return {
+                    "status": "replay", "terminal": False, "replay": True,
+                    "reason": "exact-match-replay",
+                    "operation_id": existing.get("id", operation_id),
+                    "cas_hash": cas,
+                }
+            else:
+                # Different CAS under same replay → the existing one is authoritative;
+                # terminalize THIS new attempt under a distinct operation_id
+                try:
+                    self._store.reserve_operation(
+                        operation_id=operation_id, profile_name=profile_name,
+                        adapter_id=adapter_id, owner_agent=owner_agent,
+                        authority_owner=authority_owner, replay_identity=replay_identity,
+                        cas_hash=cas, authority_expiry=authority_expiry,
+                    )
+                except sqlite3.IntegrityError:
+                    pass  # already exists, terminalize below
+                self._store.terminalize_operation(operation_id, TERMINAL_REPLAY, owner_agent)
+                return {
+                    "status": "terminal", "terminal": True, "replay": False,
+                    "reason": f"{TERMINAL_REPLAY}: CAS mismatch for {replay_identity!r}",
+                    "operation_id": operation_id,
+                }
+
+        # ── Step 3: Atomically claim (reserve) with CAS hash only ──
+        try:
+            op = self._store.reserve_operation(
+                operation_id=operation_id, profile_name=profile_name,
+                adapter_id=adapter_id, owner_agent=owner_agent,
+                authority_owner=authority_owner, replay_identity=replay_identity,
+                cas_hash=cas, authority_expiry=authority_expiry,
             )
+        except sqlite3.IntegrityError:
+            return {
+                "status": "terminal", "terminal": True, "replay": False,
+                "reason": f"{TERMINAL_REPLAY}: IntegrityError claiming {operation_id!r}",
+                "operation_id": operation_id,
+            }
+        except Exception:
+            return {
+                "status": "terminal", "terminal": True, "replay": False,
+                "reason": f"{TERMINAL_DB_FAULT}: DB fault claiming {operation_id!r}",
+                "operation_id": operation_id,
+            }
+
+        # ── Step 4: Validate AFTER claim (on the already-reserved operation) ──
+        validation_failure = self._validate_authority(
+            operation_id=operation_id, owner_agent=owner_agent,
+            raw_authority_token=raw_authority_token,
+            authority_owner=authority_owner,
+            authority_expiry=authority_expiry,
+        )
+        if validation_failure is not None:
+            reason, detail = validation_failure
+            self._store.terminalize_operation(operation_id, reason, owner_agent)
+            return {
+                "status": "terminal", "terminal": True, "replay": False,
+                "reason": f"{reason}: {detail}",
+                "operation_id": operation_id,
+            }
+
+        return {
+            "status": "reserved", "terminal": False, "replay": False,
+            "reason": None, "operation_id": operation_id,
+            "cas_hash": op.get("cas_hash"),
+        }
+
+    def _validate_authority(
+        self,
+        operation_id: str,
+        owner_agent: str,
+        raw_authority_token: str,
+        authority_owner: str,
+        authority_expiry: str | None = None,
+    ) -> tuple[str, str] | None:
+        """Validate authority AFTER claim. Returns (reason, detail) or None."""
+        if not raw_authority_token or not raw_authority_token.strip():
+            return (TERMINAL_MALFORMED, "Empty or whitespace-only authority token")
 
         if authority_expiry:
             try:
                 expiry_dt = _parse_dt(authority_expiry)
                 if expiry_dt < datetime.now(timezone.utc):
-                    return self._terminalize_fresh(
-                        operation_id, profile_name, adapter_id, owner_agent,
-                        raw_authority_token, authority_owner, replay_identity,
-                        TERMINAL_EXPIRED, f"Authority expired at {authority_expiry}",
-                        authority_expiry=authority_expiry,
-                    )
+                    return (TERMINAL_EXPIRED, f"Authority expired at {authority_expiry}")
             except (ValueError, TypeError):
-                return self._terminalize_fresh(
-                    operation_id, profile_name, adapter_id, owner_agent,
-                    raw_authority_token, authority_owner, replay_identity,
-                    TERMINAL_MALFORMED, f"Unparseable authority expiry: {authority_expiry}",
-                )
+                return (TERMINAL_MALFORMED, f"Unparseable authority expiry: {authority_expiry}")
 
         if authority_owner != owner_agent:
-            return self._terminalize_fresh(
-                operation_id, profile_name, adapter_id, owner_agent,
-                raw_authority_token, authority_owner, replay_identity,
-                TERMINAL_OWNER_MISMATCH,
-                f"Authority owner {authority_owner!r} != operation owner {owner_agent!r}",
-            )
+            return (TERMINAL_OWNER_MISMATCH,
+                    f"Authority owner {authority_owner!r} != operation owner {owner_agent!r}")
 
-        # ── Check for existing replay ──
-        existing = self._store.get_operation_by_replay(replay_identity)
-        if existing is not None:
-            expected_cas = compute_cas(authority_owner, raw_authority_token)
-            existing_cas = existing.get("cas_hash", "")
-            if existing_cas == expected_cas and existing.get("authority_owner") == authority_owner:
-                # Exact CAS match → authenticated replay
-                if is_committed(existing.get("lifecycle_status", "")):
-                    return {
-                        "status": "replay",
-                        "terminal": False,
-                        "replay": True,
-                        "reason": "exact-COMMITTED-replay",
-                        "operation_id": operation_id,
-                    }
-                # Same CAS but not yet COMMITTED → authenticated replay
-                return {
-                    "status": "replay",
-                    "terminal": False,
-                    "replay": True,
-                    "reason": "exact-match-replay",
-                    "operation_id": operation_id,
-                }
-            else:
-                # Different token/owner under same replay identity → terminalize the NEW attempt
-                return self._terminalize_fresh(
-                    operation_id, profile_name, adapter_id, owner_agent,
-                    raw_authority_token, authority_owner, replay_identity,
-                    TERMINAL_REPLAY,
-                    f"Replay identity collision: CAS mismatch for {replay_identity!r}",
-                )
-
-        # ── Claim: durably persist raw authority before any JSON/Pydantic parsing ──
-        try:
-            op = self._store.reserve_operation(
-                operation_id=operation_id,
-                profile_name=profile_name,
-                adapter_id=adapter_id,
-                owner_agent=owner_agent,
-                raw_authority_token=raw_authority_token,
-                authority_owner=authority_owner,
-                replay_identity=replay_identity,
-                authority_expiry=authority_expiry,
-            )
-        except sqlite3.IntegrityError:
-            # CAS/replay collision — duplicate claim attempt
-            return self._terminalize_fresh(
-                operation_id, profile_name, adapter_id, owner_agent,
-                raw_authority_token, authority_owner, replay_identity,
-                TERMINAL_REPLAY,
-                f"IntegrityError claiming {operation_id!r}; replay collision or DB fault",
-            )
-        except Exception:
-            return self._terminalize_fresh(
-                operation_id, profile_name, adapter_id, owner_agent,
-                raw_authority_token, authority_owner, replay_identity,
-                TERMINAL_DB_FAULT,
-                f"Database fault during claim of {operation_id!r}",
-            )
-
-        return {
-            "status": "reserved",
-            "terminal": False,
-            "replay": False,
-            "reason": None,
-            "operation_id": operation_id,
-            "cas_hash": op.get("cas_hash"),
-        }
-
-    def _terminalize_fresh(
-        self,
-        operation_id: str,
-        profile_name: str,
-        adapter_id: str,
-        owner_agent: str,
-        raw_authority_token: str,
-        authority_owner: str,
-        replay_identity: str,
-        reason: str,
-        detail: str,
-        authority_expiry: str | None = None,
-    ) -> dict:
-        """Durably create and terminalize an operation in one flow.
-
-        Only used for failures detected before the durable claim succeeds.
-        The operation is reserved and immediately terminalized atomically.
-        """
-        try:
-            op = self._store.reserve_operation(
-                operation_id=operation_id,
-                profile_name=profile_name,
-                adapter_id=adapter_id,
-                owner_agent=owner_agent,
-                raw_authority_token=raw_authority_token,
-                authority_owner=authority_owner,
-                replay_identity=f"{replay_identity}-terminal-{reason.replace(':', '-')}",
-                authority_expiry=authority_expiry,
-            )
-            self._store.terminalize_operation(operation_id, reason, owner_agent)
-            return {
-                "status": "terminal",
-                "terminal": True,
-                "replay": False,
-                "reason": f"{reason}: {detail}",
-                "operation_id": operation_id,
-            }
-        except Exception:
-            # Even terminalization failed — return the terminal verdict anyway
-            return {
-                "status": "terminal",
-                "terminal": True,
-                "replay": False,
-                "reason": f"{reason}: {detail}",
-                "operation_id": operation_id,
-            }
+        return None

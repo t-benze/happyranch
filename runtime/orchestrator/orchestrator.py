@@ -317,7 +317,8 @@ class Orchestrator:
 
     def _build_executor(self, provider: str):
         """Build an executor instance for a registered profile."""
-        return build_executor(provider, self._settings, self._paths)
+        store = getattr(self._db, 'direct_connect', None)
+        return build_executor(provider, self._settings, self._paths, direct_connect_store=store)
 
     def _current_time_line(self, now: Callable[[], datetime] | None) -> str:
         """Render the localized current-time value injected into every agent

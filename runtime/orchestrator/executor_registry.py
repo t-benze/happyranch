@@ -233,17 +233,24 @@ class ExecutorRegistry:
     def __init__(self) -> None:
         self._profiles: dict[str, ExecutorProfile] = {}
         self._register_builtins()
-        # THR-107 v9 Slice 1: authoritative store for COMMITTED-only eligibility.
-        # Wired by OrgState.load during daemon startup. When None, eligibility
-        # fails closed (no authority source).
-        self.direct_connect_store: "DirectConnectStore | None" = None
 
-    def set_direct_connect_store(self, store: "DirectConnectStore | None") -> None:
-        """Wire the authoritative DirectConnectStore for eligibility checks.
+    # THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F5):
+    # Multi-org store isolation. The direct_connect_store is NEVER a
+    # process-global singleton on the registry. Instead, each OrgState
+    # carries its own store, and it is passed as a parameter to
+    # eligibility checks and build_executor.
+    # Tests may still set a global store for compatibility via the
+    # deprecated set_direct_connect_store (test-only backward compat).
+    _deprecated_direct_connect_store: "DirectConnectStore | None" = None
 
-        Called by OrgState.load during daemon startup and by tests.
+    @classmethod
+    def set_direct_connect_store(cls, store: "DirectConnectStore | None") -> None:
+        """DEPRECATED: test-only backward compat.
+
+        Production code uses the per-OrgState store passed through
+        _resolve_custom_adapter_eligibility.
         """
-        self.direct_connect_store = store
+        cls._deprecated_direct_connect_store = store
 
     def _register_builtins(self) -> None:
         """Register the four built-in executor profiles.
@@ -401,13 +408,17 @@ class ExecutorRegistry:
         return existing is not None
 
     @classmethod
-    def _resolve_custom_adapter_eligibility(cls, profile: ExecutorProfile) -> dict | None:
+    def _resolve_custom_adapter_eligibility(
+        cls, profile: ExecutorProfile,
+        direct_connect_store: "DirectConnectStore | None" = None,
+    ) -> dict | None:
         """Check whether a custom-adapter profile is launchable.
 
         Returns a dict with ``{executable, hash, version, contract_version}``
-        when the adapter is APPROVED, hash-verified, and on-disk executable
-        is intact. Returns ``None`` when the adapter is pending, tampered,
-        missing, or otherwise not launchable.
+        when the adapter is APPROVED, hash-verified, on-disk executable
+        is intact, AND has a durable COMMITTED direct-connect operation.
+        Returns ``None`` when the adapter is pending, tampered, missing,
+        or otherwise not launchable.
 
         This is the SINGLE central eligibility predicate consumed by:
         - ``/health/prereqs`` (present flag)
@@ -416,13 +427,13 @@ class ExecutorRegistry:
         - ``build_executor`` (resolve → validate → build)
         - ``CustomAdapterExecutor`` (pre-launch verification)
 
-        It performs the same exact resolve_adapter → hash check as the
-        launch path without side effects.
+        THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F5):
+        Multi-org store isolation. The store parameter comes from the
+        per-org OrgState, not a process-global singleton. When absent,
+        eligibility fails closed.
 
         THR-107 v9 Slice 1: COMMITTED-only launch fence. Only a durable
         matching COMMITTED direct_connect_operation grants eligibility.
-        The authoritative store is wired to the ExecutorRegistry instance
-        during daemon startup; when absent, eligibility fails closed.
         """
         cmd_adapter = profile.command_adapter_id or ""
         if not cmd_adapter.startswith("custom-adapter:"):
@@ -433,8 +444,9 @@ class ExecutorRegistry:
         # A profile must have a durable COMMITTED direct-connect operation;
         # no other state (YAML, registry, approval, pending, bind, recovery,
         # token text) is accepted as launch authority.
-        registry = get_registry()
-        store = registry.direct_connect_store
+        # The store comes from the caller (per-org OrgState), with fallback
+        # to deprecated test-only global for backward compat.
+        store = direct_connect_store or cls._deprecated_direct_connect_store
         if store is None:
             # No authority source wired — fail closed. This covers:
             # - Daemon not yet fully started
@@ -729,6 +741,7 @@ def reset_registry() -> None:
     """Reset the registry singleton (test seam)."""
     global _registry
     _registry = ExecutorRegistry()
+    ExecutorRegistry._deprecated_direct_connect_store = None
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +753,7 @@ def build_executor(
     name: str,
     settings: Settings,
     paths: OrgPaths | None = None,
+    direct_connect_store: "DirectConnectStore | None" = None,
 ) -> "AgentExecutor":
     """Build an executor instance for a registered profile name.
 
@@ -833,7 +847,9 @@ def build_executor(
     if cmd_adapter.startswith("custom-adapter:"):
         # Central eligibility check — same predicate as health/prereqs,
         # runtime profiles, Agent-page, and CustomAdapterExecutor pre-launch.
-        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(
+            profile, direct_connect_store=direct_connect_store,
+        )
         if binding is None:
             adapter_id = cmd_adapter[len("custom-adapter:"):]
             raise ValueError(
