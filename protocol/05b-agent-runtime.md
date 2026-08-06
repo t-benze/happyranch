@@ -404,9 +404,10 @@ plus a human-only legacy route:
   per-binding lease/re-verification follow the same SessionTracker pattern
   as the proposal path. The skill enters the lifecycle ledger as ``proposed``
   and is hidden by default — no materialization occurs until eligibility
-  is configured by a founder. This replaces the proposal-review ceremony
-  for ordinary ``standard_operational`` custom skills. The B2 follow-on
-  (eligibility, human web editor, migration/cutover) is explicitly deferred.
+  is configured by a founder. This is an additional agent-authoring path
+  alongside the existing proposal workflow; both create PROPOSED lifecycle
+  records. The proposal-review ceremony remains the existing human-review
+  path; B1 does not replace or bypass it. The B2 follow-on
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
   is restricted to bearer-authenticated human/founder callers. Non-bearer

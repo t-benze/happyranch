@@ -1,5 +1,4 @@
-# THR-055 B1 Proof Matrix / Spec Parity — Revision R4 (TASK-4568)
-
+# THR-055 B1 Proof Matrix / Spec Parity — Revision R5 (TASK-4573)
 Frozen: 2026-08-06. Maps every requirement to its executable test/proof and the exact durable data asserted.
 
 ## Requirement 1: Canonical injection/materialization

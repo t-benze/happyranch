@@ -845,12 +845,12 @@ permission/config mutation surface reachable from this API) return server-side
 403 for agent invocations. No agent route may gain an alternate mutation method.
 Human/founder lifecycle authority remains as merged.
 
-**Proposal submission CLI (corrected — opaque session only).** The agent
-submission workflow is described in §4.5 "Agent authority" above. The single
-shipping CLI form is::
+ **Proposal submission CLI (corrected — opaque session only).** The agent
+ proposal submission workflow is described in §4.5 "Agent authority" above.
+ The proposal CLI form is::
 
-    happyranch skills propose --from-file <proposal.json> \
-      --session-id <session-id> [--org <slug>]
+     happyranch skills propose --from-file <proposal.json> \
+       --session-id <session-id> [--org <slug>]
 
 There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
 or mechanisms. Identity is derived server-side exclusively from the verified

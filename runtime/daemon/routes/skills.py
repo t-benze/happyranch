@@ -1707,8 +1707,27 @@ def create_skill_agent(
 
         # Derive task_brief_digest from the active task binding
         task_record = org.db.get_task(task_id)
-        task_brief = task_record.brief if task_record and task_record.brief else ""
-        task_brief_digest = hashlib.sha256(task_brief.encode("utf-8")).hexdigest() if task_brief else ""
+        if task_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_task",
+                    "detail": f"Task {task_id} from session context does not exist. "
+                              "The create-skill route requires a valid active task binding.",
+                },
+            )
+        task_brief = task_record.brief if task_record.brief else ""
+        if not task_brief.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "missing_task_brief",
+                    "detail": f"Task {task_id} has no brief. "
+                              "The create-skill route requires a non-empty task brief "
+                              "for durable provenance recording.",
+                },
+            )
+        task_brief_digest = hashlib.sha256(task_brief.encode("utf-8")).hexdigest()
 
         # Build live protected-slug set from release catalog + system contracts
         release_dir = org.settings.project_root / "runtime" / "skills"
@@ -1729,58 +1748,87 @@ def create_skill_agent(
             body.references, body.assets,
         )
 
+        # Reject invalid packages before any persistence
+        if not validation.get("ok"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "validation_failed",
+                    "detail": "Skill package failed deterministic validation.",
+                    "validation": validation,
+                },
+            )
+
         service = SkillLifecycleService()
 
+        db = _get_db(org)
+
         try:
-            pkg = service.submit_proposal(
-                db=_get_db(org),
-                actor_kind="agent",
-                slug=body.slug,
-                name=body.name,
-                description=body.description,
-                skill_md=body.skill_md,
-                version=body.version,
-                policy_class=body.policy_class,
-                references=body.references,
-                assets=body.assets,
+            try:
+                pkg = service.submit_proposal(
+                    db=db,
+                    actor_kind="agent",
+                    slug=body.slug,
+                    name=body.name,
+                    description=body.description,
+                    skill_md=body.skill_md,
+                    version=body.version,
+                    policy_class=body.policy_class,
+                    references=body.references,
+                    assets=body.assets,
+                    task_id=task_id,
+                    session_id=session_id,
+                    proposer_agent=agent_name,
+                    purpose=body.purpose,
+                    target_agent_suggestion=body.target_agent_suggestion,
+                    protected_slugs=protected_slugs,
+                    org_root=org.root,
+                )
+            except LifecycleErr as e:
+                raise HTTPException(
+                    status_code=e.status_code,
+                    detail={"code": e.code, "detail": e.detail},
+                )
+
+            # ── Enrich lifecycle event with verified provenance ────────
+            from runtime.skills.lifecycle.models import LifecycleEvent as LifecycleEvt
+            from runtime.skills.lifecycle import stores as lifecycle_stores
+            provenance_evt = LifecycleEvt(
+                skill_id=pkg.skill_id,
+                package_version_id=pkg.id,
+                event_type="provenance_recorded",
+                actor=agent_name,
+                actor_role="agent",
+                previous_status=pkg.status.value,
+                new_status=pkg.status.value,
+                content_hash=pkg.content_hash,
+                metadata={
+                    "verified_org_slug": verified_org,
+                    "task_brief_digest": task_brief_digest,
+                    "validation_ok": validation["ok"],
+                    "validation_reason_codes": validation.get("reason_codes", []),
+                    "validator_version": "B1-create-skill-route-v1",
+                },
                 task_id=task_id,
                 session_id=session_id,
-                proposer_agent=agent_name,
-                purpose=body.purpose,
-                target_agent_suggestion=body.target_agent_suggestion,
-                protected_slugs=protected_slugs,
-                org_root=org.root,
             )
-        except LifecycleErr as e:
+            lifecycle_stores.insert_lifecycle_event(db, provenance_evt)
+        except HTTPException:
+            raise
+        except Exception:
+            # Provenance write failure after package commit —
+            # the package is already durable but provenance evidence is
+            # missing.  Raise a 500 so the caller knows the result is
+            # incomplete.  True atomicity requires schema-level
+            # transaction boundaries deferred to B2.
             raise HTTPException(
-                status_code=e.status_code,
-                detail={"code": e.code, "detail": e.detail},
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "provenance_write_failed",
+                    "detail": "Package was created but provenance evidence "
+                              "could not be recorded.  Contact operator.",
+                },
             )
-
-        # ── Enrich lifecycle event with verified provenance ────────
-        from runtime.skills.lifecycle.models import LifecycleEvent as LifecycleEvt
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        provenance_evt = LifecycleEvt(
-            skill_id=pkg.skill_id,
-            package_version_id=pkg.id,
-            event_type="provenance_recorded",
-            actor=agent_name,
-            actor_role="agent",
-            previous_status=pkg.status.value,
-            new_status=pkg.status.value,
-            content_hash=pkg.content_hash,
-            metadata={
-                "verified_org_slug": verified_org,
-                "task_brief_digest": task_brief_digest,
-                "validation_ok": validation["ok"],
-                "validation_reason_codes": validation.get("reason_codes", []),
-                "validator_version": "B1-create-skill-route-v1",
-            },
-            task_id=task_id,
-            session_id=session_id,
-        )
-        lifecycle_stores.insert_lifecycle_event(_get_db(org), provenance_evt)
-
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,

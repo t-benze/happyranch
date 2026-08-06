@@ -1412,9 +1412,16 @@ class TestSkillsCreateCliIntegration:
     def test_cli_create_success_through_forwarding_adapter(
         self, tmp_path, monkeypatch,
     ):
-        import argparse
+        """Drive the literal `happyranch skills create --from-file <path>
+        --session-id <id> --org alpha` through the registered parser/dispatch.
+
+        Uses cli.main.build_parser() + parser.parse_args() + args.func(args)
+        to exercise the full CLI surface, not a manufactured argparse.Namespace.
+        The forwarding adapter captures and forwards the real httpx construction
+        unchanged, then asserts transport headers, base URL, and durable
+        package/provenance from the ASGI route.
+        """
         import json
-        from cli.commands.skills import cmd_skills_create
         import httpx
         from fastapi.testclient import TestClient
         from runtime.daemon.app import create_app
@@ -1422,9 +1429,10 @@ class TestSkillsCreateCliIntegration:
         from runtime.runtime import RuntimeDir
         from runtime.config import Settings
         from runtime.daemon import paths as paths_mod
+        from runtime.models import TaskRecord
+        import os
 
         # Set up daemon home
-        import os
         home = tmp_path / ".happyranch"
         home.mkdir(parents=True)
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
@@ -1449,18 +1457,12 @@ class TestSkillsCreateCliIntegration:
         test_client = TestClient(app)
         org = daemon_state.orgs["alpha"]
 
-        # Set up active session
+        # Set up active session AND task record (required for provenance)
         org.sessions.set_active("TASK-CLI-1", "dev_agent", "sess-cli-1", org_slug="alpha")
+        org.db.insert_task(TaskRecord(id="TASK-CLI-1", brief="CLI integration test brief"))
 
         # Create payload file
         payload_path = self._make_valid_payload(tmp_path, slug="cli-test-skill")
-
-        # Build parsed args
-        ns = argparse.Namespace(
-            from_file=str(payload_path),
-            session_id="sess-cli-1",
-            org="alpha",
-        )
 
         # Create temp port file
         port_path = tmp_path / "port"
@@ -1524,13 +1526,22 @@ class TestSkillsCreateCliIntegration:
             return httpx.Response(404)
         monkeypatch.setattr(httpx.Client, "get", fake_get)
 
-        # Now invoke the CLI command
+        # ── Drive through the REAL parser/dispatch ──────────────────
+        from cli.main import build_parser
+        parser = build_parser()
+        args = parser.parse_args([
+            "skills", "create",
+            "--from-file", str(payload_path),
+            "--session-id", "sess-cli-1",
+            "--org", "alpha",
+        ])
+
         try:
-            cmd_skills_create(ns)
+            args.func(args)
         except SystemExit:
             pass
 
-        # Verify captured transport
+        # ── Verify captured transport ───────────────────────────────
         assert captured.get("method") == "POST", f"Expected POST, got {captured.get('method')}"
         assert captured.get("path") == "/api/v1/orgs/alpha/skills/agent", \
             f"Expected /api/v1/orgs/alpha/skills/agent, got {captured.get('path')}"
@@ -1539,7 +1550,7 @@ class TestSkillsCreateCliIntegration:
         assert body.get("slug") == "cli-test-skill"
         assert body.get("name") == "My Test Skill"
 
-        # Verify NO Authorization header
+        # Verify NO Authorization header was constructed
         captured_headers = {k.lower(): v for k, v in captured.get("headers", {}).items()}
         assert "authorization" not in captured_headers, \
             f"Authorization found: {captured_headers}"
@@ -1548,6 +1559,16 @@ class TestSkillsCreateCliIntegration:
         assert captured_client_kwargs.get("base_url") == "http://127.0.0.1:9999"
         client_headers = captured_client_kwargs.get("headers", {})
         assert client_headers.get("X-HappyRanch-Surface") == "cli"
+
+        # ── Verify durable package + provenance from ASGI route ─────
+        from runtime.skills.lifecycle import stores
+        pkgs = stores.list_package_versions(org.db, skill_id="hr:cli-test-skill")
+        assert len(pkgs) == 1, f"Expected 1 package, got {len(pkgs)}"
+        pkg = pkgs[0]
+        assert pkg.proposer_agent == "dev_agent"
+        assert pkg.proposal_task_id == "TASK-CLI-1"
+        assert pkg.proposal_session_id == "sess-cli-1"
+        assert len(pkg.content_hash) == 64
 
     def test_cli_create_malformed_package(self, tmp_path):
         """Malformed JSON package file -> actionable CLI error, exit=1."""
