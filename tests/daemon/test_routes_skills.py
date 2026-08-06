@@ -3701,7 +3701,7 @@ class TestB1CreateSkillAgent:
     # ── P2: CLI literal transport, bearer, rejections ────────────────
 
     def test_b1_cli_literal_transport_no_bearer(self, app, org_state):
-        """P2: CLI → real POST via TestClient, no Authorization header."""
+        """P2: registered parser → args.func → real route, bearer-free."""
         import json, tempfile
         from unittest.mock import patch
 
@@ -3714,10 +3714,10 @@ class TestB1CreateSkillAgent:
             json.dump(package, f)
             pkg_path = f.name
         try:
-            from cli.commands.skills import cmd_skills_create
-            import argparse
-            args = argparse.Namespace(
-                from_file=pkg_path, session_id="sess-b1-cli", org="alpha", func=None,
+            from cli.main import build_parser
+            args = build_parser().parse_args(
+                ["skills", "create", "--from-file", pkg_path,
+                 "--session-id", "sess-b1-cli", "--org", "alpha"]
             )
             captured = {}
 
@@ -3729,16 +3729,19 @@ class TestB1CreateSkillAgent:
                     captured["headers"] = self._h
                 def get(self, url, **kw):
                     captured["get_url"] = url
-                    return _FR(200, {"orgs": [{"slug": "alpha"}]})
+                    tc = TestClient(app)
+                    r = tc.get(url, headers=self._h)
+                    return _FR(r.status_code, r.json())
                 def post(self, url, **kw):
                     captured["method"] = "POST"
                     captured["path"] = url
                     captured["json_body"] = kw.get("json", {})
                     captured["params"] = kw.get("params", {})
                     tc = TestClient(app)
-                    q = "&".join(f"{k}={v}" for k, v in kw.get("params", {}).items())
-                    fp = url + ("?" + q if q else "")
-                    r = tc.post(fp, json=kw.get("json", {}))
+                    r = tc.post(
+                        url, json=kw.get("json", {}), params=kw.get("params", {}),
+                        headers=self._h,
+                    )
                     return _FR(r.status_code, r.json())
                 def close(self): pass
                 def __enter__(self): return self
@@ -3752,12 +3755,15 @@ class TestB1CreateSkillAgent:
                 with patch("cli.client.client.port_file") as mp:
                     mp.return_value.exists.return_value = True
                     mp.return_value.read_text.return_value = "8888"
-                    cmd_skills_create(args)
+                    args.func(args)
 
+            assert args.func.__name__ == "cmd_skills_create"
+            assert captured["base_url"] == "http://127.0.0.1:8888"
             assert captured["method"] == "POST"
             assert captured["path"] == "/api/v1/orgs/alpha/skills/agent"
             assert captured["params"] == {"session_id": "sess-b1-cli"}
-            assert captured["json_body"]["slug"] == "b1-cli-skill"
+            assert captured["json_body"] == package
+            assert captured["headers"] == {"X-HappyRanch-Surface": "cli"}
             assert "Authorization" not in captured["headers"]
             assert "authorization" not in captured["headers"]
 
@@ -3827,13 +3833,12 @@ class TestB1CreateSkillAgent:
 
     # ── P3: Post-package/pre-commit failure + zero residue ─────────
 
-    def test_b3_validation_failure_zero_residue(self, app, org_state):
-        """P3: Prove zero residue after a validation failure.
+    def test_b1_event_boundary_failure_rolls_back_with_zero_residue(self, app, org_state, monkeypatch):
+        """P3: exact post-package/pre-commit event failure rolls back fully.
 
-        Creates a valid skill first to seed a pre-existing artifact,
-        then triggers a heading-validation failure and verifies all
-        four persistence surfaces are clean for the failed skill while
-        the pre-existing artifact is preserved.
+        The test injects one failure at the real lifecycle-event write after
+        package construction. The B1 route and lifecycle service remain live;
+        their transaction and artifact compensation must leave no residue.
         """
         from runtime.skills.lifecycle import stores as lifecycle_stores
         from runtime.infrastructure.artifact_store import ArtifactStore
@@ -3850,13 +3855,22 @@ class TestB1CreateSkillAgent:
         )
         assert r_ok.status_code == 201
 
-        # Trigger validation failure (no heading)
+        from runtime.skills.lifecycle import stores
+        original_insert_event = stores.insert_lifecycle_event
+
+        def fail_event_boundary(db, event):
+            if event.skill_id == "hr:b1-fail":
+                raise RuntimeError("injected post-package event-boundary failure")
+            return original_insert_event(db, event)
+
+        monkeypatch.setattr(stores, "insert_lifecycle_event", fail_event_boundary)
         r_fail = client.post(
             "/api/v1/orgs/alpha/skills/agent",
-            json=_b1_make_body(slug="b1-fail", name="Fail", skill_md="no heading"),
+            json=_b1_make_body(slug="b1-fail", name="Fail"),
             params={"session_id": "sess-b1-p3"},
         )
-        assert r_fail.status_code == 422
+        assert r_fail.status_code == 500
+        assert r_fail.json()["detail"]["code"] == "create_failed"
 
         # Zero residue for the failed skill
         pkgs = lifecycle_stores.list_package_versions(org_state.db, skill_id="hr:b1-fail")
