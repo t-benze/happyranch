@@ -643,10 +643,10 @@ describe('SettingsPage — Organization section', () => {
       expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
     );
 
-    // Toggle is present (as a switch)
-    const switches = within(content).getAllByRole('switch');
-    // One of them is the work-hours enabled toggle (others are dreaming/threads)
-    expect(switches.length).toBeGreaterThanOrEqual(1);
+    // Toggle is present in operating controls (not dreaming/threads)
+    const operatingControls = within(content).getByTestId('operating-controls');
+    const switches = within(operatingControls).getAllByRole('switch');
+    expect(switches.length).toBe(1);
 
     // Eligibility editor button present
     expect(
@@ -681,19 +681,15 @@ describe('SettingsPage — Organization section', () => {
 
     const user = userEvent.setup();
 
-    // Find the toggle in the Operating controls section — it's the one
-    // immediately following "Enabled" label in the operating controls group.
-    const switches = within(content).getAllByRole('switch');
-    // The last BooleanToggle is work-hours (session, dreaming, threads come before)
-    // Actually, let's click the one that has aria-checked="true" (enabled=true)
-    const whSwitch = switches.find(
-      (s) => s.getAttribute('aria-checked') === 'true',
-    )!;
-    expect(whSwitch).toBeTruthy();
+    // Scope to Operating controls — the Dreaming section also has switches
+    const operatingControls = within(content).getByTestId('operating-controls');
+    const switches = within(operatingControls).getAllByRole('switch');
+    expect(switches.length).toBe(1); // exactly one switch in operating controls
+    const whSwitch = switches[0];
+    expect(whSwitch.getAttribute('aria-checked')).toBe('true');
 
     // Click to disable — should show confirmation dialog
     await user.click(whSwitch);
-
     await waitFor(() => {
       expect(screen.getByText('Disable work hours?')).toBeInTheDocument();
     });
@@ -748,12 +744,10 @@ describe('SettingsPage — Organization section', () => {
 
     const user = userEvent.setup();
 
-    // Find the OFF toggle and click it
-    const switches = within(content).getAllByRole('switch');
-    const whSwitch = switches.find(
-      (s) => s.getAttribute('aria-checked') === 'false',
-    )!;
-    expect(whSwitch).toBeTruthy();
+    // Scope to Operating controls
+    const operatingControls = within(content).getByTestId('operating-controls');
+    const whSwitch = within(operatingControls).getByRole('switch');
+    expect(whSwitch.getAttribute('aria-checked')).toBe('false');
 
     await user.click(whSwitch);
 
@@ -787,11 +781,10 @@ describe('SettingsPage — Organization section', () => {
 
     const user = userEvent.setup();
 
-    // Find the enabled toggle in operating controls
-    const switches = within(content).getAllByRole('switch');
-    const whSwitch = switches.find(
-      (s) => s.getAttribute('aria-checked') === 'true',
-    )!;
+    // Scope to Operating controls
+    const operatingControls = within(content).getByTestId('operating-controls');
+    const whSwitch = within(operatingControls).getByRole('switch');
+    expect(whSwitch.getAttribute('aria-checked')).toBe('true');
 
     // Click to disable — confirm dialog shows
     await user.click(whSwitch);

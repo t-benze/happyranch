@@ -48,6 +48,7 @@ export function AgentDetailPage(): JSX.Element {
   const team = agent ? (agentTeam[agent] ?? null) : null;
 
   const [tier, setTier] = useState<Tier | null>(null);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 

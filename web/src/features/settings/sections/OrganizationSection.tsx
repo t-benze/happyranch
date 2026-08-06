@@ -29,7 +29,7 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { EligibilityEditorDialog } from '@/features/work-hours-config/EligibilityEditorDialog';
-import { ErrorPanel, SavedBanner } from '@/features/work-hours-config/components';
+import { SavedBanner } from '@/features/work-hours-config/components';
 import { extractServerErrors } from '@/features/work-hours-config/errors';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 import { useUpdateOrgSettings } from '@/hooks/settings';
@@ -43,7 +43,6 @@ import {
 } from '@/design-system/primitives/Select';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import { useParams } from 'react-router-dom';
-import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 
 interface FieldState {
   timeout: string;
@@ -387,7 +386,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         </div>
       )}
 
-      <div className="border-border divide-border mb-4 divide-y rounded-md border">
+      <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
         <EditableRow label="Enabled" badge="Applies live">
           <div className="flex items-center gap-2">
             <BooleanToggle
@@ -494,6 +493,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         />
       )}
 
+    </section>
   );
 }
 
