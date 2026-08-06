@@ -373,12 +373,12 @@ task/session binding via the SessionTracker. A single agent-only path exists,
 plus a human-only legacy route:
 
 - **Opaque session path (agent CLI).** The agent commands
-  ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
+  ``happyranch skills create --from-file <payload.json> --session-id <session-id> [--org <slug>]``.
   The CLI builds a token-free transport (no bearer token read or sent) using
   only the daemon port. Org is resolved via the established
   ``resolve_org_slug(args_org=, available=)`` convention. The CLI sends the
   opaque session ID to
-  ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent`` — an agent-only
+  ``POST /api/v1/orgs/{slug}/skills/agent`` — an agent-only
   route that does NOT accept the master bearer token. The server independently
   derives all four identity dimensions (org_slug, task_id, agent_name,
   active session_id) from the SessionTracker's additive context index
@@ -391,11 +391,10 @@ plus a human-only legacy route:
   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
   ``permissions`` — before request-model parsing, session lookup,
   policy checks, or any persistence. Presence includes empty values.
-  Rejection returns exact HTTP 403 with error code
-  ``body_identity_rejected``; no lifecycle package, event,
-  materialization, or ArtifactStore residue is produced. This is the
-  sole agent
-  authoring workflow — there is no alternate agent-capable path.
+  The server also rejects ANY Authorization bearer header by its mere
+  presence (valid or invalid) with 401; the route is exclusively
+  session-binding. The Pydantic request model uses ``extra='forbid'``
+  to reject all unknown fields with zero persistence side effects.
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
   is restricted to bearer-authenticated human/founder callers. Non-bearer

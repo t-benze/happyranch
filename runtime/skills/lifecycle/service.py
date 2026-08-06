@@ -195,6 +195,9 @@ class SkillLifecycleService:
 
     # ── Agent proposal submission ─────────────────────────────────────────
 
+    # Validator version recorded with every validated package
+    VALIDATOR_VERSION = "THR-055-B1R1/1.0.0"
+
     def submit_proposal(
         self,
         db,
@@ -214,6 +217,7 @@ class SkillLifecycleService:
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
         org_root: Path | str | None = None,
+        brief_digest: str | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound proposal.
 
@@ -254,6 +258,13 @@ class SkillLifecycleService:
             )
 
         skill_id = f"hr:{slug}"
+
+        # ── Originator enforcement (agent path only) ──────────────────
+        if actor_kind == "agent":
+            self._enforce_originator(db, skill_id, proposer_agent)
+
+        # ── Content scanning for prohibited guidance ──────────────────
+        self._scan_for_prohibited_content(skill_md, slug)
 
         # Persist all package members to ArtifactStore under content-addressed
         # immutable keys, then build a manifest artifact. The manifest's hash
@@ -332,6 +343,13 @@ class SkillLifecycleService:
                     "purpose": purpose,
                     "target_agent_suggestion": target_agent_suggestion,
                     "content_artifact_key": content_artifact_key,
+                    "validator_version": self.VALIDATOR_VERSION,
+                    "brief_digest": brief_digest,
+                    "validator_findings": {
+                        "policy_class": policy_class,
+                        "protected_slug_ok": True,
+                        "content_scan_ok": True,
+                    },
                 },
                 task_id=task_id,
                 session_id=session_id,
@@ -388,6 +406,95 @@ class SkillLifecycleService:
                 raise LifecycleError(
                     code="unsafe_path",
                     detail=f"Member path '{rel_path}' contains '..' traversal.",
+                    status_code=400,
+                )
+
+    # ── Originator enforcement ─────────────────────────────────────────
+
+    def _enforce_originator(
+        self, db, skill_id: str, proposer_agent: str | None,
+    ) -> None:
+        """Enforce that only the original creator can append to a custom skill.
+
+        A new slug has no originator — any verified agent can create it.
+        An existing slug checks that proposer_agent matches the original
+        creator. A different agent attempting to append is rejected.
+        """
+        if not proposer_agent:
+            return  # Human path or test path — no enforcement
+
+        # Find the FIRST version for this skill_id (the originator)
+        versions = stores.list_package_versions(db, skill_id=skill_id)
+        if not versions:
+            return  # New skill — any verified agent can create
+
+        originator = None
+        for pv in sorted(versions, key=lambda p: p.id or 0):
+            if pv.created_by:
+                originator = pv.created_by
+                break
+
+        if originator and originator != proposer_agent:
+            raise LifecycleError(
+                code="originator_mismatch",
+                detail=(
+                    f"The slug '{skill_id}' was originated by agent '{originator}'. "
+                    f"Only the originating agent may create new versions. "
+                    f"Agent '{proposer_agent}' is not the originator."
+                ),
+                status_code=403,
+            )
+
+    # ── Content scanning ────────────────────────────────────────────────
+
+    # Patterns that indicate prohibited capability claims in skill guidance.
+    # These are conservative keyword matches; false positives surface as
+    # actionable validation errors, not silent suppression.
+    _PROHIBITED_CONTENT_PATTERNS: tuple[tuple[str, str], ...] = (
+        ("execut", "executable behavior / code execution"),
+        ("run command", "command execution"),
+        ("spawn", "process spawning"),
+        ("subprocess", "subprocess invocation"),
+        ("credential", "credential management"),
+        ("password", "password / secret management"),
+        ("api key", "API key management"),
+        ("token", "token management"),
+        ("bearer", "bearer token management"),
+        ("secret", "secret management"),
+        ("permission", "permission changes"),
+        ("allow rule", "allow-rule changes"),
+        ("allow-rule", "allow-rule changes"),
+        ("sandbox", "sandbox configuration"),
+        ("network access", "network access changes"),
+        ("filesystem", "filesystem policy changes"),
+        ("executor", "executor selection/configuration"),
+        ("model select", "model selection"),
+        ("eligibility", "eligibility configuration"),
+        ("publish", "publishing / visibility control"),
+        ("system instruction", "system instruction changes"),
+        ("developer instruction", "developer instruction changes"),
+        ("user instruction", "user instruction changes"),
+    )
+
+    def _scan_for_prohibited_content(self, skill_md: str, slug: str) -> None:
+        """Scan skill guidance for prohibited capability claims.
+
+        A custom skill is *guidance only*. Content that claims to grant
+        or configure tools, credentials, permissions, sandbox, executor,
+        eligibility, or rewrite system/developer/user instructions is
+        rejected before any persistence occurs.
+        """
+        lowered = skill_md.lower()
+        for pattern, category in self._PROHIBITED_CONTENT_PATTERNS:
+            if pattern in lowered:
+                raise LifecycleError(
+                    code="prohibited_content",
+                    detail=(
+                        f"Skill guidance for '{slug}' contains prohibited content: "
+                        f"'{category}'. Custom skills are guidance only and must "
+                        f"not claim to grant or configure tools, credentials, "
+                        f"permissions, sandbox, executor, or instruction authority."
+                    ),
                     status_code=400,
                 )
 

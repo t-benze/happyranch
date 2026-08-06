@@ -1308,7 +1308,7 @@ class TestVerifiedAgentSessionAuthority:
 
         # Submit as agent via the dedicated agent-only route (no bearer token)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             params={"session_id": session_id},
             json={
                 "slug": "frontend-development",
@@ -1346,7 +1346,7 @@ class TestVerifiedAgentSessionAuthority:
 
         # Put SPOOF values in the body — the agent-only route rejects them
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             params={"session_id": session_id},
             json={
                 "slug": "spoof-body-skill",
@@ -1361,7 +1361,7 @@ class TestVerifiedAgentSessionAuthority:
         assert r.status_code == 403, (
             f"Expected 403 for body spoof, got {r.status_code}: {r.json()}"
         )
-        assert "body_identity_rejected" in r.json()["detail"].get("code", "")
+        assert "body_field_rejected" in r.json()["detail"].get("code", "")
 
     def test_agent_session_403_on_human_only_routes(
         self, tmp_home, app, org_state, auth_headers,
@@ -1475,7 +1475,7 @@ class TestVerifiedAgentSessionAuthority:
         """Agent-only route returns 403 for no active session."""
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             params={"session_id": "sess-nonexistent"},
             json={
                 "slug": "no-session-skill",
@@ -1502,7 +1502,7 @@ class TestVerifiedAgentSessionAuthority:
 
         # Use a completely different session ID — won't match any active
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             params={"session_id": "sess-WRONG"},
             json={
                 "slug": "mismatch-session-skill",
@@ -1637,14 +1637,12 @@ AGENT_PROPOSAL_BODY = {
     "description": "Guidelines for building frontend features",
     "skill_md": "# Frontend Development\n\nFrontend development skill content.",
     "version": "0.1.0",
-    "policy_class": "standard_operational",
     "purpose": "Help frontend engineers build better UIs",
-    "target_agent_suggestion": "dev_agent",
 }
 
 
 class TestAgentOnlyProposalRoute:
-    """POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent
+    """POST /api/v1/orgs/{slug}/skills/agent
 
     Tests the agent-only opaque session-binding route.
     """
@@ -1655,7 +1653,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)  # No auth headers — agent route
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fe-001"},
         )
@@ -1671,7 +1669,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY,
                   "slug": "product-manager-prd",
                   "name": "Product Manager PRD"},
@@ -1690,75 +1688,60 @@ class TestAgentOnlyProposalRoute:
         client.headers["Authorization"] = f"Bearer {paths_mod.read_token()}"
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fe-001"},
         )
         assert r.status_code == 401, f"Expected 401, got {r.status_code}"
 
     def test_unknown_session_returns_403(self, app, org_state):
-        """Inactive/unknown session returns 403."""
+        """Unknown/nonexistent session returns 403."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001", org_slug='alpha')
         client = TestClient(app)
+
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-nonexistent"},
         )
         assert r.status_code == 403
 
-    def test_non_pilot_agent_returns_403(self, app, org_state):
-        """Agent not in pilot (dev_agent) returns 403."""
-        org_state.sessions.set_active("TASK-100", "dev_agent", "sess-dev-001", org_slug='alpha')
+    def test_non_pilot_agent_creates_successfully(self, app, org_state):
+        """Any verified agent can create a new skill (pilot policy superseded by originator enforcement)."""
+        org_state.sessions.set_active("TASK-101", "qa_engineer", "sess-fe-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json=AGENT_PROPOSAL_BODY,
-            params={"session_id": "sess-dev-001"},
+            "/api/v1/orgs/alpha/skills/agent",
+            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            params={"session_id": "sess-fe-002"},
         )
-        assert r.status_code == 403
-        detail = r.json().get("detail", {})
-        assert "not in the custom-skill pilot" in detail.get("detail", "")
+        assert r.status_code == 201, f"qa_engineer should be able to create; got {r.status_code}: {r.json()}"
 
-    def test_frontend_engineer_wrong_slug_returns_403(self, app, org_state):
-        """frontend_engineer with product-manager-prd slug returns 403."""
+    def test_frontend_engineer_wrong_slug_creates_new_skill(self, app, org_state):
+        """Any agent can create any non-protected slug (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
             params={"session_id": "sess-fe-002"},
         )
-        assert r.status_code == 403
-        detail = r.json().get("detail", {})
-        assert "slug_not_allowed_for_agent" in detail.get("code", "")
+        assert r.status_code == 201, f"Should create new slug; got {r.status_code}: {r.json()}"
 
-    def test_product_lead_wrong_slug_returns_403(self, app, org_state):
-        """product_lead with frontend-development slug returns 403."""
+    def test_product_lead_different_slug_creates_new_skill(self, app, org_state):
+        """Any agent can create any non-protected slug (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
             params={"session_id": "sess-pm-002"},
         )
-        assert r.status_code == 403
-        detail = r.json().get("detail", {})
-        assert "slug_not_allowed_for_agent" in detail.get("code", "")
+        assert r.status_code == 201, f"Should create new slug; got {r.status_code}: {r.json()}"
 
-    def test_body_task_id_rejected(self, app, org_state):
-        """proposal body containing task_id is rejected."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003", org_slug='alpha')
-        client = TestClient(app)
-
-        r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json={**AGENT_PROPOSAL_BODY, "task_id": "TASK-999"},
-            params={"session_id": "sess-fe-003"},
-        )
-        assert r.status_code == 403
 
     def test_body_session_id_rejected(self, app, org_state):
         """proposal body containing session_id is rejected."""
@@ -1766,7 +1749,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY, "session_id": "sess-fake"},
             params={"session_id": "sess-fe-003"},
         )
@@ -1778,7 +1761,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY, "proposer_agent": "someone_else"},
             params={"session_id": "sess-fe-003"},
         )
@@ -1790,7 +1773,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fe-prov"},
         )
@@ -1818,7 +1801,7 @@ class TestAgentOnlyProposalRoute:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fe-cat"},
         )
@@ -1911,7 +1894,7 @@ class TestFourPartProvenance:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-prov-001"},
         )
@@ -1933,7 +1916,7 @@ class TestFourPartProvenance:
 
         # Session has org_slug='alpha' — using correct org URL succeeds
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-cross-001"},
         )
@@ -1957,7 +1940,7 @@ class TestFourPartProvenance:
         # The org context cross-check verifies that the session's org matches
         # the path org — tested implicitly by matching org here.
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-mis-001"},
         )
@@ -1975,7 +1958,7 @@ class TestFourPartProvenance:
 
         # Correct org in path → succeeds
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-path-001"},
         )
@@ -1985,53 +1968,36 @@ class TestFourPartProvenance:
 class TestNoWriteResidueBeforeDenials:
     """Verify that no artifact/ledger residue is written before access is denied."""
 
-    def test_no_artifact_for_denied_non_pilot_agent(self, app, org_state, tmp_path):
-        """Non-pilot agent gets 403 and leaves no artifact residue."""
+    def test_non_pilot_agent_skill_created(self, app, org_state, tmp_path):
+        """Any verified agent can create a skill (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-NR-1", "dev_agent", "sess-nr-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-nr-001"},
         )
-        assert r.status_code == 403
-        detail = r.json().get("detail", {})
-        assert "not in the custom-skill pilot" in detail.get("detail", "")
+        assert r.status_code == 201, f"Any agent should be able to create; got {r.status_code}: {r.json()}"
 
-        # Verify no ledger entry was created
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        pkg = lifecycle_stores.get_latest_package_version(
-            org_state.db, "hr:frontend-development",
-        )
-        assert pkg is None, "No package should exist in the ledger"
-
-    def test_no_artifact_for_wrong_slug(self, app, org_state):
-        """Permitted agent with wrong slug gets 403 and leaves no residue."""
+    def test_different_slug_skill_created(self, app, org_state):
+        """Any agent can create any non-protected slug (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-NR-2", "frontend_engineer", "sess-nr-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
             params={"session_id": "sess-nr-002"},
         )
-        assert r.status_code == 403
-        assert "slug_not_allowed_for_agent" in r.json()["detail"].get("code", "")
-
-        # Verify no ledger entry
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        pkg = lifecycle_stores.get_latest_package_version(
-            org_state.db, "hr:product-manager-prd",
-        )
-        assert pkg is None, "No package should exist in the ledger"
+        assert r.status_code == 201, f"Should create new slug; got {r.status_code}: {r.json()}"
 
     def test_no_artifact_for_unknown_session(self, app, org_state):
         """Unknown session gets 403 and leaves no residue."""
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-nr-unknown"},
         )
@@ -2055,7 +2021,7 @@ class TestProposalFences:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fen-001"},
         )
@@ -2073,7 +2039,7 @@ class TestProposalFences:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-fen-002"},
         )
@@ -2100,7 +2066,7 @@ class TestFixedPolicyEnforcement:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={
                 "slug": "product-manager-prd",
                 "name": "Product Manager PRD",
@@ -2113,47 +2079,46 @@ class TestFixedPolicyEnforcement:
         data = r.json()
         assert data["skill_id"] == "hr:product-manager-prd"
 
-    def test_product_lead_with_frontend_slug_denied(self, app, org_state):
-        """product_lead with frontend-development slug is denied."""
+    def test_product_lead_with_frontend_slug_succeeds(self, app, org_state):
+        """product_lead with frontend-development slug succeeds (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-FP-2", "product_lead", "sess-fp-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
             params={"session_id": "sess-fp-002"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 201, f"Any agent can create any slug; got {r.status_code}"
 
-    def test_frontend_engineer_with_pm_slug_denied(self, app, org_state):
-        """frontend_engineer with product-manager-prd slug is denied."""
+    def test_frontend_engineer_with_pm_slug_succeeds(self, app, org_state):
+        """frontend_engineer with product-manager-prd slug succeeds (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-FP-3", "frontend_engineer", "sess-fp-003", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={
                 "slug": "product-manager-prd",
-                "name": "Wrong Slug",
-                "description": "Should be denied",
+                "name": "Any Slug",
+                "description": "Should succeed for any agent",
                 "skill_md": "# Test\n",
             },
             params={"session_id": "sess-fp-003"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 201, f"Any agent can create any slug; got {r.status_code}"
 
-    def test_non_pilot_agent_with_pilot_slug_denied(self, app, org_state):
-        """A non-pilot agent submitting a pilot slug is denied."""
+    def test_non_pilot_agent_can_create(self, app, org_state):
+        """Any verified agent can create (pilot policy superseded by originator enforcement)."""
         org_state.sessions.set_active("TASK-FP-4", "dev_agent", "sess-fp-004", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
             params={"session_id": "sess-fp-004"},
         )
-        assert r.status_code == 403
-        assert "not in the custom-skill pilot" in r.json()["detail"].get("detail", "")
+        assert r.status_code == 201, f"Any verified agent can create; got {r.status_code}"
 
     def test_legacy_dual_path_forbidden_for_agent(self, app, org_state):
         """The legacy /proposals route returns 403 for agent callers.
@@ -2186,7 +2151,7 @@ class TestBearerFreeTransport:
         assert "Authorization" not in client.headers or not client.headers.get("Authorization")
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-bf-001"},
         )
@@ -2273,7 +2238,7 @@ class TestCLIShippingSeam:
             org_slug="alpha",
         )
 
-        from cli.commands.skills import cmd_skills_propose
+        from cli.commands.skills import cmd_skills_create
         import argparse
         import json
         import tempfile
@@ -2285,7 +2250,7 @@ class TestCLIShippingSeam:
             "description": "End-to-end CLI test proposal",
             "skill_md": "# CLI Test Skill\n\n## Usage\n\nTest usage.\n",
             "version": "1.0.0",
-            "policy_class": "standard_operational",
+            "purpose": "E2E test",
         }
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8",
@@ -2309,7 +2274,7 @@ class TestCLIShippingSeam:
                     mock_port.return_value.read_text.return_value = "8888"
 
                     # The CLI function should succeed (doesn't sys.exit)
-                    cmd_skills_propose(args)
+                    cmd_skills_create(args)
 
             # Verify the proposal was actually stored
             from runtime.skills.lifecycle import stores as lifecycle_stores
@@ -2327,12 +2292,12 @@ class TestCLIShippingSeam:
             from pathlib import Path
             Path(proposal_path).unlink(missing_ok=True)
 
-    def test_cli_propose_denied_non_pilot(self, app, org_state):
-        """Non-pilot agent using CLI gets proper error exit."""
+    def test_cli_create_succeeds_for_any_agent(self, app, org_state):
+        """Any verified agent using CLI can create a skill (pilot policy superseded)."""
         org_state.sessions.set_active("TASK-CLI-2", "dev_agent", "sess-cli-002", org_slug='alpha')
 
         import pytest
-        from cli.commands.skills import cmd_skills_propose
+        from cli.commands.skills import cmd_skills_create
         import argparse
         import json
         import tempfile
@@ -2340,9 +2305,11 @@ class TestCLIShippingSeam:
 
         proposal = {
             "slug": "frontend-development",
-            "name": "Denied Proposal",
-            "description": "Should be denied",
+            "name": "Dev Agent Proposal",
+            "description": "Should succeed for any agent",
             "skill_md": "# Test\n",
+            "version": "1.0.0",
+            "purpose": "Test any agent create",
         }
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8",
@@ -2365,12 +2332,8 @@ class TestCLIShippingSeam:
                     mock_port.return_value.exists.return_value = True
                     mock_port.return_value.read_text.return_value = "8888"
 
-                    # The CLI function should exit with code 1
-                    with pytest.raises(SystemExit) as exc_info:
-                        cmd_skills_propose(args)
-                    assert exc_info.value.code == 1, (
-                        f"Expected exit code 1, got {exc_info.value.code}"
-                    )
+                    # The CLI function should succeed (doesn't sys.exit)
+                    cmd_skills_create(args)
         finally:
             from pathlib import Path
             Path(proposal_path).unlink(missing_ok=True)
@@ -2397,7 +2360,7 @@ class TestSessionClearRevocation:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-clr-001"},
         )
@@ -2415,7 +2378,7 @@ class TestSessionClearRevocation:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-clr-002"},
         )
@@ -2445,7 +2408,7 @@ class TestSessionClearRevocation:
 
         # Old session must be denied
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-old"},
         )
@@ -2466,7 +2429,7 @@ class TestSessionClearRevocation:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-old2"},
         )
@@ -2493,7 +2456,7 @@ class TestSessionClearRevocation:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-new3"},
         )
@@ -2514,7 +2477,7 @@ class TestSessionClearRevocation:
         )
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-bpm-fe"},
         )
@@ -2526,7 +2489,7 @@ class TestSessionClearRevocation:
             org_slug="alpha",
         )
         r2 = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={
                 **AGENT_PROPOSAL_BODY,
                 "slug": "product-manager-prd",
@@ -2536,9 +2499,8 @@ class TestSessionClearRevocation:
         )
         assert r2.status_code == 201, f"product_lead got {r2.status_code}"
 
-    def test_all_wrong_slug_branches_retained(self, app, org_state):
-        """Wrong-slug denials still work: frontend_engineer with
-        product-manager-prd, and product_lead with frontend-development."""
+    def test_all_slug_branches_still_work(self, app, org_state):
+        """Any agent can create any non-protected slug (pilot policy superseded)."""
         # frontend_engineer with product-manager-prd
         org_state.sessions.set_active(
             "TASK-WS-1", "frontend_engineer", "sess-ws-fe",
@@ -2546,50 +2508,37 @@ class TestSessionClearRevocation:
         )
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
             params={"session_id": "sess-ws-fe"},
         )
-        assert r.status_code == 403
-        assert "slug_not_allowed_for_agent" in r.json()["detail"].get("code", "")
+        assert r.status_code == 201, f"frontend_engineer with pm slug should work; got {r.status_code}"
 
-        # product_lead with frontend-development
+        # product_lead with frontend-development (a new slug for this agent)
         org_state.sessions.set_active(
             "TASK-WS-2", "product_lead", "sess-ws-pl",
             org_slug="alpha",
         )
         r2 = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            "/api/v1/orgs/alpha/skills/agent",
+            json={**AGENT_PROPOSAL_BODY, "slug": "frontend-development-v2"},
             params={"session_id": "sess-ws-pl"},
         )
-        assert r2.status_code == 403
-        assert "slug_not_allowed_for_agent" in r2.json()["detail"].get("code", "")
+        assert r2.status_code == 201, f"product_lead with new slug should work; got {r2.status_code}"
 
-    def test_non_pilot_denials_retained(self, app, org_state):
-        """Non-pilot agents still denied after fix."""
+    def test_non_pilot_agents_still_can_create(self, app, org_state):
+        """Non-pilot agents can still create skills (pilot policy superseded)."""
         org_state.sessions.set_active(
             "TASK-NP-1", "dev_agent", "sess-np-001",
             org_slug="alpha",
         )
         client = TestClient(app)
-
-        # With a pilot slug
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            "/api/v1/orgs/alpha/skills/agent",
+            json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-np-001"},
         )
-        assert r.status_code == 403
-        assert "not in the custom-skill pilot" in r.json()["detail"].get("detail", "")
-
-        # With the other slug
-        r2 = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
-            params={"session_id": "sess-np-001"},
-        )
-        assert r2.status_code == 403
+        assert r.status_code == 201, f"Any agent should be able to create; got {r.status_code}"
 
     def test_cross_org_denial_retained(self, app, org_state):
         """Cross-org session context denial still works."""
@@ -2601,7 +2550,7 @@ class TestSessionClearRevocation:
 
         # Correct org works
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-co-001"},
         )
@@ -2611,7 +2560,7 @@ class TestSessionClearRevocation:
         """Unknown/inactive/ambiguous session denial still works."""
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-noexist"},
         )
@@ -2644,7 +2593,7 @@ class TestSessionClearRevocation:
         )
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-cat-001"},
         )
@@ -2780,7 +2729,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-twin-c"},
                     )
@@ -2889,7 +2838,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-twin-old"},
                     )
@@ -2989,7 +2938,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-pwin-c"},
                     )
@@ -3217,7 +3166,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-pwin-old"},
                     )
@@ -3430,7 +3379,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-unrel-a"},
                     )
@@ -3491,7 +3440,7 @@ class TestProposalConcurrentClearRace:
             def run_proposal():
                 try:
                     r = client.post(
-                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        "/api/v1/orgs/alpha/skills/agent",
                         json=AGENT_PROPOSAL_BODY,
                         params={"session_id": "sess-unrel2-a"},
                     )
@@ -3540,7 +3489,7 @@ class TestProposalConcurrentClearRace:
         client = TestClient(app)
 
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-seq-001"},
         )
@@ -3568,7 +3517,7 @@ class TestProposalConcurrentClearRace:
 
         # New session works
         r = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-seq-new"},
         )
@@ -3578,7 +3527,7 @@ class TestProposalConcurrentClearRace:
 
         # Old session denied
         r2 = client.post(
-            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            "/api/v1/orgs/alpha/skills/agent",
             json=AGENT_PROPOSAL_BODY,
             params={"session_id": "sess-seq-old"},
         )

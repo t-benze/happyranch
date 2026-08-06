@@ -1512,6 +1512,7 @@ def skill_recover(
 # ══════════════════════════════════════════════════════════════════════════════
 
 from fastapi import Depends, Header, Body as RequestBody
+from pydantic import ConfigDict
 from runtime.daemon.auth import _check_optional_token
 from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
 from runtime.skills.system_contracts import SYSTEM_CONTRACTS as _SYSTEM_CONTRACTS
@@ -1528,9 +1529,34 @@ _AGENT_SKILL_PROHIBITED_KEYS: frozenset[str] = frozenset({
     "actor", "eligibility", "permission", "permissions",
 })
 
+# Extended prohibited set — also rejects unknown authority/config/eligibility fields
+_AGENT_SKILL_BROAD_REJECT: frozenset[str] = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+    "configuration", "config", "policy", "policies",
+    "assign", "assignment", "authority", "allow_rule",
+    "allow_rules", "executor", "model", "credential",
+    "credentials", "sandbox", "network", "filesystem",
+})
+
+
+def _check_any_bearer(
+    authorization: str | None = Header(default=None, include_in_schema=False),
+) -> bool:
+    """Return True iff ANY Authorization header is present, regardless of validity.
+
+    Agent-only routes reject the mere presence of a bearer token —
+    valid or invalid — because that path is exclusively session-binding.
+    This is stricter than _check_optional_token which only detects the
+    master token match.
+    """
+    return bool(authorization and authorization.startswith("Bearer "))
+
 
 class CreateSkillRequestBody(BaseModel):
     """Request body for agent create-skill submission."""
+    model_config = ConfigDict(extra="forbid")
     slug: str
     name: str
     description: str
@@ -1539,6 +1565,7 @@ class CreateSkillRequestBody(BaseModel):
     purpose: str = ""
     references: dict[str, str] | None = None
     assets: dict[str, str] | None = None
+
 
 
 def _build_protected_slugs() -> frozenset:
@@ -1553,14 +1580,13 @@ def _build_protected_slugs() -> frozenset:
         protected.add(sc.id)
     return frozenset(protected)
 
-
 @agent_skills_router.post("/skills/agent", status_code=201)
 def create_skill_agent_only(
     org: OrgDep,
     request: Request,
     body_raw: dict = RequestBody(..., description="Skill package (no identity/authority fields)"),
     session_id: str = Query(..., min_length=1),
-    has_bearer: bool = Depends(_check_optional_token),
+    has_bearer: bool = Depends(_check_any_bearer),
 ) -> dict:
     """Create a custom skill via opaque agent-session binding.
 
@@ -1569,37 +1595,51 @@ def create_skill_agent_only(
     independently derives org, agent, task, and session from the
     SessionTracker context.
 
-    Returns 401 for bearer token present, 403 for unknown/cross-org/
-    mismatched sessions, and 403 for any prohibited body key.
+    Returns 401 for ANY bearer token present (valid or invalid),
+    403 for unknown/cross-org/mismatched sessions,
+    and 403 for any prohibited body key. The request model uses
+    extra=forbid to reject unknown fields with zero side effects.
 
     The created skill is default-hidden. Eligibility is a separate
     Founder-only operation.
     """
-    # Reject bearer token — agent-session ONLY
+    # Reject ANY bearer token by presence (valid or invalid) — agent-session ONLY
     if has_bearer:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "code": "bearer_not_accepted",
                 "detail": "This route is for agent-session creation only. "
-                          "Use the web console for bearer-authenticated skill creation.",
+                          "Authorization bearer headers are not accepted.",
             },
         )
 
-    # Reject ANY prohibited body key BEFORE Pydantic parsing or persistence
-    for key in _AGENT_SKILL_PROHIBITED_KEYS:
+    # Scan for ANY prohibited body key (identity/authority/config/eligibility)
+    # BEFORE any parsing or persistence occurs — zero side effects.
+    for key in _AGENT_SKILL_BROAD_REJECT:
         if key in body_raw:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "code": "body_identity_rejected",
-                    "detail": f"{key} must not be set in the request body. "
-                              "Identity is derived from the server's verified session context.",
+                    "code": "body_field_rejected",
+                    "detail": f"'{key}' is not accepted in the request body. "
+                              "Identity, authority, and configuration are derived "
+                              "from the server's verified session context.",
                 },
             )
 
-    # Parse the sanitized body through Pydantic
-    body = CreateSkillRequestBody(**body_raw)
+    # Parse through strict Pydantic model (extra=forbid) — unknown fields
+    # cause a ValidationError before any side effects.
+    try:
+        body = CreateSkillRequestBody.model_validate(body_raw)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_request_body",
+                "detail": f"Request body validation failed: {exc}",
+            },
+        )
 
     # Resolve (org_slug, task_id, agent_name) from opaque session
     context = org.sessions.get_context_by_session(session_id)
@@ -1660,6 +1700,18 @@ def create_skill_agent_only(
         except Exception:
             pass  # Registry might not be available; system-contract slugs suffice
 
+        # Compute task brief digest for immutable provenance
+        import hashlib
+        brief_digest: str | None = None
+        try:
+            task_record = org.db.get_task(task_id)
+            if task_record and task_record.brief:
+                brief_digest = hashlib.sha256(
+                    task_record.brief.encode("utf-8")
+                ).hexdigest()
+        except Exception:
+            pass  # Non-critical provenance — don't block creation
+
         try:
             pkg = _create_skill_service.submit_proposal(
                 db=org.db,
@@ -1679,19 +1731,23 @@ def create_skill_agent_only(
                 target_agent_suggestion="",
                 protected_slugs=protected_slugs,
                 org_root=org.root,
+                brief_digest=brief_digest,
             )
         except LifecycleError as e:
             raise HTTPException(
                 status_code=e.status_code,
                 detail={"code": e.code, "detail": e.detail},
             )
-
     return {
         "skill_id": pkg.skill_id,
         "version_id": pkg.id,
         "version": pkg.version,
         "content_hash": pkg.content_hash,
         "policy_class": pkg.policy_class,
+        "status": pkg.status.value,
+        "proposal_task_id": task_id,
+        "proposer_agent": agent_name,
+        "content_artifact_key": pkg.content_artifact_key,
         "provenance": {
             "agent": agent_name,
             "task_id": task_id,

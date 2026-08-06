@@ -149,11 +149,16 @@ The `--from-file` JSON payload has this shape:
 The server:
 
 1. Derives org, agent, task, and session from your active SessionTracker context.
-2. Rejects any body field claiming identity, eligibility, or permissions.
-3. Validates the package deterministically.
-4. Creates or appends a version for your custom skill.
-5. Returns `skill_id`, `version_id`, `version`, `content_hash`, and provenance.
-
+2. Rejects ANY Authorization bearer header by its presence (valid or invalid).
+3. Rejects all unknown and prohibited identity/authority/configuration fields
+   before any persistence occurs (extra=forbid, zero side effects).
+4. Enforces originator-based ownership: only the original creating agent may
+   append a new version to an existing custom skill.
+5. Scans guidance content for prohibited capability claims.
+6. Validates the package deterministically.
+7. Records immutable provenance: content hash, validator version, findings,
+   verified source org/task/session/agent, and source task brief digest.
+8. Returns `skill_id`, `version_id`, `version`, `content_hash`, and provenance.
 ## After submission
 
 - The skill appears in the web console as a custom skill with your provenance.

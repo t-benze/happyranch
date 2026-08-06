@@ -9,7 +9,7 @@ Commands:
   skills catalog validate   — validate registry + eligibility policy
   skills effective          — show effective skills for an agent
   skills policy explain     — explain why a skill is/isn't available
-  skills propose            — submit a custom-skill proposal (agent-only)
+  skills create             — create a custom skill from an active task (agent-only, session-bound)
 """
 
 from __future__ import annotations
@@ -589,22 +589,25 @@ def _fmt_pc(pc) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Command: skills propose --from-file <path> --session-id <session-id>
+# Command: skills create --from-file <path> --session-id <session-id>
 # ---------------------------------------------------------------------------
 
-def cmd_skills_propose(args: argparse.Namespace) -> None:
-    """Submit a custom-skill proposal via the agent-only session-bound route.
+def cmd_skills_create(args: argparse.Namespace) -> None:
+    """Create a custom skill via the agent-only session-bound route.
 
     Agent callers must supply only their opaque active session ID — the
     server derives org, task_id, and agent_name from the SessionTracker
-    context. The proposal file must contain only package metadata/content
-    (slug, name, description, skill_md, version, policy_class, references,
-    assets, purpose, target_agent_suggestion). It must NOT contain org,
-    agent, task, session, proposer_agent, eligibility, or permission
-    identity — any such fields are rejected by the server.
+    context. The payload file must contain only package metadata/content
+    (slug, name, description, skill_md, version, references, assets,
+    purpose). It must NOT contain org, agent, task, session,
+    proposer_agent, eligibility, permission, configuration, or authority
+    fields — any such fields are rejected by the server with no side effects.
 
     This command does NOT send the master bearer token; it uses the
-    session-binding authentication path exclusively.
+    session-binding authentication path exclusively. The single-line
+    invocation is suitable for agent guidance:
+
+        happyranch skills create --from-file /tmp/skill-payload.json --session-id <session-id>
     """
     if not args.from_file:
         print("error: --from-file <path> is required", file=sys.stderr)
@@ -613,23 +616,26 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
         print("error: --session-id <session-id> is required", file=sys.stderr)
         sys.exit(1)
 
-    # Read proposal file
+    # Read payload file
     try:
         body = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"Error reading proposal file {args.from_file}: {exc}", file=sys.stderr)
+        print(f"Error reading payload file {args.from_file}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Reject forbidden identity fields in the proposal body
+    # Reject forbidden identity/authority fields in the payload body
     forbidden = {"org", "agent", "agent_name", "task_id", "task",
                  "session_id", "session", "proposer_agent", "proposer",
-                 "actor", "eligibility", "permission", "identity"}
+                 "actor", "eligibility", "permission", "identity",
+                 "configuration", "config", "authority", "allow_rule",
+                 "allow_rules", "executor", "model", "credential",
+                 "credentials", "sandbox", "network", "filesystem"}
     for key in forbidden:
         if key in body:
             print(
-                f"error: proposal file must not contain identity field '{key}'. "
-                f"Org, agent, task, and session identity are derived from the "
-                f"server's verified session context.",
+                f"error: payload file must not contain '{key}'. "
+                f"Org, agent, task, session identity and authority are "
+                f"derived from the server's verified session context.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -664,28 +670,32 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
     org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
 
     resp = token_free_client.post(
-        f"/api/v1/orgs/{org}/skill-lifecycle/proposals/agent",
+        f"/api/v1/orgs/{org}/skills/agent",
         json=body,
         params={"session_id": args.session_id},
     )
 
     if resp.status_code == 201:
         result = resp.json()
-        print(f"Proposal submitted successfully.")
-        print(f"  skill_id:  {result['skill_id']}")
-        print(f"  version_id: {result['version_id']}")
-        print(f"  version:   {result['version']}")
-        print(f"  status:    {result['status']}")
+        print(f"Custom skill created successfully.")
+        print(f"  skill_id:     {result['skill_id']}")
+        print(f"  version_id:   {result['version_id']}")
+        print(f"  version:      {result['version']}")
         print(f"  content_hash: {result['content_hash']}")
-        if result.get("content_artifact_key"):
-            print(f"  artifact:  {result['content_artifact_key']}")
+        print(f"  policy_class: {result['policy_class']}")
+        prov = result.get("provenance", {})
+        if prov:
+            print(f"  provenance:")
+            print(f"    agent:       {prov.get('agent', '')}")
+            print(f"    task_id:     {prov.get('task_id', '')}")
+            print(f"    session_id:  {prov.get('session_id', '')}")
+            print(f"    org:         {prov.get('org', '')}")
         print()
-        print("This proposal is now visible to the founder for review and publication.")
+        print("This skill is default-hidden. The Founder configures eligibility separately.")
     else:
         detail = resp.json().get("detail", resp.text)
         print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
         sys.exit(1)
-
 
 # ---------------------------------------------------------------------------
 # Command: skills recover <slug> <version> <content_hash>
@@ -857,21 +867,21 @@ def register(sub) -> None:
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
     p_exp.set_defaults(func=cmd_skills_policy_explain)
 
-    # --- skills propose --from-file <path> --session-id <session-id> ---
-    p_propose = skills_sub.add_parser(
-        "propose",
-        help="Submit a custom-skill proposal (agent-only, session-bound)",
+    # --- skills create --from-file <path> --session-id <session-id> ---
+    p_create = skills_sub.add_parser(
+        "create",
+        help="Create a custom skill from an active task (agent-only, session-bound)",
     )
-    p_propose.add_argument(
+    p_create.add_argument(
         "--from-file", dest="from_file", required=True,
-        help="Path to proposal JSON file (package metadata/content only)",
+        help="Path to JSON payload file (package metadata/content only)",
     )
-    p_propose.add_argument(
+    p_create.add_argument(
         "--session-id", dest="session_id", required=True,
         help="Opaque active session ID (from task context)",
     )
-    p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
-    p_propose.set_defaults(func=cmd_skills_propose)
+    p_create.add_argument("--org", help="Org slug (default: auto-detect)")
+    p_create.set_defaults(func=cmd_skills_create)
 
     # --- skills recover <slug> <version> <content_hash> ---
     p_recover = skills_sub.add_parser(

@@ -779,34 +779,31 @@ states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 **Agent authority.** Agents may submit proposals ONLY through the dedicated
 agent-only route. The legacy dual-auth path is human/founder-only:
 
-1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
-   authoring workflow: ``happyranch skills propose --from-file <proposal.json>
-   --session-id <session-id> [--org <slug>]``. The proposal file contains only
-   package metadata/content accepted by ``ProposalRequest`` (slug, name,
-   description, skill_md, version, policy_class, references, assets, purpose,
-   target_agent_suggestion). It must NOT contain any client-controlled
+1. **Opaque session CLI (THR-055 B1-R1).** The single safe agent
+   authoring workflow: ``happyranch skills create --from-file <payload.json>
+   --session-id <session-id> [--org <slug>]``. The payload file contains only
+   package metadata/content accepted by ``CreateSkillRequestBody`` (slug, name,
+   description, skill_md, version, references, assets, purpose).
+   It must NOT contain any client-controlled
    trusted identity/authority field: ``org``, ``org_slug``, ``agent``,
    ``agent_name``, ``task_id``, ``session_id``, ``proposer_agent``,
-   ``actor``, ``eligibility``, ``permission``, or ``permissions``.
+   ``actor``, ``eligibility``, ``permission``, ``permissions``,
+   ``configuration``, ``config``, ``authority``, ``allow_rule``,
+   ``allow_rules``, ``executor``, ``model``, ``credential``,
+   ``credentials``, ``sandbox``, ``network``, ``filesystem``.
    The CLI builds a
    token-free transport (no bearer token read or sent) using only the daemon
    port. It resolves org via the established ``resolve_org_slug(args_org=,
    available=)`` convention. The opaque session ID is sent to
-   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
-   accept the master bearer token. The server independently derives all four
+   ``POST /api/v1/orgs/{slug}/skills/agent``, which does NOT
+   accept ANY bearer token (valid or invalid). The server independently derives all four
    identity dimensions (org_slug, task_id, agent_name, active session_id) from
    the SessionTracker's additive context index — never from body, query,
    environment, task lookup by agent, team membership, or client-asserted
-   identity. The server rejects the **presence** of every client-controlled
-   trusted identity/authority field in the direct HTTP body — ``task_id``,
-   ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
-   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
-   ``permissions`` — before request-model parsing, session lookup, policy
-   checks, or any persistence. Presence includes empty values. Rejection
-   returns exact HTTP 403 with error code ``body_identity_rejected``; no
-   lifecycle package, event, materialization, or ArtifactStore residue is
-   produced. Path-selected org is cross-checked against the session's
-   org; cross-org and mismatched contexts are denied.
+   identity. The server rejects the **presence** of all prohibited
+   identity/authority/configuration fields before Pydantic parsing,
+   session lookup, policy checks, or any persistence. The Pydantic model
+   uses ``extra='forbid'`` to reject unknown fields with zero side effects.
 
 2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
    is restricted to bearer-authenticated human/founder callers. Non-bearer

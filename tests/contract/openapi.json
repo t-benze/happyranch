@@ -2456,10 +2456,6 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "session_id",
             "query"
           ],

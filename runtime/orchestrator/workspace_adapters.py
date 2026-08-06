@@ -1914,7 +1914,7 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "If a skill's content is wrong or a new skill is needed, propose the",
         "change through the skill lifecycle instead of editing files directly:",
         "```",
-        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
+        "happyranch skills create --from-file <path> --session-id <your-session-id>",
         "```\n",
     ]
 
