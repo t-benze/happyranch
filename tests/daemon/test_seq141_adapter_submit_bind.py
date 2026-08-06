@@ -220,8 +220,10 @@ class TestSubmitAuthIsolation:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["id"] == "test-cli-adapter"
-        assert data["status"] == "pending"
+        assert data["status"] == "approved"
         assert data["intended_profile_name"] == "test-cli"
+        # seq363: scoped submission directly connects — eligibility is already_bound
+        assert data.get("eligibility") == "already_bound"
 
     def test_master_token_rejected_on_submit(self, app_and_client, route_setup, token_store):
         """Master bearer is rejected by the registration-token dependency."""
@@ -351,9 +353,9 @@ class TestSubmitGating:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "pending"
-        assert data["approved_at"] is None
-        assert data["approved_by"] is None
+        assert data["status"] == "approved"
+        assert data["approved_at"] is not None  # seq363: auto-approved
+        assert data["approved_by"] is not None
 
     def test_submission_cannot_bind(self, app_and_client, route_setup, token_store):
         """Submission token cannot call bind-profile."""
@@ -555,17 +557,22 @@ class TestBindGating:
     def test_pending_adapter_bind_rejected(self, app_and_client, route_setup, token_store):
         """Bind to a PENDING (not-yet-approved) adapter is rejected."""
         app, master_token, store = app_and_client
-        token = _mint_adapter_token(store, "pending-cli")
+        # Use register_custom_adapter directly to get a PENDING adapter.
+        # Scoped submission now auto-approves via seq363, so it cannot be used
+        # to create PENDING-only entries from the normal Connect path.
         script = _make_conformant_adapter_script(route_setup, "pending-cli-adapter")
-
-        c = TestClient(app)
-        resp = c.post(
-            "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
-            headers={"Authorization": f"Bearer {token}"},
+        from runtime.orchestrator.custom_adapter_registry import register_custom_adapter
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+            workspace_adapter="pi",
+            registered_by="test",
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(script), "sha256": compute_sha256(str(script))}],
         )
-        assert resp.status_code == 200
-        adapter_id = resp.json()["id"]
+        adapter_id = entry.id
+        assert entry.status == "pending"
 
         # Bind without approval
         mc = self._master_client(app, master_token)
@@ -608,11 +615,12 @@ class TestBindGating:
         assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
 
     def test_builtin_collision_bind_rejected(self, app_and_client, route_setup, token_store):
-        """Approve (seq237 auto-bind) rejects built-in profile name collision.
+        """Submit with built-in profile name fails at auto-connect (seq363).
 
-        THR-107 seq237: the approve endpoint now atomically approves AND binds
-        the intended profile. A builtin-colliding intended_profile_name
-        causes the binding to fail, and the approval is rolled back to PENDING.
+        THR-107 seq363: the scoped submission now auto-approves and auto-binds.
+        A builtin-colliding intended_profile_name causes the binding to fail,
+        and the approval is rolled back — the adapter remains PENDING and the
+        token is released for retry.
         """
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "codex")
@@ -624,45 +632,31 @@ class TestBindGating:
             json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
+        # seq363: auto-connect fails because "codex" is a built-in profile name
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        detail = resp.json().get("detail", "")
+        assert "built-in" in str(detail).lower() or "collides" in str(detail).lower()
+
+        # Adapter remains PENDING after the failed auto-connect rollback.
+        # register_custom_adapter wrote a PENDING entry; approve_adapter rolled
+        # back to PENDING when the auto-bind failed.
+        scoped_adapter_id = "codex-adapter"
+        mc = self._master_client(app, master_token)
+        resp = mc.get(f"/api/v1/runtime/adapters/{scoped_adapter_id}")
         assert resp.status_code == 200
         data = resp.json()
-        adapter_id = data["id"]
-
-        # Approve (seq237: auto-bind with builtin collision → rollback)
-        mc = self._master_client(app, master_token)
-        resp = mc.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json=_approval_snapshot(data),
-        )
-        # Approval auto-binds but builtin collision causes rollback → 422
-        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-        detail = resp.json()["detail"]
-        assert "built-in" in detail.lower() or "collides" in detail.lower()
-
-        # Adapter remains PENDING after rollback
-        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "pending"
+        assert data["status"] == "pending"
 
         # seq244: dependency manifest MUST be preserved through the
-        # failed-auto-bind rollback — the durable identity facts are
-        # immutable until the founder explicitly re-registers.
-        assert resp.json()["dependency_manifest_version"] == 1, (
-            "dependency_manifest_version must survive failed-auto-bind rollback"
+        # failed-auto-connect rollback.
+        assert data["dependency_manifest_version"] == 1, (
+            "dependency_manifest_version must survive failed-auto-connect rollback"
         )
-        assert isinstance(resp.json()["dependencies"], list), (
-            "dependencies must survive failed-auto-bind rollback as a list"
-        )
-        assert len(resp.json()["dependencies"]) == 1, (
-            "dependencies list must preserve exact record count after rollback"
-        )
-        dep = resp.json()["dependencies"][0]
-        assert dep["executable"] == str(script), (
-            "dependency executable path must be preserved through rollback"
-        )
-        assert dep["sha256"] == compute_sha256(str(script)), (
-            "dependency SHA-256 must be preserved through rollback"
-        )
+        assert isinstance(data["dependencies"], list)
+        assert len(data["dependencies"]) == 1
+        dep = data["dependencies"][0]
+        assert dep["executable"] == str(script)
+        assert dep["sha256"] == compute_sha256(str(script))
 
     def test_rollback_manifest_preserves_re_registration_guard(self, app_and_client,
                                                                 route_setup, token_store):
@@ -2199,7 +2193,8 @@ class TestSubmitStrictManifestVersion:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["dependency_manifest_version"] == 1
-        assert data["status"] == "pending"
+        assert data["status"] == "approved"  # seq363: auto-connect
+        assert data.get("eligibility") == "already_bound"
         spy.assert_called_once()
         adapters = load_adapters()
         assert len(adapters) == 1

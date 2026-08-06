@@ -377,11 +377,11 @@ export function buildAdapterConnectPrompt(
     `#    absolute path + SHA-256 with normal absolute-path validation`,
     `#    (no location constraint).`,
     ``,
-    `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
-    `# is a separate, Settings-only step. When the founder approves, the`,
-    `# server atomically approves AND connects the "${name}" profile — one`,
-    `# action, no follow-up bind needed.`,
-    `# No auto-approval, no token disclosure beyond this prompt.`,
+    `# Submission directly registers and connects — the server atomically`,
+    `# validates identity, conformance, path, and dependency facts, then`,
+    `# creates and binds the "${name}" profile in a single step.`,
+    `# When you see Connected on this screen the token is consumed.`,
+    `# No founder approval wait, no separate bind action needed.`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live.`,
   ].join('\n');
@@ -394,13 +394,12 @@ export type AdapterState =
   | { stage: 'submitted'; name: string; adapterId: string; status: string }
   | { stage: 'connected'; name: string; adapterId: string };
 
-/** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
+/** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq363).
  *  Mints an adapter-purpose token → fetches contract reference to obtain
  *  the literal server-derived ``required_executable_path`` → CLI
- *  creates/submits v1 adapter wrapper → UI polls adapter status →
- *  Connected when server reports already_bound.  Normal intended-profile
- *  approval is atomic (seq237): the server approves and connects in one
- *  transaction — no client-side bind. */
+ *  creates/submits v1 adapter wrapper → server atomically registers,
+ *  approves, and binds the profile in a single transaction → Connected.
+ *  No PENDING approval wait, no founder action, no client-side bind. */
 export function useAdapterConnect({
   onConnected,
 }: {
@@ -472,24 +471,13 @@ export function useAdapterConnect({
     refetchInterval: pollEnabled && adapterIdForPoll !== '' ? 2500 : false,
   });
 
-  // Transition: waiting → submitted when adapter appears as PENDING
-  useEffect(() => {
-    if (state.stage !== 'waiting' || 'expired' in state && state.expired) return;
-    if (adapterEntry && adapterEntry.status === 'pending') {
-      setState({
-        stage: 'submitted',
-        name,
-        adapterId: adapterIdForPoll,
-        status: adapterEntry.status,
-      });
-    }
-  }, [adapterEntry, state.stage, name, adapterIdForPoll]);
-
-  // Transition: submitted → connected when server confirms atomically bound.
-  // No client-side bind — approval is an atomic server transaction (seq237).
+  // Transition: waiting → connected when server confirms the adapter is
+  // approved and the profile is bound (seq363 direct register-and-connect).
+  // The scoped submission is a single coherent server transaction — no
+  // PENDING intermediate state, no founder approval wait, no client bind.
   // The server-authoritative ``eligibility`` value is the single source of truth.
   useEffect(() => {
-    if (state.stage !== 'submitted') return;
+    if (state.stage !== 'waiting' || ('expired' in state && state.expired)) return;
     if (adapterEntry && adapterEntry.eligibility === 'already_bound') {
       setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
       onConnected({ name, path: null, via: 'custom' });

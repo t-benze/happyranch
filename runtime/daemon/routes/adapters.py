@@ -833,31 +833,40 @@ def submit_adapter(
     request: Request,
     body: AdapterSubmitRequest,
 ) -> AdapterEntryResponse:
-    """Submit a custom adapter executable via a scoped registration token.
+    """Submit and directly connect a custom adapter via a scoped token.
 
     Loopback-only, registration-token-scoped adapter submission endpoint
-    (THR-107 seq141). The candidate CLI submits its v1 adapter wrapper
-    executable for a specific intended profile.
+    (THR-107 seq141 + seq363). The candidate CLI submits its v1 adapter
+    wrapper executable for a specific intended profile.
+
+    **seq363**: The scoped submission is a production-seam direct
+    register-and-connect transaction.  After validating all
+    identity/conformance/path/dependency/profile facts, the server
+    atomically creates the adapter, approves it, and binds the intended
+    custom profile — all in a single coherent step.  The normal
+    user-visible result is Connected (eligibility: already_bound), with
+    no PENDING approval wait, approve action, or separate bind action.
+
+    Idempotent only for the same durable snapshot/profile binding:
+    a repeat submission of an already-connected adapter returns the
+    existing connected state without consuming the token.  Incompatible
+    replays/conflicts fail closed.
 
     Gating checks (exact order, every rejection returns 422 with a
     concrete error detail):
-    1. Request is loopback (127.0.0.1, ::1, localhost)
-       (checked by require_registration_token dependency)
-    2. Token is a valid ``hrreg_`` runtime registration token
-       (checked by require_registration_token dependency)
+    1. Request is loopback (checked by require_registration_token)
+    2. Valid ``hrreg_`` runtime registration token (same dependency)
     3. Token purpose is exactly ``'adapter'``
     4. Token's intended_profile_name is present and non-empty
     5. Conformance challenge is complete
     6. Server-derived adapter id (``<profile>-adapter``) is computed
-       — the candidate request MUST NOT choose a different target
-    7. The submission creates/re-registers ONLY that exact adapter,
-       ONLY as PENDING
+    7. Body.executable matches the server-owned canonical path exactly
 
     The token is consumed on success. On any failure the token is
     released so it remains retryable (within TTL boundaries).
 
-    Never approves, resolves, launches, binds a profile, or accepts
-    master bearer as an alternative.
+    Compatible with existing PENDING/APPROVED/bound records — never
+    silently deletes, upgrades, rebinds, or auto-launches legacy records.
     """
     # Extract raw token from Authorization header
     raw_token = _extract_registration_token(request)
@@ -992,6 +1001,32 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
+    # 7. Check if adapter+profile is already connected (idempotent replay).
+    #    When the same durable snapshot already produced a connected profile,
+    #    return the connected state without re-registering.
+    from runtime.orchestrator.custom_adapter_registry import _find_active_profile_bound
+    from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+    already_bound = _find_active_profile_bound(
+        scoped_adapter_id, load_runtime_profiles()
+    )
+    if already_bound is not None:
+        existing = get_adapter(scoped_adapter_id)
+        if existing is not None and existing.status == "approved":
+            # Idempotent replay: adapter is already connected.
+            # Do NOT consume the token — return the existing connected state.
+            return _entry_to_response(existing)
+        # Bound but adapter missing or not approved — release lock, allow retry
+        store.release_runtime(raw_token)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Profile {already_bound!r} is bound to adapter "
+                f"{scoped_adapter_id!r} but the adapter entry is "
+                f"missing or not approved. Remove the profile first "
+                f"(Settings → Executors → Custom CLIs) then retry."
+            ),
+        )
+
     try:
         entry = register_custom_adapter(
             executable=body.executable,
@@ -1002,6 +1037,24 @@ def submit_adapter(
             intended_profile_name=intended_profile,
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
+        )
+        # seq363: The scoped submission does the full register-and-connect
+        # transaction — immediately approve the adapter and bind the intended
+        # profile in a single coherent server step.  No separate founder
+        # approval or client-side bind is needed.  The normal user-visible
+        # result is Connected (eligibility: already_bound).
+        approved_entry = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            approved_by=f"adapter-submission:{intended_profile}",
+            auto_bind_profile=True,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
         )
     except ValueError as exc:
         # Release the token on failure so it remains retryable
@@ -1014,7 +1067,7 @@ def submit_adapter(
     # Consume the token permanently on success
     store.commit_runtime(raw_token)
 
-    return _entry_to_response(entry)
+    return _entry_to_response(approved_entry)
 
 
 # ---------------------------------------------------------------------------
