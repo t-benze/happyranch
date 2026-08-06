@@ -36,6 +36,7 @@ logs/
 # Claude
 .claude/worktrees
 .claude/settings.local.json
+.worktree-guard.json
 .worktrees
 
 # Tool scratch dirs
