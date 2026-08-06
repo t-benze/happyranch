@@ -617,10 +617,11 @@ class TestBindGating:
     def test_builtin_collision_bind_rejected(self, app_and_client, route_setup, token_store):
         """Submit with built-in profile name fails at auto-connect (seq363).
 
-        THR-107 seq363: the scoped submission now auto-approves and auto-binds.
-        A builtin-colliding intended_profile_name causes the binding to fail,
-        and the approval is rolled back — the adapter remains PENDING and the
-        token is released for retry.
+        THR-107 seq363: the scoped submission uses the unified atomic
+        submit_and_connect transaction. A builtin-colliding
+        intended_profile_name causes the binding to fail, and FULL
+        compensation restores the complete pre-request state — no adapter
+        entry, no profile residue. The token is released for retry.
         """
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "codex")
@@ -632,95 +633,75 @@ class TestBindGating:
             json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
-        # seq363: auto-connect fails because "codex" is a built-in profile name
         assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
         detail = resp.json().get("detail", "")
         assert "built-in" in str(detail).lower() or "collides" in str(detail).lower()
 
-        # Adapter remains PENDING after the failed auto-connect rollback.
-        # register_custom_adapter wrote a PENDING entry; approve_adapter rolled
-        # back to PENDING when the auto-bind failed.
         scoped_adapter_id = "codex-adapter"
         mc = self._master_client(app, master_token)
         resp = mc.get(f"/api/v1/runtime/adapters/{scoped_adapter_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "pending"
-
-        # seq244: dependency manifest MUST be preserved through the
-        # failed-auto-connect rollback.
-        assert data["dependency_manifest_version"] == 1, (
-            "dependency_manifest_version must survive failed-auto-connect rollback"
+        assert resp.status_code == 404, (
+            f"Expected 404 (adapter fully compensated), got {resp.status_code}"
         )
-        assert isinstance(data["dependencies"], list)
-        assert len(data["dependencies"]) == 1
-        dep = data["dependencies"][0]
-        assert dep["executable"] == str(script)
-        assert dep["sha256"] == compute_sha256(str(script))
+        assert store.validate_runtime(token) is not None
 
     def test_rollback_manifest_preserves_re_registration_guard(self, app_and_client,
                                                                 route_setup, token_store):
-        """Re-registration after failed-auto-bind rollback honours the fresh
-        manifest identity — a re-submit without dependency_manifest_version is
-        rejected (not silently treated as legacy).
+        """Submit with builtin-colliding name fails atomically with full compensation.
+
+        THR-107 seq363: submit directly connects in one transaction. A
+        builtin-colliding profile name causes the submit to fail with full
+        compensation — no adapter entry, no profile residue. The token is
+        released for retry. A subsequent re-submit without a required
+        dependency_manifest_version is rejected at the Pydantic validation
+        layer (before any durable work).
         """
         app, master_token, store = app_and_client
+        # "codex" is a builtin executor name — auto-bind MUST fail
         token = _mint_adapter_token(store, "codex")
         script = _make_conformant_adapter_script(route_setup, "codex-adapter")
 
         c = TestClient(app)
-        # 1) Submit with strict manifest
+        # 1) Submit with strict manifest — fails because "codex" collides with builtin
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
             json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        adapter_id = data["id"]
-        original_manifest_version = data["dependency_manifest_version"]
-        original_deps = data["dependencies"]
+        # Builtin collision causes submit to fail with full compensation
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        detail = resp.json().get("detail", "")
+        assert "built-in" in str(detail).lower() or "collides" in str(detail).lower()
 
-        # 2) Approve → auto-bind collision → rollback to PENDING
+        # 2) Full compensation: no adapter entry at all
+        scoped_adapter_id = "codex-adapter"
         mc = self._master_client(app, master_token)
-        resp = mc.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json=_approval_snapshot(data),
+        resp = mc.get(f"/api/v1/runtime/adapters/{scoped_adapter_id}")
+        assert resp.status_code == 404, (
+            f"Expected 404 (adapter fully compensated), got {resp.status_code}"
         )
-        assert resp.status_code == 422
 
-        # 3) Verify rollback preserved manifest
-        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "pending"
-        assert resp.json()["dependency_manifest_version"] == original_manifest_version
-        assert resp.json()["dependencies"] == original_deps
+        # 3) Token remains retryable (not consumed)
+        assert store.validate_runtime(token) is not None
 
-        # 4) Re-register the SAME adapter identity WITHOUT a dependency
-        #    manifest — this must be REJECTED (422), proving the adapter
-        #    is still treated as a fresh-manifest identity, not silently
-        #    reclassed as legacy.
-        new_token = _mint_adapter_token(store, "codex2")
+        # 4) Re-submit with a non-builtin profile but WITHOUT a dependency
+        #    manifest — this must be REJECTED (422) at the Pydantic validation
+        #    layer, proving the seq244 manifest requirement is enforced.
+        new_token = _mint_adapter_token(store, "valid-cli")
+        new_script = _make_conformant_adapter_script(route_setup, "valid-cli-adapter")
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(new_script), "version": "1.0.0"},
             headers={"Authorization": f"Bearer {new_token}"},
         )
         assert resp.status_code == 422, (
-            f"Expected 422 for re-registration without manifest, got {resp.status_code}"
+            f"Expected 422 for re-submission without manifest, got {resp.status_code}"
         )
         detail = resp.json()["detail"]
-        # Pydantic validation errors may return detail as a list of objects
         detail_str = str(detail).lower()
         assert "dependency_manifest_version" in detail_str or (
             "manifest" in detail_str
         ), f"Rejection should reference manifest: {detail}"
-
-        # 5) Verify the existing PENDING adapter remains untouched
-        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
-        assert resp.status_code == 200
-        assert resp.json()["dependency_manifest_version"] == original_manifest_version
-        assert resp.json()["dependencies"] == original_deps
 
 
 # ---------------------------------------------------------------------------
@@ -870,7 +851,7 @@ class TestRaceSafety:
         """
         app, master_token, store = app_and_client
         profile_name = "rereg-race-cli"
-        adapter_id = self._submit_and_approve_static(app, master_token, store, route_setup, profile_name)
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name)
 
         # Verify the adapter is APPROVED and profile is bound
         mc = self._master_client(app, master_token)
@@ -896,9 +877,9 @@ class TestRaceSafety:
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
-        # Re-registration is blocked because profile is bound to the adapter
-        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-        assert "currently bound" in resp.json()["detail"].lower() or "profile" in resp.json()["detail"].lower()
+        # Re-submit with same snapshot returns 200 (idempotent, already_bound)
+        assert resp.status_code == 200, f"Expected 200 for idempotent replay, got {resp.status_code}: {resp.text}"
+        assert "already_bound" in resp.json().get("eligibility", "")
 
         # Bind is idempotent (profile already bound, replace_custom_profile succeeds)
         resp = mc.post(
@@ -909,7 +890,8 @@ class TestRaceSafety:
         assert resp.json()["status"] == "connected"
 
     @staticmethod
-    def _submit_and_approve_static(app, master_token, store, route_setup, profile_name):
+    def _submit_and_connect(app, store, route_setup, profile_name):
+        """Submit and connect in one atomic step (seq363). Returns adapter_id."""
         token = _mint_adapter_token(store, profile_name)
         script = _make_conformant_adapter_script(route_setup, f"{profile_name}-adapter")
 
@@ -919,16 +901,10 @@ class TestRaceSafety:
             json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == 200, f"Submit failed: {resp.text}"
         data = resp.json()
-        adapter_id = data["id"]
-        c.headers.update({"Authorization": f"Bearer {master_token}"})
-        resp = c.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json=_approval_snapshot(data),
-        )
-        assert resp.status_code == 200, resp.text
-        return adapter_id
+        assert data["eligibility"] == "already_bound", f"Expected already_bound: {data}"
+        return data["id"]
 
     def test_bind_first_then_re_register_rejected(
         self, app_and_client, route_setup, token_store, monkeypatch
@@ -943,8 +919,7 @@ class TestRaceSafety:
         both rejected with clear errors."""
         app, master_token, store = app_and_client
         profile_name = "bind-first-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name
         )
 
         adapter_entry = load_adapters().get(adapter_id)
@@ -972,8 +947,8 @@ class TestRaceSafety:
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
-        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-        assert "currently bound" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, f"Expected 200 for idempotent re-submit, got {resp.status_code}: {resp.text}"
+        assert "already_bound" in str(resp.json().get("eligibility", ""))
 
         # Bind is idempotent (profile already bound)
         resp = mc.post(
@@ -1006,8 +981,7 @@ class TestRaceSafety:
         Final state: approved adapter + bound profile."""
         app, master_token, store = app_and_client
         profile_name = "rereg-first-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name
         )
 
         adapter_entry = load_adapters().get(adapter_id)
@@ -1035,8 +1009,8 @@ class TestRaceSafety:
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
-        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-        assert "currently bound" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, f"Expected 200 for idempotent re-submit, got {resp.status_code}: {resp.text}"
+        assert "already_bound" in str(resp.json().get("eligibility", ""))
 
         # Bind is idempotent (profile already bound)
         resp = mc.post(
@@ -1092,11 +1066,11 @@ class TestRaceSafety:
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
                 json=_approval_snapshot(data),
             )
-            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-            # Adapter back to PENDING
+            assert resp.status_code == 200, f"Expected 200 (idempotent re-approve after auto-connect), got {resp.status_code}: {resp.text}"
+            # Adapter already approved by submit (idempotent)
             re_read = load_adapters().get(adapter_id)
-            assert re_read is not None and re_read.status == "pending"
-            # No profile residue
+            assert re_read is not None and re_read.status == "approved"
+            # Profile already bound
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
                 assert post_profiles[profile_name] == pre_profiles.get(profile_name)
@@ -1151,9 +1125,9 @@ class TestRaceSafety:
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
                 json=_approval_snapshot(data),
             )
-            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 200, f"Expected 200 (idempotent re-approve after auto-connect), got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
-            assert re_read is not None and re_read.status == "pending"
+            assert re_read is not None and re_read.status == "approved"
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
                 assert post_profiles[profile_name] == pre_profiles.get(profile_name)
@@ -1174,8 +1148,7 @@ class TestRaceSafety:
         (submit) is rejected because a runtime profile is already bound."""
         app, master_token, store = app_and_client
         profile_name = "bound-rereg-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name
         )
 
         # Profile is already bound (seq237 auto-bind during approval)
@@ -1206,13 +1179,11 @@ class TestRaceSafety:
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
-        assert resp.status_code == 422, (
-            f"Expected 422 for re-registration with bound profile, "
+        assert resp.status_code == 200, (
+            f"Expected 200 for idempotent re-submit, "
             f"got {resp.status_code}: {resp.text}"
         )
-        detail = resp.json()["detail"]
-        assert "bound" in detail.lower() or "profile" in detail.lower()
-        assert adapter_id in detail
+        assert "already_bound" in str(resp.json().get("eligibility", ""))
 
         # Adapter must remain APPROVED after rejected re-registration.
         re_read = load_adapters().get(adapter_id)
@@ -1257,9 +1228,9 @@ class TestRaceSafety:
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
                 json=_approval_snapshot(data),
             )
-            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 200, f"Expected 200 (idempotent re-approve after auto-connect), got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
-            assert re_read is not None and re_read.status == "pending"
+            assert re_read is not None and re_read.status == "approved"
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
                 assert post_profiles[profile_name] == pre_profiles.get(profile_name)
@@ -1290,8 +1261,7 @@ class TestRaceSafety:
 
         app, master_token, store = app_and_client
         profile_name = "legacy-upgrade-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name
         )
 
         # Load the approved adapter entry for exact workspace_adapter assertions.
@@ -1444,9 +1414,9 @@ class TestRaceSafety:
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
                 json=_approval_snapshot(data),
             )
-            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 200, f"Expected 200 (idempotent re-approve after auto-connect), got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
-            assert re_read is not None and re_read.status == "pending"
+            assert re_read is not None and re_read.status == "approved"
             post_profiles_a = load_runtime_profiles()
             if profile_name in post_profiles_a:
                 assert post_profiles_a[profile_name] == pre_profiles_a.get(profile_name)
@@ -1479,9 +1449,9 @@ class TestRaceSafety:
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
                 json=_approval_snapshot(data),
             )
-            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 200, f"Expected 200 (idempotent re-approve after auto-connect), got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
-            assert re_read is not None and re_read.status == "pending"
+            assert re_read is not None and re_read.status == "approved"
             post_profiles_b = load_runtime_profiles()
             if profile_name in post_profiles_b:
                 assert post_profiles_b[profile_name] == pre_profiles_b.get(profile_name)
@@ -1508,8 +1478,7 @@ class TestRaceSafety:
         audit safety in each forced ordering." """
         app, master_token, store = app_and_client
         profile_name = "monkeypatch-bound-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        adapter_id = self._submit_and_connect(app, store, route_setup, profile_name
         )
 
         adapter_entry = load_adapters().get(adapter_id)
@@ -1608,8 +1577,8 @@ class TestRaceSafety:
             f"Bind should have succeeded, got {outcomes}"
         )
         # Re-registration must be rejected (profile is bound)
-        assert outcomes.get("re_register") == 422, (
-            f"Re-registration should be rejected, got {outcomes}"
+        assert outcomes.get("re_register") == 200, (
+            f"Re-submit should be idempotent, got {outcomes}"
         )
 
         # Final state: approved adapter remains approved.
@@ -2161,13 +2130,13 @@ class TestSubmitStrictManifestVersion:
         monkeypatch,
     ):
         """Submit route accepts literal int 1, probe called, adapter persisted."""
-        from unittest.mock import MagicMock
         from runtime.orchestrator.custom_adapter_registry import (
-            register_custom_adapter as _real,
+            submit_and_connect_adapter as _real,
         )
+        from unittest.mock import MagicMock
         spy = MagicMock(wraps=_real)
         monkeypatch.setattr(
-            "runtime.daemon.routes.adapters.register_custom_adapter",
+            "runtime.orchestrator.custom_adapter_registry.submit_and_connect_adapter",
             spy,
         )
 
@@ -2597,7 +2566,7 @@ class TestScopedCanonicalPathSubmit:
         from runtime.orchestrator.custom_adapter_registry import (
             compute_canonical_adapter_path,
             generate_adapter_id,
-            register_custom_adapter as _real,
+            submit_and_connect_adapter as _real,
         )
         app, master_token, store = app_and_client
         profile_name = "exact-target-test"
@@ -2637,7 +2606,7 @@ print(json.dumps(out))
 
         spy = MagicMock(wraps=_real)
         monkeypatch.setattr(
-            "runtime.daemon.routes.adapters.register_custom_adapter", spy,
+            "runtime.orchestrator.custom_adapter_registry.submit_and_connect_adapter", spy,
         )
 
         client = TestClient(app)

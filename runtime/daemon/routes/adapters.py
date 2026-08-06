@@ -1001,73 +1001,41 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
-    # 7. Check if adapter+profile is already connected (idempotent replay).
-    #    When the same durable snapshot already produced a connected profile,
-    #    return the connected state without re-registering.
-    from runtime.orchestrator.custom_adapter_registry import _find_active_profile_bound
-    from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
-    already_bound = _find_active_profile_bound(
-        scoped_adapter_id, load_runtime_profiles()
-    )
-    if already_bound is not None:
-        existing = get_adapter(scoped_adapter_id)
-        if existing is not None and existing.status == "approved":
-            # Idempotent replay: adapter is already connected.
-            # Do NOT consume the token — return the existing connected state.
-            return _entry_to_response(existing)
-        # Bound but adapter missing or not approved — release lock, allow retry
-        store.release_runtime(raw_token)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Profile {already_bound!r} is bound to adapter "
-                f"{scoped_adapter_id!r} but the adapter entry is "
-                f"missing or not approved. Remove the profile first "
-                f"(Settings → Executors → Custom CLIs) then retry."
-            ),
-        )
-
+    # 8. Call the unified direct-register-and-connect transaction.
+    #    Under one lock this validates, registers, approves, and binds
+    #    the profile in a single atomic operation. On ANY failure full
+    #    compensation restores the pre-request state (no adapter or
+    #    profile residue). The token is released so it remains retryable.
+    from runtime.orchestrator.custom_adapter_registry import submit_and_connect_adapter
     try:
-        entry = register_custom_adapter(
+        connected_entry = submit_and_connect_adapter(
             executable=body.executable,
             version=body.version,
             capabilities=body.capabilities,
             workspace_adapter=body.workspace_adapter,
-            registered_by=f"adapter-submission:{intended_profile}",
-            intended_profile_name=intended_profile,
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
-        )
-        # seq363: The scoped submission does the full register-and-connect
-        # transaction — immediately approve the adapter and bind the intended
-        # profile in a single coherent server step.  No separate founder
-        # approval or client-side bind is needed.  The normal user-visible
-        # result is Connected (eligibility: already_bound).
-        approved_entry = approve_adapter(
-            adapter_id=entry.id,
-            executable=entry.executable,
-            executable_hash=entry.executable_hash,
-            version=entry.version,
-            capabilities=entry.capabilities,
-            contract_version=entry.contract_version,
-            workspace_adapter=entry.workspace_adapter,
-            approved_by=f"adapter-submission:{intended_profile}",
-            auto_bind_profile=True,
-            dependency_manifest_version=entry.dependency_manifest_version,
-            dependencies=entry.dependencies,
+            intended_profile_name=intended_profile,
         )
     except ValueError as exc:
-        # Release the token on failure so it remains retryable
         store.release_runtime(raw_token)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        # OSError, RuntimeError, or any other unexpected failure —
+        # release the token so it stays retryable and surface the error.
+        store.release_runtime(raw_token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Adapter submission failed: {exc}",
+        )
 
     # Consume the token permanently on success
     store.commit_runtime(raw_token)
 
-    return _entry_to_response(approved_entry)
+    return _entry_to_response(connected_entry)
 
 
 # ---------------------------------------------------------------------------
@@ -1248,11 +1216,13 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
             "description": (
                 "Submit the adapter wrapper executable for the intended profile. "
                 "Requires the same adapter-purpose hrreg_ token and a completed "
-                "conformance challenge. Submission creates ONLY the exact PENDING "
-                "adapter; founder approval is a separate Settings-only step. "
-                "For adapters with an intended profile, approval atomically creates "
-                "and connects the profile (seq237); explicit Bind is only needed for "
-                "advanced recovery of approved no-intended adapters. "
+                "conformance challenge. Submission directly registers and "
+                "connects — the server atomically validates identity, "
+                "conformance, path, and dependency facts, then creates, "
+                "approves, and binds the profile in a single transaction. "
+                "No separate founder approval step, no client-side bind. "
+                "For adapters without an intended profile, explicit "
+                "Bind is available as authenticated operator recovery. "
                 "New submissions MUST include dependency_manifest_version: 1 and a "
                 "non-empty dependencies list declaring every child executable the "
                 "adapter wrapper invokes."
