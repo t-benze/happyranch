@@ -72,7 +72,7 @@ class SystemContract:
     requires_repo: bool = False
 
 
-# ── The 6 system contracts (single source of truth) ──────────────────
+# ── The 7 system contracts (single source of truth) ──────────────────
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
@@ -172,9 +172,26 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.THREAD,
             SessionContext.WAKE,
             SessionContext.DREAM,
-            SessionContext.SCHEDULE,
             SessionContext.BOOTSTRAP,
         ),
+    ),
+    SystemContract(
+        id="create-skill",
+        name="Create Skill",
+        description=(
+            "Guided custom-skill authoring from an active task: valid package "
+            "format, deterministic validation, immutable content hash, verified "
+            "task/session/agent/org provenance, nonempty task-brief digest, "
+            "and the supported CLI submission command."
+        ),
+        when_to_use=(
+            "Use when capturing a repeatable workflow or reusable guidance "
+            "discovered during a task. The created skill will be default-hidden "
+            "and must be separately made eligible by the founder."
+        ),
+        source_path="protocol/skills/create-skill/SKILL.md",
+        contexts=(SessionContext.TASK,),
+        requires_repo=True,
     ),
 )
 

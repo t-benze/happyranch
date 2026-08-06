@@ -776,10 +776,11 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit proposals ONLY through the dedicated
-agent-only route. The legacy dual-auth path is human/founder-only:
+**Agent authority.** Agents may create custom skills through two agent-only
+routes, both using opaque session-binding and server-derived identity. The
+legacy dual-auth path is human/founder-only:
 
-1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
+1. **Opaque session CLI (``skills propose``, original).** The original agent
    authoring workflow: ``happyranch skills propose --from-file <proposal.json>
    --session-id <session-id> [--org <slug>]``. The proposal file contains only
    package metadata/content accepted by ``ProposalRequest`` (slug, name,
@@ -808,6 +809,24 @@ agent-only route. The legacy dual-auth path is human/founder-only:
    produced. Path-selected org is cross-checked against the session's
    org; cross-org and mismatched contexts are denied.
 
+3. **Opaque session CLI — ``skills create`` (B1, THR-055).** An ADDITIONAL
+   verified agent create path: ``happyranch skills create --from-file
+   <creation.json> --session-id <session-id> [--org <slug>]``. Uses the same
+   token-free transport and identity-derivation model as the propose path but
+   targets a distinct route: ``POST /api/v1/orgs/{slug}/skills/agent``. The
+   route enforces identical identity derivation, body-identity-key rejection,
+   protected-slug enforcement, ``standard_operational`` policy class, default
+   hidden eligibility, and zero-residue denial. The lifecycle record remains
+   PROPOSED alongside the legacy proposal workflow — both converge on the same
+   ``SkillLifecycleService.submit_proposal`` service. This is the B1 path;
+   B2 eligibility, human editor, effective visibility, migration/cutover, and
+   proposal-review resurrection are explicitly deferred.
+
+   The ``skills create`` route is documented by the ``create-skill`` system
+   contract (the 7th system contract, TASK-context only, requires repos).
+   It is served by a separate router (``agent_skills_router``) that does NOT
+   require the global master bearer token — each route on it performs its own
+   bearer-rejection independently.
 2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
    is restricted to bearer-authenticated human/founder callers. Non-bearer
    (agent) callers receive 403 directing them to the dedicated
@@ -1069,14 +1088,13 @@ they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_inde
 the permission model, executor skill-load paths, or the SQLite schema. No new
 daemon routes are added.
 
-### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4)
+### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4 + B1)
 
 System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
-``dream``, ``todos`` — are mandatory operating-contract skills injected by the runtime based
+``dream``, ``todos``, ``create-skill`` — are mandatory operating-contract skills injected by the runtime based
 on session/context type. They are defined in the single-source-of-truth module
 ``runtime/skills/system_contracts.py`` and are OUTSIDE the toggleable managed
 catalog (they are NOT displayed by ``skills catalog list`` and are never
-manager-toggleable).
 
 **Injection model (Phase 4 — CUT OVER / REMOVED).** The wholesale
 ``protocol/skills/`` dump and its former ``_WHOLESALE_DUMP_ENABLED`` gate
@@ -1103,6 +1121,7 @@ in the guard test, then removed in Phase 4.
 | ``thread`` | ✓ | ✓ | ✓ | | ✓ | ✓ | no |
 | ``dream`` | | | | ✓ | | | no |
 | ``todos`` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| ``create-skill`` | ✓ | | | | | | yes |
 
 **Session-context mapping:**
 - ``TASK`` — ``Orchestrator._run_agent`` (ordinary task/subtask session)

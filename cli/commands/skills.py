@@ -688,6 +688,94 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: skills create --from-file <path> --session-id <session-id>
+# ---------------------------------------------------------------------------
+
+def cmd_skills_create(args: argparse.Namespace) -> None:
+    """Submit a custom-skill creation via the agent-only session-bound route.
+
+    Agent callers must supply only their opaque active session ID. The
+    server derives org, task_id, and agent_name from the SessionTracker
+    context. The creation file must contain only package metadata/content.
+    It must NOT contain identity fields — any such fields are rejected.
+
+    This command does NOT send the master bearer token; it uses the
+    session-binding authentication path exclusively.
+    """
+    if not args.from_file:
+        print("error: --from-file <path> is required", file=sys.stderr)
+        sys.exit(1)
+    if not args.session_id:
+        print("error: --session-id <session-id> is required", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        body = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Error reading creation file {args.from_file}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    forbidden = {"org", "agent", "agent_name", "task_id", "task",
+                 "session_id", "session", "proposer_agent", "proposer",
+                 "actor", "eligibility", "permission", "identity"}
+    for key in forbidden:
+        if key in body:
+            print(
+                f"error: creation file must not contain identity field '{key}'. "
+                f"Org, agent, task, and session identity are derived from the "
+                f"server's verified session context.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    import httpx
+    from cli.client.client import port_file
+
+    port_path = port_file()
+    if not port_path.exists():
+        print("error: daemon not running — start it with scripts/daemon.sh start",
+              file=sys.stderr)
+        sys.exit(1)
+    port = port_path.read_text().strip()
+    base_url = f"http://127.0.0.1:{port}"
+    token_free_client = httpx.Client(
+        base_url=base_url,
+        headers={"X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    )
+
+    from cli._shared import resolve_org_slug
+    try:
+        r = token_free_client.get("/api/v1/orgs")
+        available = [o["slug"] for o in r.json().get("orgs", [])] if r.status_code == 200 else []
+    except Exception:
+        available = []
+    org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
+
+    resp = token_free_client.post(
+        f"/api/v1/orgs/{org}/skills/agent",
+        json=body,
+        params={"session_id": args.session_id},
+    )
+
+    if resp.status_code == 201:
+        result = resp.json()
+        print(f"Skill created successfully.")
+        print(f"  skill_id:  {result['skill_id']}")
+        print(f"  version_id: {result['version_id']}")
+        print(f"  version:   {result['version']}")
+        print(f"  status:    {result['status']}")
+        print(f"  content_hash: {result['content_hash']}")
+        if result.get("content_artifact_key"):
+            print(f"  artifact:  {result['content_artifact_key']}")
+        print()
+        print("This skill is default-hidden. The founder must configure "
+              "eligibility before any agent receives it.")
+    else:
+        detail = resp.json().get("detail", resp.text)
+        print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
+        sys.exit(1)
+# ---------------------------------------------------------------------------
 # Command: skills recover <slug> <version> <content_hash>
 # ---------------------------------------------------------------------------
 
@@ -872,6 +960,22 @@ def register(sub) -> None:
     )
     p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
     p_propose.set_defaults(func=cmd_skills_propose)
+
+    # --- skills create --from-file <path> --session-id <session-id> ---
+    p_create = skills_sub.add_parser(
+        "create",
+        help="Create a custom skill (agent-only, session-bound)",
+    )
+    p_create.add_argument(
+        "--from-file", dest="from_file", required=True,
+        help="Path to creation JSON file (package metadata/content only)",
+    )
+    p_create.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="Opaque active session ID (from task context)",
+    )
+    p_create.add_argument("--org", help="Org slug (default: auto-detect)")
+    p_create.set_defaults(func=cmd_skills_create)
 
     # --- skills recover <slug> <version> <content_hash> ---
     p_recover = skills_sub.add_parser(

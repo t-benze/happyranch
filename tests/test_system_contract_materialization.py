@@ -1462,7 +1462,7 @@ class TestCrossContextSystemContractRetention:
 
         # ── System-contract source dirs ──
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1715,7 +1715,7 @@ class TestUnknownContextNoOp:
         from runtime.skills.canonical_store import CanonicalSkillStore
 
         src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")

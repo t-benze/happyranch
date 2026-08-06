@@ -1504,3 +1504,189 @@ def skill_recover(
             f"release source for same-owner deployments)."
         ),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agent-only skills creation route (token-free, session-binding)
+# ═══════════════════════════════════════════════════════════════════════════
+from fastapi import Body as RequestBody, Depends
+from runtime.daemon.auth import _check_optional_token
+from runtime.skills.lifecycle.models import ProposalRequest
+from runtime.skills.lifecycle.service import LifecycleError, SkillLifecycleService
+
+# Separate router — NO global bearer requirement. Each route checks independently.
+agent_skills_router = APIRouter()
+
+_agent_skills_service = SkillLifecycleService()
+
+# Prohibited body identity/authority keys for agent creation route.
+_AGENT_SKILLS_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+def _build_protected_slugs_for_agent_route(org: OrgState) -> frozenset:
+    """Build the live protected-slug set from the release catalog + system contracts.
+
+    Fails closed: if the registry cannot be loaded, raises HTTP 500.
+    """
+    protected = set()
+    release_dir = org.settings.project_root / "runtime" / "skills"
+    if release_dir.is_dir():
+        from runtime.skills.registry import SkillRegistry
+        registry = SkillRegistry(skills_root=release_dir)
+        for entry in registry.list_all():
+            if isinstance(entry, tuple):
+                entry = entry[0]
+            protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+    for sc in SYSTEM_CONTRACTS:
+        protected.add(sc.id)
+    return frozenset(protected)
+
+
+@agent_skills_router.post("/skills/agent", status_code=201)
+def create_skill_agent(
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Skill package metadata and content (no identity fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Create a custom skill via opaque agent-session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, task_id, agent_name, and session_id from
+    the SessionTracker context (four-part server-authoritative provenance).
+
+    Returns 401 for bearer token present.
+    Returns 403 for unknown/inactive/stale/cross-org session.
+    Returns 403 for any prohibited body identity/authority key.
+    Returns 409 for protected slug collision.
+    Returns 400 for validation failures.
+    """
+    # Reject bearer token — this route is agent-session ONLY
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session creation only. "
+                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
+            },
+        )
+
+    # Reject prohibited body identity keys BEFORE parsing/persistence
+    for key in _AGENT_SKILLS_PROHIBITED_BODY_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the creation body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the clean body through Pydantic
+    body = ProposalRequest(**body_raw)
+
+    # Step 1: Resolve (org_slug, task_id, agent_name) from opaque session
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        if verified_org != org.slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{org.slug}'.",
+                },
+            )
+    else:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'.",
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context.",
+            },
+        )
+
+    # Step 2: pre-lease barrier (test seam)
+    pre_lease = org.sessions._pre_lease_barrier
+    if pre_lease is not None:
+        reached = org.sessions._pre_lease_barrier_reached
+        if reached is not None:
+            reached.set()
+        pre_lease.wait()
+
+    # Step 3: Acquire per-binding lease and re-verify
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session "
+                              f"for task {task_id} agent {agent_name}.",
+                },
+            )
+
+        # Step 3b: post-authorization barrier (test seam)
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
+
+        try:
+            protected_slugs = _build_protected_slugs_for_agent_route(org)
+            pkg = _agent_skills_service.submit_proposal(
+                db=org.db,
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class=body.policy_class,
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion=body.target_agent_suggestion,
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "status": pkg.status.value,
+        "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
+        "proposal_task_id": pkg.proposal_task_id,
+    }

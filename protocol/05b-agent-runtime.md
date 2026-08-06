@@ -368,18 +368,28 @@ Artifacts newly created during the request are cleaned up on ledger failure
 are never deleted. An ArtifactStore write failure before any ledger row
 aborts without any side effects.
 
-**Session-bound authority.** Agent proposal submission requires verified
-task/session binding via the SessionTracker. A single agent-only path exists,
-plus a human-only legacy route:
+**Session-bound authority.** Agent skill creation requires verified
+task/session binding via the SessionTracker. Two agent-only paths exist:
 
-- **Opaque session path (agent CLI).** The agent commands
+- **Opaque session path — `skills propose` (original).** The agent commands
   ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
+  The CLI builds a token-free transport to
+  ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``. This is the
+  pre-existing agent proposal path that records a PROPOSED lifecycle record.
+
+- **Opaque session path — `skills create` (B1, THR-055).** The agent commands
+  ``happyranch skills create --from-file <creation.json> --session-id <session-id> [--org <slug>]``.
+  The CLI builds a token-free transport to
+  ``POST /api/v1/orgs/{slug}/skills/agent``. This is an ADDITIONAL verified
+  agent create path whose lifecycle record remains PROPOSED alongside the
+  legacy proposal workflow. The route enforces identical identity derivation,
+  protected-slug enforcement, standard_operational only, default hidden
+  eligibility, and zero-residue denial. Both paths converge on the same
+  ``SkillLifecycleService.submit_proposal`` service.
+
   The CLI builds a token-free transport (no bearer token read or sent) using
   only the daemon port. Org is resolved via the established
-  ``resolve_org_slug(args_org=, available=)`` convention. The CLI sends the
-  opaque session ID to
-  ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent`` — an agent-only
-  route that does NOT accept the master bearer token. The server independently
+  ``resolve_org_slug(args_org=, available=)`` convention. The server independently
   derives all four identity dimensions (org_slug, task_id, agent_name,
   active session_id) from the SessionTracker's additive context index
   (``get_context_by_session()``) — never from body/query/env/client claims,
@@ -393,9 +403,6 @@ plus a human-only legacy route:
   policy checks, or any persistence. Presence includes empty values.
   Rejection returns exact HTTP 403 with error code
   ``body_identity_rejected``; no lifecycle package, event,
-  materialization, or ArtifactStore residue is produced. This is the
-  sole agent
-  authoring workflow — there is no alternate agent-capable path.
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
   is restricted to bearer-authenticated human/founder callers. Non-bearer
