@@ -2452,6 +2452,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skills/agent": {
+      "POST": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skills/catalog": {
       "GET": {
         "params": [

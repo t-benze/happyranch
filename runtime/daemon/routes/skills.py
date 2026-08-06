@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field, field_validator
 
 from runtime.config import settings
 from runtime.daemon.auth import require_token
@@ -1173,7 +1173,7 @@ def skill_recover(
     content_hash = body.content_hash
 
     # ── 1. Validate ledger provenance ─────────────────────────────
-    service = SkillLifecycleService()
+    service = SkillLifecycleService()  # was:)
     try:
         pkgs = service.list_catalog(org.db)
     except Exception as exc:
@@ -1503,4 +1503,229 @@ def skill_recover(
             f"the ArtifactStore (which must be verified against the "
             f"release source for same-owner deployments)."
         ),
+    }
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B1 agent-only create-skill route (SessionTracker binding, no bearer token)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _get_db(org: OrgState):
+    return org.db
+# Separate router WITHOUT the global require_token() dependency — this
+# route is agent-only and validates identity exclusively through the
+# SessionTracker's opaque session binding.
+agent_skills_router = APIRouter()
+
+# ── Prohibited body identity/authority keys ───────────────────────────
+_AGENT_CREATE_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+class CreateSkillBody(BaseModel):
+    """Request body for agent-only POST /skills/agent.
+
+    Contains package metadata and content. Must NOT contain identity
+    fields — those are derived server-side from the SessionTracker.
+    """
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(min_length=1, max_length=512)
+    skill_md: str = Field(min_length=1)
+    version: str = Field(default="0.1.0")
+    policy_class: str = Field(default="standard_operational")
+    purpose: str = Field(default="")
+    target_agent_suggestion: str = Field(default="")
+    references: dict[str, str] | None = Field(default=None)
+    assets: dict[str, str] | None = Field(default=None)
+
+    model_config = {"extra": "forbid"}
+
+
+@agent_skills_router.post("/skills/agent", status_code=201)
+def create_skill_agent(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+    body_raw: dict,
+    session_id: str = Query(..., min_length=1),
+    authorization: str | None = Header(default=None, include_in_schema=False),
+) -> dict:
+    """Create a custom skill via agent session-binding (B1 create-skill).
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, task_id, and agent_name from the
+    SessionTracker context.
+
+    - All identity dimensions (org, task, agent) are derived from the
+      opaque session capability — never from body/query/env/client
+      claims.
+    - Path-selected org is cross-checked against the session's org;
+      cross-org sessions are denied with 403.
+    - Body claims for identity/authority fields are rejected BEFORE
+      model parsing — exact 403 body_identity_rejected.
+
+    Returns 403 for:
+    - Inactive, expired, or unknown session
+    - Cross-org session
+    - Bearer token present (agent path only)
+    - Any prohibited body identity/authority key present
+    """
+    from runtime.daemon.auth import _check_optional_token
+    from runtime.skills.registry import SkillRegistry
+
+    # ── Reject bearer token — this route is agent-session ONLY ─────
+    has_bearer = _check_optional_token(authorization)
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session skill creation only. "
+                          "Use the bearer-authenticated routes for human operations.",
+            },
+        )
+
+    # ── Reject ANY Authorization header presence (defense-in-depth) ──
+    # Covers Bearer, Basic, Token, case variants, malformed, empty
+    if authorization is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "authorization_not_accepted",
+                "detail": "This agent-only route does not accept any Authorization "
+                          "header. Identity is derived from the server's verified "
+                          "session context.",
+            },
+        )
+
+    # ── Reject prohibited body identity keys BEFORE Pydantic parsing ──
+    for key in _AGENT_CREATE_PROHIBITED_BODY_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the create-skill body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the clean body through Pydantic
+    try:
+        body = CreateSkillBody(**body_raw)
+    except Exception:
+        from pydantic import ValidationError
+        try:
+            CreateSkillBody.model_validate(body_raw)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=e.errors(),
+            )
+        raise
+    # ── Derive identity from SessionTracker ────────────────────────
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        if verified_org != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{slug}'. Org is derived from the server's "
+                              "verified session context, not caller-selected path.",
+                },
+            )
+    else:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'. "
+                              "The session may be inactive, expired, or never existed.",
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context. "
+                          "The agent-only create-skill route requires a context-bearing "
+                          "active session with org, task, and agent identity.",
+            },
+        )
+
+    # ── Acquire per-binding lease + re-verify session active ────────
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active "
+                              f"session for task {task_id} agent {agent_name}. "
+                              "The session may have been cleared, superseded, or revoked.",
+                },
+            )
+
+        # ── Persist via lifecycle service ─────────────────────────
+        from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError as LifecycleErr
+
+        # Build live protected-slug set from release catalog + system contracts
+        release_dir = org.settings.project_root / "runtime" / "skills"
+        protected = set()
+        if release_dir.is_dir():
+            registry = SkillRegistry(skills_root=release_dir)
+            for entry in registry.list_all():
+                e = entry[0] if isinstance(entry, tuple) else entry
+                protected.add(getattr(e, 'slug', getattr(e, 'id', '')))
+        for sc in SYSTEM_CONTRACTS:
+            protected.add(sc.id)
+        protected_slugs = frozenset(protected)
+
+        service = SkillLifecycleService()
+
+        try:
+            pkg = service.submit_proposal(
+                db=_get_db(org),
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class=body.policy_class,
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion=body.target_agent_suggestion,
+                org_root=org.root,
+            )
+        except LifecycleErr as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "content_hash": pkg.content_hash,
+        "status": pkg.status.value,
     }

@@ -1052,7 +1052,7 @@ class TestSystemContractsCliDisplay:
 
         out = capsys.readouterr().out
         assert "System Contracts (runtime-injected):" in out
-        assert "Total: 6 contract(s)" in out
+        assert "Total: 7 contract(s)" in out
         assert "start-task" in out
         assert "jobs" in out
         assert "make-worktree" in out
@@ -1077,7 +1077,7 @@ class TestSystemContractsCliDisplay:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "system_contracts" in data
-        assert len(data["system_contracts"]) == 6
+        assert len(data["system_contracts"]) == 7
         ids = [sc["id"] for sc in data["system_contracts"]]
         assert "start-task" in ids
         assert "jobs" in ids

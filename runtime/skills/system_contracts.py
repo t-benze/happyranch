@@ -72,7 +72,7 @@ class SystemContract:
     requires_repo: bool = False
 
 
-# ── The 6 system contracts (single source of truth) ──────────────────
+# ── The 7 system contracts (single source of truth) ──────────────────
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
@@ -153,6 +153,20 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
         when_to_use="Use during scheduled dream invocations only.",
         source_path="protocol/skills/dream/SKILL.md",
         contexts=(SessionContext.DREAM,),
+    ),
+    SystemContract(
+        id="create-skill",
+        name="Create Skill",
+        description=(
+            "Task-facing system contract for agent-authored custom-skill "
+            "creation via verified session identity. Package shape, validation, "
+            "provenance, hard boundaries, and the supported submission command. "
+            "Grants no tools, credentials, permissions, or eligibility authority."
+        ),
+        when_to_use="Use to create a custom skill to capture reusable guidance discovered during a task.",
+        source_path="protocol/skills/create-skill/SKILL.md",
+        contexts=(SessionContext.TASK,),
+        requires_repo=True,
     ),
     SystemContract(
         id="todos",
