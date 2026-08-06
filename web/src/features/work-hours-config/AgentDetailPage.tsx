@@ -1,7 +1,8 @@
 /**
  * S2 — Agent Detail. The 3-column + Effective reconciliation table (per-leaf
  * provenance), eligibility state, read-only Routine Tasks panel, and the
- * next-wakes panel. Buttons open the tier editors + eligibility editor.
+ * next-wakes panel. Tier editing remains here; eligibility editing moved to
+ * Settings → Organization → Operating controls.
  */
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -26,7 +27,6 @@ import {
   SavedBanner,
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';
-import { EligibilityEditorDialog } from './EligibilityEditorDialog';
 import { useAgentTeamMap } from './useAgentTeamMap';
 
 const PENDING_TICK =
@@ -48,8 +48,6 @@ export function AgentDetailPage(): JSX.Element {
   const team = agent ? (agentTeam[agent] ?? null) : null;
 
   const [tier, setTier] = useState<Tier | null>(null);
-  const [editEligibility, setEditEligibility] = useState(false);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 
@@ -142,9 +140,12 @@ export function AgentDetailPage(): JSX.Element {
               >
                 Edit this agent
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setEditEligibility(true)}>
-                Eligibility
-              </Button>
+              <Link
+                to={`/orgs/${slug}/settings/organization`}
+                className="text-accent-text text-xs hover:underline self-center"
+              >
+                Manage operating control
+              </Link>
             </div>
           </div>
 
@@ -260,15 +261,6 @@ export function AgentDetailPage(): JSX.Element {
         />
       )}
 
-      {editEligibility && (
-        <EligibilityEditorDialog
-          open={editEligibility}
-          onOpenChange={setEditEligibility}
-          wh={wh}
-          allAgents={allAgentNames}
-          onSaved={onSaved}
-        />
-      )}
     </div>
   );
 }

@@ -19,6 +19,19 @@
  * Unsaved-changes guard: prompts on nav-away via beforeunload.
  */
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
+import { EligibilityEditorDialog } from '@/features/work-hours-config/EligibilityEditorDialog';
+import { ErrorPanel, SavedBanner } from '@/features/work-hours-config/components';
+import { extractServerErrors } from '@/features/work-hours-config/errors';
+import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 import { useUpdateOrgSettings } from '@/hooks/settings';
 import { useAgentsList } from '@/hooks/agents';
 import {
@@ -29,6 +42,7 @@ import {
   SelectValue,
 } from '@/design-system/primitives/Select';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
+import { useParams } from 'react-router-dom';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 
 interface FieldState {
@@ -96,6 +110,28 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     () => agentsQuery.data?.agents ?? [],
     [agentsQuery.data?.agents],
   );
+
+  // ── Operating controls (work-hours enablement + eligibility) ──
+  const { slug: orgSlug } = useParams<{ slug: string }>();
+  const wh = org.working_hours;
+  const allAgentNames = useMemo(
+    () => agentsList.map((a) => a.name),
+    [agentsList],
+  );
+  const [confirmDisable, setConfirmDisable] = useState(false);
+  const [editEligibility, setEditEligibility] = useState(false);
+  const [whSavedMsg, setWhSavedMsg] = useState<string | null>(null);
+  const [whError, setWhError] = useState<string | null>(null);
+
+  async function setEnabled(next: boolean) {
+    setWhError(null);
+    try {
+      await mutation.mutateAsync({ working_hours: { enabled: next } });
+      setWhSavedMsg('Saved \u2713 \u2014 takes effect at the next scheduler pass (\u2248 within ~60s).');
+    } catch (err: unknown) {
+      setWhError(extractServerErrors(err).join('; '));
+    }
+  }
 
   // Reset fields when org data changes externally
   const prevOrgRef = useRef(org);
@@ -325,6 +361,71 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         </EditableRow>
       </div>
 
+      {/* ── Operating controls ── */}
+      <h4 className="mb-2 text-sm font-medium">Operating controls</h4>
+      <p className="text-text-secondary mb-3 text-xs">
+        Organization-wide work hours enablement and agent eligibility. The
+        scheduler and tier-level cadence is configured under{' '}
+        <a
+          href={`/orgs/${orgSlug}/work-hours`}
+          className="text-accent-text hover:underline"
+        >
+          Work Hours
+        </a>
+        .
+      </p>
+
+      {whSavedMsg && (
+        <SavedBanner message={whSavedMsg} />
+      )}
+      {whError && (
+        <div
+          role="alert"
+          className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
+        >
+          {whError}
+        </div>
+      )}
+
+      <div className="border-border divide-border mb-4 divide-y rounded-md border">
+        <EditableRow label="Enabled" badge="Applies live">
+          <div className="flex items-center gap-2">
+            <BooleanToggle
+              value={wh?.enabled ?? false}
+              onChange={(v) => {
+                if (v) {
+                  setEnabled(true);
+                } else {
+                  setConfirmDisable(true);
+                }
+              }}
+            />
+            <span className="text-text-muted text-xs">
+              {wh?.enabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </EditableRow>
+        <EditableRow label="Agent eligibility">
+          <div className="flex items-center gap-2">
+            <span className="text-text-muted text-xs">
+              {wh?.agents?.mode === 'whitelist'
+                ? `Whitelist (${wh.agents.include.length} included)`
+                : 'All agents'}
+              {wh?.agents?.exclude.length
+                ? `, ${wh.agents.exclude.length} excluded`
+                : ''}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditEligibility(true)}
+            >
+              Edit eligibility
+            </Button>
+          </div>
+        </EditableRow>
+      </div>
+
       {/* Sticky save bar */}
       {dirty && (
         <div className="border-border bg-bg-subtle sticky bottom-0 -mx-6 mt-6 -mb-6 flex items-center gap-3 border-t px-6 py-3">
@@ -349,7 +450,50 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           </span>
         </div>
       )}
-    </section>
+
+      {/* Confirm-before-disable the global feature switch. */}
+      <Dialog open={confirmDisable} onOpenChange={setConfirmDisable}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disable work hours?</DialogTitle>
+            <DialogDescription>
+              Turning the feature off halts all scheduled wakes for every agent.
+              Eligibility and tier config are preserved; nothing runs until you
+              turn it back on.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmDisable(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmDisable(false);
+                void setEnabled(false);
+              }}
+            >
+              Disable
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Eligibility editor — shared dialog from work-hours-config. */}
+      {editEligibility && wh && (
+        <EligibilityEditorDialog
+          open={editEligibility}
+          onOpenChange={setEditEligibility}
+          wh={wh}
+          allAgents={allAgentNames}
+          onSaved={() => {
+            setWhSavedMsg(
+              'Saved \u2713 \u2014 takes effect at the next scheduler pass (\u2248 within ~60s).',
+            );
+          }}
+        />
+      )}
+
   );
 }
 

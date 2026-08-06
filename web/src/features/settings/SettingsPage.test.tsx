@@ -32,6 +32,13 @@ const SETTINGS_PAYLOAD = {
       default_turn_cap: 5,
       invocation_timeout_seconds: null,
     },
+    working_hours: {
+      enabled: true,
+      agents: { mode: 'all' as const, include: [], exclude: [] },
+      default: { mode: 'windowed', window: { start: '09:00', end: '17:00', timezone: 'UTC' }, interval: '2h', days: ['mon','tue','wed','thu','fri'], catch_up_on_startup: false },
+      teams: {},
+      overrides: {},
+    },
   },
 };
 
@@ -620,6 +627,187 @@ describe('SettingsPage — Organization section', () => {
     // Only the roster-valid token should be in the patch
     expect(body.dreaming.agents.include).toEqual(['dev_agent']);
     expect(body.dreaming.agents.include).not.toContain('non_existent');
+  });
+
+  // ── Operating controls (work-hours enablement + eligibility) ──
+
+  test('renders Operating controls with toggle and eligibility editor', async () => {
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    // Toggle is present (as a switch)
+    const switches = within(content).getAllByRole('switch');
+    // One of them is the work-hours enabled toggle (others are dreaming/threads)
+    expect(switches.length).toBeGreaterThanOrEqual(1);
+
+    // Eligibility editor button present
+    expect(
+      within(content).getByRole('button', { name: 'Edit eligibility' }),
+    ).toBeInTheDocument();
+
+    // Work Hours deep link present
+    expect(
+      within(content).getByText('Work Hours'),
+    ).toBeInTheDocument();
+  });
+
+  test('toggle disable shows confirmation dialog and saves working_hours-only payload', async () => {
+    let savedBody: unknown = null;
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        return HttpResponse.json(SETTINGS_PAYLOAD);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    const user = userEvent.setup();
+
+    // Find the toggle in the Operating controls section — it's the one
+    // immediately following "Enabled" label in the operating controls group.
+    const switches = within(content).getAllByRole('switch');
+    // The last BooleanToggle is work-hours (session, dreaming, threads come before)
+    // Actually, let's click the one that has aria-checked="true" (enabled=true)
+    const whSwitch = switches.find(
+      (s) => s.getAttribute('aria-checked') === 'true',
+    )!;
+    expect(whSwitch).toBeTruthy();
+
+    // Click to disable — should show confirmation dialog
+    await user.click(whSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByText('Disable work hours?')).toBeInTheDocument();
+    });
+
+    // Confirm
+    await user.click(screen.getByRole('button', { name: 'Disable' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Disable work hours?')).not.toBeInTheDocument();
+    });
+
+    // Verify the PUT payload is working_hours-only
+    expect(savedBody).toEqual({
+      working_hours: { enabled: false },
+    });
+  });
+
+  test('toggle enable sends working_hours-only payload immediately', async () => {
+    let savedBody: unknown = null;
+    // Start with enabled: false
+    const disabledPayload = {
+      ...SETTINGS_PAYLOAD,
+      org: {
+        ...SETTINGS_PAYLOAD.org,
+        working_hours: {
+          ...SETTINGS_PAYLOAD.org.working_hours,
+          enabled: false,
+        },
+      },
+    };
+
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json(disabledPayload),
+      ),
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        return HttpResponse.json(disabledPayload);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    const user = userEvent.setup();
+
+    // Find the OFF toggle and click it
+    const switches = within(content).getAllByRole('switch');
+    const whSwitch = switches.find(
+      (s) => s.getAttribute('aria-checked') === 'false',
+    )!;
+    expect(whSwitch).toBeTruthy();
+
+    await user.click(whSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Saved.*takes effect.*scheduler/)).toBeInTheDocument();
+    });
+
+    // Verify working_hours-only payload
+    expect(savedBody).toEqual({
+      working_hours: { enabled: true },
+    });
+  });
+
+  test('save error shows inline error in operating controls', async () => {
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, () =>
+        HttpResponse.json({ detail: 'Invalid agent reference' }, { status: 422 }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Operating controls')).toBeInTheDocument(),
+    );
+
+    const user = userEvent.setup();
+
+    // Find the enabled toggle in operating controls
+    const switches = within(content).getAllByRole('switch');
+    const whSwitch = switches.find(
+      (s) => s.getAttribute('aria-checked') === 'true',
+    )!;
+
+    // Click to disable — confirm dialog shows
+    await user.click(whSwitch);
+    await waitFor(() => {
+      expect(screen.getByText('Disable work hours?')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: 'Disable' }));
+
+    await waitFor(() => {
+      expect(
+        within(content).getByRole('alert'),
+      ).toBeInTheDocument();
+    });
+    expect(
+      within(content).getByText(/Invalid agent reference/),
+    ).toBeInTheDocument();
   });
 });
 

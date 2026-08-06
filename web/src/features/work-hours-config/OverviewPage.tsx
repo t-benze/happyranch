@@ -3,15 +3,16 @@
  * mode · effective cadence · next wake · read-only On status · eligibility chip
  * · "no routine tasks" flag.
  *
- * Header has the SINGLE global feature on/off switch (working_hours.enabled)
- * with confirm-before-disable, plus entry points to edit the org default / a
- * team. Invalid-config recovery banner pinned at top when the live config
+ * Read-only status bar shows derived enabled/disabled state with a
+ * "Manage operating control" deep link to Settings → Organization.
+ * Tier editing for org default / team remains here.
+ *
+ * Invalid-config recovery banner pinned at top when the live config
  * failed to load.
  */
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { useSettings, useUpdateOrgSettings } from '@/hooks/settings';
+import { useSettings } from '@/hooks/settings';
 import { useAgentsList } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { Button } from '@/design-system/primitives/Button';
@@ -22,14 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/design-system/primitives/Select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/design-system/primitives/Dialog';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import type { AgentSummary } from '@/lib/api/types';
 import {
@@ -49,8 +42,6 @@ import {
   WorkHoursTabs,
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';
-import { EligibilityEditorDialog } from './EligibilityEditorDialog';
-import { extractServerErrors } from './errors';
 import { useAgentTeamMap } from './useAgentTeamMap';
 
 const PENDING_TICK =
@@ -61,8 +52,6 @@ export function OverviewPage(): JSX.Element {
   const settingsQuery = useSettings();
   const agentsQuery = useAgentsList();
   const teamsQuery = useTeamsList();
-  const mutation = useUpdateOrgSettings();
-  const queryClient = useQueryClient();
 
   const wh = settingsQuery.data?.org.working_hours;
   const agents: AgentSummary[] = useMemo(
@@ -72,11 +61,8 @@ export function OverviewPage(): JSX.Element {
   const agentTeam = useAgentTeamMap();
 
   const [tier, setTier] = useState<Tier | null>(null);
-  const [editEligibility, setEditEligibility] = useState(false);
   const [teamToEdit, setTeamToEdit] = useState<string>('');
-  const [confirmDisable, setConfirmDisable] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const teamNames = useMemo(
     () => (teamsQuery.data?.teams ?? []).map((t) => t.name),
@@ -84,15 +70,6 @@ export function OverviewPage(): JSX.Element {
   );
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 
-  async function setEnabled(next: boolean) {
-    setError(null);
-    try {
-      await mutation.mutateAsync({ working_hours: { enabled: next } });
-      setSavedMsg(PENDING_TICK);
-    } catch (err: unknown) {
-      setError(extractServerErrors(err).join('; '));
-    }
-  }
 
   function onSaved() {
     setSavedMsg(PENDING_TICK);
@@ -116,14 +93,6 @@ export function OverviewPage(): JSX.Element {
         <WorkHoursTabs slug={slug} active="overview" />
         <div className="p-4">
           <RecoveryBanner reason={reason} />
-          <Button
-            variant="outline"
-            onClick={() =>
-              queryClient.invalidateQueries({ queryKey: ['settings', slug] })
-            }
-          >
-            Retry
-          </Button>
         </div>
       </div>
     );
@@ -138,51 +107,39 @@ export function OverviewPage(): JSX.Element {
         {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
         <div className="max-w-content-wide mx-auto p-4">
         {savedMsg && <SavedBanner message={savedMsg} />}
-        {error && (
-          <div
-            role="alert"
-            className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
-          >
-            {error}
-          </div>
-        )}
 
-        {/* Feature switch + entry points */}
+        {/* Read-only status bar + tier editing */}
         <div className="border-border bg-bg-subtle mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3">
           <span className="text-text-primary text-sm font-medium">
-            Feature: work hours
+            Work hours
           </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={wh.enabled}
-            aria-label="Work-hours feature on/off"
-            onClick={() => {
-              if (wh.enabled) setConfirmDisable(true);
-              else void setEnabled(true);
-            }}
-            disabled={mutation.isPending}
-            className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+          <span
+            className={`inline-flex h-5 w-9 items-center rounded-full ${
               wh.enabled ? 'bg-accent' : 'bg-bg-raised border-border border'
             }`}
+            aria-hidden="true"
           >
             <span
-              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
-                wh.enabled ? 'translate-x-4' : 'translate-x-0.5'
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow ${
+                wh.enabled ? 'ml-auto mr-0.5' : 'ml-0.5'
               }`}
             />
-          </button>
+          </span>
           <span className="text-text-muted text-xs">
             {wh.enabled ? 'ON' : 'OFF'}
           </span>
 
           <span className="flex-1" />
 
+          <Link
+            to={`/orgs/${slug}/settings/organization`}
+            className="text-accent-text text-xs hover:underline"
+          >
+            Manage operating control
+          </Link>
+
           <Button variant="outline" size="sm" onClick={() => setTier({ kind: 'org' })}>
             Edit org default
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setEditEligibility(true)}>
-            Edit eligibility
           </Button>
           <div className="flex items-center gap-1">
             <Select
@@ -291,43 +248,6 @@ export function OverviewPage(): JSX.Element {
         />
       )}
 
-      {editEligibility && (
-        <EligibilityEditorDialog
-          open={editEligibility}
-          onOpenChange={setEditEligibility}
-          wh={wh}
-          allAgents={allAgentNames}
-          onSaved={onSaved}
-        />
-      )}
-
-      {/* Confirm-before-disable the global feature switch. */}
-      <Dialog open={confirmDisable} onOpenChange={setConfirmDisable}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Disable work hours?</DialogTitle>
-            <DialogDescription>
-              Turning the feature off halts all scheduled wakes for every agent.
-              Eligibility and tier config are preserved; nothing runs until you
-              turn it back on.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmDisable(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirmDisable(false);
-                void setEnabled(false);
-              }}
-            >
-              Disable
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
