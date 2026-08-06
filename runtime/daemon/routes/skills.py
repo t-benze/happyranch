@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body as RequestBody, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, field_validator
 
 from runtime.config import settings
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _check_optional_token, require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.state import DaemonState
@@ -32,6 +32,16 @@ from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 from runtime.skills.canonical_store import parse_strict_sha256_hash
 
 router = APIRouter(dependencies=[require_token()])
+
+# ── Separate agent-only router (no global bearer requirement) ───────────
+# Used for POST /skills/agent — the agent-session binding B1 create path.
+# This router does NOT use require_token() because the route rejects
+# bearer tokens and uses SessionTracker identity instead.
+agent_skills_router = APIRouter()
+
+def _check_optional_token_dep(request: Request) -> bool:
+    """Check for optional bearer token — identical to auth._check_optional_token."""
+    return _check_optional_token(request)
 
 
 def _recover_audit_event_mandatory(
@@ -1503,4 +1513,352 @@ def skill_recover(
             f"the ArtifactStore (which must be verified against the "
             f"release source for same-owner deployments)."
         ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 B1: POST /skills/agent — verified-agent create-skill route
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Prohibited body keys — same set as proposal route, plus org_slug
+_PROHIBITED_BODY_KEYS_B1 = frozenset({
+    "task_id", "session_id", "proposer_agent",
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+def _get_b1_protected_slugs(org: OrgState) -> frozenset:
+    """Build the live B1 protected-slug set from system contracts + release catalog.
+
+    Consults SYSTEM_CONTRACTS and the runtime skills registry (release-managed
+    skills only). Fails closed: if the registry cannot be loaded, raises
+    HTTP 500 rather than falling back to a stale static list.
+
+    This is the authoritative protected-slug set for the B1 create path only.
+    """
+    from runtime.skills.registry import SkillRegistry
+
+    release_dir = org.settings.project_root / "runtime" / "skills"
+    protected: set[str] = set()
+    if release_dir.is_dir():
+        try:
+            registry = SkillRegistry(skills_root=release_dir)
+            for entry in registry.list_all():
+                entry_obj = entry[0] if isinstance(entry, tuple) else entry
+                slug_val = getattr(entry_obj, 'slug', None)
+                if slug_val:
+                    protected.add(slug_val)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "protected_slugs_unavailable",
+                    "detail": "Cannot load release-managed skill registry. Protected-slug enforcement is mandatory.",
+                },
+            )
+    # Add system contract slugs
+    for sc in SYSTEM_CONTRACTS:
+        protected.add(sc.id)
+    return frozenset(protected)
+
+
+@agent_skills_router.post("/skills/agent", status_code=201)
+def create_skill_agent(
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Package metadata and content (no identity fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token_dep),
+) -> dict:
+    """B1: Create a custom skill via verified agent session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, task_id, agent_name, and session_id from
+    the SessionTracker context (four-part server-authoritative provenance).
+
+    This is an ADDITIONAL verified-agent authoring path. The created skill
+    enters PROPOSED status and is hidden by default. B2 eligibility, human
+    web editor, effective visibility, migration/cutover, and proposal-review
+    resurrection are explicitly deferred.
+
+    Enforced invariants:
+    - No bearer token (401 bearer_not_accepted)
+    - No body identity keys (403 body_identity_rejected)
+    - Valid session with org context
+    - Cross-org denial
+    - Binding lease + active session re-verification
+    - standard_operational only
+    - Protected slug enforcement (system contracts + release registry, live)
+    - Nonempty task brief digest (the task must have a non-blank brief)
+    - Deterministic validation with validator version + findings
+    - Atomic persistence: all B1 provenance (org/task/agent/session,
+      brief digest, content hash, validator version/findings) committed
+      in the SAME transaction as the package
+    - Zero residue on any failure path
+    """
+    import hashlib as _hashlib
+    from runtime.skills.lifecycle.service import LifecycleError, SkillLifecycleService
+    from runtime.skills.lifecycle.models import LifecycleStatus
+
+    _b1_service = SkillLifecycleService()
+    _VALIDATOR_VERSION = "THR-055/1.0.0"
+
+    # ── Reject bearer token ──────────────────────────────────────────
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session skill creation only. "
+                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
+            },
+        )
+
+    # ── Reject ANY prohibited body identity/authority key BEFORE
+    #    any parsing, session lookup, or persistence. ──
+    for key in _PROHIBITED_BODY_KEYS_B1:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the request body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # ── Extract package fields from clean body ───────────────────────
+    slug = body_raw.get("slug", "")
+    name = body_raw.get("name", "")
+    skill_md = body_raw.get("skill_md", "")
+    version = body_raw.get("version", "0.1.0")
+    policy_class = body_raw.get("policy_class", "standard_operational")
+    description = body_raw.get("description", "")
+    references = body_raw.get("references", {}) or {}
+    assets = body_raw.get("assets", {}) or {}
+
+    # ── Resolve session context ──────────────────────────────────────
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        # Cross-org check
+        if verified_org != org.slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{org.slug}'. Org is derived from the server's "
+                              "verified session context.",
+                },
+            )
+    else:
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'.",
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context.",
+            },
+        )
+
+    # ── Acquire binding lease and re-verify session ──────────────────
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not current for "
+                              f"task {task_id} agent {agent_name}.",
+                },
+            )
+
+        # ── Enforce B1 invariants before any persistence ─────────────
+        # 1. policy_class must be standard_operational
+        if policy_class != "standard_operational":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "invalid_policy_class",
+                    "detail": f"B1 only supports standard_operational. "
+                              f"Got: {policy_class}",
+                },
+            )
+
+        # 2. Protected slug enforcement (live registry)
+        protected_slugs = _get_b1_protected_slugs(org)
+        clean_slug = slug.strip()
+        if clean_slug in protected_slugs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "protected_slug",
+                    "detail": f"Slug '{clean_slug}' is protected and cannot be used "
+                              "for a custom skill.",
+                },
+            )
+
+        # 3. Nonempty skill_md with heading
+        if not isinstance(skill_md, str) or not skill_md.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "skill_md_empty",
+                    "detail": "SKILL.md content is empty or missing.",
+                },
+            )
+        if not skill_md.strip().startswith("#"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "skill_md_no_heading",
+                    "detail": "SKILL.md must start with a Markdown heading.",
+                },
+            )
+
+        # 4. Nonempty task brief digest
+        task_record = org.db.get_task(task_id)
+        if task_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "task_not_found",
+                    "detail": f"Task {task_id} not found. "
+                              "The active session must be bound to an existing task.",
+                },
+            )
+        task_brief = (task_record.brief or "").strip()
+        if not task_brief:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "missing_task_brief",
+                    "detail": f"Task {task_id} has no brief. "
+                              "B1 requires a nonempty task brief for provenance digest.",
+                },
+            )
+        task_brief_digest = _hashlib.sha256(task_brief.encode("utf-8")).hexdigest()
+
+        # 5. Required metadata
+        if not slug or not isinstance(slug, str) or not slug.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "missing_slug",
+                    "detail": "Required field 'slug' is missing or empty.",
+                },
+            )
+        if not name or not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "missing_name",
+                    "detail": "Required field 'name' is missing or empty.",
+                },
+            )
+
+        # 6. Deterministic validation — references/assets filename safety
+        validator_findings: list[str] = []
+        validator_reason_codes: list[str] = []
+        for fname in references:
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError as exc:
+                validator_findings.append(f"Invalid reference filename '{fname}': {exc}")
+                validator_reason_codes.append("invalid_reference_filename")
+        for fname in assets:
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError as exc:
+                validator_findings.append(f"Invalid asset filename '{fname}': {exc}")
+                validator_reason_codes.append("invalid_asset_filename")
+
+        # (g) Dry-materialization check
+        try:
+            _dry_materialize(clean_slug, skill_md, references, assets)
+        except Exception as exc:
+            validator_findings.append(f"Dry materialization failed: {exc}")
+            validator_reason_codes.append("materialization_error")
+
+        validation_ok = len(validator_findings) == 0
+
+        # Pack B1 provenance into event metadata — committed atomically
+        # INSIDE the service's existing transaction via extra_event_metadata.
+        b1_event_metadata = {
+            "task_brief_digest": task_brief_digest,
+            "validator_version": _VALIDATOR_VERSION,
+            "validator_ok": validation_ok,
+            "validator_findings": validator_findings,
+            "validator_reason_codes": validator_reason_codes,
+            "b1_create_path": True,
+        }
+
+        # ── Persist via existing SkillLifecycleService ────────────────
+        # All B1 provenance is passed through extra_event_metadata and
+        # committed in the SAME durable transaction as the package + event.
+        try:
+            pkg = _b1_service.submit_proposal(
+                db=org.db,
+                actor_kind="agent",
+                slug=clean_slug,
+                name=name,
+                description=description,
+                skill_md=skill_md,
+                version=version,
+                policy_class=policy_class,
+                references=references,
+                assets=assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose="B1 create-skill — additional verified-agent authoring path",
+                target_agent_suggestion="",
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+                extra_event_metadata=b1_event_metadata,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "create_failed",
+                    "detail": f"Skill creation failed: {exc}",
+                },
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "status": pkg.status.value,
+        "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
+        "proposal_task_id": pkg.proposal_task_id,
+        "provenance": {
+            "verified_org": verified_org,
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "task_brief_digest": task_brief_digest,
+            "validator_version": _VALIDATOR_VERSION,
+            "validation_ok": validation_ok,
+        },
     }

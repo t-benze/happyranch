@@ -776,11 +776,10 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit proposals ONLY through the dedicated
-agent-only route. The legacy dual-auth path is human/founder-only:
+**Agent authority.** Agents may submit proposals and create skills through
+two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
 
-1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
-   authoring workflow: ``happyranch skills propose --from-file <proposal.json>
+1. **Propose session CLI (THR-055 seq 127 corrective).** The proposal
    --session-id <session-id> [--org <slug>]``. The proposal file contains only
    package metadata/content accepted by ``ProposalRequest`` (slug, name,
    description, skill_md, version, policy_class, references, assets, purpose,
@@ -831,12 +830,24 @@ permission/config mutation surface reachable from this API) return server-side
 403 for agent invocations. No agent route may gain an alternate mutation method.
 Human/founder lifecycle authority remains as merged.
 
-**Proposal submission CLI (corrected — opaque session only).** The agent
-submission workflow is described in §4.5 "Agent authority" above. The single
-shipping CLI form is::
+**Proposal submission CLI (corrected — two agent paths).** The two
+agent submission workflows are described in §4.5 "Agent authority" above.
+The shipping CLI forms are::
 
     happyranch skills propose --from-file <proposal.json> \
       --session-id <session-id> [--org <slug>]
+
+    happyranch skills create --from-file <path> \
+      --session-id <session-id> [--org <slug>]
+
+The B1 ``skills create`` path (THR-055 B1) is an ADDITIONAL verified-agent
+authoring route at ``POST /api/v1/orgs/{slug}/skills/agent`` that shares
+the same SessionTracker identity derivation, body-key rejection, and
+binding-lease pattern as the proposal route. The created skill enters
+``proposed`` status, is hidden by default, and carries B1-specific
+provenance (task-brief digest, validator version, findings) committed
+atomically. **B2 eligibility, human editor, effective visibility,
+migration/cutover, and proposal-review resurrection are explicitly deferred.**
 
 There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
 or mechanisms. Identity is derived server-side exclusively from the verified

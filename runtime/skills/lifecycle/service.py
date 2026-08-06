@@ -213,6 +213,7 @@ class SkillLifecycleService:
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
         org_root: Path | str | None = None,
+        extra_event_metadata: dict | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound proposal.
 
@@ -331,6 +332,7 @@ class SkillLifecycleService:
                     "purpose": purpose,
                     "target_agent_suggestion": target_agent_suggestion,
                     "content_artifact_key": content_artifact_key,
+                    **(extra_event_metadata if extra_event_metadata is not None else {}),
                 },
                 task_id=task_id,
                 session_id=session_id,

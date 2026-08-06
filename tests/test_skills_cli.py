@@ -1052,13 +1052,14 @@ class TestSystemContractsCliDisplay:
 
         out = capsys.readouterr().out
         assert "System Contracts (runtime-injected):" in out
-        assert "Total: 6 contract(s)" in out
+        assert "Total: 7 contract(s)" in out
         assert "start-task" in out
         assert "jobs" in out
         assert "make-worktree" in out
         assert "thread" in out
         assert "dream" in out
         assert "todos" in out
+        assert "create-skill" in out
         # Managed catalog section still present
         assert "Effective skills" in out
 
@@ -1077,13 +1078,14 @@ class TestSystemContractsCliDisplay:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "system_contracts" in data
-        assert len(data["system_contracts"]) == 6
+        assert len(data["system_contracts"]) == 7
         ids = [sc["id"] for sc in data["system_contracts"]]
         assert "start-task" in ids
         assert "jobs" in ids
         assert "make-worktree" in ids
         assert "thread" in ids
         assert "dream" in ids
+        assert "create-skill" in ids
         # Existing keys still present
         assert "effective_skills" in data
         assert "blocked_skills" in data
