@@ -1,6 +1,6 @@
-# THR-055 Skill Proposal Review — Server Contract & UI Slices
+# THR-055 Skill Proposal Review — Server Contract & UI Slices (RETIRED)
 
-**Status:** Current (2026-08-03) — supersedes §4.5 lifecycle wording in protocol/05c-orchestrator.md for the review surface.
+**Status:** Retired by founder direction (THR-055 seq 317, TASK-4749). This is historical context only, not a current server, API, or UI contract. The proposal queue, detail, and review-action routes are removed. The separate verified-agent B1 `happyranch skills create` / `POST /skills/agent` path remains supported with server-derived provenance and default-hidden behavior; it is not a proposal-review replacement.
 
 **Approved sources:** TASK-4045 design handoff, TASK-4098 (Slice 2A), TASK-4128 (Slice 2B), TASK-4154 (Slice 3A), TASK-4312 (THR-136 bounded review actions), protocol/05c-orchestrator.md §4.5.
 
