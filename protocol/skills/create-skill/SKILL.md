@@ -4,9 +4,9 @@ description: >
   Verified-agent custom-skill authoring from an active task session.
   Creates a standard_operational custom skill with server-verified
   task/session/agent/org provenance. This is an ADDITIONAL verified-agent
-  authoring path; the skill enters PROPOSED status and is hidden by default.
-  B2 eligibility, human web editor, effective visibility, migration/cutover,
-  and the retired Founder proposal-review workflow is explicitly out of scope.
+  authoring path; the skill is hidden by default. Eligibility and the Founder
+  web editor are separate supported surfaces. The legacy proposal-review
+  workflow and `happyranch skills propose` are retired.
 ---
 
 # create-skill
@@ -29,9 +29,9 @@ injected only for TASK sessions with repo access.
 - On success, the server records an immutable version with a canonical
   content hash, validator version, findings, task/session/agent/org provenance,
   and a nonempty task-brief digest.
-- The created skill enters PROPOSED status and is **hidden by default**.
-  No agent sees it and no materialization occurs until a founder configures
-  eligibility (deferred to B2).
+- The created skill is **hidden by default**. No agent sees it or receives
+  materialization until the Founder configures eligibility through the
+  supported policy surface.
 
 ## What create-skill does NOT do
 
@@ -136,12 +136,10 @@ the entire transaction rolls back with zero residue.
 - Validation failure → HTTP 422 with structured error codes.
 - Server error → HTTP 500 with detail.
 
-## Deferred to B2 and later
+## Not part of this agent path
 
-- Eligibility configuration (org/team/agent scope, additive inheritance,
-  explicit deny).
-- Human web editor for custom skills.
-- Effective visibility / materialization of custom skills.
-- Migration/cutover from legacy proposal workflow.
+- Eligibility configuration or any visibility write.
+- Founder web editing (it is a separate bearer-authenticated console flow).
 - `high_impact_policy` custom skills.
-- Resurrection of the retired Founder proposal-review workflow.
+- `happyranch skills propose` or any proposal/review/publish action; those
+  legacy surfaces are retired and intentionally absent.
