@@ -937,9 +937,10 @@ optionally ``recurrence`` and ``timezone``.  The server enforces:
   NL instruction) and ``normalized_brief`` (the structured normalized brief)
   are mandatory.  Natural-language-only arming (without normalization)
   is refused.
-- **Capability gate (default-deny):** the agent must be listed in
-  ``scheduling.enabled_agents`` in ``org/config.yaml``.  Omission, empty
-  list, and missing key all reject with 409 ``scheduling_disabled``.
+- **In-org availability:** every agent with a valid active session and a
+  resolvable in-org team may create a self-owned Todo. Legacy
+  ``scheduling.enabled_agents`` config is accepted as a no-op and does not
+  authorize or deny creation.
 - **Caps and defaults:** the 20-per-agent / 100-org-wide armed caps, 90-day
   one-shot horizon, weekly shape validation (single weekday + HH:MM + IANA
   timezone only), and 90-day recurring expiry are enforced at create time

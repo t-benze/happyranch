@@ -32,7 +32,6 @@ def _seed_one_shot(
         timezone="Asia/Shanghai",
         normalized_brief=brief,
         source_instruction=instruction,
-        scheduling_enabled=True,
     )
     return record.id
 
@@ -52,7 +51,6 @@ def _seed_weekly(
         timezone="Asia/Shanghai",
         normalized_brief="Test weekly todo",
         source_instruction="Test weekly instruction",
-        scheduling_enabled=True,
     )
     return record.id
 

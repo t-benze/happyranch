@@ -80,7 +80,6 @@ def test_create_one_shot_success(tmp_path, frozen_clock):
         timezone="Asia/Shanghai",
         normalized_brief="Follow up with customer",
         source_instruction="Follow up in 48 hours",
-        scheduling_enabled=True,
     )
     assert record.id.startswith("SCHEDULE-")
     assert record.agent_name == "dev_agent"
@@ -115,7 +114,6 @@ def test_create_weekly_success(tmp_path, frozen_clock):
         timezone="Asia/Shanghai",
         normalized_brief="Send weekly market update",
         source_instruction="Every Saturday, send the weekly market update",
-        scheduling_enabled=True,
     )
     assert record.kind == ScheduleKind.WEEKLY
     assert record.recurrence == rec
@@ -128,13 +126,14 @@ def test_create_weekly_success(tmp_path, frozen_clock):
     assert audit_rows[0]["payload"]["kind"] == "weekly"
 
 
-# ── capability gate ──────────────────────────────────────────────────────
+# ── capability API removed ───────────────────────────────────────────────
 
-def test_create_rejects_when_scheduling_disabled(tmp_path, frozen_clock):
+def test_create_does_not_accept_scheduling_capability_argument(tmp_path, frozen_clock):
+    """Authorization belongs to the session-bound route, not this service."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
-    with pytest.raises(ScheduleServiceError, match="scheduling is not enabled"):
+    with pytest.raises(TypeError, match="unexpected keyword argument 'scheduling_enabled'"):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
@@ -142,38 +141,6 @@ def test_create_rejects_when_scheduling_disabled(tmp_path, frozen_clock):
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=False,
-        )
-
-
-def test_create_rejects_when_scheduling_capability_omitted(tmp_path, frozen_clock):
-    """Omitted scheduling capability must default-deny (reviewer finding #1)."""
-    db = Database(tmp_path / "db.sqlite")
-    svc = ScheduleService(db)
-
-    with pytest.raises(ScheduleServiceError, match="scheduling is not enabled"):
-        svc.create(
-            agent_name="dev_agent", team="engineering",
-            kind=ScheduleKind.ONE_SHOT,
-            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
-            recurrence=None, timezone="UTC",
-            normalized_brief="x", source_instruction="x",
-            # scheduling_enabled NOT passed
-        )
-
-
-def test_create_rejects_when_scheduling_capability_none(tmp_path, frozen_clock):
-    """Explicit None scheduling capability must be rejected."""
-    db = Database(tmp_path / "db.sqlite")
-    svc = ScheduleService(db)
-
-    with pytest.raises(ScheduleServiceError, match="scheduling is not enabled"):
-        svc.create(
-            agent_name="dev_agent", team="engineering",
-            kind=ScheduleKind.ONE_SHOT,
-            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
-            recurrence=None, timezone="UTC",
-            normalized_brief="x", source_instruction="x",
-            scheduling_enabled=None,
         )
 
 
@@ -188,7 +155,6 @@ def test_create_rejects_blank_source_instruction(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="   ",
-            scheduling_enabled=True,
         )
 
 
@@ -203,7 +169,6 @@ def test_create_rejects_blank_normalized_brief(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -219,7 +184,6 @@ def test_create_rejects_invalid_one_shot_horizon(tmp_path, frozen_clock):
             kind=ScheduleKind.ONE_SHOT,
             fire_at=far, recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -236,7 +200,6 @@ def test_create_one_shot_rejects_past_fire_at(tmp_path, frozen_clock):
             kind=ScheduleKind.ONE_SHOT,
             fire_at=past, recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
     # No row was inserted
@@ -256,7 +219,6 @@ def test_create_rejects_invalid_weekly_recurrence(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=4, hours=1),
             recurrence=bad_rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -273,7 +235,6 @@ def test_create_rejects_unsupported_recurrence(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=4, hours=1),
             recurrence=bad_rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -297,7 +258,6 @@ def test_create_rejects_agent_cap_exceeded(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -322,7 +282,6 @@ def test_create_rejects_org_cap_exceeded(tmp_path, frozen_clock):
             fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -338,7 +297,6 @@ def test_get_returns_record(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     got = svc.get(r.id)
@@ -358,7 +316,6 @@ def test_list_all_and_filtered(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="a", source_instruction="a",
-        scheduling_enabled=True,
     )
     mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     svc.create(
@@ -368,7 +325,6 @@ def test_list_all_and_filtered(tmp_path, frozen_clock):
         recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
         timezone="UTC",
         normalized_brief="b", source_instruction="b",
-        scheduling_enabled=True,
     )
 
     assert len(svc.list()) == 2
@@ -388,7 +344,6 @@ def test_pause_success(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     paused = svc.pause(r.id, "dev_agent")
@@ -450,7 +405,6 @@ def test_cancel_success_from_armed(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     cancelled = svc.cancel(r.id, "dev_agent")
@@ -472,7 +426,6 @@ def test_cancel_success_from_paused(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     svc.pause(r.id, "dev_agent")
 
@@ -541,7 +494,6 @@ def test_edit_success_revalidates(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="old brief", source_instruction="old instruction",
-        scheduling_enabled=True,
     )
 
     edited = svc.edit(r.id, "dev_agent",
@@ -604,7 +556,6 @@ def test_edit_rejects_invalid_after_edit(tmp_path, frozen_clock):
         recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
         timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     # Try to set an invalid recurrence
@@ -638,7 +589,6 @@ def test_edit_rejects_normalized_brief(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="original brief", source_instruction="original instruction",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -660,7 +610,6 @@ def test_edit_rejects_source_instruction(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="original brief", source_instruction="original instruction",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -682,7 +631,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_status(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -704,7 +652,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_active(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -725,7 +672,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_created_at(tmp_path, frozen_cloc
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     new_ts = _FROZEN_NOW - timedelta(days=21)
@@ -747,7 +693,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_updated_at(tmp_path, frozen_cloc
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -765,7 +710,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_spawned_task_ids(tmp_path, froze
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -783,7 +727,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_last_fired_at(tmp_path, frozen_c
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -801,7 +744,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_fire_count(tmp_path, frozen_cloc
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -819,7 +761,6 @@ def test_edit_rejects_arbitrary_lifecycle_field_expires_at(tmp_path, frozen_cloc
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
@@ -839,7 +780,6 @@ def test_edit_succeeds_from_paused(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     svc.pause(r.id, "dev_agent")
 
@@ -863,7 +803,6 @@ def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path, froz
             recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
             timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -880,7 +819,6 @@ def test_create_one_shot_rejects_cron_recurrence(tmp_path, frozen_clock):
             recurrence={"cron": "* * * * *"},
             timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
 
@@ -895,7 +833,6 @@ def test_edit_one_shot_rejects_adding_recurrence(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="one-shot"):
@@ -913,7 +850,6 @@ def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path, frozen_
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     try:
@@ -939,7 +875,6 @@ def test_edit_one_shot_accepts_null_recurrence(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     edited = svc.edit(r.id, "dev_agent", recurrence=None)
@@ -961,7 +896,6 @@ def test_create_weekly_indefinite_skips_expiry(tmp_path, frozen_clock):
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
         indefinite=True,
     )
     assert record.indefinite == 1
@@ -978,7 +912,6 @@ def test_create_one_shot_has_no_expiry(tmp_path, frozen_clock):
         fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     assert record.expires_at is None
 
@@ -1006,7 +939,6 @@ def test_create_weekly_rejects_past_fire_at(tmp_path, frozen_clock):
             fire_at=past,
             recurrence=rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
     # No row was inserted
@@ -1030,7 +962,6 @@ def test_create_weekly_rejects_mismatched_weekday(tmp_path, frozen_clock):
             fire_at=tue,
             recurrence=rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
     assert len(svc.list()) == 0
@@ -1053,7 +984,6 @@ def test_create_weekly_rejects_mismatched_time(tmp_path, frozen_clock):
             fire_at=mon_10,
             recurrence=rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
     assert len(svc.list()) == 0
@@ -1073,7 +1003,6 @@ def test_create_weekly_accepts_normalized_fire_at(tmp_path, frozen_clock):
         fire_at=correct,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     assert record.fire_at == correct
     assert record.status == ScheduleStatus.ARMED
@@ -1099,7 +1028,6 @@ def test_edit_weekly_rejects_mismatched_fire_at(tmp_path, frozen_clock):
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     # Try to set fire_at to Tuesday (wrong weekday)
@@ -1126,7 +1054,6 @@ def test_edit_weekly_accepts_valid_fire_at(tmp_path, frozen_clock):
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
-        scheduling_enabled=True,
     )
 
     # Edit timezone only — fire_at stays the same.
@@ -1153,7 +1080,6 @@ def test_edit_weekly_rejects_recurrence_change_without_matching_fire_at(tmp_path
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     # Change day from Mon → Sat — stored fire_at (next Mon) won't match.
@@ -1183,7 +1109,6 @@ def test_edit_weekly_rejects_recurrence_tz_change_without_timezone(tmp_path, fro
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     # Change recurrence.tz → diverges from stored timezone.
@@ -1212,7 +1137,6 @@ def test_edit_weekly_rejects_tz_change_without_matching_fire_at(tmp_path, frozen
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
 
     new_rec = {"day": "Mon", "time": "09:00", "tz": "America/New_York"}
@@ -1241,7 +1165,6 @@ def test_edit_weekly_accepts_atomically_consistent_change(tmp_path, frozen_clock
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
-        scheduling_enabled=True,
     )
 
     # Change to Saturday — pass all three fields consistently.
@@ -1274,7 +1197,6 @@ def test_edit_weekly_past_fire_at_rejected_and_row_unchanged(tmp_path, frozen_cl
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
-        scheduling_enabled=True,
     )
 
     # Try to set fire_at to a past date
@@ -1310,7 +1232,6 @@ def test_create_weekly_rejects_divergent_timezone(tmp_path, frozen_clock):
             recurrence=rec,
             timezone="UTC",  # diverges from recurrence["tz"]=Asia/Shanghai
             normalized_brief="x", source_instruction="x",
-            scheduling_enabled=True,
         )
 
     # No row was inserted
@@ -1332,7 +1253,6 @@ def test_create_weekly_derives_timezone_from_recurrence(tmp_path, frozen_clock):
         recurrence=rec,
         timezone="Asia/Shanghai",
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     assert record.timezone == "Asia/Shanghai"
     assert record.recurrence["tz"] == "Asia/Shanghai"
@@ -1353,7 +1273,6 @@ def test_create_weekly_derives_timezone_when_omitted(tmp_path, frozen_clock):
         recurrence=rec,
         timezone="",  # empty
         normalized_brief="x", source_instruction="x",
-        scheduling_enabled=True,
     )
     assert record.timezone == "America/New_York"
 
@@ -1372,7 +1291,6 @@ def test_edit_weekly_rejects_divergent_timezone(tmp_path, frozen_clock):
         fire_at=mon_fire,
         recurrence=rec, timezone="Asia/Shanghai",
         normalized_brief="old", source_instruction="old",
-        scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="timezone.*must match"):
@@ -1398,7 +1316,6 @@ def test_edit_weekly_rejects_recurrence_tz_and_timezone_mismatch(tmp_path, froze
         fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
-        scheduling_enabled=True,
     )
 
     # recurrence.tz != timezone
