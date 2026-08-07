@@ -105,6 +105,6 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 Before editing any function, class, or method: state the blast radius before making the edit — search for its call sites (`rg` for the symbol name, its imports, and its references) and name the direct callers, affected modules, and a risk level (LOW/MEDIUM/HIGH) to the user. Stop and escalate explicitly before proceeding if risk is HIGH.
 
-Before committing: run `git diff --stat` plus a targeted `rg` sweep for the changed symbol/import/call-site names, and run focused tests covering the changed behavior (`uv run python -m pytest <path> -v` for Python, `npm run test` in `web/` for TS). This is the evidence bundle a reviewer checks against the blast radius stated in Step 1 — the diff should only touch what was declared.
+Before committing: run `git diff --stat` plus a targeted `rg` sweep for the changed symbol/import/call-site names, and run focused tests covering the changed behavior (`uv run python -m pytest <path> -v` for Python, `npx vitest run <path>` in `web/` for TS). This is the evidence bundle a reviewer checks against the blast radius stated before the edit — the diff should only touch what was declared.
 
 Do not rename symbols with a blind find-and-replace across the repo — confirm all call sites with `rg` first. A rename that misses a dynamic reference (string-based dispatch, a config-driven agent name, etc.) fails silently at runtime instead of at compile time.
