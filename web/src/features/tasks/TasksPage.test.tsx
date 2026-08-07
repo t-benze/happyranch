@@ -1542,6 +1542,30 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     expect(within(rail).getByText('Created')).toBeInTheDocument();
   });
 
+  test('wraps multiple job links within the property rail in returned order (THR-137)', async () => {
+    const jobs = [
+      { ...JOB, id: 'JOB-0338' },
+      { ...JOB, id: 'JOB-0337' },
+      { ...JOB, id: 'JOB-0336' },
+      { ...JOB, id: 'JOB-0335' },
+    ];
+    stubHandlers(jobs);
+    const rail = await mountAndGetRail();
+
+    const jobRow = within(rail).getByText('Job').closest('div') as HTMLElement;
+    const links = within(jobRow).getAllByRole('link');
+    expect(links.map((link) => link.textContent)).toEqual(jobs.map((job) => job.id));
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(
+      jobs.map((job) => `/orgs/${SLUG}/jobs/${job.id}`),
+    );
+
+    // jsdom cannot assert geometry; lock the Job-only shrink-and-wrap contract instead.
+    const value = jobRow.querySelector('dd') as HTMLElement;
+    expect(value).toHaveClass('min-w-0', 'flex-1');
+    expect(value).not.toHaveClass('min-w-max');
+    expect(value.firstElementChild).toHaveClass('flex', 'flex-wrap');
+  });
+
   test('honestly omits fields with no backing payload (Executor / Churn / Priority)', async () => {
     stubHandlers([JOB]);
     const rail = await mountAndGetRail();
