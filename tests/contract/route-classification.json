@@ -139,7 +139,8 @@
     "POST /api/v1/runtime/adapters/{adapter_id}/approve",
     "POST /api/v1/runtime/adapters/{adapter_id}/reject",
     "GET /api/v1/runtime/adapters",
-    "GET /api/v1/runtime/adapters/contract-reference"
+    "GET /api/v1/runtime/adapters/contract-reference",
+    "POST /api/v1/runtime/custom-cli/connect"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",

@@ -94,17 +94,24 @@ submissions must create the wrapper at exactly this path; the route and
 registration seam independently enforce canonical placement. The
 master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
 
-**THR-107 Slice 1A mint authority foundation.** A master-authenticated runtime
+**THR-107 direct-connect pre-projection authority.** A master-authenticated runtime
 adapter-purpose token mint may additionally carry an exact first-party
 ``workspace_adapter_id``. When present, the daemon writes only a
-domain-separated one-way token fingerprint and server-derived intent into a
-separate runtime-root SQLite authority store. These ``minted_nonlaunchable``
-rows are not profiles, adapters, projections, connection state, or launch
-eligibility; no direct-connect ingress, runner, Popen, or UI behavior is
-introduced by this foundation. Legacy adapter mints without the optional field
-remain the existing PENDING-submission path. Later serial slices own direct
-ingress, projection/receipt/compensation, COMMITTED eligibility, and the final
-Connect-to-Connected lifecycle.
+domain-separated one-way token fingerprint, frozen first-party workspace
+adapter, and the exact public contract-reference wrapper target
+``<daemon-home>/adapters/<canonical-adapter-id>`` into a daemon-global SQLite
+authority store. The registration-token-only, loopback
+``POST /api/v1/runtime/custom-cli/connect`` route accepts metadata and a
+direct-only v2 child manifest, never a wrapper path, profile, adapter ID, or
+workspace adapter selector. It validates the already-present immutable wrapper
+and explicit, same-path upgradeable children before atomically recording one
+``pre_projection`` operation plus append-only event. A malformed known direct
+request is terminalized; stale private Slice-1A targets require a fresh mint.
+No YAML profile, adapter store, registry projection, executor construction, or
+Popen is performed at this boundary. Legacy adapter mints without the optional
+field retain the existing PENDING-submission path. Receipt-backed projection,
+COMMITTED eligibility, retained-handle pre-Popen validation, and the final
+Connect-to-Connected UI cutover remain deferred.
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,

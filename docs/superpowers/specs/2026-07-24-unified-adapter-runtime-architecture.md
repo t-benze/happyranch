@@ -885,6 +885,7 @@ not the orchestration layer.
 | P7 | Extended `ExecutorProfile` with `adapter_version`, `capabilities`, `bootstrap_file`, `contract_version`, `provenance` | Proposed this spec §6.1; additive-only |
 | P8 | `workspace_adapter` vs `command_adapter` split in profile model | ~~Proposed~~ → **APPROVED and IMPLEMENTED as D6** (PR TASK-3434, founder seq115). Canonical `workspace_adapter_id` + `command_adapter_id` with deprecated aliases, dual-read, conflict detection, no auto-mutation. |
 | P9 | Migration phases 0–4 (inventory → encapsulation → opt-in → default change) | Proposed this spec §7; each phase requires explicit founder authorization |
+| P10 | Direct custom-CLI pre-projection intake | **IMPLEMENTED (THR-107 Slice 1B):** a registration-token-only loopback route derives all wrapper/profile/adapter authority from a fingerprint-bound mint, validates the existing public canonical wrapper and v2 explicit child manifest, then records only a durable ``pre_projection`` operation/event. No YAML/registry projection, COMMITTED eligibility, launcher change, or normal UI cutover occurs in this slice. |
 
 ### 9.3 Exact Founder-Gated Decisions Required Before Any Build
 

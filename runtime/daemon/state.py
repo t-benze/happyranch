@@ -15,7 +15,7 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
-from runtime.runtime import RuntimeDir
+from runtime.runtime import RuntimeDir, daemon_home
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class DaemonState:
         if self.runtime is not None and self.direct_connect_authority_store is None:
             self.direct_connect_authority_store = DirectConnectAuthorityStore(
                 self.runtime.root / "direct_connect_authority.db",
-                runtime_root=self.runtime.root,
+                runtime_root=daemon_home(),
             )
 
     @classmethod

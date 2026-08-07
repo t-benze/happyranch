@@ -17,6 +17,7 @@ from runtime.daemon.routes import (
     audit,
     auth,
     dashboard,
+    direct_connect,
     dreams,
     executor_binaries,
     executors,
@@ -373,6 +374,9 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(executors.router, prefix="/api/v1/orgs/{slug}", tags=["executors"])
     app.include_router(executors.runtime_router, prefix="/api/v1", tags=["executors-runtime"])
     app.include_router(executor_binaries.router, prefix="/api/v1", tags=["executor-binaries"])
+    # Direct custom-CLI intake deliberately precedes every master-bearer or
+    # catch-all adapter route. It accepts only a scoped registration token.
+    app.include_router(direct_connect.router, prefix="/api/v1", tags=["direct-connect"])
     # seq184 contract-reference endpoint — isolated from master-bearer auth;
     # accepts ONLY registration-token auth (loopback + hrreg_ token, adapter-purpose).
     # Read-only; does not consume the token.

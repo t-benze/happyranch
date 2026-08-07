@@ -100,16 +100,22 @@ version, and session-id echo enforced before mapping any result; subprocess-only
 (no Python import/discovery); PENDING adapters cannot bind or launch; D5
 baseline-only permission posture.
 
-**THR-107 Slice 1A mint authority foundation.** The existing
+**THR-107 direct-connect pre-projection authority.** The existing
 master-authenticated runtime adapter-purpose mint optionally accepts an exact
 first-party ``workspace_adapter_id`` and persists a nonsecret,
-domain-separated fingerprint plus server-derived intent in daemon-global
-runtime-root SQLite. The new ``minted_nonlaunchable`` authority has no
-projection, profile/adapter state, scoped direct-connect route, executor
-eligibility, or runner effect. Existing adapter mints that omit the optional
-field retain the legacy PENDING submission behavior. Direct ingress,
-COMMITTED/receipt/compensation lifecycle, launcher fencing, and UI changes are
-explicit later serial slices.
+domain-separated fingerprint plus a frozen public canonical wrapper target in
+daemon-global SQLite. Its loopback, registration-token-only direct ingress is
+``POST /api/v1/runtime/custom-cli/connect`` and is mounted before the
+master-bearer adapter router. The request has ``extra=forbid`` and carries only
+metadata plus a v2 manifest of explicit same-path upgradeable children; all
+wrapper/profile/adapter/workspace authority is derived from the mint. Validated
+intake writes a durable append-only event and an explicitly nonlaunchable
+``pre_projection`` operation. Known malformed direct input terminalizes its
+authority before ordinary model rejection. There is still no profile/adapter
+projection, registry write, executor eligibility, runner effect, or Popen.
+Existing adapter mints that omit the optional field retain the legacy PENDING
+submission behavior. Receipt/compensation projection, COMMITTED launcher
+fencing, and Settings/onboarding cutover remain later serial work.
 
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest
