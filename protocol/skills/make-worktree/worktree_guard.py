@@ -183,120 +183,6 @@ def _baseline_primary(primary: Path) -> dict:
     return baseline
 
 
-def _maybe_install_happyranch_pre_push(
-    worktree: Path,
-    primary: Path,
-    task_id: str | None = None,
-) -> None:
-    """Install a mandatory pre-push hook for HappyRanch linked worktrees.
-
-    Only acts when the worktree contains BOTH ``scripts/local_ci.sh`` and
-    ``scripts/hooks/pre-push.local-ci.sample`` (the HappyRanch fingerprint).
-    Outside HappyRanch repos this is a no-op.
-
-    Installation:
-    - Uses ``git rev-parse --git-dir`` to find this worktree's Git metadata
-      directory (NOT the primary checkout's ``.git/hooks``).
-    - Creates a dedicated ``happyranch-hooks/`` subdirectory under it.
-    - Copies the sample hook as ``pre-push`` inside that directory and
-      makes it executable.
-    - Runs ``git config --worktree core.hooksPath`` scoped to THIS linked
-      worktree only.
-    - Does NOT overwrite, delete, or reconfigure the normal checkout's
-      existing pre-push hook or hooks path.
-    - Fails closed with an actionable diagnostic if any mandatory step
-      cannot complete.
-    """
-    local_ci = worktree / "scripts" / "local_ci.sh"
-    sample_hook = worktree / "scripts" / "hooks" / "pre-push.local-ci.sample"
-
-    # Not a HappyRanch repo — no-op
-    if not (local_ci.is_file() and sample_hook.is_file()):
-        return
-
-    # This is a HappyRanch worktree — installation is mandatory.
-    # Determine the worktree's dedicated git metadata directory.
-    git_dir_out = _git_out(worktree, "rev-parse", "--git-dir")
-    if not git_dir_out:
-        print("ERROR: HappyRanch worktree detected but cannot run 'git rev-parse --git-dir'.",
-              file=sys.stderr)
-        print("  Worktree root: " + str(worktree), file=sys.stderr)
-        print("  Pre-push hook installation is mandatory for agent worktrees.", file=sys.stderr)
-        print("  Corrective: verify this is a valid git worktree and retry.", file=sys.stderr)
-        sys.exit(1)
-
-    git_dir = _canonical(git_dir_out)
-    hooks_dir = git_dir / "happyranch-hooks"
-
-    # Enable the worktreeConfig extension so `git config --worktree`
-    # writes to this worktree's dedicated config.worktree file instead
-    # of the shared config. Must be done at the primary repo level.
-    ext_result = _run_git(
-        primary, "config", "extensions.worktreeConfig", "true",
-    )
-    if ext_result.returncode != 0:
-        print("ERROR: Cannot enable worktreeConfig extension for mandatory pre-push hook.",
-              file=sys.stderr)
-        print("  Primary root: " + str(primary), file=sys.stderr)
-        if ext_result.stderr:
-            print("  git error: " + ext_result.stderr.strip(), file=sys.stderr)
-        sys.exit(1)
-
-    # Create the dedicated hooks directory
-    try:
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print("ERROR: Cannot create hooks directory for mandatory pre-push hook.",
-              file=sys.stderr)
-        print("  Hooks dir: " + str(hooks_dir), file=sys.stderr)
-        print("  Reason: " + str(exc), file=sys.stderr)
-        sys.exit(1)
-
-    # Copy the sample hook as pre-push
-    pre_push_path = hooks_dir / "pre-push"
-    try:
-        pre_push_path.write_bytes(sample_hook.read_bytes())
-    except OSError as exc:
-        print("ERROR: Cannot copy pre-push hook into hooks directory.",
-              file=sys.stderr)
-        print("  Source: " + str(sample_hook), file=sys.stderr)
-        print("  Dest:   " + str(pre_push_path), file=sys.stderr)
-        print("  Reason: " + str(exc), file=sys.stderr)
-        sys.exit(1)
-
-    # Make it executable
-    try:
-        pre_push_path.chmod(0o755)
-    except OSError as exc:
-        print("ERROR: Cannot make pre-push hook executable.",
-              file=sys.stderr)
-        print("  Path:   " + str(pre_push_path), file=sys.stderr)
-        print("  Reason: " + str(exc), file=sys.stderr)
-        sys.exit(1)
-
-    # Write worktree-local core.hooksPath via `git config --worktree`.
-    # This sets the config ONLY for this linked worktree (stored in
-    # the worktree's own config), never the primary checkout.
-    config_result = _run_git(
-        worktree, "config", "--worktree", "core.hooksPath", str(hooks_dir),
-    )
-    if config_result.returncode != 0:
-        print("ERROR: Cannot set worktree-local core.hooksPath for mandatory pre-push hook.",
-              file=sys.stderr)
-        print("  Worktree root: " + str(worktree), file=sys.stderr)
-        print("  Hooks dir:     " + str(hooks_dir), file=sys.stderr)
-        if config_result.stderr:
-            print("  git error: " + config_result.stderr.strip(), file=sys.stderr)
-        sys.exit(1)
-
-    task_label = task_id if task_id else "(unknown)"
-    print("HappyRanch worktree detected: mandatory pre-push hook installed.")
-    print(f"  Task:        {task_label}")
-    print(f"  Hooks dir:   {hooks_dir}")
-    print(f"  Hook:        {pre_push_path} (executable)")
-    print(f"  Config:      core.hooksPath = {hooks_dir} (worktree-local)")
-    print(f"  Command:     scripts/local_ci.sh all")
-
 
 def cmd_setup(
     worktree_root: str,
@@ -373,8 +259,6 @@ def cmd_setup(
             print(f"  Worktree root:    {wt}", file=sys.stderr)
             sys.exit(1)
 
-    # ── HappyRanch worktree: install mandatory pre-push hook ───────
-    _maybe_install_happyranch_pre_push(wt, pr, task_id)
 
     # ── Baseline primary checkout state ─────────────────────────────
     baseline = _baseline_primary(pr)
