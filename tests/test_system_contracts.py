@@ -166,7 +166,7 @@ class TestSystemContractsTuple:
         assert "`git push --no-verify` remains forbidden" in normalized
         assert "Human normal checkout" in normalized
         assert "opt-in" in normalized
-        assert '"script": "cd /absolute/path/to/happyranch && git push -u origin task/TASK-4729\\n"' in source
+        assert '"script": "cd /absolute/path/to/repository && git push -u origin task/TASK-4729\\n"' in source
         assert "scripts/local_ci.sh all && git push" not in source
 
     def test_make_worktree_contexts(self):

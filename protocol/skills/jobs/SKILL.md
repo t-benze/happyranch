@@ -98,7 +98,7 @@ Safe push-only publish job example:
 
 ```json
 {
-  "script": "cd /absolute/path/to/happyranch && git push -u origin task/TASK-4729\n"
+  "script": "cd /absolute/path/to/repository && git push -u origin task/TASK-4729\n"
 }
 ```
 
