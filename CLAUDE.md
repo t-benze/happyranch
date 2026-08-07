@@ -101,48 +101,10 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.
 - Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run python -m pytest tests/contract/test_openapi_snapshot.py`.
 
-## GitNexus
+## Change Impact Analysis
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+Before editing any function, class, or method: state the blast radius before making the edit — search for its call sites (`rg` for the symbol name, its imports, and its references) and name the direct callers, affected modules, and a risk level (LOW/MEDIUM/HIGH) to the user. Stop and escalate explicitly before proceeding if risk is HIGH.
 
-This project is indexed by GitNexus as **TASK-4376** (34671 symbols, 82652 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+Before committing: run `git diff --stat` plus a targeted `rg` sweep for the changed symbol/import/call-site names, and run focused tests covering the changed behavior (`uv run python -m pytest <path> -v` for Python, `npm run test` in `web/` for TS). This is the evidence bundle a reviewer checks against the blast radius stated in Step 1 — the diff should only touch what was declared.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/TASK-4376/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/TASK-4376/clusters` | All functional areas |
-| `gitnexus://repo/TASK-4376/processes` | All execution flows |
-| `gitnexus://repo/TASK-4376/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+Do not rename symbols with a blind find-and-replace across the repo — confirm all call sites with `rg` first. A rename that misses a dynamic reference (string-based dispatch, a config-driven agent name, etc.) fails silently at runtime instead of at compile time.
