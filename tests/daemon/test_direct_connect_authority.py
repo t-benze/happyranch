@@ -92,7 +92,10 @@ def test_readback_failure_rolls_back_authority_row(tmp_path, monkeypatch) -> Non
     assert store.count() == 0
 
 
-@pytest.mark.parametrize("workspace_adapter_id", ["", " ", "claude-code", "generic-cli", "Claude"])
+@pytest.mark.parametrize(
+    "workspace_adapter_id",
+    ["", " ", "arbitrary", "claude-code", "codex ", "generic-cli", "Claude"],
+)
 def test_runtime_mint_rejects_invalid_workspace_adapter_without_authority_write(
     client, daemon_state, workspace_adapter_id
 ) -> None:
@@ -229,7 +232,12 @@ def test_runtime_mint_openapi_exposes_optional_direct_workspace_adapter() -> Non
 
     schemas = create_app(DaemonState.idle(Settings())).openapi()["components"]["schemas"]
     schema = schemas["RuntimeRegistrationTokenMintRequest"]
-    assert schema["properties"]["workspace_adapter_id"]
+    workspace_adapter = schema["properties"]["workspace_adapter_id"]
+    allowed_adapter_schema = next(
+        variant for variant in workspace_adapter["anyOf"] if "enum" in variant
+    )
+    assert allowed_adapter_schema["enum"] == ["claude", "codex", "opencode", "pi"]
+    assert {variant["type"] for variant in workspace_adapter["anyOf"]} == {"string", "null"}
     assert "workspace_adapter_id" not in schema.get("required", [])
 
 

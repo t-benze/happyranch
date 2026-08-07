@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
@@ -23,6 +25,7 @@ from runtime.daemon.direct_connect_store import FIRST_PARTY_WORKSPACE_ADAPTER_ID
 router = APIRouter()
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+WorkspaceAdapterId = Literal["claude", "codex", "opencode", "pi"]
 
 
 @router.get("/auth/bootstrap")
@@ -68,7 +71,7 @@ class RuntimeRegistrationTokenMintRequest(BaseModel):
         min_length=1,
         description="For 'adapter' purpose: the profile name this adapter is bound to"
     )
-    workspace_adapter_id: str | None = Field(
+    workspace_adapter_id: WorkspaceAdapterId | None = Field(
         None,
         description=(
             "Optional Slice-1A direct-authority workspace adapter. Accepted only "
