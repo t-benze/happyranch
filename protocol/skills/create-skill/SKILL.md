@@ -6,7 +6,7 @@ description: >
   task/session/agent/org provenance. This is an ADDITIONAL verified-agent
   authoring path; the skill enters PROPOSED status and is hidden by default.
   B2 eligibility, human web editor, effective visibility, migration/cutover,
-  and proposal-review resurrection are explicitly deferred.
+  and the retired Founder proposal-review workflow is explicitly out of scope.
 ---
 
 # create-skill
@@ -144,4 +144,4 @@ the entire transaction rolls back with zero residue.
 - Effective visibility / materialization of custom skills.
 - Migration/cutover from legacy proposal workflow.
 - `high_impact_policy` custom skills.
-- Proposal-review queue resurrection.
+- Resurrection of the retired Founder proposal-review workflow.
