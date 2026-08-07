@@ -3884,6 +3884,14 @@
         ]
       }
     },
+    "/api/v1/runtime/custom-cli/connect": {
+      "POST": {
+        "params": [],
+        "responses": [
+          "201"
+        ]
+      }
+    },
     "/api/v1/runtime/use": {
       "POST": {
         "params": [

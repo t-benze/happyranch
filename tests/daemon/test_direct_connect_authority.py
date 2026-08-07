@@ -1,6 +1,8 @@
 """THR-107 Slice 1A nonlaunchable direct-mint authority tests."""
 from __future__ import annotations
 
+import threading
+
 import sqlite3
 
 import pytest
@@ -225,6 +227,20 @@ def test_direct_mint_name_collision_has_deterministic_server_destination(client,
     assert first_authority.token_fingerprint != second_authority.token_fingerprint
 
 
+def test_direct_mint_target_is_the_public_canonical_adapter_path(client, daemon_state) -> None:
+    response = client.post(
+        "/api/v1/auth/registration-token/runtime",
+        json={
+            "name": "custom-cli", "purpose": "adapter",
+            "intended_profile_name": "Custom Profile", "workspace_adapter_id": "codex",
+        },
+    )
+    authority = daemon_state.direct_connect_authority_store.get_for_token(response.json()["token"])
+    assert authority.wrapper_destination == (
+        daemon_state.runtime.root / "adapters" / "custom-profile-adapter"
+    )
+
+
 def test_runtime_mint_openapi_exposes_optional_direct_workspace_adapter() -> None:
     from runtime.config import Settings
     from runtime.daemon.app import create_app
@@ -257,3 +273,29 @@ def test_authority_store_has_no_org_input_or_yaml_projection(tmp_path) -> None:
     )
     assert alpha.wrapper_destination == beta.wrapper_destination
     assert alpha.provenance == beta.provenance == "runtime-master-mint"
+
+
+def test_direct_authority_reservation_has_one_concurrent_winner(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_concurrent", name="custom-cli", intended_profile_name="profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    barrier = threading.Barrier(2)
+    results: list[str | None] = []
+
+    def reserve() -> None:
+        barrier.wait()
+        results.append(store.reserve("hrreg_concurrent", now=2))
+
+    first = threading.Thread(target=reserve)
+    second = threading.Thread(target=reserve)
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    assert sum(result is not None for result in results) == 1
+    assert store.reserve("hrreg_concurrent", now=2) is None

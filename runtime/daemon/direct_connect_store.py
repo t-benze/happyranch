@@ -7,15 +7,17 @@ mint intent only; it has no projection, connection, or launch eligibility.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 
 FIRST_PARTY_WORKSPACE_ADAPTER_IDS = frozenset({"claude", "codex", "opencode", "pi"})
 _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
-_DESTINATION_DOMAIN = b"happyranch/direct-connect-wrapper-destination/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
 
 
@@ -24,13 +26,17 @@ def fingerprint_registration_token(token_plaintext: str) -> str:
     return hashlib.sha256(_FINGERPRINT_DOMAIN + token_plaintext.encode("utf-8")).hexdigest()
 
 
-def _wrapper_destination(runtime_root: Path | None, intended_profile_name: str) -> Path:
-    """Derive a daemon-owned destination without accepting a caller path."""
+def _canonical_adapter_id(intended_profile_name: str) -> str:
+    """Keep the direct authority's identifier server-derived and stable."""
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", f"{intended_profile_name}-adapter".lower()).strip("-") or "adapter"
+
+
+def canonical_wrapper_destination(runtime_root: Path | None, intended_profile_name: str) -> Path:
+    """Derive the public daemon-owned wrapper path without caller input."""
     root = runtime_root if runtime_root is not None else Path("/runtime")
-    profile_digest = hashlib.sha256(
-        _DESTINATION_DOMAIN + intended_profile_name.encode("utf-8")
-    ).hexdigest()
-    return root / "direct-connect" / profile_digest / "adapter-wrapper"
+    return root / "adapters" / _canonical_adapter_id(intended_profile_name)
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,14 @@ class DirectConnectAuthority:
     expires_at: float
     state: str
     provenance: str
+
+
+@dataclass(frozen=True)
+class DirectConnectReceipt:
+    operation_id: str
+    token_fingerprint: str
+    state: str
+    wrapper_sha256: str
 
 
 class DirectConnectAuthorityStore:
@@ -76,6 +90,58 @@ class DirectConnectAuthorityStore:
         self._conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_direct_connect_authorities_expiry
                ON direct_connect_authorities(expires_at)"""
+        )
+        # These tables are intentionally additive.  The foundation authority
+        # row remains immutable mint intent; an intake attempt gets its own
+        # nonlaunchable reservation, receipt, artifact facts, and event trail.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_reservations (
+                token_fingerprint TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('reserved', 'terminalized', 'received_nonlaunchable')),
+                reason TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_operations (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                intended_profile_name TEXT NOT NULL,
+                workspace_adapter_id TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_artifacts (
+                operation_id TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('immutable_wrapper', 'upgradeable_child')),
+                declared_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                structural_facts TEXT NOT NULL,
+                PRIMARY KEY (operation_id, slot)
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_receipts (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                created_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_events (
+                event_id TEXT PRIMARY KEY,
+                operation_id TEXT,
+                token_fingerprint TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )"""
         )
         self._conn.commit()
 
@@ -117,7 +183,7 @@ class DirectConnectAuthorityStore:
         if workspace_adapter_id not in FIRST_PARTY_WORKSPACE_ADAPTER_IDS:
             raise ValueError("workspace adapter is not a first-party adapter")
         fingerprint = fingerprint_registration_token(token_plaintext)
-        destination = _wrapper_destination(self._runtime_root, intended_profile_name)
+        destination = canonical_wrapper_destination(self._runtime_root, intended_profile_name)
         with self._lock, self._conn:
             cursor = self._conn.cursor()
             cursor.execute(
@@ -153,6 +219,197 @@ class DirectConnectAuthorityStore:
     def count(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM direct_connect_authorities").fetchone()[0])
+
+    def reserve(self, token_plaintext: str, *, now: float | None = None) -> str | None:
+        """Reserve one unexpired direct authority exactly once.
+
+        A reservation is distinct from the immutable mint row so old minted
+        authority data is never rewritten into a different trust target.
+        """
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            authority = self._read_authority(cursor, fingerprint)
+            if authority is None or authority.expires_at < now:
+                return None
+            operation_id = str(uuid.uuid4())
+            try:
+                cursor.execute(
+                    """INSERT INTO direct_connect_reservations
+                       (token_fingerprint, operation_id, state, reason, created_at, updated_at)
+                       VALUES (?, ?, 'reserved', NULL, ?, ?)""",
+                    (fingerprint, operation_id, now, now),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            return operation_id
+
+    def terminalize(self, token_plaintext: str, operation_id: str, reason: str, *, now: float | None = None) -> bool:
+        """Durably make a reservation non-reusable without creating an operation."""
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            updated = cursor.execute(
+                """UPDATE direct_connect_reservations
+                   SET state = 'terminalized', reason = ?, updated_at = ?
+                   WHERE token_fingerprint = ? AND operation_id = ? AND state = 'reserved'""",
+                (reason, now, fingerprint, operation_id),
+            ).rowcount
+            if updated:
+                cursor.execute(
+                    """INSERT INTO direct_connect_events
+                       (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                       VALUES (?, NULL, ?, 'terminalized', ?, ?)""",
+                    (str(uuid.uuid4()), fingerprint, reason, now),
+                )
+            return bool(updated)
+
+    def terminalize_known(self, token_plaintext: str, reason: str, *, now: float | None = None) -> bool:
+        """Record an invalid known-direct attempt even before reservation."""
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            if self._read_authority(cursor, fingerprint) is None:
+                return False
+            existing = cursor.execute(
+                "SELECT state FROM direct_connect_reservations WHERE token_fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+            if existing is not None:
+                return False
+            cursor.execute(
+                """INSERT INTO direct_connect_reservations
+                   (token_fingerprint, operation_id, state, reason, created_at, updated_at)
+                   VALUES (?, ?, 'terminalized', ?, ?, ?)""",
+                (fingerprint, str(uuid.uuid4()), reason, now, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, NULL, ?, 'terminalized', ?, ?)""",
+                (str(uuid.uuid4()), fingerprint, reason, now),
+            )
+            return True
+
+    def receive(
+        self,
+        token_plaintext: str,
+        operation_id: str,
+        *,
+        wrapper_sha256: str,
+        wrapper_facts: dict[str, object],
+        children: list[dict[str, object]],
+        now: float | None = None,
+    ) -> DirectConnectReceipt:
+        """Atomically write and read back the Slice-A nonlaunchable receipt."""
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            authority = self._read_authority(cursor, fingerprint)
+            reservation = cursor.execute(
+                """SELECT state FROM direct_connect_reservations
+                   WHERE token_fingerprint = ? AND operation_id = ?""",
+                (fingerprint, operation_id),
+            ).fetchone()
+            if authority is None or reservation is None or reservation["state"] != "reserved":
+                raise RuntimeError("direct authority is not reserved by this operation")
+            cursor.execute(
+                """INSERT INTO direct_connect_operations
+                   (operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at)
+                   VALUES (?, ?, 'received_nonlaunchable', ?, ?, ?)""",
+                (operation_id, fingerprint, authority.intended_profile_name, authority.workspace_adapter_id, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_artifacts
+                   (operation_id, slot, kind, declared_path, sha256, structural_facts)
+                   VALUES (?, 'wrapper', 'immutable_wrapper', ?, ?, ?)""",
+                (operation_id, str(authority.wrapper_destination), wrapper_sha256, json.dumps(wrapper_facts, sort_keys=True)),
+            )
+            for child in children:
+                cursor.execute(
+                    """INSERT INTO direct_connect_artifacts
+                       (operation_id, slot, kind, declared_path, sha256, structural_facts)
+                       VALUES (?, ?, 'upgradeable_child', ?, ?, ?)""",
+                    (operation_id, child["slot"], child["path"], child["sha256"], json.dumps(child["facts"], sort_keys=True)),
+                )
+            cursor.execute(
+                """INSERT INTO direct_connect_receipts
+                   (operation_id, token_fingerprint, state, created_at)
+                   VALUES (?, ?, 'received_nonlaunchable', ?)""",
+                (operation_id, fingerprint, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, ?, ?, 'received_nonlaunchable', 'validated receipt', ?)""",
+                (str(uuid.uuid4()), operation_id, fingerprint, now),
+            )
+            cursor.execute(
+                """UPDATE direct_connect_reservations
+                   SET state = 'received_nonlaunchable', updated_at = ?
+                   WHERE token_fingerprint = ? AND operation_id = ? AND state = 'reserved'""",
+                (now, fingerprint, operation_id),
+            )
+            receipt = cursor.execute(
+                """SELECT operation_id, token_fingerprint, state FROM direct_connect_receipts
+                   WHERE operation_id = ?""", (operation_id,)
+            ).fetchone()
+            if receipt is None:
+                raise RuntimeError("direct receipt readback failed")
+            return DirectConnectReceipt(
+                operation_id=receipt["operation_id"], token_fingerprint=receipt["token_fingerprint"],
+                state=receipt["state"], wrapper_sha256=wrapper_sha256,
+            )
+
+    def compensate_received(
+        self, token_plaintext: str, operation_id: str, reason: str, *, now: float | None = None
+    ) -> bool:
+        """Remove a receipt that could not be paired with token consumption.
+
+        Slice A has no projection to undo, but the registration-token consume is
+        outside this SQLite transaction.  If that final consume reports failure,
+        retain only terminal, fingerprint-only evidence rather than leaving a
+        seemingly accepted receipt behind.
+        """
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            reservation = cursor.execute(
+                """SELECT state FROM direct_connect_reservations
+                   WHERE token_fingerprint = ? AND operation_id = ?""",
+                (fingerprint, operation_id),
+            ).fetchone()
+            if reservation is None or reservation["state"] != "received_nonlaunchable":
+                return False
+            cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
+            cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
+            cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))
+            cursor.execute(
+                """UPDATE direct_connect_reservations
+                   SET state = 'terminalized', reason = ?, updated_at = ?
+                   WHERE token_fingerprint = ? AND operation_id = ?""",
+                (reason, now, fingerprint, operation_id),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, NULL, ?, 'terminalized', ?, ?)""",
+                (str(uuid.uuid4()), fingerprint, reason, now),
+            )
+            return True
+
+    def counts(self) -> dict[str, int]:
+        """Testing/operator seam; never returns raw authorization material."""
+        with self._lock:
+            return {
+                table: int(self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in ("direct_connect_operations", "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_events")
+            }
 
     def close(self) -> None:
         with self._lock:

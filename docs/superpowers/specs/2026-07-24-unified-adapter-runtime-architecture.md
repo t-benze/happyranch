@@ -472,9 +472,12 @@ with its intended profile/name and a server-derived wrapper destination in a
 separate daemon-global SQLite store. The store contains only a
 domain-separated one-way registration-token fingerprint and nonsecret mint
 provenance; it is neither YAML/registry authority nor a projection. Its sole
-state is ``minted_nonlaunchable``. It does not expose a direct-connect route,
-create an adapter/profile, change PENDING submission, choose a launcher, or
-claim Connected. Direct ingress, receipts/compensation, COMMITTED eligibility,
+state begins ``minted_nonlaunchable``. Slice A's one registration-token-only
+ direct-connect route validates a server-owned canonical wrapper and strict v2
+ manifest, then stores only a nonlaunchable receipt/event/artifact snapshot.
+ It does not create an adapter/profile, change PENDING submission, choose a
+ launcher, run a process, or claim Connected. Direct projection/compensation,
+ COMMITTED eligibility,
 Popen fencing, and final UI simplification remain later serial slices.
 
 ### 4.4 Registration, Conformance, Provenance

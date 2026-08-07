@@ -116,11 +116,19 @@ adapter-purpose token mint may additionally carry an exact first-party
 domain-separated one-way token fingerprint and server-derived intent into a
 separate runtime-root SQLite authority store. These ``minted_nonlaunchable``
 rows are not profiles, adapters, projections, connection state, or launch
-eligibility; no direct-connect ingress, runner, Popen, or UI behavior is
-introduced by this foundation. Legacy adapter mints without the optional field
-remain the existing PENDING-submission path. Later serial slices own direct
-ingress, projection/receipt/compensation, COMMITTED eligibility, and the final
-Connect-to-Connected lifecycle.
+eligibility. **Slice A** adds one loopback, registration-token-only
+``POST /api/v1/runtime/custom-cli/connect`` ingress. It accepts only a strict
+v2 manifest and nonsecret metadata, derives profile/adapter/wrapper authority
+solely from the fingerprinted mint, validates the existing canonical
+``<daemon-home>/adapters/<canonical-adapter-id>`` wrapper and declared child
+paths, then writes a read-back ``received_nonlaunchable`` receipt plus
+append-only event. It never creates/copies/chmods a wrapper, runs a probe or
+``Popen``, creates a YAML profile/registry/adapter entry, or claims Connected.
+Malformed known-direct attempts terminalize their authority; unknown or
+foreign registration context remains ordinary invalid context. Legacy adapter
+mints without the optional field remain the existing PENDING-submission path.
+Projection/reconciliation, compensation, COMMITTED eligibility, runner fences,
+and UI cutover remain later slices.
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,
