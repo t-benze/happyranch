@@ -94,6 +94,18 @@ submissions must create the wrapper at exactly this path; the route and
 registration seam independently enforce canonical placement. The
 master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
 
+**Wrapper-owned headless launch posture.** A custom-adapter wrapper MUST
+choose and apply its underlying CLI's own non-interactive, sufficiently
+permissive launch posture for every unattended daemon session. It MUST NOT
+rely on daemon ``permission_mode`` or provider-specific allow-rule strings to
+supply that posture; the stable v1 ``AdapterInput`` remains provider-neutral.
+The wrapper MUST preserve callback availability from the daemon-provided
+environment (including ``PATH``) so the invoked agent can perform ordinary
+workspace actions and invoke its required ``happyranch`` callback. This is a
+wrapper implementation and founder-approval responsibility: approval requires
+evidence of a successful end-to-end unattended session that invokes the
+required callback. It is not a daemon permission/sandbox expansion.
+
 **THR-107 Slice 1A mint authority foundation.** A master-authenticated runtime
 adapter-purpose token mint may additionally carry an exact first-party
 ``workspace_adapter_id``. When present, the daemon writes only a

@@ -1768,6 +1768,12 @@ class TestContractReferenceHappyPath:
         # Rules
         rules = data["rules"]
         assert rules["input"]["source"] == "stdin"
+        headless_launch = rules["headless_launch"]["description"].lower()
+        assert "wrapper must choose" in headless_launch
+        assert "non-interactive" in headless_launch
+        assert "must not rely on daemon permission_mode" in headless_launch
+        assert "happyranch callback" in headless_launch
+        assert "end-to-end unattended session" in headless_launch
         assert rules["output"]["target"] == "stdout"
         assert rules["output"]["max_size_bytes"] == 1_048_576
         assert rules["diagnostics"]["target"] == "stderr"
