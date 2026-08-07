@@ -5,16 +5,24 @@ describe('Vitest browser storage environment', () => {
     expect(window.localStorage).toBe(globalThis.localStorage);
     expect(window.sessionStorage).toBe(globalThis.sessionStorage);
 
-    localStorage.setItem('local-key', 'local-value');
-    sessionStorage.setItem('session-key', 'session-value');
+    window.localStorage.setItem('window-local-key', 'window-local-value');
+    globalThis.localStorage.setItem('global-local-key', 'global-local-value');
+    window.sessionStorage.setItem('window-session-key', 'window-session-value');
+    globalThis.sessionStorage.setItem('global-session-key', 'global-session-value');
 
-    expect(window.localStorage.getItem('local-key')).toBe('local-value');
-    expect(window.sessionStorage.getItem('session-key')).toBe('session-value');
+    expect(globalThis.localStorage.getItem('window-local-key')).toBe('window-local-value');
+    expect(window.localStorage.getItem('global-local-key')).toBe('global-local-value');
+    expect(globalThis.sessionStorage.getItem('window-session-key')).toBe(
+      'window-session-value',
+    );
+    expect(window.sessionStorage.getItem('global-session-key')).toBe(
+      'global-session-value',
+    );
 
-    window.localStorage.clear();
-    window.sessionStorage.clear();
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
 
-    expect(localStorage.getItem('local-key')).toBeNull();
-    expect(sessionStorage.getItem('session-key')).toBeNull();
+    expect(window.localStorage.getItem('window-local-key')).toBeNull();
+    expect(window.sessionStorage.getItem('window-session-key')).toBeNull();
   });
 });
