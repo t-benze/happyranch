@@ -1781,6 +1781,7 @@ class TestContractReferenceHappyPath:
         assert "non-interactive" in headless_launch
         assert "executor_context.permission_mode remains a legacy nullable" in headless_launch
         assert "provider-specific compatibility field" in headless_launch
+        assert "customadapterexecutor supplies null for this existing frozen nullable" in headless_launch
         assert "must not rely on it for their cli-specific headless posture" in headless_launch
         assert "no new daemon-supplied or daemon-translated permission policy or field" in headless_launch
         assert "happyranch callback" in headless_launch
