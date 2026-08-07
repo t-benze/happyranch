@@ -40,6 +40,7 @@ function emptySummary(): DashboardSummaryResponse {
       spend_today_usd: 0,
     },
     escalations: [],
+    pending_review_jobs: [],
     active_by_team: [],
     recent_activity: [],
     updates_this_week: [],
@@ -167,6 +168,41 @@ describe('DashboardPage', () => {
       expect(screen.getByText(/Waiting on you · 1/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/Photo licensing unclear/i)).toBeInTheDocument();
+  });
+
+  test('combines pending jobs with escalations while preserving continue and job navigation', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.escalations = [{
+      task_id: 'TASK-101',
+      agent: 'qa_engineer',
+      team: 'engineering',
+      question: 'Photo licensing unclear',
+      raised_at: '2026-05-30T11:00:00Z',
+      age_seconds: 3600,
+    }];
+    s.pending_review_jobs = [{
+      id: 'JOB-201',
+      task_id: 'TASK-201',
+      agent_name: 'dev_agent',
+      title: 'Publish founder report',
+      created_at: '2026-05-30T11:30:00Z',
+    }];
+    seedShell();
+    server.use(handler(s));
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    expect(await screen.findByText(/Waiting on you · 2/i)).toBeInTheDocument();
+    expect(screen.getByText('JOB-201')).toBeInTheDocument();
+    expect(screen.getByText('Publish founder report')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review job' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/jobs/JOB-201`,
+    );
+
+    await user.click(screen.getByText(/Photo licensing unclear/i));
+    expect(await screen.findByRole('button', { name: /Continue/i })).toBeInTheDocument();
   });
 
   test('header meta drops the $-today spend line (THR-061 slice 1)', async () => {

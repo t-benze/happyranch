@@ -21,6 +21,8 @@ from runtime.models import (
     JobInterpreter,
     JobRecord,
     JobStatus,
+    ThreadMessageKind,
+    ThreadStatus,
 )
 
 # Two routers mounted at the same prefix. ``router`` carries the bearer-only
@@ -137,6 +139,57 @@ class SubmitBody(BaseModel):
 # caller didn't pass an explicit max_runtime_seconds. Persistent jobs default
 # to unbounded (None) until the founder /stop or task-terminal kill.
 _DEFAULT_BOUNDED_RUNTIME_SECONDS = 300
+
+
+def _append_pending_review_thread_message(
+    org,
+    *,
+    task_id: str,
+    job_id: str,
+    title: str,
+    slug: str,
+) -> None:
+    """Surface a review-gated job on its originating open founder thread.
+
+    This is deliberately a durable visibility note only: it neither creates a
+    thread invocation nor changes the task, thread, or job state.
+    """
+    from runtime.infrastructure.database import LineageTooDeep
+
+    try:
+        ancestors = org.db.walk_ancestors(task_id, max_hops=200)
+    except LineageTooDeep:
+        return
+    if not ancestors:
+        return
+    root = ancestors[-1]
+    chain = org.db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
+    original = chain[-1] if chain else root
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        return
+    thread = org.db.get_thread(thread_id)
+    if thread is None or thread.status is not ThreadStatus.OPEN:
+        return
+
+    job_path = f"/orgs/{slug}/jobs/{job_id}"
+    org.db.append_thread_message(
+        thread_id=thread_id,
+        speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        body_markdown=(
+            f"Job [{job_id}]({job_path}) — {title} — is waiting for your review. "
+            "Review it and approve & run or reject."
+        ),
+        system_payload={
+            "kind_tag": "job_pending_approval",
+            "job_id": job_id,
+            "task_id": task_id,
+            "title": title,
+            "action": "review_and_approve_or_reject",
+        },
+        sent_from_task_id=task_id,
+    )
 
 
 @router.post("/jobs/submit", status_code=201)
@@ -257,6 +310,13 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
 
     # Founder-review path: leave pending, return.
     if body.review_required:
+        _append_pending_review_thread_message(
+            org,
+            task_id=scope_id,
+            job_id=job_id,
+            title=title,
+            slug=slug,
+        )
         if getattr(org, "orchestrator", None) is not None:
             org.orchestrator.notify_job_submitted(
                 job_id=job_id, agent=agent, task_id=scope_id,

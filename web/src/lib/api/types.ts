@@ -510,6 +510,14 @@ export interface DashboardEscalationRow {
   flavor?: string | null;
 }
 
+export interface DashboardPendingReviewJobRow {
+  id: string;
+  task_id: string;
+  agent_name: string;
+  title: string;
+  created_at: string;
+}
+
 export interface ActiveByTeamRow {
   team: string;
   count: number;
@@ -551,6 +559,7 @@ export interface DashboardSummaryResponse {
   heartbeat: HeartbeatBucket[];
   narrative_counts: NarrativeCounts;
   escalations: DashboardEscalationRow[];
+  pending_review_jobs: DashboardPendingReviewJobRow[];
   active_by_team: ActiveByTeamRow[];
   recent_activity: DashboardActivityRow[];
   updates_this_week: DashboardUpdateRow[];

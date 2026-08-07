@@ -149,6 +149,12 @@ This is a deliberate choice: the cost of daemon-side validation (parsing compoun
 
 Terminal states: `rejected`, `completed`, `failed`. Once terminal, the row is frozen.
 
+For a `review_required=true` submission from an open founder thread, the daemon
+also appends one durable SYSTEM message to that originating thread identifying
+the pending job and its canonical `/orgs/{slug}/jobs/{job_id}` action surface.
+It is a visibility note only: it does not mint an invocation or change job,
+task, or thread state. Missing or archived threads are a safe no-op.
+
 `reason` (a new column, see §6) is null for natural exits (`completed`, `failed` via non-zero exit), populated for forcible kills. The existing SR module uses `reason` for the `timeout` case only; this design adds `output_cap`, `founder_stop`, `agent_stop`, `task_ended`, `daemon_shutdown`, `daemon_crash`.
 
 ### 5.1 Task-terminal kill (persistent jobs)

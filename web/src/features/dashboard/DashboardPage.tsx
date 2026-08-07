@@ -187,6 +187,7 @@ export function DashboardPage(): JSX.Element {
     );
   }
   const s = q.data;
+  const pendingReviewJobs = s.pending_review_jobs ?? [];
   const now = new Date(s.server_now);
   const nowHour = now.getUTCHours();
 
@@ -197,7 +198,8 @@ export function DashboardPage(): JSX.Element {
     s.org_age_days === 0 &&
     s.narrative_counts.completed_today === 0 &&
     s.narrative_counts.failed_today === 0 &&
-    s.escalations.length === 0
+    s.escalations.length === 0 &&
+    pendingReviewJobs.length === 0
   ) {
     return (
       <div className="mx-auto max-w-2xl p-8">
@@ -209,7 +211,7 @@ export function DashboardPage(): JSX.Element {
     );
   }
 
-  const pendingCount = s.escalations.length;
+  const pendingCount = s.escalations.length + pendingReviewJobs.length;
 
   return (
     <ContentWrap>
@@ -258,10 +260,10 @@ export function DashboardPage(): JSX.Element {
                   ? `Waiting on you · ${pendingCount}`
                   : 'Waiting on you'
               }
-              meta={pendingCount > 0 ? 'esc to close · ⌘↵ to send' : undefined}
+              meta={pendingCount > 0 ? 'review or continue' : undefined}
             >
               {pendingCount === 0 ? (
-                <EmptyState title="All clear" body="No escalations waiting." />
+                <EmptyState title="All clear" body="No escalations or jobs waiting." />
               ) : (
                 <div className="space-y-2">
                   {s.escalations.map((row) => (
@@ -273,6 +275,27 @@ export function DashboardPage(): JSX.Element {
                       onCollapse={() => setExpandedEscId(null)}
                       slug={slug ?? ''}
                     />
+                  ))}
+                  {pendingReviewJobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="border-border-subtle flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border p-3"
+                    >
+                      <span className="text-text-primary font-mono text-xs font-medium">
+                        {job.agent_name}
+                      </span>
+                      <span className="text-text-muted font-mono text-xs">·</span>
+                      <span className="text-id-task font-mono text-xs">{job.id}</span>
+                      <span className="text-text-primary text-sm">{job.title}</span>
+                      {slug ? (
+                        <Link
+                          to={`/orgs/${slug}/jobs/${job.id}`}
+                          className="text-link-primary ml-auto text-sm hover:underline"
+                        >
+                          Review job
+                        </Link>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               )}
