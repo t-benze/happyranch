@@ -120,11 +120,14 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.getAllByText('Validated').length).toBeGreaterThan(0);
   });
 
-  test('does not expose retired proposal review or custom-skill writer links', async () => {
+  test('exposes custom-skill authoring but no retired proposal review link', async () => {
     mount();
     await screen.findByText('kb-curation');
     expect(screen.queryByRole('link', { name: /Proposals/i })).toBeNull();
-    expect(screen.queryByRole('link', { name: /Add custom skill/i })).toBeNull();
+    expect(screen.getByRole('link', { name: /Add custom skill/i })).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/skills/new`,
+    );
   });
 
   test('read-only system contract shows no toggle/edit control', async () => {
