@@ -104,12 +104,15 @@ baseline-only permission posture.
 master-authenticated runtime adapter-purpose mint optionally accepts an exact
 first-party ``workspace_adapter_id`` and persists a nonsecret,
 domain-separated fingerprint plus server-derived intent in daemon-global
-runtime-root SQLite. The new ``minted_nonlaunchable`` authority has no
-projection, profile/adapter state, scoped direct-connect route, executor
-eligibility, or runner effect. Existing adapter mints that omit the optional
-field retain the legacy PENDING submission behavior. Direct ingress,
-COMMITTED/receipt/compensation lifecycle, launcher fencing, and UI changes are
-explicit later serial slices.
+runtime-root SQLite. Slice A adds the single loopback registration-token-only
+``POST /api/v1/runtime/custom-cli/connect`` route ahead of adapter catch-alls.
+It produces a durable, fingerprint-only ``received_nonlaunchable`` receipt
+after canonical wrapper and v2 manifest validation; it has no projection,
+profile/adapter state, executor eligibility, runner effect, or browser client.
+If the final registration-token commit fails, Slice A compensates the
+receipt/event boundary. Existing adapter mints that omit the optional field
+retain the legacy PENDING submission behavior. Direct projection, COMMITTED
+eligibility, launcher fencing, and UI changes are explicit later serial slices.
 
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest

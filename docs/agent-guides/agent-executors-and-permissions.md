@@ -443,6 +443,15 @@ The candidate CLI reports step arrivals via `POST /api/v1/orgs/{slug}/executors/
 (gated by `require_registration_token()` — loopback-only; other routes' auth is
 unchanged). The daemon tracks arrivals idempotently and exposes pending steps.
 
+### Direct custom-CLI receipt boundary (Slice A)
+
+`POST /api/v1/runtime/custom-cli/connect` is a loopback registration-token-only
+CLI ingress, not a browser API. It consumes a direct-purpose token only after
+validating the daemon-owned canonical wrapper and a strict v2 child manifest,
+then returns a nonsecret `received_nonlaunchable` receipt. It never launches a
+process, writes a profile or registry entry, or exposes the registration token.
+Projection, COMMITTED eligibility, and Connected UI are explicitly deferred.
+
 ### Registration gate
 
 `POST /api/v1/orgs/{slug}/executors/register` (same `require_registration_token()`
