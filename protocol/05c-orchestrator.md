@@ -788,8 +788,9 @@ two dedicated agent-only routes. The legacy dual-auth path is human/founder-only
    B2 eligibility, human web editing, publishing/effective visibility,
    migration/cutover, and proposal review remain deferred.
 
-2. **Propose session CLI (legacy agent route).** The proposal
-   --session-id <session-id> [--org <slug>]``. The proposal file contains only
+2. **Separate legacy agent-proposal route.** The agent commands
+   ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
+   The proposal file contains only
    package metadata/content accepted by ``ProposalRequest`` (slug, name,
    description, skill_md, version, policy_class, references, assets, purpose,
    target_agent_suggestion). It must NOT contain any client-controlled
