@@ -102,46 +102,53 @@ def _release_registry(org: OrgState) -> SkillRegistry:
                 registry._entries[entry.id] = entry
 
     return registry
-
-
 def _user_registry(org: OrgState) -> SkillRegistry:
     """Return the per-org user-skill store registry.
 
-    THR-055: This legacy store is RETIRED. The org_root/skills/ directory
-    no longer feeds any catalog, effective, or detail API. All custom-skill
-    discovery, assignment, and lifecycle management now routes through the
-    lifecycle ledger (``/skill-lifecycle/*`` routes). This helper returns
-    an empty registry; the quarantine migration copies legacy content to
-    the immutable ArtifactStore for reference, never for materialization.
-
-    Store directory: <org_root>/skills/ — exists only for legacy quarantine
-    migration purposes, NOT for runtime skill resolution.
+    Store directory: <org_root>/skills/ — a SIBLING of the org/ definition
+    directory, NOT inside it (v3 s6.2). Missing / empty dir → empty
+    SkillRegistry (graceful).
     """
-    return SkillRegistry(skills_root=Path("/nonexistent"))
+    user_dir = org.root / "skills"
+    return SkillRegistry(skills_root=user_dir)
 
 
 def _union_catalog(org: OrgState) -> list[tuple[SkillEntry, str]]:
-    """Build the union of managed catalog and system contracts ONLY.
-
-    THR-055: User-authored custom skills are excluded — the lifecycle
-    ledger is the sole source for custom-skill discovery, assignment, and
-    materialization. Legacy quarantined content from org_root/skills/
-    must never appear in catalog or effective API results.
+    """Build the union of managed catalog, system contracts, and user store.
 
     Returns list of (SkillEntry, source_type) where source_type is one of:
-    'managed', 'system_contract'.
+    'managed', 'system_contract', 'user_authored'.
 
-    Release-wins on slug collision with system contracts.
+    Release-wins on slug collision: a user-authored skill can NEVER shadow a
+    release-shipped skill; the release entry is kept and the user entry
+    discarded.
     """
     release = _release_registry(org)
+    user = _user_registry(org)
 
     union: dict[str, tuple[SkillEntry, str]] = {}
 
-    # Release-shipped managed-catalog skills
+    # Release entries are authoritative — collect their slugs so user-authored
+    # entries with a colliding slug are discarded (release-wins on SLUG, not id;
+    # v3 s6.3: a user package cannot shadow a shipped skill by reusing its slug
+    # under a different id).
+    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
+    sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
+    protected_slugs = release_slugs | sc_slugs
+
+    # User-authored entries — discard any whose slug collides with a release
+    # or system-contract slug (release-wins on slug collision, v3 s6.3).
+    for entry in user.list_all():
+        if entry.slug not in protected_slugs:
+            union[entry.id] = (entry, "user_authored")
+
+    # Release entries added after users so any residual id collision resolves
+    # to release (id-based backup — slug-based gate already handles the
+    # canonical case).
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
-    # System contracts — not in the registry
+    # System contracts — not in either registry
     for sc in SYSTEM_CONTRACTS:
         sc_entry = SkillEntry(
             id=f"hr:{sc.id}",
@@ -400,6 +407,7 @@ def agent_skills_effective(
         )
 
     release = _release_registry(org)
+    user = _user_registry(org)
     policy = _read_eligibility_policy(org)
 
     # Determine team from agent def
@@ -413,10 +421,12 @@ def agent_skills_effective(
     except Exception:
         pass
 
-    # THR-055: Union is release-managed skills only.
-    # User-authored custom skills are resolved via the lifecycle ledger
-    # (/skill-lifecycle/* routes), not through this legacy effective API.
+    # Union catalog for resolution — release-wins on SLUG collision (v3 s6.3)
+    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
     union: dict[str, tuple[SkillEntry, str]] = {}
+    for entry in user.list_all():
+        if entry.slug not in release_slugs:
+            union[entry.id] = (entry, "user_authored")
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
@@ -445,7 +455,7 @@ def agent_skills_effective(
         agent_allow_ids = set(agent_rules.get("allow", []) or [])
         agent_deny_ids = set(agent_rules.get("deny", []) or [])
 
-    # Build response: all managed entries + system contracts
+    # Build response: all union entries + system contracts
     skills = []
 
     for entry, source_type in union.values():
@@ -454,13 +464,24 @@ def agent_skills_effective(
         is_disabled = entry.status == SkillStatus.DISABLED
         is_denied = skill_id in agent_deny_ids
 
-        # Determine provenance reason (managed skills only — THR-055)
-        if is_exposed:
+        # Determine provenance reason
+        if is_exposed and source_type == "user_authored":
+            # Check materialization store for version match (Phase 3b)
+            mat_event = org.db.get_latest_skill_materialization(skill_id, agent_id)
+            if mat_event is not None and mat_event["version"] == entry.version:
+                provenance = "catalog_and_eligible"  # effective
+            else:
+                provenance = "assigned_not_yet_effective"
+        elif is_exposed:
             provenance = "catalog_and_eligible"
         elif is_disabled:
             provenance = "hidden_because:disabled"
         elif is_denied:
             provenance = "hidden_because:denied_by_eligibility"
+        elif skill_id in agent_allow_ids and source_type == "user_authored":
+            # Assigned but resolve_exposed_skills didn't expose it
+            provenance = "assigned_not_yet_effective"
+            is_exposed = True  # surface it as assigned, not hidden
         else:
             provenance = "hidden_because:not_in_eligibility"
 
@@ -849,72 +870,164 @@ def _record_validation_event(
 
 
 def _is_editable(entry: SkillEntry) -> tuple[bool, int, str]:
-    """Check if a skill is editable (v3 §9.5).
-
-    Returns (editable, status_code, error_code).
-    - user_authored → editable
-    - first_party/runtime → 409 skill_not_editable
-    - system_contract → 403 system_contract_read_only
-    """
+    """Check whether an entry is an editable user-authored skill."""
     if entry.policy_class == PolicyClass.SYSTEM_CONTRACT:
         return False, 403, "system_contract_read_only"
     if entry.source == "user_authored":
         return True, 200, ""
     return False, 409, "skill_not_editable"
 
+# ── Route: POST /skills (create/import) ──────────────────────────────────
 
-# ── Route: POST /skills (create/import) ── LEGACY CUTOVER ────────────────
-
-@router.post("/skills", status_code=410)
+@router.post("/skills", status_code=201)
 def create_skill(
     slug: str,
     org: OrgDep,
     body: CreateSkillRequest,
 ) -> dict:
-    """LEGACY-CUTOVER: Direct skill creation is retired.
+    """Create/import a user-authored skill.
 
-    Use the THR-055 lifecycle routes instead:
-    - Agents: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals
-    - Humans: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals (then claim/validate/etc.)
-
-    Existing legacy skills are quarantined and available read-only.
+    Runs the technical validate guard synchronously.
+    - Content-validation failure → 201 with validation.ok=false (draft saved)
+    - Malformed request → 422 (nothing persisted)
     """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "legacy_cutover",
-            "detail": "Direct skill creation is retired. Use /skill-lifecycle/proposals for agent proposals and the lifecycle routes for management.",
-            "migration": "Existing user-authored skills have been quarantined. Use GET /skills to list them read-only.",
-        },
+    skill_id = f"hr:{body.slug}"
+
+    # Validate
+    result = _validate_skill_package(
+        org=org,
+        slug=body.slug,
+        skill_id=skill_id,
+        name=body.name,
+        version=body.version,
+        policy_class=body.policy_class,
+        skill_md=body.skill_md,
+        references=body.references,
+        assets=body.assets,
     )
+
+    # Always persist (even on content-validation failure — v3 §9.1)
+    _write_user_skill_to_store(
+        org=org,
+        slug=body.slug,
+        skill_id=skill_id,
+        name=body.name,
+        version=body.version,
+        summary=body.summary,
+        policy_class=body.policy_class,
+        skill_md=body.skill_md,
+        references=body.references,
+        assets=body.assets,
+    )
+
+    # Record validation event
+    _record_validation_event(
+        org=org,
+        skill_id=skill_id,
+        slug=body.slug,
+        agent=None,
+        version=body.version,
+        validation_result=result,
+    )
+
+    validation_state = "validated" if result["ok"] else "in_catalog"
+    return {
+        "skill_id": skill_id,
+        "source": "user_authored",
+        "validation_state": validation_state,
+        "validation": {"ok": result["ok"], "errors": result["errors"]},
+    }
 
 
 # ── Route: POST /skills/{skill_id}/validate ──────────────────────────────
 
-@router.post("/skills/{skill_id}/validate", status_code=410)
+@router.post("/skills/{skill_id}/validate")
 def validate_skill(
     slug: str,
     skill_id: str,
     org: OrgDep,
 ) -> dict:
-    """LEGACY-CUTOVER: Direct skill validation is retired.
+    """Re-run the technical validate guard on an existing user-authored skill.
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/validate
-
-    Legacy validation read org_root/skills — that filesystem path is no longer
-    an authoritative catalog or materialization source.
+    Reads the skill from the per-org store and re-validates.
+    Never mutates content.
     """
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            if source_type != "user_authored":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "skill_not_user_authored"},
+                )
+            # Read the skill_md from the store
+            pkg_dir = org.root / "skills" / entry.slug
+            skill_md_path = pkg_dir / "SKILL.md"
+            if not skill_md_path.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"code": "skill_content_missing", "skill_id": skill_id},
+                )
+            skill_md = skill_md_path.read_text(encoding="utf-8")
+
+            # Load stored references and assets RECURSIVELY for re-validation.
+            # Nested entries (e.g. references/subdir/evil.md) must not be
+            # silently skipped — their relative name includes '/' which
+            # _validate_artifact_filename rejects, yielding validation.ok=false.
+            stored_refs: dict[str, str] = {}
+            ref_dir = pkg_dir / "references"
+            if ref_dir.is_dir():
+                for fpath in sorted(ref_dir.rglob("*"), key=lambda p: str(p)):
+                    if fpath.is_file():
+                        rel_name = str(fpath.relative_to(ref_dir))
+                        stored_refs[rel_name] = fpath.read_text(encoding="utf-8")
+
+            stored_assets: dict[str, str] = {}
+            assets_dir = pkg_dir / "assets"
+            if assets_dir.is_dir():
+                for fpath in sorted(assets_dir.rglob("*"), key=lambda p: str(p)):
+                    if fpath.is_file():
+                        rel_name = str(fpath.relative_to(assets_dir))
+                        stored_assets[rel_name] = fpath.read_text(encoding="utf-8")
+
+            result = _validate_skill_package(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=entry.name,
+                version=entry.version,
+                policy_class=(entry.policy_class.value
+                              if isinstance(entry.policy_class, PolicyClass)
+                              else str(entry.policy_class)),
+                skill_md=skill_md,
+                references=stored_refs,
+                assets=stored_assets,
+            )
+
+            _record_validation_event(
+                org=org,
+                skill_id=skill_id,
+                slug=entry.slug,
+                agent=None,
+                version=entry.version,
+                validation_result=result,
+            )
+
+            validation_state = "validated" if result["ok"] else "in_catalog"
+            return {
+                "skill_id": skill_id,
+                "validation_state": validation_state,
+                "validation": {"ok": result["ok"], "errors": result["errors"]},
+            }
+
     raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "legacy_cutover",
-            "detail": "Direct skill validation is retired. Use /skill-lifecycle/validate for lifecycle-managed validation.",
-        },
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"code": "not_found", "skill_id": skill_id},
     )
 
 
-# ── Route: PATCH /skills/{skill_id} (edit) ── LEGACY CUTOVER ──────────────
+# ── Route: PATCH /skills/{skill_id} (edit) ───────────────────────────────
 
 @router.patch("/skills/{skill_id}")
 def edit_skill(
@@ -923,17 +1036,105 @@ def edit_skill(
     org: OrgDep,
     body: EditSkillRequest,
 ) -> dict:
-    """LEGACY-CUTOVER: Direct skill editing is retired.
+    """Edit a user-authored skill (v3 §9.5).
 
-    Use THR-055 lifecycle routes for all skill management.
-    Existing legacy skills are quarantined and available read-only.
+    Only user_authored skills are editable.
+    managed/system_contract → 409/403.
+
+    DRAFT-PERSIST-ON-CONTENT-FAILURE (v3 §9.5 + MEM-288):
+    - Well-formed request but content fails validation → 200 with
+      validation.ok=false (draft IS saved)
+    - Malformed request (no editable fields supplied) → 422 (nothing saved)
     """
+    # Check if any editable field is present
+    if (body.name is None and body.summary is None and body.version is None
+            and body.skill_md is None and body.references is None
+            and body.assets is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "malformed_request",
+                "errors": ["no editable fields supplied"],
+            },
+        )
+
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            # Editability gate
+            editable, gate_status, gate_code = _is_editable(entry)
+            if not editable:
+                raise HTTPException(
+                    status_code=gate_status,
+                    detail={"code": gate_code},
+                )
+
+            # Determine the effective new values (merge with existing)
+            pkg_dir = org.root / "skills" / entry.slug
+            existing_skill_md = ""
+            skill_md_path = pkg_dir / "SKILL.md"
+            if skill_md_path.is_file():
+                existing_skill_md = skill_md_path.read_text(encoding="utf-8")
+
+            new_name = body.name if body.name is not None else entry.name
+            new_version = body.version if body.version is not None else entry.version
+            new_summary = body.summary if body.summary is not None else entry.description
+            new_skill_md = body.skill_md if body.skill_md is not None else existing_skill_md
+            new_references = body.references if body.references is not None else {}
+            new_assets = body.assets if body.assets is not None else {}
+            policy_class_val = (entry.policy_class.value
+                                if isinstance(entry.policy_class, PolicyClass)
+                                else str(entry.policy_class))
+
+            # Run validation
+            result = _validate_skill_package(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=new_name,
+                version=new_version,
+                policy_class=policy_class_val,
+                skill_md=new_skill_md,
+                references=new_references,
+                assets=new_assets,
+            )
+
+            # Always persist even on content-validation failure
+            _write_user_skill_to_store(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=new_name,
+                version=new_version,
+                summary=new_summary,
+                policy_class=policy_class_val,
+                skill_md=new_skill_md,
+                references=new_references,
+                assets=new_assets,
+            )
+
+            _record_validation_event(
+                org=org,
+                skill_id=skill_id,
+                slug=entry.slug,
+                agent=None,
+                version=new_version,
+                validation_result=result,
+            )
+
+            validation_state = "validated" if result["ok"] else "in_catalog"
+            return {
+                "skill_id": skill_id,
+                "source": "user_authored",
+                "validation_state": validation_state,
+                "validation": {"ok": result["ok"], "errors": result["errors"]},
+                "version": new_version,
+            }
+
     raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "legacy_cutover",
-            "detail": "Direct skill editing is retired. Use /skill-lifecycle routes for lifecycle management.",
-        },
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"code": "not_found", "skill_id": skill_id},
     )
 
 
@@ -966,9 +1167,9 @@ def skills_validation(
     return {"events": events, "label": "Runtime Validation"}
 
 
-# ── Route: POST /agents/{agent_id}/skills/{skill_id}/assign ── LEGACY CUTOVER
+# ── Route: POST /agents/{agent_id}/skills/{skill_id}/assign ──────────────
 
-@router.post("/agents/{agent_id}/skills/{skill_id}/assign", status_code=410)
+@router.post("/agents/{agent_id}/skills/{skill_id}/assign")
 def assign_skill(
     slug: str,
     agent_id: str,
@@ -976,19 +1177,117 @@ def assign_skill(
     org: OrgDep,
     body: AssignSkillRequest,
 ) -> dict:
-    """LEGACY-CUTOVER: Direct skill assignment is retired.
+    """Assign or unassign a skill to a single agent (v3 §9.3).
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/assign
-      with body: {"skill_id": "hr:my-skill", "agent_name": "dev_agent", "version_id": <id>}
+    Scoped eligibility write: single agent + single skill.
+    - Precondition: the skill's current store version must be validated
+      (a skill whose current version failed the technical guard cannot be
+      assigned — retained correctness gate, ruling 2).
+    - Assign = append an allow rule; remove = the inverse.
+    - Writes through the scoped eligibility writer ONLY.
+    - On success the assignment is durable + audited.
+    - The skill stays assigned_not_yet_effective (Phase 3b materialization
+      is NOT in this slice).
     """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "code": "legacy_cutover",
-            "detail": "Direct skill assignment is retired. Use /skill-lifecycle/assign with lifecycle-managed versions.",
-        },
+    # Validate agent exists
+    agent_def_path = org.root / "org" / "agents" / f"{agent_id}.md"
+    if not agent_def_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "agent_not_found", "agent_id": agent_id},
+        )
+
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    skill_entry = None
+    skill_source_type = None
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            skill_entry = entry
+            skill_source_type = source_type
+            break
+
+    if skill_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "skill_id": skill_id},
+        )
+
+    # Only user_authored skills can be assigned (v1 constraint)
+    if skill_source_type != "user_authored":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "skill_not_assignable",
+                    "reason": "Only user-authored skills can be assigned via this endpoint"},
+        )
+
+    # Precondition: current store version must be validated
+    validation_state = _get_validation_state(org, skill_id, skill_entry.version)
+    if validation_state != "validated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "skill_not_validated",
+                "validation_state": validation_state,
+            },
+        )
+
+    # Read before state for audit
+    policy_before = _read_eligibility_policy(org)
+    agent_before = {}
+    agents_before = policy_before.get("agents", {})
+    if isinstance(agents_before, dict):
+        agent_before = agents_before.get(agent_id, {})
+
+    # Write through the scoped eligibility writer
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_config import write_skill_eligibility_entry
+
+    try:
+        write_skill_eligibility_entry(
+            OrgPaths(root=org.root),
+            agent=agent_id,
+            skill_id=skill_id,
+            action=body.action,
+        )
+    except OrgConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "config_validation_failed", "error": str(exc)},
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_action", "error": str(exc)},
+        )
+
+    # Read after state for audit
+    policy_after = _read_eligibility_policy(org)
+    agent_after = {}
+    agents_after = policy_after.get("agents", {})
+    if isinstance(agents_after, dict):
+        agent_after = agents_after.get(agent_id, {})
+
+    # Emit audit row under config:skills:eligibility scope
+    from runtime.infrastructure.audit_logger import AuditLogger
+    AuditLogger(org.db).log_skills_config_write(
+        subsection="eligibility",
+        tiers=[agent_id],
+        before=agent_before,
+        after=agent_after,
+        actor="operator",
     )
+
+    # Determine new assignment state
+    assigned = skill_id in (agent_after.get("allow") or [])
+
+    return {
+        "agent_id": agent_id,
+        "skill_id": skill_id,
+        "state": "assigned" if assigned else "unassigned",
+        "effective_hint": "assigned_not_yet_effective" if assigned else None,
+        "materializes_on": "next_session_spawn" if assigned else None,
+    }
 
 
 # ── Route: GET /skills/{skill_id}/status (lifecycle status) ──────────────

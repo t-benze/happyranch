@@ -112,18 +112,6 @@
     "DELETE /api/v1/executor-binaries/{kind}",
     "GET /api/v1/executors/runtime/profiles",
     "DELETE /api/v1/executors/runtime/profiles/{name}",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/{skill_id}",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/catalog/custom",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/events/{skill_id}",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/{skill_id}/claim",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/validate",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/submit-review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/publish",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/assign",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/rollback",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/retire",
     "GET /api/v1/runtime/adapters/{adapter_id}",
     "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile",
     "DELETE /api/v1/runtime/adapters/{adapter_id}",
@@ -172,11 +160,7 @@
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
-
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
-
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055)",
-
     "POST /api/v1/orgs/{slug}/skills/recover": "operator CLI-only recovery route; not in SPA",
     "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — opaque session-binding B1 create-skill path, not exercised from the Web UI (THR-055)"
   }
