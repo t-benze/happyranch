@@ -229,58 +229,38 @@ function mount(skillId: string) {
         ? HttpResponse.json(s)
         : HttpResponse.json({ detail: 'not found' }, { status: 404 });
     }),
-    // Lifecycle custom catalog (called by useAssignSkill to resolve version_id).
-    http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/catalog/custom`, () =>
-      HttpResponse.json({
-        skills: [
-          {
-            version_id: 42,
-            skill_id: CUSTOM.skill_id,
-            slug: 'tourism-partner-playbook',
-            name: 'tourism-partner-playbook',
-            version: '1.2.0',
-            description: '',
-            content_hash: 'abc123',
-            published_at: '2026-01-01T00:00:00Z',
-            publisher: 'founder',
-          },
-        ],
-      }),
-    ),
-    // Lifecycle assign endpoint (replaces legacy POST /agents/:agentId/skills/:skillId/assign).
     http.post(
-      `/api/v1/orgs/${SLUG}/skill-lifecycle/assign`,
-      async ({ request }) => {
-        const body = (await request.json()) as {
-          skill_id: string;
-          agent_name: string;
-          version_id: number;
-        };
-        const agentId = body.agent_name;
-        const sid = body.skill_id;
+      `/api/v1/orgs/${SLUG}/agents/:agentId/skills/:skillId/assign`,
+      async ({ params, request }) => {
+        const body = (await request.json()) as { action: 'allow' | 'remove' };
+        const agentId = params.agentId as string;
+        const sid = params.skillId as string;
+        const assigned = body.action === 'allow';
         const s = statusStore[sid];
         if (s) {
           const row = s.assignments.find((x) => x.agent === agentId);
           if (!row) {
-            s.assignments.push({
-              agent: agentId,
-              assigned: true,
-              effective: false,
-              materialized_version: null,
-              state: 'assigned_not_yet_effective',
-            });
+            if (assigned) {
+              s.assignments.push({
+                agent: agentId,
+                assigned: true,
+                effective: false,
+                materialized_version: null,
+                state: 'assigned_not_yet_effective',
+              });
+            }
           } else {
-            row.assigned = true;
+            row.assigned = assigned;
             row.effective = false;
             row.state = 'assigned_not_yet_effective';
           }
         }
         return HttpResponse.json({
           skill_id: sid,
-          agent_name: agentId,
-          version: '1.2.0',
-          content_hash: 'abc123',
-          assigned_at: '2026-01-01T00:00:00Z',
+          agent_id: agentId,
+          state: assigned ? 'assigned' : 'unassigned',
+          effective_hint: assigned ? 'assigned_not_yet_effective' : null,
+          materializes_on: assigned ? 'next_session_spawn' : null,
         });
       },
     ),
