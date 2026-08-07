@@ -76,6 +76,22 @@ class SystemContract:
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
+        id="create-skill",
+        name="Create Skill",
+        description=(
+            "Verified-agent custom-skill authoring: create a standard_operational "
+            "custom skill from an active task session with server-verified "
+            "task/session/agent/org provenance."
+        ),
+        when_to_use=(
+            "Use when you have reusable guidance to capture as a custom skill "
+            "from an active task session."
+        ),
+        source_path="protocol/skills/create-skill/SKILL.md",
+        contexts=(SessionContext.TASK,),
+        requires_repo=True,
+    ),
+    SystemContract(
         id="start-task",
         name="Start Task",
         description=(

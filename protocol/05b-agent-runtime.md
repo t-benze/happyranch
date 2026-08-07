@@ -394,8 +394,23 @@ plus a human-only legacy route:
   Rejection returns exact HTTP 403 with error code
   ``body_identity_rejected``; no lifecycle package, event,
   materialization, or ArtifactStore residue is produced. This is the
-  sole agent
-  authoring workflow — there is no alternate agent-capable path.
+  proposal authoring workflow.
+
+- **B1 create-skill path (agent CLI).** The agent commands
+  ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``.
+  This is an ADDITIONAL verified-agent authoring path (THR-055 B1) that
+  sends a bearer-free HTTP POST to ``POST /api/v1/orgs/{slug}/skills/agent``.
+  Identity derivation, body-key rejection, cross-org enforcement, and
+  per-binding lease/re-verification follow the same SessionTracker pattern
+  as the proposal path. The skill enters the lifecycle ledger as ``proposed``
+  and is hidden by default — no materialization occurs until eligibility
+  is configured by a founder. This replaces the proposal-review ceremony
+  for ordinary ``standard_operational`` custom skills. The created skill
+  records B1-specific provenance: nonempty task-brief digest, canonical
+  content hash, validator version, and structured findings — all committed
+  atomically in the SAME durable transaction as the package.
+  **The B2 follow-on (eligibility, human web editor, migration/cutover,
+  and proposal-review resurrection) is explicitly deferred.**
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
   is restricted to bearer-authenticated human/founder callers. Non-bearer

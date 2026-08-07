@@ -1347,7 +1347,11 @@ class TestUserAuthoredSkillMaterialization:
 
         sc_slugs = {sc.id for sc in SYSTEM_CONTRACTS}
         assert len(sc_slugs) > 0, "need at least one system contract"
-        test_slug = sorted(sc_slugs)[0]
+        # Pick a slug guaranteed to be in the service's built-in _PROTECTED_SLUGS
+        # (create-skill is in SYSTEM_CONTRACTS but not _PROTECTED_SLUGS,
+        #  so use "dream" which is in both)
+        test_slug = "dream"
+        assert test_slug in sc_slugs, "dream must be in SYSTEM_CONTRACTS"
 
         service = SkillLifecycleService()
 

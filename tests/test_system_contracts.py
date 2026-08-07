@@ -105,16 +105,16 @@ class TestSystemContractDataclass:
 class TestSystemContractsTuple:
     """Verify the 6 system contracts are correctly defined."""
 
-    def test_exactly_six_contracts(self):
-        assert len(SYSTEM_CONTRACTS) == 6
+    def test_exactly_seven_contracts(self):
+        assert len(SYSTEM_CONTRACTS) == 7
 
-    def test_all_six_ids(self):
+    def test_all_seven_ids(self):
         ids = {sc.id for sc in SYSTEM_CONTRACTS}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"}
 
-    def test_no_requires_repo_except_make_worktree(self):
+    def test_no_requires_repo_except_make_worktree_and_create_skill(self):
         for sc in SYSTEM_CONTRACTS:
-            if sc.id == "make-worktree":
+            if sc.id in ("make-worktree", "create-skill"):
                 assert sc.requires_repo is True
             else:
                 assert sc.requires_repo is False
@@ -182,11 +182,11 @@ class TestSystemContractsTuple:
         assert SessionContext.THREAD not in sc.contexts
         assert SessionContext.WAKE not in sc.contexts
 
-    def test_list_system_contracts_returns_all_six(self):
+    def test_list_system_contracts_returns_all_seven(self):
         result = list_system_contracts()
-        assert len(result) == 6
+        assert len(result) == 7
         assert {sc.id for sc in result} == {
-            "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
+            "start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill",
         }
 
 
@@ -252,7 +252,7 @@ class TestResolveSystemContracts:
             SessionContext.TASK, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos", "create-skill"}
 
     def test_task_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(

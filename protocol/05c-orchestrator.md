@@ -776,12 +776,21 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit proposals ONLY through the dedicated
-agent-only route. The legacy dual-auth path is human/founder-only:
+**Agent authority.** Agents may submit proposals and create skills through
+two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
 
-1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
-   authoring workflow: ``happyranch skills propose --from-file <proposal.json>
-   --session-id <session-id> [--org <slug>]``. The proposal file contains only
+1. **B1 create-skill session CLI (THR-055 B1).** The agent invokes
+   ``happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]``.
+   This is an **additional verified-agent authoring route** at
+   ``POST /api/v1/orgs/{slug}/skills/agent``. It is bearer-free and derives
+   identity only from the verified SessionTracker context. A created skill is
+   ``proposed`` and hidden by default; it is neither published nor effective.
+   B2 eligibility, human web editing, publishing/effective visibility,
+   migration/cutover, and proposal review remain deferred.
+
+2. **Separate legacy agent-proposal route.** The agent commands
+   ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
+   The proposal file contains only
    package metadata/content accepted by ``ProposalRequest`` (slug, name,
    description, skill_md, version, policy_class, references, assets, purpose,
    target_agent_suggestion). It must NOT contain any client-controlled
@@ -808,7 +817,7 @@ agent-only route. The legacy dual-auth path is human/founder-only:
    produced. Path-selected org is cross-checked against the session's
    org; cross-org and mismatched contexts are denied.
 
-2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
+3. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
    is restricted to bearer-authenticated human/founder callers. Non-bearer
    (agent) callers receive 403 directing them to the dedicated
    ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
@@ -831,12 +840,24 @@ permission/config mutation surface reachable from this API) return server-side
 403 for agent invocations. No agent route may gain an alternate mutation method.
 Human/founder lifecycle authority remains as merged.
 
-**Proposal submission CLI (corrected — opaque session only).** The agent
-submission workflow is described in §4.5 "Agent authority" above. The single
-shipping CLI form is::
+**Proposal submission CLI (corrected — two agent paths).** The two
+agent submission workflows are described in §4.5 "Agent authority" above.
+The shipping CLI forms are::
 
     happyranch skills propose --from-file <proposal.json> \
       --session-id <session-id> [--org <slug>]
+
+    happyranch skills create --from-file <path> \
+      --session-id <session-id> [--org <slug>]
+
+The B1 ``skills create`` path (THR-055 B1) is an ADDITIONAL verified-agent
+authoring route at ``POST /api/v1/orgs/{slug}/skills/agent`` that shares
+the same SessionTracker identity derivation, body-key rejection, and
+binding-lease pattern as the proposal route. The created skill enters
+``proposed`` status, is hidden by default, and carries B1-specific
+provenance (task-brief digest, validator version, findings) committed
+atomically. **B2 eligibility, human editor, effective visibility,
+migration/cutover, and proposal-review resurrection are explicitly deferred.**
 
 There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
 or mechanisms. Identity is derived server-side exclusively from the verified
