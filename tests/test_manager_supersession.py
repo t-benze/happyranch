@@ -1,6 +1,7 @@
 """THR-152 phase-1 regression tests for the closed manager-supersession core."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,17 +11,33 @@ from runtime.infrastructure.database import Database
 from runtime.models import NextStep, TaskRecord, TaskStatus
 
 
+def _attestation(**overrides: object) -> dict[str, object]:
+    return {
+        "recovery_reason": "Evidence showed the execution plan is obsolete.",
+        "policy_product_intent_unchanged": True,
+        "no_budget_or_external_commitment": True,
+        "no_permission_or_cross_team_change": True,
+        "no_schema_auth_security_privacy_or_data_access_change": True,
+        "no_unresolved_founder_gate": True,
+        **overrides,
+    }
+
+
 @pytest.mark.parametrize("payload", [
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "task_id": "TASK-2"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "agent": "other"},
-    {"action": "supersede", "successor_brief": " ", "rationale": "because"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "", "force": True},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "team": "other"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "assigned_agent": "other"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "parent_task_id": "TASK-0"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "revisit_of_task_id": "TASK-0"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "resolves": "TASK-0"},
-    {"action": "supersede", "successor_brief": "next", "rationale": "because", "status": "completed"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "task_id": "TASK-2"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "agent": "other"},
+    {"action": "supersede", "successor_brief": " ", "rationale": "because", "attestation": _attestation()},
+    {"action": "supersede", "successor_brief": "next", "rationale": "", "attestation": _attestation(), "force": True},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "team": "other"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "assigned_agent": "other"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "parent_task_id": "TASK-0"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "revisit_of_task_id": "TASK-0"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "resolves": "TASK-0"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(), "status": "completed"},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(unexpected=True)},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(recovery_reason=" ")},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because", "attestation": _attestation(no_unresolved_founder_gate=False)},
+    {"action": "supersede", "successor_brief": "next", "rationale": "because"},
 ])
 def test_supersede_payload_is_closed_and_nonblank(payload: dict) -> None:
     with pytest.raises(ValidationError):
@@ -40,6 +57,7 @@ def _supersede(db: Database, task_id: str = "TASK-001") -> str | None:
     return db.try_manager_supersede(
         task_id, actor_agent="engineering_manager", actor_session_id="session-1",
         expected_team="engineering", successor_brief="successor", rationale="rationale",
+        attestation=_attestation(),
     )
 
 
@@ -48,6 +66,7 @@ def test_manager_supersede_is_atomic_and_preserves_bidirectional_provenance(tmp_
     successor = db.try_manager_supersede(
         "TASK-001", actor_agent="engineering_manager", actor_session_id="session-1",
         expected_team="engineering", successor_brief="successor literal brief", rationale="fresh evidence invalidated plan",
+        attestation=_attestation(),
     )
 
     assert successor == "TASK-002"
@@ -60,17 +79,46 @@ def test_manager_supersede_is_atomic_and_preserves_bidirectional_provenance(tmp_
     assert row["successor_brief"] == "successor literal brief"
     assert len(row["predecessor_brief_sha256"]) == 64
     assert len(row["successor_brief_sha256"]) == 64
+    evidence = json.loads(row["attestation_evidence"])
+    assert evidence == {
+        "actor_agent": "engineering_manager",
+        "actor_session_id": "session-1",
+        "attestation": _attestation(),
+        "rule_version": "manager_supersession_attestation.v1",
+    }
     assert {r["task_id"] for r in db.execute(
         "SELECT task_id FROM audit_log WHERE action='manager_supersession'"
     ).fetchall()} == {"TASK-001", successor}
     audits = {
-        row["task_id"]: row["payload"]
+        row["task_id"]: json.loads(row["payload"])
         for row in db.execute("SELECT task_id, payload FROM audit_log WHERE action='manager_supersession'")
     }
-    assert successor in audits["TASK-001"]
-    assert "TASK-001" in audits[successor]
+    assert audits["TASK-001"]["counterpart_task_id"] == successor
+    assert audits[successor]["counterpart_task_id"] == "TASK-001"
+    assert audits["TASK-001"]["attestation_evidence"] == evidence
+    assert audits[successor]["attestation_evidence"] == evidence
     with pytest.raises(Exception, match="append-only"):
         db.execute("DELETE FROM manager_supersessions")
+    with pytest.raises(Exception, match="append-only"):
+        db.execute("UPDATE manager_supersessions SET attestation_evidence = '{}' ")
+
+
+def test_valid_looking_attestation_is_audited_not_truth_proof(tmp_path: Path) -> None:
+    """The pilot records manager declarations; it does not assess their real-world truth."""
+    db = _db(tmp_path)
+    attestation = _attestation(recovery_reason="Manager states that scope is unchanged.")
+
+    successor = db.try_manager_supersede(
+        "TASK-001", actor_agent="engineering_manager", actor_session_id="session-1",
+        expected_team="engineering", successor_brief="successor", rationale="manager assertion",
+        attestation=attestation,
+    )
+
+    assert successor == "TASK-002"
+    evidence = json.loads(db.execute(
+        "SELECT attestation_evidence FROM manager_supersessions"
+    ).fetchone()["attestation_evidence"])
+    assert evidence["attestation"] == attestation
 
 
 def test_manager_supersede_rejects_live_work_and_does_not_consume_allowance(tmp_path: Path) -> None:
@@ -188,5 +236,6 @@ def test_manager_supersede_allows_only_one_original_lineage_reset(tmp_path: Path
     assert db.try_manager_supersede(
         successor, actor_agent="engineering_manager", actor_session_id="session-2",
         expected_team="engineering", successor_brief="third", rationale="second reset",
+        attestation=_attestation(),
     ) is None
     assert db.get_task(successor).status is TaskStatus.IN_PROGRESS

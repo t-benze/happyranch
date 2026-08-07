@@ -132,6 +132,14 @@ def test_zombie_consumer_rejects_thread_originated_manager_supersession(
             "decision_json": json.dumps({
                 "action": "supersede", "successor_brief": "replacement",
                 "rationale": "new evidence",
+                "attestation": {
+                    "recovery_reason": "Evidence invalidated the old plan.",
+                    "policy_product_intent_unchanged": True,
+                    "no_budget_or_external_commitment": True,
+                    "no_permission_or_cross_team_change": True,
+                    "no_schema_auth_security_privacy_or_data_access_change": True,
+                    "no_unresolved_founder_gate": True,
+                },
             }),
         },
         db.get_task("T-ZOMBIE-SUP"),

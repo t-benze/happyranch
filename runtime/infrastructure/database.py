@@ -648,6 +648,7 @@ class Database:
                 actor_agent TEXT NOT NULL,
                 actor_session_id TEXT NOT NULL,
                 rationale TEXT NOT NULL,
+                attestation_evidence TEXT NOT NULL,
                 predecessor_brief TEXT NOT NULL,
                 successor_brief TEXT NOT NULL,
                 predecessor_brief_sha256 TEXT NOT NULL,
@@ -2481,6 +2482,7 @@ class Database:
         expected_team: str,
         successor_brief: str,
         rationale: str,
+        attestation: dict[str, object],
     ) -> str | None:
         """Atomically replace one eligible claimed root with a pending successor.
 
@@ -2543,6 +2545,12 @@ class Database:
             predecessor_brief = row["brief"]
             predecessor_hash = hashlib.sha256(predecessor_brief.encode()).hexdigest()
             successor_hash = hashlib.sha256(successor_brief.encode()).hexdigest()
+            attestation_evidence = {
+                "rule_version": "manager_supersession_attestation.v1",
+                "actor_agent": actor_agent,
+                "actor_session_id": actor_session_id,
+                "attestation": attestation,
+            }
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief, task_type,
                        revision_count, created_at, updated_at, parent_task_id,
@@ -2554,11 +2562,11 @@ class Database:
             self._conn.execute(
                 """INSERT INTO manager_supersessions
                    (predecessor_task_id, successor_task_id, original_root_task_id,
-                    actor_agent, actor_session_id, rationale, predecessor_brief,
+                    actor_agent, actor_session_id, rationale, attestation_evidence, predecessor_brief,
                     successor_brief, predecessor_brief_sha256, successor_brief_sha256, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (predecessor, successor_id, original_root, actor_agent, actor_session_id,
-                 rationale, predecessor_brief, successor_brief, predecessor_hash,
+                 rationale, json.dumps(attestation_evidence, sort_keys=True), predecessor_brief, successor_brief, predecessor_hash,
                  successor_hash, now),
             )
             self._conn.execute(
@@ -2576,6 +2584,7 @@ class Database:
                 "original_root_task_id": original_root,
                 "actor_session_id": actor_session_id,
                 "rationale": rationale,
+                "attestation_evidence": attestation_evidence,
                 "predecessor_brief_sha256": predecessor_hash,
                 "successor_brief_sha256": successor_hash,
             }

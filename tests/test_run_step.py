@@ -162,6 +162,14 @@ def _consume_manager_supersede(orch, task_id: str) -> None:
                 action="supersede",
                 successor_brief="replacement plan",
                 rationale="new evidence",
+                attestation={
+                    "recovery_reason": "Evidence invalidated the old plan.",
+                    "policy_product_intent_unchanged": True,
+                    "no_budget_or_external_commitment": True,
+                    "no_permission_or_cross_team_change": True,
+                    "no_schema_auth_security_privacy_or_data_access_change": True,
+                    "no_unresolved_founder_gate": True,
+                },
             ),
         ),
     )

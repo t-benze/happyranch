@@ -274,6 +274,9 @@ def test_manager_prompt_marks_supersede_as_default_off_internal_pilot():
     assert '"action": "supersede"' in p
     assert "default OFF" in p
     assert "kill switch" in p
+    assert '"attestation"' in p
+    assert "MUST escalate" in p
+    assert "not proof" in p
     assert "Thread-originated roots are rejected in phase 1" in p
 
 

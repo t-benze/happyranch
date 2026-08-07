@@ -463,6 +463,7 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             expected_team=pilot_team,
             successor_brief=decision.successor_brief or "",
             rationale=decision.rationale or "",
+            attestation=decision.attestation.model_dump() if decision.attestation else {},
         )
         if successor_id is None:
             # The claim may have been superseded by cancellation or a competing

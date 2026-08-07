@@ -971,6 +971,14 @@ def test_sweep_orphaned_thread_originated_supersede_remains_unconsumed(tmp_path,
         decision_json=json.dumps({
             "action": "supersede", "successor_brief": "replacement",
             "rationale": "new evidence",
+            "attestation": {
+                "recovery_reason": "Evidence invalidated the old plan.",
+                "policy_product_intent_unchanged": True,
+                "no_budget_or_external_commitment": True,
+                "no_permission_or_cross_team_change": True,
+                "no_schema_auth_security_privacy_or_data_access_change": True,
+                "no_unresolved_founder_gate": True,
+            },
         }),
     )
     monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
