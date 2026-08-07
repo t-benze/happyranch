@@ -59,6 +59,9 @@ function rowTone(label: string): string {
 export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [connectionState, setConnectionState] = useState<'connecting' | 'empty' | 'error'>(
+    'connecting',
+  );
   const seen = useRef<Set<string>>(new Set());
 
   const append = useCallback((ev: TaskEvent) => {
@@ -68,7 +71,10 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
     setEvents((prev) => [...prev, ev]);
   }, []);
 
-  useTaskTailSSE(taskId, append);
+  const markConnected = useCallback(() => setConnectionState('empty'), []);
+  const markFailed = useCallback(() => setConnectionState('error'), []);
+
+  useTaskTailSSE(taskId, append, { onOpen: markConnected, onError: markFailed });
 
   const toggle = (sig: string) =>
     setExpanded((prev) => {
@@ -79,7 +85,17 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
     });
 
   if (events.length === 0) {
-    return <p className="text-fg-muted text-xs">Waiting for events…</p>;
+    if (connectionState === 'error') {
+      return (
+        <p role="alert" className="text-status-abandoned text-xs">
+          Unable to load events for {taskId}.
+        </p>
+      );
+    }
+    if (connectionState === 'connecting') {
+      return <p className="text-fg-muted text-xs">Loading events for {taskId}…</p>;
+    }
+    return <p className="text-fg-muted text-xs">No events for {taskId} yet.</p>;
   }
   return (
     <ol className="space-y-1 text-xs">

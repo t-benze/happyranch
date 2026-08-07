@@ -53,7 +53,8 @@ export const useTaskRecall: ReturnType<typeof useData>['tasks']['useTaskRecall']
 export const useTaskTailSSE: ReturnType<typeof useData>['tasks']['useTaskTailSSE'] = (
   taskId,
   onEvent,
-) => useData().tasks.useTaskTailSSE(taskId, onEvent);
+  callbacks,
+) => useData().tasks.useTaskTailSSE(taskId, onEvent, callbacks);
 
 // ---------------------------------------------------------------------------
 // Mutations
