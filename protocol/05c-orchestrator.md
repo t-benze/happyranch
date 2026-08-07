@@ -64,6 +64,8 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
+**Manager root supersession (THR-152 phase 1).** The default-disabled, one-team internal pilot adds only the `supersede` completion decision. It is a same-manager, same-team, currently claimed root replacement with a nonblank successor brief and rationale; it has no arbitrary task-id/API/CLI/dashboard surface. A dedicated append-only relation stores both literal briefs, SHA-256 hashes, and bidirectional audit records in the same transaction as predecessor `superseded` and successor `pending`. The operator environment kill switch (`HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED=1`; optional pilot-team override) is authoritative. It is informational only: no Founder escalation, approval, or notification is emitted. Thread-origin traversal/dispatch integration is explicitly deferred to phase 2; any policy/product intent, budget/external commitment, permissions, cross-team, schema/auth/security/privacy/data-access, or unresolved Founder gate remains an escalation.
+
 **7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, and team health metrics into a weekly report.
 
 **8. Executor result-envelope contract (THR-107).** Custom (non-built-in) CLIs
