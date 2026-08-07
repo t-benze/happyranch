@@ -127,8 +127,9 @@ append-only event. It never creates/copies/chmods a wrapper, runs a probe or
 Malformed known-direct attempts terminalize their authority; unknown or
 foreign registration context remains ordinary invalid context. Legacy adapter
 mints without the optional field remain the existing PENDING-submission path.
-Projection/reconciliation, compensation, COMMITTED eligibility, runner fences,
-and UI cutover remain later slices.
+If the final registration-token commit fails, Slice A compensates the
+receipt/event boundary. Projection/reconciliation, COMMITTED eligibility,
+runner fences, and UI cutover remain later slices.
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,

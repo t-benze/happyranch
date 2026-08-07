@@ -109,10 +109,10 @@ runtime-root SQLite. Slice A adds the single loopback registration-token-only
 It produces a durable, fingerprint-only ``received_nonlaunchable`` receipt
 after canonical wrapper and v2 manifest validation; it has no projection,
 profile/adapter state, executor eligibility, runner effect, or browser client.
-Existing adapter mints that omit the optional field retain the legacy PENDING
-submission behavior. Direct projection, compensation, COMMITTED eligibility,
-COMMITTED/receipt/compensation lifecycle, launcher fencing, and UI changes are
-explicit later serial slices.
+If the final registration-token commit fails, Slice A compensates the
+receipt/event boundary. Existing adapter mints that omit the optional field
+retain the legacy PENDING submission behavior. Direct projection, COMMITTED
+eligibility, launcher fencing, and UI changes are explicit later serial slices.
 
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest
