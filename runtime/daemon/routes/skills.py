@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, Body as RequestBody, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body as RequestBody, HTTPException, Query, Request, status
 from pydantic import BaseModel, field_validator
 
 from runtime.config import settings
-from runtime.daemon.auth import _check_optional_token, require_token
+from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.state import DaemonState
@@ -38,11 +38,6 @@ router = APIRouter(dependencies=[require_token()])
 # This router does NOT use require_token() because the route rejects
 # bearer tokens and uses SessionTracker identity instead.
 agent_skills_router = APIRouter()
-
-def _check_optional_token_dep(request: Request) -> bool:
-    """Check for optional bearer token — identical to auth._check_optional_token."""
-    return _check_optional_token(request.headers.get("Authorization"))
-
 
 def _recover_audit_event_mandatory(
     db,
@@ -1548,14 +1543,43 @@ def _get_b1_protected_slugs(org: OrgState) -> frozenset:
                 "detail": "Canonical release-managed skill registry is missing or unreadable. Protected-slug enforcement is mandatory.",
             },
         )
-    protected: set[str] = set()
     try:
+        package_dirs = tuple(
+            path for path in release_dir.iterdir()
+            if path.is_dir() and ((path / "skill.yaml").exists() or (path / "SKILL.md").exists())
+        )
+        if not package_dirs:
+            raise RuntimeError("release registry has no package directories")
+
+        expected_entries: set[tuple[str, str]] = set()
+        for package_dir in package_dirs:
+            manifest_path = package_dir / "skill.yaml"
+            skill_md_path = package_dir / "SKILL.md"
+            if not manifest_path.is_file() or not skill_md_path.is_file():
+                raise RuntimeError(f"incomplete release package: {package_dir.name}")
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise RuntimeError(f"invalid release manifest: {package_dir.name}")
+            skill_id = manifest.get("id", f"hr:{package_dir.name}")
+            skill_slug = manifest.get("slug", package_dir.name)
+            if not isinstance(skill_id, str) or not skill_id or not isinstance(skill_slug, str) or not skill_slug:
+                raise RuntimeError(f"invalid release identity: {package_dir.name}")
+            expected_entries.add((skill_id, skill_slug))
+        if len(expected_entries) != len(package_dirs):
+            raise RuntimeError("duplicate release package identity")
+
         registry = SkillRegistry(skills_root=release_dir)
-        for entry in registry.list_all():
+        loaded_entries = registry.list_all()
+        loaded_identities: set[tuple[str, str]] = set()
+        for entry in loaded_entries:
             entry_obj = entry[0] if isinstance(entry, tuple) else entry
-            slug_val = getattr(entry_obj, 'slug', None)
-            if slug_val:
-                protected.add(slug_val)
+            skill_id = getattr(entry_obj, "id", None)
+            skill_slug = getattr(entry_obj, "slug", None)
+            if not isinstance(skill_id, str) or not skill_id or not isinstance(skill_slug, str) or not skill_slug:
+                raise RuntimeError("invalid loaded release identity")
+            loaded_identities.add((skill_id, skill_slug))
+        if len(loaded_identities) != len(loaded_entries) or loaded_identities != expected_entries:
+            raise RuntimeError("partial release registry load")
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1564,10 +1588,7 @@ def _get_b1_protected_slugs(org: OrgState) -> frozenset:
                 "detail": "Cannot load release-managed skill registry. Protected-slug enforcement is mandatory.",
             },
         )
-    # Add system contract slugs
-    for sc in SYSTEM_CONTRACTS:
-        protected.add(sc.id)
-    return frozenset(protected)
+    return frozenset({skill_slug for _, skill_slug in loaded_identities} | {sc.id for sc in SYSTEM_CONTRACTS})
 
 
 @agent_skills_router.post("/skills/agent", status_code=201)
@@ -1576,7 +1597,6 @@ def create_skill_agent(
     request: Request,
     body_raw: dict = RequestBody(..., description="Package metadata and content (no identity fields)"),
     session_id: str = Query(..., min_length=1),
-    has_bearer: bool = Depends(_check_optional_token_dep),
 ) -> dict:
     """B1: Create a custom skill via verified agent session binding.
 
@@ -1613,7 +1633,7 @@ def create_skill_agent(
     _VALIDATOR_VERSION = "THR-055/1.0.0"
 
     # ── Reject bearer token ──────────────────────────────────────────
-    if has_bearer:
+    if "authorization" in request.headers:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={

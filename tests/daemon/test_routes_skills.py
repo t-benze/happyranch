@@ -3633,6 +3633,21 @@ class TestB1CreateSkillAgent:
         _b1_seed_task(org_state.db, task_id)
         org_state.sessions.set_active(task_id, agent, session_id, org_slug=org_slug)
 
+    @staticmethod
+    def _assert_no_b1_residue(org_state, slug, task_id, session_id, agent="frontend_engineer"):
+        """Assert every B1 persistence surface remains untouched on denial."""
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        skill_id = f"hr:{slug}"
+        assert lifecycle_stores.list_package_versions(org_state.db, skill_id=skill_id) == []
+        assert lifecycle_stores.list_lifecycle_events(org_state.db, skill_id=skill_id) == []
+        assert lifecycle_stores.get_latest_materialization(org_state.db, skill_id, agent) is None
+        artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+        assert artifact_store.list_artifacts(prefix=f"skill-lifecycle/{slug}") == []
+        assert org_state.sessions.get_active(task_id, agent) == session_id
+
     # ── P1: Provenance, hash, context ────────────────────────────────────
 
     def test_b1_happy_path_returns_201_with_provenance(self, app, org_state):
@@ -3774,18 +3789,32 @@ class TestB1CreateSkillAgent:
             from pathlib import Path
             Path(pkg_path).unlink(missing_ok=True)
 
-    def test_b1_bearer_rejected_401(self, app, org_state, auth_headers):
-        """P2: Bearer token → 401."""
+    def test_b1_every_authorization_header_is_rejected_before_session_lookup(
+        self, app, org_state, auth_headers, monkeypatch,
+    ):
+        """P2: valid and arbitrary bearer headers have the identical no-bearer denial."""
         self._setup_session(org_state, "TASK-B1-BR", "sess-b1-br")
         client = TestClient(app)
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/agent",
-            json=_b1_make_body(slug="b1-bearer"),
-            params={"session_id": "sess-b1-br"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 401
-        assert r.json()["detail"]["code"] == "bearer_not_accepted"
+        lookups = []
+        original_lookup = org_state.sessions.get_context_by_session
+
+        def observe_lookup(session_id):
+            lookups.append(session_id)
+            return original_lookup(session_id)
+
+        monkeypatch.setattr(org_state.sessions, "get_context_by_session", observe_lookup)
+        for suffix, headers in (("valid", auth_headers), ("arbitrary", {"Authorization": "Bearer arbitrary"})):
+            slug = f"b1-bearer-{suffix}"
+            r = client.post(
+                "/api/v1/orgs/alpha/skills/agent",
+                json=_b1_make_body(slug=slug),
+                params={"session_id": "sess-b1-br"},
+                headers=headers,
+            )
+            assert r.status_code == 401
+            assert r.json()["detail"]["code"] == "bearer_not_accepted"
+            self._assert_no_b1_residue(org_state, slug, "TASK-B1-BR", "sess-b1-br")
+        assert lookups == []
 
     def test_b1_body_identity_rejected_403(self, app, org_state):
         """P2: Body identity keys → 403."""
@@ -4009,31 +4038,19 @@ class TestB1CreateSkillAgent:
 
     # ── P5: Protected-slug enforcement ─────────────────────────────
 
-    def test_b1_create_skill_slug_rejected(self, app, org_state):
-        """P5: System contract slug 'create-skill' rejected 409."""
+    def test_b1_system_contract_slugs_rejected_with_no_residue(self, app, org_state):
+        """P5: Canonical system-contract slugs cannot be shadowed."""
         self._setup_session(org_state, "TASK-B1-P5A", "sess-b1-p5a")
         client = TestClient(app)
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/agent",
-            json=_b1_make_body(slug="create-skill", name="Shadow"),
-            params={"session_id": "sess-b1-p5a"},
-        )
-        assert r.status_code == 409
-        assert r.json()["detail"]["code"] == "protected_slug"
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        assert len(lifecycle_stores.list_package_versions(org_state.db, skill_id="hr:create-skill")) == 0
-
-    def test_b1_todos_slug_rejected(self, app, org_state):
-        """P5: System contract slug 'todos' rejected 409."""
-        self._setup_session(org_state, "TASK-B1-P5B", "sess-b1-p5b")
-        client = TestClient(app)
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/agent",
-            json=_b1_make_body(slug="todos", name="Shadow todos"),
-            params={"session_id": "sess-b1-p5b"},
-        )
-        assert r.status_code == 409
-        assert r.json()["detail"]["code"] == "protected_slug"
+        for slug in ("create-skill", "todos"):
+            r = client.post(
+                "/api/v1/orgs/alpha/skills/agent",
+                json=_b1_make_body(slug=slug, name=f"Shadow {slug}"),
+                params={"session_id": "sess-b1-p5a"},
+            )
+            assert r.status_code == 409
+            assert r.json()["detail"]["code"] == "protected_slug"
+            self._assert_no_b1_residue(org_state, slug, "TASK-B1-P5A", "sess-b1-p5a")
 
     def test_b1_release_registry_slug_rejected(self, app, org_state):
         """P5: Release-managed skill slug rejected 409."""
@@ -4046,6 +4063,72 @@ class TestB1CreateSkillAgent:
         )
         assert r.status_code == 409
         assert r.json()["detail"]["code"] == "protected_slug"
+        self._assert_no_b1_residue(org_state, "reflection", "TASK-B1-P5C", "sess-b1-p5c")
+
+    def test_b1_missing_release_registry_fails_closed_with_no_residue(
+        self, app, org_state, tmp_path, monkeypatch,
+    ):
+        """P5: A missing canonical release registry never becomes an empty allow-list."""
+        self._setup_session(org_state, "TASK-B1-P5M", "sess-b1-p5m")
+        monkeypatch.setattr(
+            org_state, "settings", org_state.settings.model_copy(update={"project_root": tmp_path}),
+        )
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/skills/agent",
+            json=_b1_make_body(slug="b1-missing-registry"),
+            params={"session_id": "sess-b1-p5m"},
+        )
+        assert r.status_code == 500
+        assert r.json()["detail"]["code"] == "protected_slugs_unavailable"
+        self._assert_no_b1_residue(org_state, "b1-missing-registry", "TASK-B1-P5M", "sess-b1-p5m")
+
+    def test_b1_unreadable_release_registry_fails_closed_with_no_residue(
+        self, app, org_state, monkeypatch,
+    ):
+        """P5: A registry read error denies before package persistence."""
+        import runtime.skills.registry as registry_module
+
+        self._setup_session(org_state, "TASK-B1-P5U", "sess-b1-p5u")
+
+        class UnreadableRegistry:
+            def __init__(self, skills_root):
+                raise OSError("injected unreadable release registry")
+
+        monkeypatch.setattr(registry_module, "SkillRegistry", UnreadableRegistry)
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/skills/agent",
+            json=_b1_make_body(slug="b1-unreadable-registry"),
+            params={"session_id": "sess-b1-p5u"},
+        )
+        assert r.status_code == 500
+        assert r.json()["detail"]["code"] == "protected_slugs_unavailable"
+        self._assert_no_b1_residue(org_state, "b1-unreadable-registry", "TASK-B1-P5U", "sess-b1-p5u")
+
+    def test_b1_partial_release_registry_fails_closed_with_no_residue(
+        self, app, org_state, monkeypatch,
+    ):
+        """P5: Omitting one canonical release entry is an unavailable registry, not a partial allow-list."""
+        import runtime.skills.registry as registry_module
+
+        self._setup_session(org_state, "TASK-B1-P5P", "sess-b1-p5p")
+        original_registry = registry_module.SkillRegistry
+
+        class PartialRegistry:
+            def __init__(self, skills_root):
+                self._real = original_registry(skills_root)
+
+            def list_all(self):
+                return self._real.list_all()[:1]
+
+        monkeypatch.setattr(registry_module, "SkillRegistry", PartialRegistry)
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/skills/agent",
+            json=_b1_make_body(slug="b1-partial-registry"),
+            params={"session_id": "sess-b1-p5p"},
+        )
+        assert r.status_code == 500
+        assert r.json()["detail"]["code"] == "protected_slugs_unavailable"
+        self._assert_no_b1_residue(org_state, "b1-partial-registry", "TASK-B1-P5P", "sess-b1-p5p")
 
     # ── P6: PROPOSED status, default-hidden, B2 deferred ──────────
 
