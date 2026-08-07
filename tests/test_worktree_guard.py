@@ -16,7 +16,6 @@ Scenarios:
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 import sys
@@ -1490,424 +1489,73 @@ def test_guard_copies_are_byte_identical():
     )
 
 
-# ── TASK-3881: HappyRanch pre-push hook automatic installation ─────────────
-
+# ── HappyRanch-shaped worktrees must not receive runtime hooks ─────────────
 
 @pytest.fixture
 def happyranch_repo(primary_repo: Path) -> Path:
-    """Create a HappyRanch-shaped repo with scripts/local_ci.sh and
-    scripts/hooks/pre-push.local-ci.sample."""
+    """Create the former HappyRanch detector shape without enabling side effects."""
     scripts_dir = primary_repo / "scripts"
     hooks_dir = scripts_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    (scripts_dir / "local_ci.sh").write_text("#!/usr/bin/env bash\n"
-        'REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
-        'case "${1:-all}" in\n'
-        '  all|python|web|integration|help) exit 0 ;;\n'
-        '  *) exit 1 ;;\n'
-        'esac\n')
-    (scripts_dir / "local_ci.sh").chmod(0o755)
-    (hooks_dir / "pre-push.local-ci.sample").write_text(
-        "#!/usr/bin/env bash\n"
-        'REPO_ROOT="$(git rev-parse --show-toplevel)"\n'
-        'exec "${REPO_ROOT}/scripts/local_ci.sh" all\n'
-    )
+    (scripts_dir / "local_ci.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (hooks_dir / "pre-push.local-ci.sample").write_text("#!/usr/bin/env bash\nexit 0\n")
     _run(["git", "-C", str(primary_repo), "add", "scripts/"], cwd=primary_repo)
-    _run(["git", "-C", str(primary_repo), "commit", "-m", "add HappyRanch scripts"], cwd=primary_repo)
+    _run(["git", "-C", str(primary_repo), "commit", "-m", "add former detector files"], cwd=primary_repo)
     return primary_repo
 
 
 @pytest.fixture
 def happyranch_worktree(happyranch_repo: Path) -> Path:
-    """Create a linked worktree from a HappyRanch-shaped repo."""
+    """Create a linked worktree containing the former detector shape."""
     wt = happyranch_repo / ".claude" / "worktrees" / "TASK-3881-TEST"
     wt.parent.mkdir(parents=True, exist_ok=True)
     _run(["git", "-C", str(happyranch_repo), "worktree", "add", str(wt), "-b", "task/TASK-3881-TEST"])
     yield wt
-    # Cleanup
     _run(["git", "-C", str(happyranch_repo), "worktree", "remove", str(wt), "--force"])
     _run(["git", "-C", str(happyranch_repo), "branch", "-D", "task/TASK-3881-TEST"])
 
 
-class TestHappyRanchPrePushAutoInstall:
-    """Test A: HappyRanch worktree gets automatic pre-push hook installation."""
-
-    def test_setup_installs_pre_push_hook(self, happyranch_worktree, happyranch_repo, capsys):
-        """A newly created HappyRanch linked worktree that runs setup gets the
-        executable pre-push hook and a worktree-local core.hooksPath."""
-        cmd_setup(
-            worktree_root=str(happyranch_worktree),
-            primary_root=str(happyranch_repo),
-            task_id="TASK-3881-TEST",
-        )
-
-        captured = capsys.readouterr()
-        out = captured.out
-
-        # Verify the install message appeared
-        assert "HappyRanch worktree detected: mandatory pre-push hook installed." in out
-        assert "core.hooksPath" in out
-
-        # Verify the hooks directory was created
-        git_dir = _git_out(happyranch_worktree, "rev-parse", "--git-dir")
-        assert git_dir
-        hooks_dir = _canonical(git_dir) / "happyranch-hooks"
-        assert hooks_dir.is_dir(), f"Hooks dir not created: {hooks_dir}"
-
-        # Verify the pre-push hook file exists and is executable
-        pre_push = hooks_dir / "pre-push"
-        assert pre_push.is_file(), f"Pre-push hook not created: {pre_push}"
-        assert os.access(str(pre_push), os.X_OK), f"Pre-push hook not executable: {pre_push}"
-
-        # Verify hook content matches the sample
-        sample = happyranch_repo / "scripts" / "hooks" / "pre-push.local-ci.sample"
-        assert pre_push.read_text() == sample.read_text()
-
-        # Verify core.hooksPath is set worktree-locally
-        hooks_path = _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
-        assert hooks_path
-        assert Path(hooks_path).resolve() == hooks_dir.resolve()
-
-        # Verify the primary checkout's hooksPath is NOT affected
-        primary_hooks_path = _git_out(happyranch_repo, "config", "--local", "core.hooksPath")
-        assert not primary_hooks_path or primary_hooks_path != str(hooks_dir), (
-            "Primary checkout's core.hooksPath must not be affected"
-        )
-
-    def test_primary_checkout_hooks_preserved(self, happyranch_worktree, happyranch_repo):
-        """The primary/normal checkout retains a preexisting sentinel hook and
-        hooks path exactly."""
-        # Place a sentinel hook in the primary checkout BEFORE setup
-        primary_hooks = happyranch_repo / ".git" / "hooks"
-        primary_hooks.mkdir(parents=True, exist_ok=True)
-        sentinel = primary_hooks / "pre-push"
-        sentinel.write_text("#!/usr/bin/env bash\necho 'PRIMARY SENTINEL'\n")
-        sentinel.chmod(0o755)
-        sentinel_content = sentinel.read_text()
-
-        # Optionally set a primary hooks path
-        _run(["git", "-C", str(happyranch_repo), "config", "--local",
-              "core.hooksPath", str(primary_hooks)])
-        primary_hooks_path_before = _git_out(happyranch_repo, "config", "--local", "core.hooksPath")
-
-        cmd_setup(
-            worktree_root=str(happyranch_worktree),
-            primary_root=str(happyranch_repo),
-            task_id="TASK-3881-TEST",
-        )
-
-        # Verify the primary checkout's sentinel hook is unchanged
-        assert sentinel.read_text() == sentinel_content, (
-            "Primary checkout's pre-push hook was modified"
-        )
-
-        # Verify the primary checkout's hooksPath is unchanged
-        primary_hooks_path_after = _git_out(happyranch_repo, "config", "--local", "core.hooksPath")
-        assert primary_hooks_path_after == primary_hooks_path_before, (
-            f"Primary checkout's core.hooksPath changed: "
-            f"{primary_hooks_path_before} -> {primary_hooks_path_after}"
-        )
-
-    def test_idempotent_reprovisioning(self, happyranch_worktree, happyranch_repo, capsys):
-        """Running cmd_setup twice on the same worktree is idempotent."""
-        cmd_setup(
-            worktree_root=str(happyranch_worktree),
-            primary_root=str(happyranch_repo),
-            task_id="TASK-3881-TEST",
-        )
-
-        # Capture the state after first setup
-        git_dir = _git_out(happyranch_worktree, "rev-parse", "--git-dir")
-        hooks_dir = _canonical(git_dir) / "happyranch-hooks"
-        pre_push = hooks_dir / "pre-push"
-        first_content = pre_push.read_text()
-        first_mtime = pre_push.stat().st_mtime
-
-        # Run setup again — should not fail
-        cmd_setup(
-            worktree_root=str(happyranch_worktree),
-            primary_root=str(happyranch_repo),
-            task_id="TASK-3881-TEST",
-        )
-
-        captured = capsys.readouterr()
-        out = captured.out
-
-        # Verify second install message still appears
-        assert "HappyRanch worktree detected: mandatory pre-push hook installed." in out
-
-        # Verify the hook content is unchanged (overwritten with same content)
-        assert pre_push.read_text() == first_content
-
-        # Verify hooksPath is still set correctly
-        hooks_path = _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
-        assert hooks_path
-        assert Path(hooks_path).resolve() == hooks_dir.resolve()
-
-    def test_no_op_for_non_happyranch_worktree(self, worktree, primary_repo):
-        """A regular (non-HappyRanch) worktree is unaffected — no hook installed."""
-        cmd_setup(
-            worktree_root=str(worktree),
-            primary_root=str(primary_repo),
-            task_id="TASK-TEST",
-        )
-
-        git_dir = _git_out(worktree, "rev-parse", "--git-dir")
-        hooks_dir = _canonical(git_dir) / "happyranch-hooks"
-        assert not hooks_dir.exists(), (
-            f"Hooks dir should not exist for non-HappyRanch worktree: {hooks_dir}"
-        )
-
-        hooks_path = _git_out(worktree, "config", "--worktree", "core.hooksPath")
-        assert not hooks_path, (
-            f"core.hooksPath should not be set for non-HappyRanch worktree"
-        )
-
-    def test_fails_closed_if_git_dir_fails(self, happyranch_worktree, happyranch_repo, monkeypatch, capsys):
-        """If git rev-parse --git-dir fails during hook installation on a HappyRanch
-        worktree, setup exits 1 with the real production diagnostic.
-
-        Identity validation (worktree detection, common-dir match, branch name)
-        completes first. After identity validation succeeds, the installer calls
-        ``_git_out(worktree, "rev-parse", "--git-dir")`` — this test narrowly
-        intercepts ONLY that call, returning empty string to trigger the
-        production fail-closed path. All earlier calls (worktree detection,
-        common-dir match, branch name) and all other calls (e.g. git config)
-        delegate to the real ``_git_out`` so the test proves identity validation
-        completed and exercises the real production diagnostic."""
-        import runtime.tools.worktree_guard as guard_mod
-
-        real_git_out = guard_mod._git_out
-        git_dir_call_made = []
-
-        def _intercepted_git_out(path: Path, *args: str) -> str:
-            # Intercept ONLY the post-identity rev-parse --git-dir call inside
-            # _maybe_install_happyranch_pre_push. Delegate everything else to
-            # the real function so identity validation runs unmodified.
-            if args == ("rev-parse", "--git-dir") and path == happyranch_worktree:
-                git_dir_call_made.append(True)
-                return ""  # simulate failure → triggers production diagnostic
-            return real_git_out(path, *args)
-
-        monkeypatch.setattr(guard_mod, "_git_out", _intercepted_git_out)
-
-        with pytest.raises(SystemExit) as exc:
-            cmd_setup(
-                worktree_root=str(happyranch_worktree),
-                primary_root=str(happyranch_repo),
-                task_id="TASK-3881-TEST",
-            )
-        assert exc.value.code == 1
-
-        # Prove identity validation completed — the intercepted call was reached.
-        assert len(git_dir_call_made) == 1, (
-            "_git_out(rev-parse --git-dir) must be called exactly once after identity validation"
-        )
-
-        # Assert the real production diagnostic text (from
-        # _maybe_install_happyranch_pre_push lines 223-228).
-        captured = capsys.readouterr()
-        stderr = captured.err
-        assert "cannot run 'git rev-parse --git-dir'" in stderr, (
-            f"Must include the production git-dir diagnostic. Got: {stderr}"
-        )
-        assert "mandatory" in stderr.lower(), (
-            f"Must reference mandatory hook installation. Got: {stderr}"
-        )
-        assert "Corrective:" in stderr, (
-            f"Must include a corrective. Got: {stderr}"
-        )
-
-
-class TestPrePushHookBlocksFailingCI:
-    """Test B: Pre-push hook blocks a push when local_ci.sh fails."""
-
-    @pytest.fixture
-    def bare_remote(self, tmp_path: Path) -> Path:
-        """Create a bare git remote."""
-        remote = tmp_path / "remote.git"
-        remote.mkdir()
-        _run(["git", "init", "--bare"], cwd=remote)
-        return remote
-
-    def test_failing_local_ci_blocks_push(
-        self, happyranch_repo, bare_remote, tmp_path
+class TestHappyRanchWorktreeHasNoAutomaticHooks:
+    def test_setup_preserves_guard_invariants_without_hook_side_effects(
+        self, happyranch_worktree, happyranch_repo, capsys
     ):
-        """Configure a bare local disposable remote, make local_ci.sh fail while
-        recording/asserting the 'all' target, attempt 'git push', and prove the
-        push fails and the target ref is absent on the remote."""
-        # Add the bare remote to the primary
-        _run(["git", "-C", str(happyranch_repo), "remote", "add", "origin", str(bare_remote)])
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        config_worktree = git_dir / "config.worktree"
+        assert not config_worktree.exists()
+        assert not _git_out(happyranch_repo, "config", "--local", "extensions.worktreeConfig")
 
-        # Create a worktree and set it up (installs the hook)
-        wt = happyranch_repo / ".claude" / "worktrees" / "TASK-BLOCK-PUSH"
-        wt.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "-C", str(happyranch_repo), "worktree", "add", str(wt),
-              "-b", "task/TASK-BLOCK-PUSH"])
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
 
-        try:
-            # Setup installs the pre-push hook
-            cmd_setup(
-                worktree_root=str(wt),
-                primary_root=str(happyranch_repo),
-                task_id="TASK-BLOCK-PUSH",
-            )
+        assert "WORKTREE_ROOT=" in capsys.readouterr().out
+        assert (happyranch_worktree / SNAPSHOT_FILE).is_file()
+        assert not (git_dir / "happyranch-hooks").exists()
+        assert not config_worktree.exists()
+        assert not _git_out(happyranch_repo, "config", "--local", "extensions.worktreeConfig")
+        assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
+        assert cmd_verify(str(happyranch_worktree)) == 0
 
-            # Verify the hook is installed
-            git_dir = _git_out(wt, "rev-parse", "--git-dir")
-            hooks_dir = _canonical(git_dir) / "happyranch-hooks"
-            pre_push = hooks_dir / "pre-push"
-            assert pre_push.is_file()
-            assert os.access(str(pre_push), os.X_OK)
-
-            # Make local_ci.sh fail (persist proof target was exactly 'all')
-            # AND prove GIT_DIR contamination is sanitized by the hook via a
-            # disposable git init that must succeed under hook-scoped env.
-            target_log = tmp_path / "local_ci_target_arg.txt"
-            disposable_proof = tmp_path / "disposable-proof"
-            local_ci = wt / "scripts" / "local_ci.sh"
-            local_ci.write_text(
-                "#!/usr/bin/env bash\n"
-                "echo \"local_ci called with target: ${1:-all}\"\n"
-                "# Persist the received target argument for test assertions\n"
-                "echo \"${1:-all}\" > " + shlex.quote(str(target_log)) + "\n"
-                "# Reject any target that is NOT exactly 'all'\n"
-                "if [ \"$1\" != \"all\" ]; then\n"
-                "    echo \"ERROR: local_ci.sh received unexpected target: $1 (expected 'all')\"\n"
-                "    exit 2\n"
-                "fi\n"
-                "# Prove hook-scoped Git env is sanitized: disposable git init\n"
-                "mkdir -p " + shlex.quote(str(disposable_proof)) + " || exit 3\n"
-                "if ! git init \"" + shlex.quote(str(disposable_proof)) + "\" >/dev/null 2>&1; then\n"
-                "    echo \"GIT_DIR_LEAK: git init failed in hook context\" >&2\n"
-                "    exit 4\n"
-                "fi\n"
-                "# Simulate a test failure (to verify hook blocks push)\n"
-                "exit 1\n"
-            )
-            local_ci.chmod(0o755)
-
-            # Make a commit in the worktree so there's something to push
-            (wt / "feature.txt").write_text("new feature\n")
-            _run(["git", "-C", str(wt), "add", "feature.txt"])
-            _run(["git", "-C", str(wt), "commit", "-m", "test: new feature"])
-
-            # Attempt to push — should fail due to the pre-push hook
-            result = _run(
-                ["git", "-C", str(wt), "push", "origin", "task/TASK-BLOCK-PUSH"],
-            )
-
-            # The push should fail (non-zero exit code)
-            assert result.returncode != 0, (
-                f"Push should have failed due to pre-push hook.\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-
-            # Verify the error output mentions the local_ci failure
-            assert "local_ci" in (result.stderr + result.stdout).lower(), (
-                f"Push error should mention local_ci.\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-
-            # Verify the target ref is ABSENT on the remote
-            remote_refs = _git_out(bare_remote, "show-ref")
-            assert "task/TASK-BLOCK-PUSH" not in remote_refs, (
-                f"Target ref should NOT be on the remote after blocked push.\n"
-                f"Refs on remote: {remote_refs}"
-            )
-
-            # Verify the real installed hook passed exactly 'all' as first arg
-            assert target_log.is_file(), (
-                f"Target log not persisted by fake local_ci.sh: {target_log}"
-            )
-            recorded_target = target_log.read_text().strip()
-            assert recorded_target == "all", (
-                f"Installed pre-push hook must invoke local_ci.sh with target 'all', "
-                f"got: {recorded_target!r}"
-            )
-
-        finally:
-            _run(["git", "-C", str(happyranch_repo), "worktree", "remove", str(wt), "--force"])
-            _run(["git", "-C", str(happyranch_repo), "branch", "-D", "task/TASK-BLOCK-PUSH"])
-
-    def test_passing_local_ci_allows_push(
-        self, happyranch_repo, bare_remote, tmp_path
+    def test_setup_does_not_overwrite_preexisting_worktree_hooks_path(
+        self, happyranch_worktree, happyranch_repo
     ):
-        """When local_ci.sh passes under hook-scoped Git environment, the
-        push succeeds and the ref appears on the remote.  Proves GIT_DIR
-        contamination is sanitized via a disposable git init."""
-        # Add the bare remote to the primary
-        _run(["git", "-C", str(happyranch_repo), "remote", "add", "origin", str(bare_remote)])
+        sentinel_hooks = happyranch_worktree / "sentinel-hooks"
+        sentinel_hooks.mkdir()
+        _run(["git", "-C", str(happyranch_repo), "config", "extensions.worktreeConfig", "true"])
+        _run([
+            "git", "-C", str(happyranch_worktree), "config", "--worktree",
+            "core.hooksPath", str(sentinel_hooks),
+        ])
+        before = _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
 
-        # Create a worktree and set it up
-        wt = happyranch_repo / ".claude" / "worktrees" / "TASK-PASS-PUSH"
-        wt.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "-C", str(happyranch_repo), "worktree", "add", str(wt),
-              "-b", "task/TASK-PASS-PUSH"])
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
 
-        try:
-            cmd_setup(
-                worktree_root=str(wt),
-                primary_root=str(happyranch_repo),
-                task_id="TASK-PASS-PUSH",
-            )
-
-            # Replace default local_ci.sh with one that validates the 'all'
-            # target AND proves GIT_DIR sanitization via a disposable git init
-            # under hook-scoped environment, then exits 0 (passing CI).
-            target_log = tmp_path / "local_ci_target_arg.txt"
-            disposable_proof = tmp_path / "disposable-proof"
-            local_ci = wt / "scripts" / "local_ci.sh"
-            local_ci.write_text(
-                "#!/usr/bin/env bash\n"
-                "echo \"local_ci called with target: ${1:-all}\"\n"
-                "echo \"${1:-all}\" > " + shlex.quote(str(target_log)) + "\n"
-                "if [ \"$1\" != \"all\" ]; then\n"
-                "    echo \"ERROR: local_ci.sh received unexpected target: $1 (expected 'all')\"\n"
-                "    exit 2\n"
-                "fi\n"
-                "# Prove hook-scoped Git env is sanitized: disposable git init\n"
-                "mkdir -p " + shlex.quote(str(disposable_proof)) + " || exit 3\n"
-                "if ! git init \"" + shlex.quote(str(disposable_proof)) + "\" >/dev/null 2>&1; then\n"
-                "    echo \"GIT_DIR_LEAK: git init failed in hook context\" >&2\n"
-                "    exit 4\n"
-                "fi\n"
-                "# Simulate a CI pass\n"
-                "exit 0\n"
-            )
-            local_ci.chmod(0o755)
-
-            # Make a commit
-            (wt / "feature.txt").write_text("passing feature\n")
-            _run(["git", "-C", str(wt), "add", "feature.txt"])
-            _run(["git", "-C", str(wt), "commit", "-m", "test: passing feature"])
-
-            # Push should succeed
-            result = _run(
-                ["git", "-C", str(wt), "push", "origin", "task/TASK-PASS-PUSH"],
-            )
-            assert result.returncode == 0, (
-                f"Push should have succeeded.\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-
-            # Verify the ref exists on the remote
-            remote_refs = _git_out(bare_remote, "show-ref")
-            assert "task/TASK-PASS-PUSH" in remote_refs, (
-                f"Target ref should be on the remote after successful push.\n"
-                f"Refs on remote: {remote_refs}"
-            )
-
-            # Verify the real installed hook passed exactly 'all' as first arg
-            assert target_log.is_file(), (
-                f"Target log not persisted by fake local_ci.sh: {target_log}"
-            )
-            recorded_target = target_log.read_text().strip()
-            assert recorded_target == "all", (
-                f"Installed pre-push hook must invoke local_ci.sh with target 'all', "
-                f"got: {recorded_target!r}"
-            )
-
-        finally:
-            _run(["git", "-C", str(happyranch_repo), "worktree", "remove", str(wt), "--force"])
-            _run(["git", "-C", str(happyranch_repo), "branch", "-D", "task/TASK-PASS-PUSH"])
+        assert _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath") == before
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        assert not (git_dir / "happyranch-hooks").exists()

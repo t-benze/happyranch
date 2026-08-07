@@ -81,18 +81,12 @@ The two flags are independent. All four combinations are valid:
 
 3. Output is `ok: submitted JOB-NNN ...`. Keep the JOB-NNN id.
 
-## Normal publication from a mandatory linked worktree
+## Normal publication
 
-For a job whose purpose is a normal ref-advancing `git push` from a
-HappyRanch mandatory linked worktree, its script must contain only safe
-working-directory/environment setup and `git push` itself. It must not prepend
-or chain `scripts/local_ci.sh all`: the mandatory worktree pre-push hook runs
-`scripts/local_ci.sh all` exactly once and blocks the push on failure. Local CI
-is still mandatory for that publication; the hook is its single invocation.
-
-`git push --no-verify` remains forbidden. This applies to the mandatory guarded
-linked worktree; a Human normal checkout has opt-in hook installation and is
-not the same publication path.
+For a job whose purpose is a normal ref-advancing `git push`, follow the target
+repository's documented Git-hook and publication-process requirements. Its
+script must contain only safe working-directory/environment setup and `git push`
+itself. `git push --no-verify` remains forbidden.
 
 Safe push-only publish job example:
 

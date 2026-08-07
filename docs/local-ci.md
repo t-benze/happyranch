@@ -76,50 +76,13 @@ Runs Python integration tests (`-m integration`). The target spawns its own
 isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is **not**
 included in the `all` default.
 
-## Pre-push hook
+## Git hooks
 
-A sample pre-push hook that runs the local PR CI target is at
-`scripts/hooks/pre-push.local-ci.sample`.
-
-**Human normal-checkout installation** is **opt-in only** — copy it to
-`.git/hooks/pre-push` to enable:
-
-```bash
-cp scripts/hooks/pre-push.local-ci.sample .git/hooks/pre-push
-chmod +x .git/hooks/pre-push
-```
-
-**HappyRanch agent linked worktrees** receive **mandatory automatic**
-installation via `worktree_guard.py cmd_setup`. The hook is stored under
-the worktree's Git metadata directory (`git rev-parse --git-dir` →
-`happyranch-hooks/pre-push`) and activated via `git config --worktree
-core.hooksPath` scoped to that worktree only. The normal checkout's
-existing hook or hooks path is never touched. See
-`protocol/skills/make-worktree/SKILL.md` for the automatic-installation
-details.
-
-The hook invokes `scripts/local_ci.sh all` (python + web). If any step
-fails the push is blocked. The hook does **not** run integration tests.
-
-**Disabling / repairing:**
-
-- **Human normal-checkout (opt-in).** If you manually copied the sample
-  hook to `.git/hooks/pre-push`, you may remove that single file to
-  disable it. The agent-worktree automatic hook lives elsewhere and is
-  NOT touched.
-- **Agent worktree (mandatory automatic).** Do NOT delete
-  `.git/hooks/pre-push` — the automatic hook lives under the worktree's
-  Git metadata directory (`git rev-parse --git-dir` →
-  `happyranch-hooks/pre-push`), not in `.git/hooks`. To repair a broken
-  automatic installation, re-run the worktree setup:
-  `python worktree_guard.py setup --worktree-root <wt> --primary-root <pr>`.
-  This re-provisions the hook directory without touching the normal
-  checkout's hooks or config.
+This project does not install or manage Git hooks for linked worktrees. Follow
+the repository's documented Git-hook and publication-process requirements.
 
 **Policy constraints:**
-- The hook CANNOT prevent `git push --no-verify` — `--no-verify`
-  bypasses hooks entirely. It remains **prohibited** by engineering
-  policy regardless.
+- `git push --no-verify` remains **prohibited** by engineering policy.
 - **GitHub CI is authoritative** — it runs the full Python 3.12/3.13/3.14
   matrix and nightly integration on clean Ubuntu runners and is the
   only merge gate. Local-CI is pre-push feedback only.
