@@ -36,6 +36,8 @@ export interface RuntimeRegistrationTokenMintRequest {
   purpose?: string;
   /** For 'adapter' purpose: the profile name this adapter is bound to. */
   intended_profile_name?: string;
+  /** Optional Slice-1A direct-authority workspace adapter for adapter mints. */
+  workspace_adapter_id?: 'claude' | 'codex' | 'opencode' | 'pi';
 }
 
 export const mintRuntimeRegistrationToken = (

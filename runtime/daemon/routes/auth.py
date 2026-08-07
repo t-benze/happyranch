@@ -13,15 +13,19 @@
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from runtime.daemon import paths
 from runtime.daemon.auth import require_token
+from runtime.daemon.direct_connect_store import FIRST_PARTY_WORKSPACE_ADAPTER_IDS
 
 router = APIRouter()
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+WorkspaceAdapterId = Literal["claude", "codex", "opencode", "pi"]
 
 
 @router.get("/auth/bootstrap")
@@ -67,6 +71,27 @@ class RuntimeRegistrationTokenMintRequest(BaseModel):
         min_length=1,
         description="For 'adapter' purpose: the profile name this adapter is bound to"
     )
+    workspace_adapter_id: WorkspaceAdapterId | None = Field(
+        None,
+        description=(
+            "Optional Slice-1A direct-authority workspace adapter. Accepted only "
+            "for adapter-purpose mints and only as claude, codex, opencode, or pi."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_direct_authority_request(self) -> "RuntimeRegistrationTokenMintRequest":
+        if self.purpose == "adapter" and (
+            self.intended_profile_name is None or not self.intended_profile_name.strip()
+        ):
+            raise ValueError("intended_profile_name is required for adapter-purpose tokens")
+        if self.workspace_adapter_id is None:
+            return self
+        if self.purpose != "adapter":
+            raise ValueError("workspace_adapter_id is only valid for adapter-purpose tokens")
+        if self.workspace_adapter_id not in FIRST_PARTY_WORKSPACE_ADAPTER_IDS:
+            raise ValueError("workspace_adapter_id must be an exact first-party adapter id")
+        return self
 
 
 @router.post("/auth/registration-token")
@@ -115,9 +140,37 @@ def mint_runtime_registration_token(
         )
 
     store = request.app.state.daemon.registration_token_store
-    token, expires_at = store.mint_runtime(
-        body.name,
-        purpose=body.purpose,
-        intended_profile_name=body.intended_profile_name,
-    )
+    direct_store = request.app.state.daemon.direct_connect_authority_store
+
+    def persist_direct_authority(token: str, record: object) -> None:
+        if body.workspace_adapter_id is None:
+            return
+        if direct_store is None:
+            raise RuntimeError("direct authority store is unavailable")
+        # RegistrationTokenRecord is deliberately received as an opaque mint
+        # result so this route cannot persist the raw authorization anywhere.
+        issued_at = getattr(record, "issued_at")
+        expires_at = getattr(record, "expires_at")
+        direct_store.mint_authority(
+            token_plaintext=token,
+            name=body.name,
+            intended_profile_name=body.intended_profile_name or "",
+            workspace_adapter_id=body.workspace_adapter_id,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+
+    try:
+        token, expires_at = store.mint_runtime(
+            body.name,
+            purpose=body.purpose,
+            intended_profile_name=body.intended_profile_name,
+            on_mint=persist_direct_authority if body.workspace_adapter_id is not None else None,
+        )
+    except Exception:
+        # Do not expose a credential or a persistence implementation detail.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="unable to mint registration token",
+        ) from None
     return RegistrationTokenMintResponse(token=token, expires_at=expires_at)

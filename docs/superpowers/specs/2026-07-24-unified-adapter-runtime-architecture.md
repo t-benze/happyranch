@@ -448,6 +448,18 @@ applies to new scoped submissions and scoped re-registrations, but **not**
 to dependency records (existing absolute-path/hash-pinned rules remain) or
 the master-bearer ``/register`` route (operational/recovery path unchanged).
 
+**Slice 1A mint authority foundation (TASK-4687).** Before the later direct
+connection lifecycle, a normal master-authenticated runtime
+adapter-purpose token mint may persist an exact first-party workspace adapter
+with its intended profile/name and a server-derived wrapper destination in a
+separate daemon-global SQLite store. The store contains only a
+domain-separated one-way registration-token fingerprint and nonsecret mint
+provenance; it is neither YAML/registry authority nor a projection. Its sole
+state is ``minted_nonlaunchable``. It does not expose a direct-connect route,
+create an adapter/profile, change PENDING submission, choose a launcher, or
+claim Connected. Direct ingress, receipts/compensation, COMMITTED eligibility,
+Popen fencing, and final UI simplification remain later serial slices.
+
 ### 4.4 Registration, Conformance, Provenance
 
 | Step | Description | Gate |
