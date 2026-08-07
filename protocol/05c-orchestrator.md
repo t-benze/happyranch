@@ -961,21 +961,12 @@ New additive nullable columns preserve legacy rows with NULL.
 per-invocation run/event id. Re-runs append distinct events; never
 overwrite history. Missing/blank ``validator_version`` is rejected (400).
 
-**Founder-only proposal review endpoints.** All v2 proposal-scoped routes
-are under ``/skill-lifecycle/proposals/{version_id}/...`` and require
-bearer authentication (``_require_human``). Concurrency-protected with
-``expected_event_id`` marker: check + mutation execute inside a single
-``BEGIN IMMEDIATE``/``COMMIT``. Stale marker returns 409 with
-``stale_concurrency`` code and authoritative refresh state:
-- ``POST /proposals/{version_id}/claim`` — claim with concurrency
-- ``POST /proposals/{version_id}/validate`` — validate with deterministic metadata
-- ``POST /proposals/{version_id}/submit-review`` — VALIDATED → IN_REVIEW
-- ``POST /proposals/{version_id}/review`` — approve/reject with concurrency
-- ``POST /proposals/{version_id}/publish`` — publish with approval event id
-- ``POST /proposals/{version_id}/assign`` — assign to agent
-- ``POST /proposals/{version_id}/rollback`` — version-pinned rollback
-- ``GET /proposals/queue`` — paginated/filterable queue
-- ``GET /proposals/{version_id}`` — full detail with concurrency marker
+**Retired Founder proposal-review endpoints.** THR-055 seq 317 retired the
+v2 proposal queue, detail, and review-action routes. They are not registered,
+not documented in OpenAPI, and must not be reintroduced as a compatibility
+surface. The separate B1 `happyranch skills create` / `POST /skills/agent`
+path remains server-provenanced and default-hidden; it does not require, and
+must not gain, a Founder claim/review/publish workflow.
 
 **Decision vs assignment separation.** Package decision lifecycle ends at
 ``published`` or terminal ``rejected``. Assignment/unassignment/

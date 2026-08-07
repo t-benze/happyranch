@@ -7,7 +7,7 @@
 | Date | 2026-08-05 |
 | Source Links | THR-055 seq. 187–190; PR #555 `2026-08-04-skills-governance-prd.md`; TASK-3380; TASK-3436 / PR #507; TASK-3509 / PR #511; THR-092 Skill Management web-module brief |
 | Commitment Boundary | Implementation contract — this is an authoritative product contract; implementation proceeds under THR-055 seq 187, 200, and 205 without requiring further Founder decisions. |
-| Founder Decisions | All required decisions for v1 are closed below (Section 12). Ruled: (a) humans who create, edit, validate, version, and retire custom skills and write eligibility are Founder-only via the pre-existing bearer-authenticated path; no named org/team administrators exist in v1; (b) agents create and update only their originated custom skills using verified active task/session identity; (c) default eligibility is hidden; (d) v1 is standard_operational only; (e) migration preserves useful legacy provenance/history while atomically retiring obsolete proposal-only/direct mutation routes and returning stable compatibility errors for those old writers. No implementation is blocked on further Founder rulings. |
+| Founder Decisions | All required decisions for v1 are closed below (Section 12). Ruled: (a) humans who create, edit, validate, version, and retire custom skills and write eligibility are Founder-only via the pre-existing bearer-authenticated path; no named org/team administrators exist in v1; (b) agents create and update only their originated custom skills using verified active task/session identity; (c) default eligibility is hidden; (d) v1 is standard_operational only; (e) THR-055 seq 317 directs exact deletion of the obsolete TASK-3864 pilot package, its five lifecycle events, five proposal-only audit rows, and two verified artifacts; supported B1 records remain preserved. No implementation is blocked on further Founder rulings. |
 
 ## Implementation contract
 
@@ -121,7 +121,7 @@ Eligibility is therefore the sole runtime visibility gate for a valid custom ski
 9. **FR-9 — Next-session effect.** Saving content or eligibility never changes a running session. The UI must state whether a change is available to future sessions, and materialization evidence determines actual effect.
 10. **FR-10 — Audit and provenance.** Append-only product audit records cover creation source, agent task/session provenance, human edits, validation, version changes, eligibility rule changes, retirement/restoration, preview/request outcome, and materialization. An edit or unassignment never erases prior evidence.
 11. **FR-11 — Protection boundaries.** API and UI must deny agent eligibility/config writes and all custom edits to system or first-party shipped skills. No custom package can shadow an existing protected slug; no save may change permissions.
-12. **FR-12 — Migration.** Existing proposal/immutable records, current custom skills, validation events, and materialization history are preserved and mapped into the new custom-skill/version history. Existing direct write endpoints and proposal-only transitions must not remain competing, hidden paths after cutover; Engineering must present an explicit compatibility/cutover plan.
+12. **FR-12 — Retirement disposition.** The Founder-directed deletion applies only to the verified obsolete TASK-3864 pilot package and its exact dependent artifact/event/audit scope. Existing supported custom skills, validation events, assignment/materialization history, and the verified-agent B1 creation path remain preserved. Proposal-only review transitions must not remain competing or hidden paths after retirement.
 
 ## Data and provenance requirements
 
@@ -210,7 +210,7 @@ Initial measures:
 7. Agent Effective Skills truthfully distinguishes valid-but-hidden, visible-but-not-yet-materialized, and successfully materialized, with version/hash and policy explanation.
 8. Invalid or retired custom versions cannot become newly visible or materialize; validation failures remain actionable and recorded against the exact hash/validator version.
 9. The console presents loading, empty, populated, validation failure, conflict/stale-action, server error/retry, and forbidden states accessibly across editor and eligibility workflows.
-10. Existing proposal, validation, version, assignment/eligibility, and materialization evidence is preserved through the migration, and no old proposal-only or legacy direct-write route remains a parallel mutation path.
+10. The verified obsolete TASK-3864 pilot package and its exact dependent scope are deleted per the founder disposition; no old proposal-only review route remains a parallel mutation path, while supported B1 provenance and default-hidden semantics remain intact.
 
 ## Closed decisions (v1 authority ruled)
 
@@ -220,7 +220,7 @@ All Founder decisions for v1 are closed by THR-055 seq 187, 200, and 205:
 2. **Agent update authority.** Agents may create and update only their own originated custom skills using verified active task/session identity. Agents cannot update skills originated by other agents or humans.
 3. **Default eligibility.** Default hidden (no eligibility rules). The Founder must make an explicit policy change to expose a custom skill.
 4. **v1 content class.** `standard_operational` only. Custom high-impact doctrine requires a separate governance decision and is out of scope for v1.
-5. **Migration disposition.** Migrate existing proposal content/history into custom-skill records preserving useful provenance, default hidden; atomically retire the proposal-only workflow and legacy direct mutation routes; return stable compatibility errors for those old writers.
+5. **Retirement disposition.** Delete only the verified obsolete TASK-3864 pilot package, lifecycle events, proposal-only audit rows, and exact artifact files after dependency checks. Retire the proposal-review workflow without changing the B1 `happyranch skills create` / `POST /skills/agent` provenance, protected-slug, or default-hidden boundary.
 
 ### Risks and mitigations
 
