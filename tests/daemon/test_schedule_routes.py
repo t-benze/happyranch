@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
 
@@ -388,14 +390,14 @@ SESSION_TASK = "TASK-CREATE-001"
 SESSION_ID = "sess-create-test"
 
 
-def _enable_scheduling(org_state, agent_name: str = "dev_agent") -> None:
+def _write_legacy_scheduling_config(org_state, enabled_agents: list[str]) -> None:
     import yaml
     config_path = org_state.root / "org" / "config.yaml"
     if config_path.is_file():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     else:
         raw = {}
-    raw["scheduling"] = {"enabled_agents": [agent_name]}
+    raw["scheduling"] = {"enabled_agents": enabled_agents}
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
@@ -431,31 +433,59 @@ def _post_create(client, payload: dict, auth_headers: dict) -> tuple[int, dict]:
 
 # ── acceptance gating ──────────────────────────────────────────────────
 
-def test_create_rejects_when_scheduling_not_enabled(tmp_home, app, org_state, auth_headers):
-    """Default-deny: create is refused when scheduling.enabled_agents is absent."""
+def test_create_succeeds_without_legacy_scheduling_config(tmp_home, app, org_state, auth_headers):
+    """Missing legacy config cannot deny a session-bound in-org caller."""
     from fastapi.testclient import TestClient
     client = TestClient(app)
     _register_session(org_state)
-    status, detail = _post_create(client, _create_payload(), auth_headers)
-    assert status == 409
-    assert detail.get("code") == "scheduling_disabled"
+    status, body = _post_create(client, _create_payload(), auth_headers)
+    assert status == 200
+    assert body["agent_name"] == "dev_agent"
 
 
-def test_create_rejects_agent_not_in_enabled_list(tmp_home, app, org_state, auth_headers):
-    """An agent not in scheduling.enabled_agents is refused."""
+def test_legacy_enabled_agents_exclusion_is_a_noop_for_other_in_org_agent(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Existing config remains accepted but cannot authorize or deny Todos."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state, "other_agent")
+    _write_legacy_scheduling_config(org_state, ["dev_agent"])
+    assert load_org_config(OrgPaths(root=org_state.root)).session_timeout_seconds is None
     client = TestClient(app)
-    _register_session(org_state)
-    status, detail = _post_create(client, _create_payload(), auth_headers)
+    _register_session(
+        org_state,
+        task_id="TASK-CREATE-002",
+        agent="qa_engineer",
+        session_id="sess-create-qa",
+    )
+    payload = _create_payload(
+        task_id="TASK-CREATE-002", session_id="sess-create-qa", agent="qa_engineer",
+    )
+    status, body = _post_create(client, payload, auth_headers)
+    assert status == 200
+    assert body["agent_name"] == "qa_engineer"
+
+
+def test_create_rejects_team_unresolved_caller(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    _register_session(org_state, agent="outside_agent")
+    status, detail = _post_create(client, _create_payload(agent="outside_agent"), auth_headers)
     assert status == 409
-    assert detail.get("code") == "scheduling_disabled"
+    assert detail.get("code") == "agent_team_unresolved"
+
+
+def test_create_requires_authentication(tmp_home, app, org_state):
+    from fastapi.testclient import TestClient
+    _register_session(org_state)
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/schedules", json=_create_payload(),
+    )
+    assert response.status_code == 401
 
 
 def test_create_rejects_missing_session(tmp_home, app, org_state, auth_headers):
     """Without a registered session, create is refused (409 unknown_session)."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     client = TestClient(app)
     # No session registered
     status, detail = _post_create(client, _create_payload(), auth_headers)
@@ -466,7 +496,6 @@ def test_create_rejects_missing_session(tmp_home, app, org_state, auth_headers):
 def test_create_rejects_session_mismatch(tmp_home, app, org_state, auth_headers):
     """A session_id that doesn't match the registered session is rejected."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(session_id="wrong-session")
@@ -478,7 +507,6 @@ def test_create_rejects_session_mismatch(tmp_home, app, org_state, auth_headers)
 def test_create_rejects_wrong_agent_for_session(tmp_home, app, org_state, auth_headers):
     """The agent in the payload must match the session's agent."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state, agent="dev_agent")
     client = TestClient(app)
     payload = _create_payload(agent="other_agent", session_id=SESSION_ID)
@@ -493,7 +521,6 @@ def test_create_rejects_wrong_agent_for_session(tmp_home, app, org_state, auth_h
 
 def test_create_rejects_missing_source_instruction(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload()
@@ -504,7 +531,6 @@ def test_create_rejects_missing_source_instruction(tmp_home, app, org_state, aut
 
 def test_create_rejects_blank_source_instruction(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(source_instruction="   ")
@@ -515,7 +541,6 @@ def test_create_rejects_blank_source_instruction(tmp_home, app, org_state, auth_
 
 def test_create_rejects_missing_normalized_brief(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload()
@@ -526,7 +551,6 @@ def test_create_rejects_missing_normalized_brief(tmp_home, app, org_state, auth_
 
 def test_create_rejects_blank_normalized_brief(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(normalized_brief="")
@@ -540,7 +564,6 @@ def test_create_rejects_blank_normalized_brief(tmp_home, app, org_state, auth_he
 def test_create_rejects_extra_forbidden_fields(tmp_home, app, org_state, auth_headers):
     """The create payload uses extra='forbid' — agent_name/target cannot be in the payload."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload()
@@ -553,7 +576,6 @@ def test_create_rejects_extra_forbidden_fields(tmp_home, app, org_state, auth_he
 
 def test_create_rejects_one_shot_past_horizon(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(fire_at="2027-01-01T00:00:00+00:00")
@@ -564,7 +586,6 @@ def test_create_rejects_one_shot_past_horizon(tmp_home, app, org_state, auth_hea
 
 def test_create_rejects_one_shot_in_past(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(fire_at="2020-01-01T00:00:00+00:00")
@@ -575,7 +596,6 @@ def test_create_rejects_one_shot_in_past(tmp_home, app, org_state, auth_headers)
 
 def test_create_rejects_one_shot_with_recurrence(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(
@@ -590,7 +610,6 @@ def test_create_rejects_one_shot_with_recurrence(tmp_home, app, org_state, auth_
 
 def test_create_weekly_requires_recurrence(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     # Weekly with null recurrence
@@ -604,7 +623,6 @@ def test_create_weekly_requires_recurrence(tmp_home, app, org_state, auth_header
 def test_create_rejects_weekly_cron_extras(tmp_home, app, org_state, auth_headers):
     """Cron-style or multi-weekday recurrence extras are rejected."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(
@@ -618,7 +636,6 @@ def test_create_rejects_weekly_cron_extras(tmp_home, app, org_state, auth_header
 
 def test_create_rejects_weekly_multi_day(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(
@@ -634,7 +651,6 @@ def test_create_rejects_weekly_multi_day(tmp_home, app, org_state, auth_headers)
 
 def test_create_one_shot_success(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload()
@@ -658,7 +674,6 @@ def test_create_one_shot_success(tmp_home, app, org_state, auth_headers):
 
 def test_create_writes_schedule_created_audit(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     status, body = _post_create(client, _create_payload(), auth_headers)
@@ -674,7 +689,6 @@ def test_create_writes_schedule_created_audit(tmp_home, app, org_state, auth_hea
 
 def test_created_schedule_visible_in_list(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     status, body = _post_create(client, _create_payload(), auth_headers)
@@ -698,7 +712,6 @@ def test_created_schedule_respects_self_target(tmp_home, app, org_state, auth_he
     """The created schedule's agent_name is the session-verified agent, not any
     field in the payload."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     # The payload agent field is verified against session — the server resolves
@@ -712,7 +725,6 @@ def test_created_schedule_respects_self_target(tmp_home, app, org_state, auth_he
 
 def test_create_weekly_success(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     # Compute the next Saturday 09:00 Asia/Shanghai after _FROZEN_NOW.
@@ -742,7 +754,6 @@ def test_create_rejects_naive_fire_at(tmp_home, app, org_state, auth_headers):
     datetime that causes TypeError in the service layer.  The route must
     reject it with a controlled 422 before it reaches ScheduleService."""
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     payload = _create_payload(fire_at="2026-08-01T09:00:00")
@@ -753,7 +764,6 @@ def test_create_rejects_naive_fire_at(tmp_home, app, org_state, auth_headers):
 
 def test_create_respects_agent_cap(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
-    _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
     now = _now()

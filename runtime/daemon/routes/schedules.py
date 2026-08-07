@@ -23,7 +23,6 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
-from runtime.orchestrator.schedule_capability import is_scheduling_enabled
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
@@ -89,8 +88,7 @@ def create_schedule(
 
     Self-target only: the agent is resolved from the session context
     (task_id + session_id + agent).  The payload cannot choose another
-    agent.  Scheduling is default-deny — the per-agent capability flag
-    must be enabled.
+    agent.
     """
     # ── self-target: session validation ──
     expected_session = org.sessions.get_active(body.task_id, body.agent)
@@ -110,21 +108,6 @@ def create_schedule(
                 "code": "session_mismatch",
                 "active": expected_session,
                 "got": body.session_id,
-            },
-        )
-
-    # ── capability gate ──
-    if not is_scheduling_enabled(org.root, body.agent):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "scheduling_disabled",
-                "agent": body.agent,
-                "message": (
-                    "scheduling is not enabled for this agent. "
-                    "Add the agent to scheduling.enabled_agents "
-                    "in org/config.yaml."
-                ),
             },
         )
 
@@ -188,7 +171,6 @@ def create_schedule(
             timezone=body.timezone,
             normalized_brief=body.normalized_brief,
             source_instruction=body.source_instruction,
-            scheduling_enabled=True,  # already gated above
         )
     except ScheduleServiceError as exc:
         raise HTTPException(

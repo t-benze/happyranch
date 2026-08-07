@@ -64,20 +64,14 @@ class ScheduleService:
         timezone: str,
         normalized_brief: str,
         source_instruction: str,
-        scheduling_enabled: bool | None = None,
         indefinite: bool = False,
     ) -> ScheduleRecord:
         """Validate the request against the v1 envelope, persist, and audit.
 
-        The ``scheduling_enabled`` gate checks the per-agent capability flag
-        resolved by the caller (future route layer).  Default-deny: the caller
-        MUST pass ``True`` explicitly; omission, ``None``, and ``False`` are
-        all rejected.
+        This service has no per-agent capability gate. Caller identity and team
+        binding are enforced by the callback route; this service owns the
+        schedule envelope, cap, persistence, and audit rules.
         """
-        if scheduling_enabled is not True:
-            raise ScheduleServiceError(
-                "scheduling is not enabled for this agent"
-            )
 
         # --- mandatory fields ---
         if not (source_instruction and source_instruction.strip()):

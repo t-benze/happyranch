@@ -32,7 +32,7 @@ for the founder to manage.
 
 Primary user: the founder/operator supervising a HappyRanch org.
 
-Primary agent: any agent with the scheduling capability explicitly enabled.
+Primary agent: any valid in-org agent with an active session and resolvable team.
 
 Core workflow:
 
@@ -57,7 +57,7 @@ Core workflow:
   founder/operator explicitly instructs them to do so.
 - Make scheduled agent work legible: every Todo must show who owns it, what will
   happen, when it will fire, why it exists, its status, and what tasks it spawned.
-- Bound the new capability with product-level controls: per-agent enablement,
+- Bound scheduled work with product-level controls: session-bound self-targeting,
   active caps, horizon limits, expiry/review, audit, and founder pause/cancel.
 - Keep the user-facing concept simple: Todos are scheduled commitments, not a
   broad calendar or human task-management app.
@@ -83,12 +83,12 @@ Core workflow:
 - No unscheduled todos, priorities, tags, subtasks, or collaborative todo lists.
 - No natural-language schedule that is armed without storing a structured,
   reviewable normalized schedule.
-- No build that omits capability gating, audit, or founder stop controls.
+- No build that omits session-bound self-targeting, audit, or founder stop controls.
 
 ## Success Signal
 
 The first acceptance signal is operational, not vanity usage: the founder can
-tell an enabled agent once, "send me a market update every Saturday," then see an
+tell an in-org agent once, "send me a market update every Saturday," then see an
 armed Todo and receive the resulting agent task on the next Saturday without
 manually configuring a calendar entry.
 
@@ -138,8 +138,9 @@ v1 must support scheduled agent commitments, not a full todo app:
 
 - Agents can create a Todo only through an explicit schedule-creation path while
   handling a founder/operator instruction.
-- Todo creation is available only to agents with the per-agent scheduling
-  capability enabled.
+- Todo creation is available to every valid in-org agent with an active session
+  and a resolvable team; legacy `scheduling.enabled_agents` config is accepted
+  but has no authorization effect.
 - A Todo must be self-targeted; `owner_agent` and `target_agent` are the same in
   v1.
 - A Todo must store both the verbatim source instruction and the normalized brief
@@ -185,9 +186,9 @@ Important provenance rules:
 
 ## Acceptance Criteria
 
-- Given scheduling is disabled for an agent, when that agent attempts to create a
-  Todo, creation is rejected with an actionable explanation.
-- Given scheduling is enabled, when the founder instructs an agent to send a
+- Given an in-org agent has a valid active session, it can create a self-owned
+  Todo whether `scheduling.enabled_agents` is absent or excludes that agent.
+- Given the founder instructs an in-org agent to send a
   weekly Saturday market update, the agent arms a weekly Todo with a normalized
   schedule, source instruction, next fire time, and expiry/review window.
 - Given an armed Todo exists, the founder can see it in a list with owner,
@@ -215,8 +216,8 @@ Important provenance rules:
 - Product risk: "Todos" may create expectations for unscheduled task lists,
   priority, tags, and subtasks. The v1 UI copy must say scheduled Todos clearly.
 - Permission risk: autonomous scheduling is token-spend authority in the future.
-  Capability flag, caps, audit, and founder stop controls are v1 blockers, not
-  hardening.
+  Session-bound self-targeting, caps, audit, and founder stop controls are v1
+  blockers, not hardening.
 - Trust risk: if normalization is hidden or vague, the founder will not know what
   the agent armed. The UI must show the structured schedule before and after it
   fires.

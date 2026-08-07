@@ -1,15 +1,15 @@
 ---
 name: todos
-description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction.  Never infer or proactively schedule future work.  Scheduling is self-only and requires the per-agent capability flag to be enabled.
+description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
 # Todos — Agent-owned scheduled commitments (THR-105 v1)
 
 Agents may create `one_shot` and `weekly` self-scheduled Todos via the
-`schedules create` callback.  This is a **self-only, explicit-instruction,
-capability-gated** operation.  You cannot schedule another agent, you cannot
-infer or proactively create future work, and the skill body is
-discoverability only — it grants no capabilities.
+`schedules create` callback. This is a **self-only, explicit-instruction,
+session-bound** operation available to every valid in-org agent. You cannot
+schedule another agent, you cannot infer or proactively create future work, and
+the skill body is discoverability only — it does not bypass server validation.
 
 ## Preconditions
 
@@ -17,11 +17,9 @@ discoverability only — it grants no capabilities.
    founder or an operator has explicitly told you to schedule something.
    Never infer, guess, or proactively arm a schedule.
 
-2. **Scheduling must be enabled for you.**  The capability flag
-   `scheduling.enabled_agents` in `org/config.yaml` must include your
-   agent name.  If it doesn't, the route returns 409
-   `scheduling_disabled`.  This skill does **not** claim the capability
-   — it documents the callback for use when the flag is already on.
+2. **You must be a valid in-org caller.** Every agent with an active session
+   and a resolvable in-org team may create a self-owned Todo. Legacy
+   `scheduling.enabled_agents` configuration is accepted but has no effect.
 
 3. **Self-target only.**  Agents must create Todos only for themselves
    and must never target another agent.  The `agent` field must match
@@ -114,8 +112,8 @@ existing Todo to make room.
 
 | Failure class | Server response | What you do |
 | --- | --- | --- |
-| Scheduling disabled | 409 `scheduling_disabled` | Report to the founder; you cannot arm |
 | Session mismatch / unknown | 409 | Re-read your `task_id`/`session_id`/`agent` triples; retry once |
+| Agent team unresolved | 409 `agent_team_unresolved` | Do not arm; report the in-org identity/configuration problem |
 | Invalid `kind` | 422 `invalid_kind` | Only `one_shot` and `weekly` are valid |
 | Invalid `fire_at` (no offset, past, >90 days) | 422 `invalid_fire_at` | Correct the timestamp; always include an offset |
 | Invalid recurrence shape | 422 / 409 from service | Reread the weekly rules above |

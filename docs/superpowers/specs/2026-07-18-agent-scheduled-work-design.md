@@ -370,8 +370,8 @@ defaults and ratified PRD #475 at seq20. The approved decisions:
    schedule.
 
 The build lands as a phased engineering effort (new `schedules` table
-+ scheduler loop/queue/runner/callback reusing the §7 seam + capability flag &
-caps + CLI/web list + audit + protocol 05b/05c doc-parity in the same PR), routed
++ scheduler loop/queue/runner/callback reusing the §7 seam + session-bound
+self-target validation, caps + CLI/web list + audit + protocol 05b/05c doc-parity in the same PR), routed
 through the normal dev → code_reviewer → qa merge gate. **No part of it is
 complete without verification output**, and any implementation step that appears
 to require touching an existing schema column, the `audit_log` scope convention,
@@ -385,7 +385,7 @@ boundary).
 - ✅ Lifecycle service/audit (Phase 2): `schedule_service.py` — create, list, get, pause, cancel, edit
 - ✅ Management surface (Phase 3 part 1): `routes/schedules.py` — list/show/pause/cancel/edit; CLI `happyranch todos`
 - ✅ Fire path (Phase 3 part 2): `schedule_scheduler.py`, `schedule_runner.py`, `schedule_queue.py`, spawn callback
-- ✅ Autonomous arming (Phase 4): `POST /schedules` create callback route, `schedules create` CLI, per-agent `scheduling.enabled_agents` capability gate in `org/config.yaml`, session-bound self-target validation
+- ✅ Autonomous arming (Phase 4, amended by THR-105 seq217): `POST /schedules` create callback route and `schedules create` CLI are available to every valid in-org agent; session-bound self-target validation remains. Legacy `scheduling.enabled_agents` config is accepted as a no-op.
 
 ## 14. Non-goals (v1 no-list, consolidated)
 

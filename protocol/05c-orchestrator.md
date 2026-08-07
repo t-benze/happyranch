@@ -624,8 +624,10 @@ and optionally ``recurrence`` and ``timezone``.  Server-side enforcement:
 
 - **Self-target:** ``task_id`` + ``session_id`` + ``agent`` are validated
   against the in-memory SessionTracker; the payload cannot pick another agent.
-- **Capability gate (default-deny):** ``scheduling.enabled_agents`` in
-  ``org/config.yaml`` must list the agent.  Omission → 409.
+- **In-org availability:** every agent with a valid active session and a
+  resolvable in-org team may create a self-owned Todo. Legacy
+  ``scheduling.enabled_agents`` config is accepted as a no-op and does not
+  authorize or deny creation.
 - **Mandatory normalization:** both ``source_instruction`` and
   ``normalized_brief`` must be non-blank; NL-only arming is refused.
 - **Envelope validation** (one-shot horizon, weekly shape, caps, expiry
