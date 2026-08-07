@@ -145,7 +145,7 @@ def build_capabilities_prompt(
         "It is disabled unless the operator enables the pilot and is immediately stopped by its kill switch. "
         "It never accepts a target, actor, team, assignment, revisit, or override field. "
         "Escalate instead for policy/product intent, budget/external commitments, permissions, cross-team ownership, schema/auth/security/privacy/data access, or any unresolved Founder gate. "
-        "Thread-origin dispatch is deliberately deferred to phase 2.\n",
+        "Thread-originated roots are rejected in phase 1; dispatch handling is deliberately deferred to phase 2.\n",
         "**fanout** (`parallel` accepted as alias) -- Spawn N parallel sub-tasks "
         "(Phase 2 with pipeline, team-manager only):\n",
         "```json\n",

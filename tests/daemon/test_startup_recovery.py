@@ -951,6 +951,38 @@ def test_sweep_orphaned_result_preserves_local_ci_in_audit_and_consumption(tmp_p
     }, f"audit payload missing local_ci: {payload}"
 
 
+def test_sweep_orphaned_thread_originated_supersede_remains_unconsumed(tmp_path, monkeypatch):
+    """Startup recovery must not bypass the phase-1 thread-origin rejection."""
+    import json
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-STARTUP-SUP", brief="original", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        current_session_id="sess-startup",
+    ))
+    db.execute(
+        "UPDATE tasks SET dispatched_from_thread_id = 'THR-152' WHERE id = 'T-STARTUP-SUP'"
+    )
+    db._conn.commit()
+    db.insert_task_result(
+        task_id="T-STARTUP-SUP", agent="engineering_head", session_id="sess-startup",
+        status="completed", confidence_score=90, output_summary="replace",
+        decision_json=json.dumps({
+            "action": "supersede", "successor_brief": "replacement",
+            "rationale": "new evidence",
+        }),
+    )
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task("T-STARTUP-SUP").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert queue._queue.empty()
+
+
 def test_sweep_orphaned_result_malformed_local_ci_does_not_crash(tmp_path):
     """An orphaned task_result with malformed local_ci JSON must not crash
     the sweep or alter its preexisting restart behavior. The task is still

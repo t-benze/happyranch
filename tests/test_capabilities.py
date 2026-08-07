@@ -274,7 +274,7 @@ def test_manager_prompt_marks_supersede_as_default_off_internal_pilot():
     assert '"action": "supersede"' in p
     assert "default OFF" in p
     assert "kill switch" in p
-    assert "Thread-origin dispatch is deliberately deferred to phase 2" in p
+    assert "Thread-originated roots are rejected in phase 1" in p
 
 
 def test_self_only_prompt_advertises_fanout_as_unavailable():

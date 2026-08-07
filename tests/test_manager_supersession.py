@@ -151,6 +151,18 @@ def test_manager_supersede_rechecks_the_expected_pilot_team(tmp_path: Path) -> N
     assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
 
 
+def test_manager_supersede_rejects_thread_origin_without_mutation(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    db.execute("UPDATE tasks SET dispatched_from_thread_id = 'THR-152' WHERE id = 'TASK-001'")
+    db._conn.commit()
+
+    assert _supersede(db) is None
+    assert db.get_task("TASK-001").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM tasks WHERE id = 'TASK-002'").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM audit_log WHERE action='manager_supersession'").fetchone()[0] == 0
+
+
 def test_manager_supersede_rolls_back_every_write_when_audit_fails(tmp_path: Path) -> None:
     db = _db(tmp_path)
     db.execute(

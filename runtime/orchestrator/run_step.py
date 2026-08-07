@@ -469,7 +469,8 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             # consumer.  Never cancel/alter live work just to make it eligible.
             return
         try:
-            orch.enqueue_task(successor_id)
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, successor_id)
         except Exception:
             # The committed successor remains pending. Startup recovery
             # idempotently re-enqueues pending tasks; never reopen predecessor.

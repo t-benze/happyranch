@@ -2504,6 +2504,7 @@ class Database:
                 or row["active_chain"] is not None
                 or row["active_fanout"] is not None
                 or row["blocked_on_job_ids"] is not None
+                or row["dispatched_from_thread_id"] not in (None, "")
             ):
                 self._conn.rollback()
                 return None
