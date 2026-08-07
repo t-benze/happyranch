@@ -602,11 +602,19 @@ function chipRole(name: string): 'worker' | 'founder' {
 }
 
 /** One label/value row inside the property rail card. */
-function RailRow({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+function RailRow({
+  label,
+  children,
+  valueClassName,
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}): JSX.Element {
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
-      <dd className="min-w-0 min-w-max flex-1">{children}</dd>
+      <dd className={`${valueClassName ?? 'min-w-0 min-w-max'} flex-1`}>{children}</dd>
     </div>
   );
 }
@@ -668,7 +676,7 @@ function PropertyRail({
             </RailRow>
           )}
           {jobs.length > 0 && (
-            <RailRow label="Job">
+            <RailRow label="Job" valueClassName="min-w-0">
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {jobs.map((j) =>
                   slug ? (
