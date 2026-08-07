@@ -1398,3 +1398,20 @@ def rollback_proposal(
         "assignments_deactivated": count,
         "reason": body.reason,
     }
+
+
+# THR-055 retirement: retain the earlier lifecycle transport only while B1
+# creation continues to use its shared persistence service. The Founder-only
+# queue, detail, and v2 review actions are no longer routable or documented.
+_RETIRED_PROPOSAL_REVIEW_PATH_PREFIX = "/skill-lifecycle/proposals/"
+dual_router.routes[:] = [
+    route
+    for route in dual_router.routes
+    if not (
+        route.path == f"{_RETIRED_PROPOSAL_REVIEW_PATH_PREFIX}queue"
+        or (
+            route.path.startswith(_RETIRED_PROPOSAL_REVIEW_PATH_PREFIX)
+            and route.path != "/skill-lifecycle/proposals/agent"
+        )
+    )
+]
