@@ -153,6 +153,22 @@ class TestSystemContractsTuple:
             SessionContext.BOOTSTRAP,
         }
 
+    def test_jobs_source_contract_has_single_hook_publish_guidance(self):
+        jobs_contract = _get("jobs")
+        repo_root = Path(__file__).resolve().parents[1]
+        source = (repo_root / jobs_contract.source_path).read_text()
+        normalized = " ".join(source.split())
+
+        assert "## Normal publication from a mandatory linked worktree" in source
+        assert "only safe working-directory/environment setup and `git push` itself" in normalized
+        assert "must not prepend or chain `scripts/local_ci.sh all`" in normalized
+        assert "mandatory worktree pre-push hook runs `scripts/local_ci.sh all` exactly once" in normalized
+        assert "`git push --no-verify` remains forbidden" in normalized
+        assert "Human normal checkout" in normalized
+        assert "opt-in" in normalized
+        assert '"script": "cd /absolute/path/to/happyranch && git push -u origin task/TASK-4729\\n"' in source
+        assert "scripts/local_ci.sh all && git push" not in source
+
     def test_make_worktree_contexts(self):
         sc = _get("make-worktree")
         assert set(sc.contexts) == {
