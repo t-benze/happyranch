@@ -1056,7 +1056,8 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
       the authoritative Pydantic model at
       runtime/orchestrator/adapter_contract.py)
     - ``adapter_output_schema``: JSON Schema for AdapterOutput (same source)
-    - ``rules``: output constraints (max size, stdout/stderr contract,
+    - ``rules``: invocation and output constraints, including the wrapper-owned
+      headless launch requirement (max size, stdout/stderr contract,
       exactly-one-object rule)
     - ``submission``: the submit endpoint URL, method, and content-type for
       the adapter submission step
@@ -1164,6 +1165,28 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
                     "The daemon pipes the AdapterInput payload to the adapter's "
                     "stdin at launch time; the adapter must read it fully before "
                     "invoking the candidate CLI."
+                ),
+            },
+            "headless_launch": {
+                "description": (
+                    "The wrapper MUST choose and apply its underlying CLI's own "
+                    "non-interactive, sufficiently permissive launch posture for "
+                    "this unattended daemon session. executor_context.permission_mode "
+                    "remains a legacy nullable, provider-specific compatibility field; "
+                    "for custom-adapter invocations, CustomAdapterExecutor supplies "
+                    "null for this existing frozen nullable, provider-specific "
+                    "compatibility field. Custom wrappers MUST NOT rely on it "
+                    "for their CLI-specific "
+                    "headless posture or on daemon translation of policy or provider-"
+                    "specific allow-rule strings. The wrapper must preserve the daemon-"
+                    "provided callback environment (including PATH) so the invoked "
+                    "agent can perform ordinary workspace actions and invoke the "
+                    "happyranch callback required by its session contract. This is "
+                    "a wrapper implementation and approval responsibility: founder "
+                    "approval must include evidence of a successful end-to-end "
+                    "unattended session that invokes the required callback. This adds "
+                    "no new daemon-supplied or daemon-translated permission policy or "
+                    "field to AdapterInput."
                 ),
             },
             "output": {

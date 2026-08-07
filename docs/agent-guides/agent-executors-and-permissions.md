@@ -308,6 +308,22 @@ or revert the deployment. Legacy stored profiles are never auto-mutated.
 **D5 baseline-only:** the custom adapter contract introduces no allow-rule,
 sandbox, network-access, filesystem-access, or permission changes.
 
+**Wrapper-owned headless launch posture:** every custom-adapter wrapper MUST
+select and apply the non-interactive, sufficiently permissive launch posture
+required by its own agentic CLI. It MUST NOT rely on
+``executor_context.permission_mode`` for that CLI-specific headless posture or
+on daemon translation of policy or provider-specific allow-rule syntax. That
+existing v1 field remains a legacy nullable, provider-specific compatibility
+field; ``CustomAdapterExecutor`` supplies ``null`` for custom-adapter
+invocations. Wrappers must also preserve the daemon-provided callback
+environment, including ``PATH``, so the agent can make required ``happyranch``
+callbacks after ordinary workspace actions. This is verified through wrapper
+review and founder approval; it adds no new daemon-supplied or
+daemon-translated permission policy or field to ``AdapterInput``, and no
+daemon-managed permission enforcement. Founder approval must include evidence
+of a successful end-to-end unattended session that invokes the required
+callback.
+
 **THR-107 seq244 dependency manifest:** new adapter registrations
 require ``dependency_manifest_version: 1`` with a non-empty ``dependencies``
 list (each: ``{executable: absolute-path, sha256: hex}``). Every declared

@@ -131,6 +131,23 @@ TARGET (this spec):
 }
 ```
 
+**Custom-adapter headless posture (v1 compatibility exception).**
+``executor_context.permission_mode`` remains in the frozen v1 wire schema as
+a legacy nullable, provider-specific compatibility field.
+``CustomAdapterExecutor`` supplies ``null`` for custom-adapter invocations.
+Custom wrapper authors MUST choose their own provider-specific non-interactive,
+sufficiently permissive headless posture and MUST NOT rely on this field or on
+daemon translation of policy or allow rules for that posture. They MUST
+preserve the daemon-provided callback environment, including ``PATH``, so the
+underlying CLI can perform ordinary workspace work and invoke the required
+``happyranch`` callback.
+
+This is an approval and conformance requirement, not a new enforcement
+mechanism: founder approval must include evidence of a successful end-to-end
+unattended session that invokes the required callback. It adds no new
+daemon-supplied or daemon-translated permission policy or field to
+``AdapterInput``.
+
 ### 2.2 Adapter Result Contract (what EVERY adapter returns)
 
 ```jsonc
