@@ -1536,7 +1536,7 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         assert not config_worktree.exists()
         assert not _git_out(happyranch_repo, "config", "--local", "extensions.worktreeConfig")
         assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
-        cmd_verify(str(happyranch_worktree))
+        assert cmd_verify(str(happyranch_worktree)) == 0
 
     def test_setup_does_not_overwrite_preexisting_worktree_hooks_path(
         self, happyranch_worktree, happyranch_repo
