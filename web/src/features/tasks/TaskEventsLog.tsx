@@ -13,6 +13,11 @@ function signature(ev: TaskEvent): string {
   return JSON.stringify([ev.timestamp, ev.type, ev.agent ?? null, ev.payload ?? null]);
 }
 
+/** Render an SSE timestamp in the browser viewer's local date and time. */
+function formatEventTimestamp(timestamp: string): string {
+  return new Date(timestamp).toLocaleString();
+}
+
 /**
  * The daemon wraps every audit row with `type: "audit"` and spreads the row
  * fields, so the real semantic name lives in `ev.action`. Terminal events
@@ -93,7 +98,7 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               }`}
               aria-expanded={hasPayload ? isOpen : undefined}
             >
-              <span className="text-fg-muted font-mono">{ev.timestamp}</span>
+              <span className="text-fg-muted font-mono">{formatEventTimestamp(ev.timestamp)}</span>
               <span
                 className={`inline-block rounded-sm px-1.5 py-px font-mono font-semibold ${rowTone(label)}`}
               >
