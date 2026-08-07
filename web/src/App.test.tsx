@@ -50,7 +50,12 @@ test('root with no orgs redirects to the get-started onboarding surface', async 
   );
 });
 
-test.each(['/orgs/alpha/skills/proposals', '/orgs/alpha/skills/proposals/1'])(
+test.each([
+  '/orgs/alpha/skills/proposals',
+  '/orgs/alpha/skills/proposals/1',
+  '/orgs/alpha/skills/new',
+  '/orgs/alpha/skills/hr:legacy/edit',
+])(
   'retired proposal deep link %s renders not found rather than a skill detail',
   async (route) => {
     sessionStorage.setItem('happyranch.token', 'tok');

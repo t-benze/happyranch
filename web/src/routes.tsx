@@ -21,9 +21,6 @@ import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
-import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
-import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
-import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
@@ -112,10 +109,9 @@ export function AppRoutes(): JSX.Element {
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="skills/proposals/*" element={<NotFound />} />
-          {/* Static routes rank above the dynamic `:skillId` route. */}
-          <Route path="skills/new" element={<SkillCreatePage />} />
-          <Route path="skills/validation" element={<SkillValidationPage />} />
-          <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
+          <Route path="skills/new" element={<NotFound />} />
+          <Route path="skills/validation" element={<NotFound />} />
+          <Route path="skills/:skillId/edit" element={<NotFound />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />

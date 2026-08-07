@@ -28,20 +28,16 @@ import {
   Info,
   Lock,
   Package,
-  Pencil,
   Sparkles,
   TriangleAlert,
 } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillDetail } from '@/hooks/skills';
-import { SkillAssignmentPanel } from './SkillAssignmentPanel';
 import { SkillStatusBadge } from './SkillStatusBadge';
 import type { ValidationTone } from './skills-catalog';
 import {
   agentProvenanceList,
   assignmentRollup,
-  editRoutePath,
-  isEditableSkill,
   needsAttention,
   readOnlyReason,
   skillSource,
@@ -121,7 +117,6 @@ export function SkillDetailPage(): JSX.Element {
 
   const skill = query.data;
   const source = skillSource(skill);
-  const editable = isEditableSkill(skill);
   const lockReason = readOnlyReason(skill);
   const attention = needsAttention(skill);
   const issues = validationIssues(skill);
@@ -178,25 +173,14 @@ export function SkillDetailPage(): JSX.Element {
             </p>
           </div>
 
-          {/* Source-gated affordance: Edit for custom, lock for read-only. */}
           <div className="shrink-0">
-            {editable ? (
-              <Link
-                to={editRoutePath(slug ?? '', skill.skill_id)}
-                className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
-              >
-                <Pencil size={14} aria-hidden="true" />
-                Edit skill
-              </Link>
-            ) : (
-              <span
-                className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
-                title={lockReason ?? undefined}
-              >
-                <Lock size={14} aria-hidden="true" />
-                Read-only
-              </span>
-            )}
+            <span
+              className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
+              title={lockReason ?? undefined}
+            >
+              <Lock size={14} aria-hidden="true" />
+              Read-only
+            </span>
           </div>
         </div>
 
@@ -257,14 +241,7 @@ export function SkillDetailPage(): JSX.Element {
         )}
       </section>
 
-      {/* ── Per-agent effective / provenance ──────────────────────
-          Custom (user-authored) skills get the interactive assignment +
-          config-review surface (Slice-5); bundled / system-contract skills
-          stay READ-ONLY (applied by context, no per-agent controls), keeping
-          the Slice-2 source-gating intact. */}
-      {editable ? (
-        <SkillAssignmentPanel slug={slug ?? ''} skillId={skill.skill_id} />
-      ) : (
+      {/* ── Per-agent effective / provenance (read-only) ─────────── */}
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
         <Eyebrow>Per-agent visibility</Eyebrow>
         <h2 className="text-h2 text-fg mb-1">Where this skill is effective</h2>
@@ -344,7 +321,6 @@ export function SkillDetailPage(): JSX.Element {
           </p>
         )}
       </section>
-      )}
 
       {/* ── Guidance-only footer ──────────────────────────────── */}
       <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
