@@ -1171,16 +1171,19 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
                 "description": (
                     "The wrapper MUST choose and apply its underlying CLI's own "
                     "non-interactive, sufficiently permissive launch posture for "
-                    "this unattended daemon session. It MUST NOT rely on daemon "
-                    "permission_mode or provider-specific allow-rule strings to "
-                    "supply that posture. The wrapper must preserve the daemon-"
+                    "this unattended daemon session. executor_context.permission_mode "
+                    "remains a legacy nullable, provider-specific compatibility field; "
+                    "custom wrappers MUST NOT rely on it for their CLI-specific "
+                    "headless posture or on daemon translation of policy or provider-"
+                    "specific allow-rule strings. The wrapper must preserve the daemon-"
                     "provided callback environment (including PATH) so the invoked "
                     "agent can perform ordinary workspace actions and invoke the "
                     "happyranch callback required by its session contract. This is "
                     "a wrapper implementation and approval responsibility: founder "
                     "approval must include evidence of a successful end-to-end "
-                    "unattended session that invokes the required callback. It does "
-                    "not add a permission field to AdapterInput."
+                    "unattended session that invokes the required callback. This adds "
+                    "no new daemon-supplied or daemon-translated permission policy or "
+                    "field to AdapterInput."
                 ),
             },
             "output": {

@@ -97,14 +97,18 @@ master-bearer ``/register`` route is unchanged. The server-derived schema is can
 **Wrapper-owned headless launch posture.** A custom-adapter wrapper MUST
 choose and apply its underlying CLI's own non-interactive, sufficiently
 permissive launch posture for every unattended daemon session. It MUST NOT
-rely on daemon ``permission_mode`` or provider-specific allow-rule strings to
-supply that posture; the stable v1 ``AdapterInput`` remains provider-neutral.
-The wrapper MUST preserve callback availability from the daemon-provided
-environment (including ``PATH``) so the invoked agent can perform ordinary
-workspace actions and invoke its required ``happyranch`` callback. This is a
-wrapper implementation and founder-approval responsibility: approval requires
-evidence of a successful end-to-end unattended session that invokes the
-required callback. It is not a daemon permission/sandbox expansion.
+rely on ``executor_context.permission_mode`` for its CLI-specific headless
+posture or on daemon translation of policy or provider-specific allow-rule
+strings. That existing v1 field remains a legacy nullable, provider-specific
+compatibility field; ``CustomAdapterExecutor`` supplies ``null`` for
+custom-adapter invocations. The wrapper MUST preserve callback availability
+from the daemon-provided environment (including ``PATH``) so the invoked agent
+can perform ordinary workspace actions and invoke its required ``happyranch``
+callback. This is a wrapper implementation and founder-approval responsibility:
+approval requires evidence of a successful end-to-end unattended session that
+invokes the required callback. It adds no new daemon-supplied or
+daemon-translated permission policy or field to ``AdapterInput`` and no daemon
+permission/sandbox expansion.
 
 **THR-107 Slice 1A mint authority foundation.** A master-authenticated runtime
 adapter-purpose token mint may additionally carry an exact first-party

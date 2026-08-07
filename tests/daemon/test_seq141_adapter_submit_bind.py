@@ -1758,6 +1758,14 @@ class TestContractReferenceHappyPath:
         assert "workspace" in ai["properties"]
         assert "timeout" in ai["properties"]
 
+        # The frozen v1 schema retains this nullable compatibility field; the
+        # wrapper-owned headless-launch rule must not imply otherwise.
+        executor_context = ai["$defs"]["ExecutorContext"]
+        permission_mode = executor_context["properties"]["permission_mode"]
+        assert permission_mode["description"] == "Provider-specific permission posture"
+        assert permission_mode["default"] is None
+        assert {variant["type"] for variant in permission_mode["anyOf"]} == {"string", "null"}
+
         ao = data["adapter_output_schema"]
         assert ao["type"] == "object"
         assert "properties" in ao
@@ -1771,7 +1779,10 @@ class TestContractReferenceHappyPath:
         headless_launch = rules["headless_launch"]["description"].lower()
         assert "wrapper must choose" in headless_launch
         assert "non-interactive" in headless_launch
-        assert "must not rely on daemon permission_mode" in headless_launch
+        assert "executor_context.permission_mode remains a legacy nullable" in headless_launch
+        assert "provider-specific compatibility field" in headless_launch
+        assert "must not rely on it for their cli-specific headless posture" in headless_launch
+        assert "no new daemon-supplied or daemon-translated permission policy or field" in headless_launch
         assert "happyranch callback" in headless_launch
         assert "end-to-end unattended session" in headless_launch
         assert rules["output"]["target"] == "stdout"
