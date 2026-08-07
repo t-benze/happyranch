@@ -873,17 +873,14 @@ def create_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill creation is retired.
 
-    Use the THR-055 lifecycle routes instead:
-    - Agents: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals
-    - Humans: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals (then claim/validate/etc.)
-
-    Existing legacy skills are quarantined and available read-only.
+    The legacy proposal workflow is retired. Existing legacy skills remain
+    quarantined and read-only; this endpoint cannot create or import skills.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill creation is retired. Use /skill-lifecycle/proposals for agent proposals and the lifecycle routes for management.",
+            "detail": "Direct skill creation is retired and no replacement authoring endpoint is available.",
             "migration": "Existing user-authored skills have been quarantined. Use GET /skills to list them read-only.",
         },
     )
@@ -899,17 +896,14 @@ def validate_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill validation is retired.
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/validate
-
-    Legacy validation read org_root/skills — that filesystem path is no longer
-    an authoritative catalog or materialization source.
+    The legacy proposal workflow is retired. Legacy validation cannot be
+    invoked through this endpoint.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill validation is retired. Use /skill-lifecycle/validate for lifecycle-managed validation.",
+            "detail": "Direct skill validation is retired and no replacement validation endpoint is available.",
         },
     )
 
@@ -925,14 +919,14 @@ def edit_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill editing is retired.
 
-    Use THR-055 lifecycle routes for all skill management.
-    Existing legacy skills are quarantined and available read-only.
+    The legacy proposal workflow is retired. Existing legacy skills are
+    quarantined and read-only.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill editing is retired. Use /skill-lifecycle routes for lifecycle management.",
+            "detail": "Direct skill editing is retired and no replacement editing endpoint is available.",
         },
     )
 
@@ -978,15 +972,14 @@ def assign_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill assignment is retired.
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/assign
-      with body: {"skill_id": "hr:my-skill", "agent_name": "dev_agent", "version_id": <id>}
+    The legacy proposal workflow is retired. Existing legacy skills are
+    quarantined and read-only.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill assignment is retired. Use /skill-lifecycle/assign with lifecycle-managed versions.",
+            "detail": "Direct skill assignment is retired and no replacement assignment endpoint is available.",
         },
     )
 
@@ -1639,7 +1632,7 @@ def create_skill_agent(
             detail={
                 "code": "bearer_not_accepted",
                 "detail": "This route is for agent-session skill creation only. "
-                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
+                          "Remove the Authorization header and call this endpoint only from a verified active agent session.",
             },
         )
 

@@ -49,3 +49,24 @@ test('root with no orgs redirects to the get-started onboarding surface', async 
     ).toBeInTheDocument(),
   );
 });
+
+test.each([
+  '/orgs/alpha/skills/proposals',
+  '/orgs/alpha/skills/proposals/1',
+  '/orgs/alpha/skills/new',
+  '/orgs/alpha/skills/hr:legacy/edit',
+])(
+  'retired proposal deep link %s renders not found rather than a skill detail',
+  async (route) => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: 'alpha', root: '/x' }] }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route });
+
+    expect(await screen.findByText(/Not found/i)).toBeInTheDocument();
+  },
+);
