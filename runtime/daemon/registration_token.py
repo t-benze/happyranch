@@ -23,6 +23,7 @@ import hashlib
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 # Default TTL for registration tokens (30 minutes)
@@ -389,6 +390,7 @@ class RegistrationTokenStore:
         now: float | None = None,
         purpose: str = 'profile',
         intended_profile_name: str | None = None,
+        on_mint: Callable[[str, RegistrationTokenRecord], None] | None = None,
     ) -> tuple[str, float]:
         """Mint a runtime-level (org-agnostic) registration token.
 
@@ -404,6 +406,9 @@ class RegistrationTokenStore:
                 name this adapter is bound to. The server derives the exact
                 adapter id from this name (``<name>-adapter``). None for
                 other purposes.
+            on_mint: Optional atomic companion persistence seam. If it
+                raises, the in-memory token/challenge write is removed and no
+                token is returned.
 
         Returns:
             ``(token_plaintext, expires_at)``
@@ -428,7 +433,7 @@ class RegistrationTokenStore:
             token = REGISTRATION_TOKEN_PREFIX + secrets.token_urlsafe(32)
             token_hash = self._hash(token)
             expires_at = now + self._ttl_seconds
-            self._tokens[token_hash] = RegistrationTokenRecord(
+            record = RegistrationTokenRecord(
                 token_hash=token_hash,
                 org=_RUNTIME_ORG,
                 name=name,
@@ -437,6 +442,7 @@ class RegistrationTokenStore:
                 issued_at=now,
                 expires_at=expires_at,
             )
+            self._tokens[token_hash] = record
             self._challenges[token_hash] = ConformanceChallenge(
                 token_hash=token_hash,
                 org=_RUNTIME_ORG,
@@ -445,6 +451,13 @@ class RegistrationTokenStore:
                     ConformanceStep(step_id=s) for s in self.DEFAULT_CONFORMANCE_STEPS
                 ],
             )
+            if on_mint is not None:
+                try:
+                    on_mint(token, record)
+                except Exception:
+                    self._tokens.pop(token_hash, None)
+                    self._challenges.pop(token_hash, None)
+                    raise
         return token, expires_at
 
     def _expire_prior_runtime(self, name: str, purpose: str = 'profile') -> None:

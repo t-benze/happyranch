@@ -8,6 +8,7 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
+from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.metrics_store import MetricsStore
 from runtime.daemon.org_state import OrgState
@@ -34,6 +35,7 @@ class DaemonState:
     registration_token_store: RegistrationTokenStore = field(
         default_factory=RegistrationTokenStore
     )
+    direct_connect_authority_store: DirectConnectAuthorityStore | None = None
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     headless_assistant: HeadlessAssistantManager = field(
@@ -48,6 +50,7 @@ class DaemonState:
     def idle(cls, settings: Settings) -> "DaemonState":
         state = cls(runtime=None, settings=settings)
         state.metrics_store = MetricsStore(None)  # in-memory for idle state
+        state.direct_connect_authority_store = DirectConnectAuthorityStore(None)
         return state
 
     def __post_init__(self) -> None:
@@ -59,6 +62,11 @@ class DaemonState:
         if self.runtime is not None and self.metrics_store is None:
             self.metrics_store = MetricsStore(
                 str(self.runtime.root / "metrics.db")
+            )
+        if self.runtime is not None and self.direct_connect_authority_store is None:
+            self.direct_connect_authority_store = DirectConnectAuthorityStore(
+                self.runtime.root / "direct_connect_authority.db",
+                runtime_root=self.runtime.root,
             )
 
     @classmethod
@@ -185,3 +193,5 @@ class DaemonState:
             for org in self.orgs.values():
                 org.close()
             self.orgs.clear()
+        if self.direct_connect_authority_store is not None:
+            self.direct_connect_authority_store.close()

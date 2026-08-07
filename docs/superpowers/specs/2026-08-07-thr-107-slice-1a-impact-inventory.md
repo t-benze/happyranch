@@ -51,3 +51,16 @@ import / caller inventory is the granted replacement for this slice.
 The later lifecycle slice owns direct ingress, COMMITTED/project/receipt and
 compensation semantics, projections, central eligibility, launcher fencing,
 Popen/retry proof, runner matrix, legacy disposition/cutover, and UI changes.
+
+## Documentation sweep classification
+
+`rg` over `protocol/`, `docs/agent-guides/`, and the THR-107 specs classified
+the Slice-1A terms as follows:
+
+| Surface | Classification |
+| --- | --- |
+| `protocol/05b-agent-runtime.md` | Updated: records the nonsecret, nonlaunchable authority foundation and deferred lifecycle. |
+| `protocol/05c-orchestrator.md` | Updated: records no runner/eligibility effect and deferred fence. |
+| `docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md` | Updated: preserves the approved final D7B lifecycle while locating Slice 1A before it. |
+| `docs/agent-guides/agent-executors-and-permissions.md` | Unchanged: describes shipping adapter submission/Popen behavior, which Slice 1A deliberately does not alter. |
+| Connect/onboarding UI docs and components | Unchanged: this slice adds only a browser request type and does not wire UI behavior. |

@@ -100,6 +100,17 @@ version, and session-id echo enforced before mapping any result; subprocess-only
 (no Python import/discovery); PENDING adapters cannot bind or launch; D5
 baseline-only permission posture.
 
+**THR-107 Slice 1A mint authority foundation.** The existing
+master-authenticated runtime adapter-purpose mint optionally accepts an exact
+first-party ``workspace_adapter_id`` and persists a nonsecret,
+domain-separated fingerprint plus server-derived intent in daemon-global
+runtime-root SQLite. The new ``minted_nonlaunchable`` authority has no
+projection, profile/adapter state, scoped direct-connect route, executor
+eligibility, or runner effect. Existing adapter mints that omit the optional
+field retain the legacy PENDING submission behavior. Direct ingress,
+COMMITTED/receipt/compensation lifecycle, launcher fencing, and UI changes are
+explicit later serial slices.
+
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest
 (``dependency_manifest_version: 1``, non-empty ``dependencies`` list of
