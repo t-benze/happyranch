@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from runtime.infrastructure.kb_store import KBStore
+from runtime.models import JobInterpreter, JobRecord, JobStatus
 
 
 def test_summary_returns_full_shape(tmp_home, app, org_state, auth_headers) -> None:
@@ -33,6 +34,7 @@ def test_summary_returns_full_shape(tmp_home, app, org_state, auth_headers) -> N
         "kb_added_today", "agents_active_now", "spend_today_usd",
     }
     assert "escalations" in body
+    assert body["pending_review_jobs"] == []
     assert "active_by_team" in body
     assert "recent_activity" in body
     assert "updates_this_week" in body
@@ -74,6 +76,76 @@ def test_summary_requires_auth(tmp_home, app, org_state) -> None:
     client = TestClient(app)
     r = client.get(f"/api/v1/orgs/{org_state.slug}/dashboard/summary")
     assert r.status_code == 401
+
+
+def test_summary_includes_only_pending_review_jobs_in_deterministic_order(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    def insert(
+        job_id: str, *, status: JobStatus, review_required: bool, created_at: str,
+    ) -> None:
+        org_state.db.insert_job(JobRecord(
+            id=job_id,
+            task_id=f"TASK-{job_id[-1]}",
+            agent_name="dev_agent",
+            title=f"{job_id} title",
+            rationale="test",
+            script_text="echo hi",
+            interpreter=JobInterpreter.BASH,
+            status=status,
+            review_required=review_required,
+            created_at=created_at,
+        ))
+
+    insert("JOB-001", status=JobStatus.PENDING, review_required=True, created_at="2026-05-30T10:00:00Z")
+    insert("JOB-002", status=JobStatus.PENDING, review_required=True, created_at="2026-05-30T11:00:00Z")
+    insert("JOB-003", status=JobStatus.PENDING, review_required=False, created_at="2026-05-30T12:00:00Z")
+    insert("JOB-004", status=JobStatus.COMPLETED, review_required=True, created_at="2026-05-30T13:00:00Z")
+    kb_store = KBStore(org_state.root / "kb")
+    assert asyncio.run(org_state.dashboard_projection.warm(
+        db=org_state.db, kb_store=kb_store, teams=org_state.teams,
+    ))
+
+    response = TestClient(app).get(
+        f"/api/v1/orgs/{org_state.slug}/dashboard/summary",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pending_review_jobs"] == [
+        {
+            "id": "JOB-002",
+            "task_id": "TASK-2",
+            "agent_name": "dev_agent",
+            "title": "JOB-002 title",
+            "created_at": "2026-05-30T11:00:00Z",
+        },
+        {
+            "id": "JOB-001",
+            "task_id": "TASK-1",
+            "agent_name": "dev_agent",
+            "title": "JOB-001 title",
+            "created_at": "2026-05-30T10:00:00Z",
+        },
+    ]
+
+
+def test_load_from_disk_accepts_projection_written_before_pending_jobs_field(
+    tmp_home, org_state,
+) -> None:
+    mgr = org_state.dashboard_projection
+    kb_store = KBStore(org_state.root / "kb")
+    assert asyncio.run(mgr.warm(
+        db=org_state.db, kb_store=kb_store, teams=org_state.teams,
+    ))
+    old_projection = json.loads(mgr.projection_path.read_text(encoding="utf-8"))
+    old_projection["payload"].pop("pending_review_jobs")
+    mgr.projection_path.write_text(json.dumps(old_projection), encoding="utf-8")
+
+    loaded = mgr.load_from_disk()
+
+    assert loaded is not None
+    assert loaded.payload["pending_review_jobs"] == []
 
 
 # ── THR-129 fix-forward: projection validation tests ────────────────────

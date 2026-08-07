@@ -46,6 +46,14 @@ class EscalationRow(BaseModel):
     flavor: str | None = None
 
 
+class PendingReviewJobRow(BaseModel):
+    id: str
+    task_id: str
+    agent_name: str
+    title: str
+    created_at: datetime
+
+
 class StaleEscalationRow(BaseModel):
     task_id: str
     agent: str
@@ -88,6 +96,9 @@ class DashboardSummaryResponse(BaseModel):
     heartbeat: list[HeartbeatBucket]
     narrative_counts: NarrativeCounts
     escalations: list[EscalationRow]
+    # Default preserves compatibility with persisted projections written
+    # before approval-required jobs were included in the dashboard.
+    pending_review_jobs: list[PendingReviewJobRow] = Field(default_factory=list)
     stale_escalations: list[StaleEscalationRow]
     active_by_team: list[ActiveByTeam]
     recent_activity: list[ActivityRow]
@@ -517,6 +528,25 @@ def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
     ]
 
 
+def compute_pending_review_jobs(db: Database) -> list[PendingReviewJobRow]:
+    """Current founder-gated jobs, newest first with an id tie-breaker."""
+    rows = db.fetch_all_readonly(
+        "SELECT id, task_id, agent_name, title, created_at FROM jobs "
+        "WHERE status = 'pending' AND review_required = 1 "
+        "ORDER BY created_at DESC, id DESC",
+    )
+    return [
+        PendingReviewJobRow(
+            id=row["id"],
+            task_id=row["task_id"],
+            agent_name=row["agent_name"],
+            title=row["title"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+
+
 def _acceptance_pct_for_window(
     db: Database, *, team: str, start: datetime, end: datetime,
 ) -> tuple[int, int]:
@@ -593,6 +623,7 @@ def compose_dashboard_summary(
         heartbeat=compute_heartbeat_24h(db, now=now),
         narrative_counts=compute_narrative_counts_today(db, now=now, kb_store=kb_store),
         escalations=compute_escalations_open(db, now=now),
+        pending_review_jobs=compute_pending_review_jobs(db),
         stale_escalations=compute_stale_escalations(db, now=now),
         active_by_team=compute_active_by_team(db),
         recent_activity=compute_recent_activity(db, n=6),

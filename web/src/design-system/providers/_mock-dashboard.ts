@@ -44,6 +44,7 @@ const FIXTURE: DashboardSummaryResponse = {
       age_seconds: 3600,
     },
   ],
+  pending_review_jobs: [],
   active_by_team: [
     { team: 'engineering', count: 2, task_ids: ['TASK-555', 'TASK-553'] },
     { team: 'content', count: 1, task_ids: ['TASK-552'] },

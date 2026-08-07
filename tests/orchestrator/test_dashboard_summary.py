@@ -11,7 +11,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.infrastructure.database import Database
+from runtime.models import JobInterpreter, JobRecord, JobStatus
 from runtime.orchestrator.dashboard_summary import (
+    compute_pending_review_jobs,
     compute_narrative_counts_today,
     compute_org_age_days,
     compute_spend_today,
@@ -82,6 +84,42 @@ def test_spend_today_sums_today_only(db: Database) -> None:
         )
     db._conn.commit()
     assert compute_spend_today(db, now=now) == pytest.approx(3.75)
+
+
+def test_pending_review_jobs_include_only_pending_founder_review_rows_in_order(
+    db: Database,
+) -> None:
+    def insert(
+        job_id: str, *, status: JobStatus, review_required: bool, created_at: str,
+    ) -> None:
+        db.insert_job(JobRecord(
+            id=job_id,
+            task_id=f"TASK-{job_id[-1]}",
+            agent_name="dev_agent",
+            title=f"{job_id} title",
+            rationale="test",
+            script_text="echo hi",
+            interpreter=JobInterpreter.BASH,
+            status=status,
+            review_required=review_required,
+            created_at=created_at,
+        ))
+
+    insert("JOB-001", status=JobStatus.PENDING, review_required=True, created_at="2026-05-30T10:00:00Z")
+    insert("JOB-002", status=JobStatus.PENDING, review_required=True, created_at="2026-05-30T11:00:00Z")
+    insert("JOB-003", status=JobStatus.PENDING, review_required=False, created_at="2026-05-30T12:00:00Z")
+    insert("JOB-004", status=JobStatus.REJECTED, review_required=True, created_at="2026-05-30T13:00:00Z")
+
+    rows = compute_pending_review_jobs(db)
+
+    assert [row.id for row in rows] == ["JOB-002", "JOB-001"]
+    assert rows[0].model_dump(mode="json") == {
+        "id": "JOB-002",
+        "task_id": "TASK-2",
+        "agent_name": "dev_agent",
+        "title": "JOB-002 title",
+        "created_at": "2026-05-30T11:00:00Z",
+    }
 
 
 def test_narrative_counts_zero(db: Database, mock_kb_store: _MockKbStore) -> None:

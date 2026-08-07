@@ -51,6 +51,13 @@ class EscalationRow(BaseModel):
     raised_at: datetime
     age_seconds: int
 
+class PendingReviewJobRow(BaseModel):
+    id: str
+    task_id: str
+    agent_name: str
+    title: str
+    created_at: datetime
+
 class ActiveByTeam(BaseModel):
     team: str
     count: int
@@ -81,6 +88,7 @@ class DashboardSummaryResponse(BaseModel):
     heartbeat: list[HeartbeatBucket]  # exactly 24 entries
     narrative_counts: NarrativeCounts
     escalations: list[EscalationRow]  # sorted by raised_at DESC, no limit in v1 (typically <10)
+    pending_review_jobs: list[PendingReviewJobRow]  # pending review_required rows, newest first
     active_by_team: list[ActiveByTeam]  # sorted by team name
     recent_activity: list[ActivityRow]  # last 6, sorted by timestamp DESC
     updates_this_week: list[UpdateRow]  # last 12, sorted by timestamp DESC
@@ -187,7 +195,11 @@ Replaces the current four-card composition. Single `useDashboardSummary()` call.
 
 - **Context strip** (top) — `{date · org_age_days · spend_today · agents_active_now}`. Plain divs and text utility classes; no new pattern.
 - **Today panel** — `Heartbeat` (local component) + `NarrativeParagraph` (local component) + counter row
-- **Waiting on you panel** — `EscalationInboxRow[]` (local component) OR "All clear" empty state via the existing `EmptyState` pattern
+- **Waiting on you panel** — escalation rows retain their inline continue action;
+  pending review-required jobs appear in the same queue with a link to the
+  canonical Job Detail approval surface. The dashboard does not gain
+  approve/reject authority. The existing `EmptyState` renders only when both
+  sources are empty.
 - **Org pulse panel** — `OrgPulseTable` (local component) using the new `Sparkline` pattern
 - **Recent activity panel** — plain `<ul>` of audit rows; no new pattern
 - **Updates this week panel** — plain `<ul>`; no new pattern
@@ -263,8 +275,8 @@ allowing both Tasks and Dashboard to consume it. Out of scope here.
 |---|---|---|
 | `isLoading` | `loading…` muted text inside the page shell with the panels' titles still showing | First page mount |
 | `isError` | `Failed to load dashboard.` in `text-feedback-danger` at the page level | TanStack Query error |
-| Empty escalations | The existing `EmptyState` pattern with title "All clear" and the most-recent-resolved summary line | `escalations.length === 0` |
-| Brand-new org | `EmptyState` with "Start your first brief" CTA linking to the Tasks compose dialog | `org_age_days === 0` AND all counters are zero |
+| Empty attention queue | The existing `EmptyState` pattern with title "All clear" and truthful no-actions copy | `escalations.length === 0` AND `pending_review_jobs.length === 0` |
+| Brand-new org | `EmptyState` with "Start your first brief" CTA linking to the Tasks compose dialog | `org_age_days === 0` AND all counters are zero AND the attention queue is empty |
 | Quiet but established org | Heartbeat + narrative still render (likely flat/zero); "All clear" inbox | `org_age_days > 0` AND `narrative_counts.completed_today + failed_today + escalated_open === 0` |
 
 ## 6. Honesty audit — what we display vs what the daemon knows
@@ -276,6 +288,7 @@ allowing both Tasks and Dashboard to consume it. Out of scope here.
 | Narrative sentence | `NarrativeCounts` formatted into prose with semantic spans | yes — only counted facts; no "ran hot", "all on PR-review", or "median Wednesday" allowed |
 | Counter row (5 stats) | `NarrativeCounts` fields, one-to-one | yes |
 | Escalation question text | escalation audit-row payload, verbatim | yes |
+| Pending job id/title/link | current `jobs` rows with `status='pending'` and `review_required=true` | yes — link delegates approval/rejection to Job Detail |
 | Active by team count | `tasks.status='in_progress' GROUP BY team` | yes |
 | Recent activity row | `audit_log` row, untransformed event_kind | yes |
 | Updates "KB +1" | KB store filesystem (entries with `created_at` this week) | yes |

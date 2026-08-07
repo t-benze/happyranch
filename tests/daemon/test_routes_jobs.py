@@ -1,11 +1,12 @@
 """Unit tests for src/daemon/routes/scripts.py (spec §5.1)."""
 from __future__ import annotations
 
+import json
 import secrets
 
 import pytest
 
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
 
 
 def _make_active_session(org, agent: str = "engineering_head"):
@@ -15,6 +16,23 @@ def _make_active_session(org, agent: str = "engineering_head"):
         team="engineering",
         brief="test",
         status=TaskStatus.IN_PROGRESS,
+    )
+    org.db.insert_task(task)
+    session_id = "sid-" + secrets.token_hex(4)
+    org.sessions.set_active(task.id, agent, session_id)
+    return task.id, session_id
+
+
+def _make_thread_dispatched_active_session(
+    org, *, thread_id: str, agent: str = "engineering_head",
+):
+    task = TaskRecord(
+        id=org.db.next_task_id(),
+        assigned_agent=agent,
+        team="engineering",
+        brief="thread-dispatched test",
+        status=TaskStatus.IN_PROGRESS,
+        dispatched_from_thread_id=thread_id,
     )
     org.db.insert_task(task)
     session_id = "sid-" + secrets.token_hex(4)
@@ -101,6 +119,114 @@ def test_submit_happy_path(client_with_runtime):
     body = r.json()
     assert body["id"].startswith("JOB-")
     assert body["status"] == "pending"
+
+
+def test_submit_review_job_posts_pending_approval_message_to_open_origin_thread(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    thread_id = "THR-JOB-OPEN"
+    org.db.insert_thread(ThreadRecord(id=thread_id, subject="Founder decision"))
+    task_id, sid = _make_thread_dispatched_active_session(org, thread_id=thread_id)
+
+    response = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "Publish founder report",
+            "rationale": "requires publication permission",
+            "script": "publish-report",
+            "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    job_id = response.json()["id"]
+    rows = org.db._conn.execute(
+        "SELECT speaker, kind, body_markdown, system_payload_json, sent_from_task_id "
+        "FROM thread_messages WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["speaker"] == "system"
+    assert row["kind"] == "system"
+    assert f"/orgs/alpha/jobs/{job_id}" in row["body_markdown"]
+    assert "approve & run or reject" in row["body_markdown"]
+    assert row["sent_from_task_id"] == task_id
+    assert json.loads(row["system_payload_json"]) == {
+        "kind_tag": "job_pending_approval",
+        "job_id": job_id,
+        "task_id": task_id,
+        "title": "Publish founder report",
+        "action": "review_and_approve_or_reject",
+    }
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM thread_invocations WHERE thread_id = ?", (thread_id,),
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("thread_status", [None, ThreadStatus.ARCHIVED])
+def test_submit_review_job_skips_missing_or_archived_origin_thread(
+    client_with_runtime, thread_status,
+):
+    client, org = client_with_runtime
+    thread_id = "THR-JOB-MISSING" if thread_status is None else "THR-JOB-ARCHIVED"
+    if thread_status is not None:
+        org.db.insert_thread(ThreadRecord(
+            id=thread_id, subject="Archived", status=thread_status,
+        ))
+    task_id, sid = _make_thread_dispatched_active_session(org, thread_id=thread_id)
+
+    response = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "Needs review",
+            "rationale": "permission wall",
+            "script": "echo hi",
+            "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM thread_messages WHERE thread_id = ?", (thread_id,),
+    ).fetchone()[0] == 0
+
+
+def test_submit_auto_run_job_does_not_post_pending_approval_message(
+    client_with_runtime, monkeypatch,
+):
+    client, org = client_with_runtime
+    thread_id = "THR-JOB-AUTO"
+    org.db.insert_thread(ThreadRecord(id=thread_id, subject="No approval needed"))
+    task_id, sid = _make_thread_dispatched_active_session(org, thread_id=thread_id)
+
+    async def _fake_run_job(*_args, **_kwargs):
+        return {"status": "running"}
+
+    monkeypatch.setattr("runtime.daemon.routes.jobs._run_job_core", _fake_run_job)
+    response = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "Safe local command",
+            "script": "echo hi",
+            "interpreter": "bash",
+            "review_required": False,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM thread_messages WHERE thread_id = ?", (thread_id,),
+    ).fetchone()[0] == 0
 
 
 def test_submit_empty_title(client_with_runtime):
