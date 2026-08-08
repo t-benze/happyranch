@@ -171,18 +171,34 @@ built-in-protection/name-mismatch errors. This command removes machine-local
 binary registrations only — it does **not** delete adapters, profiles, or other
 daemon state.
 
-**Custom-adapter lifecycle management (THR-107 TASK-3792 + seq334).** The
-ordinary Settings UI no longer exposes a standalone Custom Adapters list.
+**Custom-adapter lifecycle management (THR-107 slices 1–3).** The ordinary
+Settings/onboarding "Connect a CLI → connect a custom CLI instead" flow is
+now instant: the founder mints a token (naming the CLI and picking its
+workspace CLI), the candidate CLI's copy-pasted script both writes its
+wrapper at the daemon-issued path and POSTs it directly, and the browser
+auto-finishes the connection the moment it lands — no PENDING wait, no
+founder-approval click, no separate Bind step. Approved-unbound recovery
+affordances, the pending-approval queue, and the standalone Bind card were
+**removed from the ordinary UI** in slice 3 (not hidden behind an advanced
+panel) — a connect that doesn't finish shows a retryable "Connection
+failed" card instead.
+
 Adapter-backed custom CLIs are surfaced inside **Settings → Executors →
 Custom CLIs**: their approved executable is joined to the profile row by the
-``command_adapter_id: custom-adapter:<id>`` reference, and approved-unbound
-adapters that need recovery (``ready_to_bind`` or ``recovery_ready``
-eligibility) render a CLI-level Bind affordance in the same area. The
-authenticated ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route remains
-available for API-level cleanup, but the ordinary founder-facing UI manages
-the binding through the Custom CLIs list. The adapter's on-disk executable is
-never touched — removal only deletes the durable registration entry and writes
-an ``adapter_removed`` audit row (scope ``adapter:<id>``).
+``command_adapter_id: custom-adapter:<id>`` reference. The authenticated
+``DELETE /api/v1/runtime/adapters/{adapter_id}`` route remains available for
+API-level cleanup — removal only deletes the durable registration entry
+(never the on-disk executable) and writes an ``adapter_removed`` audit row
+(scope ``adapter:<id>``).
+
+The legacy ``POST /runtime/adapters/{id}/approve|reject|bind-profile`` routes
+(and their ``happyranch``-adjacent TS bindings in ``web/src/lib/api/
+adapters.ts``) are preserved, unchanged, as **operator-only one-time
+disposition tooling** — no normal-flow UI calls them anymore
+(``tests/contract/route-classification.json`` reclassifies them as excluded,
+no browser consumer). Reach for them only for manual/scripted recovery of a
+legacy PENDING/approved-unbound record; a new custom CLI should always use
+the ordinary Connect flow instead.
 
 ### Token usage
 

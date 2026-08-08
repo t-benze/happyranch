@@ -128,8 +128,70 @@ Malformed known-direct attempts terminalize their authority; unknown or
 foreign registration context remains ordinary invalid context. Legacy adapter
 mints without the optional field remain the existing PENDING-submission path.
 If the final registration-token commit fails, Slice A compensates the
-receipt/event boundary. Projection/reconciliation, COMMITTED eligibility,
-runner fences, and UI cutover remain later slices.
+receipt/event boundary.
+
+**THR-107 Slices 1–3: projection, launch fence, UI cutover.** Building on
+Slice A's `received_nonlaunchable` receipt:
+
+- **Slice 1 (projection).** A separate, master-bearer-authed
+  `POST /api/v1/runtime/custom-cli/{operation_id}/commit` route (never the
+  registration-token-authed `/connect` route, which is pinned to spawn zero
+  subprocesses) drives one receipt through a durable `planned` →
+  `committed`/`failed` state machine (`direct_connect_projections` table,
+  additive to the Slice A authority store). Committing runs the SAME bounded
+  conformance probe the legacy master-bearer registration path uses, then
+  reuses the EXISTING `adapter_store`/`custom_adapter_registry` persistence
+  primitives (not a second write path) to durably write an
+  `AdapterEntry(status="approved", registered_by="direct-connect",
+  approved_by="direct-connect")` with a `dependency_manifest_version: 1`
+  manifest from the receipt's declared children, then binds a runtime
+  profile via the same `_perform_adapter_profile_binding` the seq237
+  atomic-approve-and-bind path uses. `version`/`contract_version` are read
+  from the probe's own `AdapterOutput.adapter_metadata` (not the manifest,
+  which carries no such fields); `capabilities` defaults to `[]`
+  (D5 baseline-only — direct-connect has no manual capability-declaration
+  surface). Idempotent on retry; a single winner under concurrent commit
+  attempts (the `direct_connect_projections` insert is the sole arbiter;
+  losers poll for the winner's terminal state instead of racing the probe a
+  second time); every failure path compensates (removes the just-created
+  `AdapterEntry` if profile binding fails) so no partial adapter/profile/
+  registry state survives. `GET /api/v1/runtime/custom-cli/status` (keyed
+  only by `intended_profile_name`, never token plaintext) exposes the
+  deterministic wrapper destination plus the latest operation's id and
+  projection state, so the founder's browser can find the daemon-issued
+  wrapper path to show in a connect prompt and detect when the candidate
+  CLI's own `/connect` call has landed.
+- **Slice 2 (launch fence — proof, not new gating).** `build_executor()` /
+  `ExecutorRegistry._resolve_custom_adapter_eligibility()` /
+  `CustomAdapterExecutor._launch()` already refuse to construct or launch
+  anything but an `AdapterEntry.status == "approved"` adapter with a live
+  on-disk SHA-256 re-check at every `Popen` attempt including throttle
+  retries — this predates THR-107 slice 1 and applies with no
+  origin-specific branching, so a Slice-1-committed direct-connect profile
+  is launch-eligible through the identical seam a legacy founder-approved
+  adapter is. `runtime/daemon/wake_runner.py`, `dream_runner.py`, and
+  `schedule_runner.py` import the SAME `_build_executor_for_provider`
+  function `thread_runner.py` defines (not independent copies);
+  `Orchestrator._build_executor` is a second thin wrapper over the same
+  `build_executor()`. `tests/test_thr107_launch_fence.py` proves this
+  end-to-end against a real Slice-1-committed profile, plus that an
+  operation which never reached COMMITTED has no registered profile and
+  fails closed with `"Unregistered executor"` at the same seam.
+- **Slice 3 (UI cutover).** The normal Settings ▸ Executors and onboarding
+  custom-CLI flow now drives `POST /connect` then `POST .../commit`
+  automatically (`useDirectConnect` in `web/src/shared/connect/
+  useRuntimeConnect.ts`) — Connect → Connected in one perceived action, no
+  founder-approval wait, no separate conformance-checkin round trips. The
+  normal-flow PENDING/approve/reject/legacy-bind-recovery UI
+  (`PendingAdaptersSection`, `RecoveryBindCard`, the `useAdapterConnect`/
+  `useAdapterRecovery` hooks) is deleted outright, not hidden behind an
+  advanced panel. The backend `POST /runtime/adapters/{id}/approve|reject|
+  bind-profile` routes and their `lib/api/adapters.ts` TS bindings are
+  UNCHANGED and preserved as operator-only one-time disposition tooling
+  outside the normal user flow (`tests/contract/route-classification.json`
+  reclassifies them from `included` to `excluded` — no normal-flow browser
+  consumer remains, but the routes and Slice-1-era tests stay intact for
+  manual/scripted operator use).
 
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,
@@ -182,15 +244,17 @@ runner fences, and UI cutover remain later slices.
   subprocesses. The daemon never imports, discovers, or executes third-party Python
   modules from adapter executables.
 - **Legacy generic-cli profiles remain readable** and are never auto-mutated.
-  The operator path to adopt custom adapters is: register executable → conformance
-  → PENDING → founder exact-snapshot approve (or reject) → APPROVED +
-  atomic profile bind for intended adapters (``already_bound``) OR
-  advanced Bind recovery for no-intended adapters (``recovery_ready``)
-  → re-register → launch/verify. PENDING rejection atomically removes the entry
-  re-register → launch/verify. PENDING rejection atomically removes the entry
-  with no persisted rejected status. Approved-only removal is a separate
-  DELETE path for APPROVED adapters. Rollback: re-register the profile as
-  ``generic-cli`` or revert the deployment.
+  This register → conformance → PENDING → founder exact-snapshot approve (or
+  reject) → APPROVED + bind path is now operator-only disposition tooling
+  (its routes and TS bindings are preserved, but no normal-flow UI calls
+  them — see the THR-107 Slices 1–3 paragraph above for the normal
+  direct-connect path). Approve transitions APPROVED + atomic profile bind
+  for intended adapters (``already_bound``) OR leaves no-intended adapters
+  for advanced Bind recovery (``recovery_ready``). PENDING rejection
+  atomically removes the entry with no persisted rejected status.
+  Approved-only removal is a separate DELETE path for APPROVED adapters.
+  Rollback: re-register the profile as ``generic-cli`` or revert the
+  deployment.
 - **D5 baseline-only posture:** the custom adapter contract introduces no allow-rule,
   sandbox, network-access, filesystem-access, or permission changes.
 - **THR-107 seq244 dependency manifest:** new adapter registrations require

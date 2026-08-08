@@ -233,7 +233,26 @@ validates ``body.executable`` against this server-owned canonical target:
 - Existing APPROVED adapters at arbitrary locations remain hash-valid and
   launchable — no automatic migration, invalidation, or rewriting occurs.
 
-**Adapter lifecycle:**
+**THR-107 slices 1–3 superseded this scoped-submission lifecycle as the
+normal-flow UI path.** Steps 0–4 below (contract-reference fetch → submit
+→ conformance → PENDING → founder approve/advanced-bind) describe the
+seq141 scoped-token adapter-submission mechanism
+(``POST /runtime/adapters/submit``) — it still exists at the API level and
+its tests remain, but the ordinary Settings/onboarding "Connect a custom
+CLI" UI no longer drives it. The normal UI now uses the THR-107 slice 1
+direct-connect mechanism instead: mint (with ``workspace_adapter_id``) →
+read the daemon-issued wrapper path from ``GET /runtime/custom-cli/status``
+→ the candidate CLI's single ``POST /runtime/custom-cli/connect`` both
+proves wrapper integrity and creates the connection record → the browser
+auto-calls ``POST /runtime/custom-cli/{operation_id}/commit`` the moment it
+lands → Connected, no PENDING wait, no founder click. See
+``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
+UI cutover" for the full contract. The PENDING/approve/reject/bind-profile
+routes below remain as operator-only one-time disposition tooling for
+legacy records — a new custom CLI should always use the ordinary Connect
+flow instead.
+
+**Adapter lifecycle (legacy scoped-submission mechanism — operator-only, not the normal UI path):**
 
 0. **Fetch contract-reference** — candidate CLI fetches
    ``GET /api/v1/runtime/adapters/contract-reference`` with the scoped
@@ -252,18 +271,18 @@ validates ``body.executable`` against this server-owned canonical target:
    AND creates/binds that named custom profile (``command_adapter_id: custom-adapter:<id>``)
    in one transaction — no client-side bind follow-up is needed. Adapters without
    an intended profile (master-bearer registration) are approved without auto-binding
-   and retain explicit advanced Bind recovery via Settings.
+   and require the operator-only advanced Bind recovery route below (step 4) —
+   not surfaced in Settings since THR-107 slice 3.
 4. **Advanced Bind recovery** — for approved adapters without an intended profile
    (``recovery_ready`` eligibility) or where atomic binding did not succeed
-   (``ready_to_bind`` eligibility), the founder provides an explicit profile name
-   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. In the ordinary
-   Settings UI this recovery affordance lives inside **Settings → Executors →
-   Custom CLIs**, not in a separate adapter list or the pending queue. Only
-   APPROVED adapters with hash-verified artifacts can bind. The registration
+   (``ready_to_bind`` eligibility), an operator provides an explicit profile name
+   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. **THR-107 slice 3
+   removed this recovery affordance from the ordinary Settings UI entirely** — it
+   is API-only operator tooling now, not surfaced anywhere in Settings → Executors.
+   Only APPROVED adapters with hash-verified artifacts can bind. The registration
    route rejects binding to PENDING, unknown, removed, tampered, non-regular, or
    non-executable adapters before any durable mutation, registry mutation, audit
-   write, or token consumption. **This path is secondary to atomic
-   approve-and-bind (seq237).**
+   write, or token consumption.
 5. **Remove (THR-107)** — the authenticated ``DELETE /api/v1/runtime/adapters/{adapter_id}``
    route still exists, but the ordinary Settings UI no longer exposes a standalone
    Custom Adapters list. Adapter-backed custom CLIs are managed inside
