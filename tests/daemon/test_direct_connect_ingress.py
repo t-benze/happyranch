@@ -52,6 +52,7 @@ def _payload(wrapper_hash: str, child_path) -> dict:
     return {"metadata": {"client": "test"}, "manifest": {
         "manifest_version": 2, "wrapper_sha256": wrapper_hash,
         "upgradeable_children": [{"slot": "cli", "executable": str(child_path), "version_probe_argv": [str(child_path), "--version"]}],
+        "workspace_adapter_id": "codex",
     }}
 
 
@@ -78,6 +79,47 @@ def test_valid_direct_ingress_writes_exactly_one_nonlaunchable_receipt(client, t
     replay = tc.post("/api/v1/runtime/custom-cli/connect", json=_payload(wrapper_hash, child), headers={"Authorization": f"Bearer {token}"})
     assert replay.status_code == 401
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 1
+
+
+def test_manifest_declared_workspace_adapter_id_wins_over_mint_time_value(client, tmp_path):
+    """The wrapper's own /connect declaration is authoritative — the
+    founder's mint-time value (an unrelated activation trigger) never
+    reaches the durable receipt."""
+    tc, state = client
+    token = _mint(tc)  # minted with workspace_adapter_id="codex"
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    payload = _payload(wrapper_hash, child)
+    payload["manifest"]["workspace_adapter_id"] = "pi"  # CLI declares a different one
+
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect", json=payload, headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 201
+    operation_id = response.json()["operation_id"]
+    artifacts = state.direct_connect_authority_store.get_receipt_artifacts(operation_id)
+    assert artifacts.workspace_adapter_id == "pi"
+
+
+def test_manifest_rejects_unknown_workspace_adapter_id(client, tmp_path):
+    tc, state = client
+    token = _mint(tc)
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    payload = _payload(wrapper_hash, child)
+    payload["manifest"]["workspace_adapter_id"] = "not-a-real-cli"
+
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect", json=payload, headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 0
 
 
 def test_bad_manifest_terminalizes_known_token_without_operation(client, tmp_path, monkeypatch):

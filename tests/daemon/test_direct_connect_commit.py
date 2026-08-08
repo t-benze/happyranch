@@ -69,6 +69,7 @@ def _mint_and_connect(tc: TestClient, state, tmp_path) -> str:
     payload = {"metadata": {}, "manifest": {
         "manifest_version": 2, "wrapper_sha256": wrapper_hash,
         "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+        "workspace_adapter_id": "codex",
     }}
     connect_response = tc.post(
         "/api/v1/runtime/custom-cli/connect", json=payload, headers={"Authorization": f"Bearer {token}"},
