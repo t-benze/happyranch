@@ -1,13 +1,21 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { Link, MemoryRouter } from 'react-router-dom';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ActiveChainResponse, JobRecord, TaskRecord } from '@/lib/api/types';
+import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
+import * as api from '@/lib/api';
+import type { SSEOptions } from '@/lib/api';
+import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function mountAt(route: string) {
   server.use(
@@ -1901,5 +1909,108 @@ describe('TaskDetailPage — superseded by link', () => {
       await screen.findByRole('heading', { name: 'Brief' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/superseded by/)).not.toBeInTheDocument();
+  });
+});
+
+describe('TaskDetailPage — Activity route isolation (TASK-4827)', () => {
+  const FIRST_TASK = rootTask({
+    task_id: 'TASK-4809',
+    brief: 'First task activity fixture',
+    status: 'in_progress',
+    severity_rollup: 'in_progress',
+  });
+  const SECOND_TASK = rootTask({
+    task_id: 'TASK-4819',
+    brief: 'Second task activity fixture',
+    status: 'in_progress',
+    severity_rollup: 'in_progress',
+  });
+
+  function event(action: string, payload: Record<string, string>): TaskEvent {
+    return {
+      timestamp: '2026-08-08T00:00:00Z',
+      type: 'audit',
+      action,
+      payload,
+    };
+  }
+
+  test('drops prior-task events on route navigation and ignores a late old callback', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const tasksById = new Map([
+      [FIRST_TASK.task_id, FIRST_TASK],
+      [SECOND_TASK.task_id, SECOND_TASK],
+    ]);
+    const tails = new Map<string, SSEOptions<unknown>>();
+    vi.spyOn(api, 'subscribeSSE').mockImplementation((path, options) => {
+      const taskId = path.split('/').at(-2);
+      if (taskId) tails.set(taskId, options);
+      return new Promise<void>(() => {});
+    });
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [FIRST_TASK, SECOND_TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/:taskId`, ({ params }) => {
+        const task = tasksById.get(params.taskId as string);
+        return HttpResponse.json({
+          task,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/:taskId/recall`, ({ params }) => {
+        const task = tasksById.get(params.taskId as string) as TaskRecord;
+        return HttpResponse.json({
+          task_id: task.task_id,
+          assigned_agent: null,
+          brief: task.brief,
+          status: task.status,
+          output_summary: null,
+          children: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks/${FIRST_TASK.task_id}`]}>
+        <AppProvider client={makeQueryClient()}>
+          <Link to={`/orgs/${SLUG}/tasks/${SECOND_TASK.task_id}`}>Open second task</Link>
+          <AppRoutes />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Activity' });
+    await waitFor(() => expect(tails.get(FIRST_TASK.task_id)).toBeDefined());
+    const firstTail = tails.get(FIRST_TASK.task_id);
+    act(() => firstTail?.onMessage(event('task_4809_activity', { source: 'TASK-4809' })));
+    expect(screen.getByText('task_4809_activity')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('link', { name: 'Open second task' }));
+    await screen.findByRole('heading', { name: new RegExp(SECOND_TASK.task_id) });
+    await waitFor(() => expect(tails.get(SECOND_TASK.task_id)).toBeDefined());
+    expect(screen.queryByText('task_4809_activity')).not.toBeInTheDocument();
+    expect(screen.getByText(`Loading events for ${SECOND_TASK.task_id}…`)).toBeInTheDocument();
+
+    act(() => firstTail?.onMessage(event('task_4809_late_activity', { source: 'late TASK-4809' })));
+    expect(screen.queryByText('task_4809_late_activity')).not.toBeInTheDocument();
+
+    const secondTail = tails.get(SECOND_TASK.task_id);
+    act(() => {
+      secondTail?.onOpen?.();
+      secondTail?.onMessage(event('task_4819_activity', { source: 'TASK-4819' }));
+    });
+    expect(screen.getByText('task_4819_activity')).toBeInTheDocument();
+    expect(screen.queryByText('task_4809_activity')).not.toBeInTheDocument();
   });
 });

@@ -986,7 +986,7 @@ export function TaskDetailPage(): JSX.Element {
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
                 Activity
               </h3>
-              <TaskEventsLog taskId={taskId} />
+              <TaskEventsLog key={taskId} taskId={taskId} />
             </section>
 
             {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (

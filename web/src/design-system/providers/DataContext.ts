@@ -161,6 +161,11 @@ export type ResolveEscalationResult = Awaited<ReturnType<typeof tasksApi.resolve
 
 export type TasksListPage = { tasks: TaskRecord[]; next_cursor?: string | null };
 
+export interface TaskTailSSECallbacks {
+  onOpen?: () => void;
+  onError?: (error: unknown) => void;
+}
+
 export interface TasksApi {
   useTasksList: (params?: {
     status?: string;
@@ -191,6 +196,7 @@ export interface TasksApi {
   useTaskTailSSE: (
     taskId: string | undefined,
     onEvent: (ev: TaskEvent) => void,
+    callbacks?: TaskTailSSECallbacks,
   ) => void;
 
   useCancelTask: (taskId: string) => MutationLike<CancelTaskArgs, CancelTaskResult>;

@@ -16,6 +16,7 @@ import type {
   QueryLike,
   ResolveEscalationArgs,
   ResolveEscalationResult,
+  TaskTailSSECallbacks,
   RevisitTaskArgs,
   RevisitTaskResult,
   TasksApi,
@@ -171,6 +172,7 @@ function useTaskRecall(taskId: string | undefined) {
 function useTaskTailSSE(
   taskId: string | undefined,
   onEvent: (ev: TaskEvent) => void,
+  callbacks?: TaskTailSSECallbacks,
 ): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -179,13 +181,16 @@ function useTaskTailSSE(
     const ctl = new AbortController();
     subscribeSSE<TaskEvent>(tasksApi.taskEventsPath(slug, taskId), {
       signal: ctl.signal,
+      onOpen: callbacks?.onOpen,
       onMessage: (ev) => {
         onEvent(ev);
         if (ev.type === 'task_complete' || ev.type === 'task_failed' || ev.type === 'task_blocked') {
           invalidateTaskViews(qc, slug, taskId);
         }
       },
-    }).catch(() => { /* swallow */ });
+    }).catch((error: unknown) => {
+      if (!ctl.signal.aborted) callbacks?.onError?.(error);
+    });
     return () => ctl.abort();
   }, [slug, taskId, qc, onEvent]);
 }
