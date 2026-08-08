@@ -720,8 +720,10 @@ permission-map/allow-rule/auth changes.
 first-party HappyRanch skills. For first-party skills, runtime approval
 duplicates the release pipeline — PR review + merge + deploy IS the approval.
 Exposure is now: catalog-presence + status==enabled + eligibility-matched.
-Runtime approval is DEFERRED to a future user-authored-skills feature and will
-be re-introduced only if/when that audience ships.
+Runtime approval is not a future roadmap for direct human authoring, a
+proposal lifecycle, or eligibility remediation. Those legacy workflows are
+retired; the current custom-skill contract is limited to the B1
+verified-agent creation path described in §4.5.
 
 ### 4.1 Two-Gate Model
 
