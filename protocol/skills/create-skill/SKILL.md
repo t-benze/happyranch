@@ -1,7 +1,7 @@
 ---
 name: create-skill
 description: >
-  Verified-agent custom-skill authoring from an active task session.
+  B1 verified-agent custom-skill creation from an active task session.
   Creates a standard_operational custom skill with server-verified
   task/session/agent/org provenance. This is the ONLY supported custom-skill
   authoring path; the skill is hidden by default. Direct human authoring,
@@ -11,9 +11,10 @@ description: >
 
 # create-skill
 
-Use this skill when you have reusable guidance to capture as a custom skill
-from your current active task session. This is a system-contract skill
-injected only for TASK sessions with repo access.
+Use this skill only when you are a verified agent with reusable guidance to
+capture during your current active task session. This B1 system-contract skill
+is injected only for TASK sessions with repo access; it is not a direct-human
+authoring or proposal workflow.
 
 ## What create-skill does
 

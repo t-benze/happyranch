@@ -1911,8 +1911,9 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "sources are not automatically repaired or trusted. Do not "
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",
-        "If a skill's content is wrong or a new skill is needed, use the",
-        "verified create-skill path instead of editing files directly:",
+        "Only a verified agent in an active TASK session may create reusable",
+        "guidance through the B1 create-skill path; it is not direct human",
+        "authoring or a proposal workflow:",
         "```",
         "happyranch skills create --from-file <path> --session-id <your-session-id>",
         "```\n",

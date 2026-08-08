@@ -522,7 +522,10 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
                 f"must not claim {forbidden!r}"
             )
 
-        # Recommends lifecycle proposal workflow
+        assert "Only a verified agent in an active TASK session" in text
+        assert "not direct human" in text
+        assert "proposal workflow" in text
+        assert "new skill is needed" not in text
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
@@ -1579,3 +1582,49 @@ class TestProductionDocumentRendering:
         assert "distinct" not in skills_section.lower(), (
             "AGENTS.md Skills Directory section must not claim distinct identity"
         )
+
+    def test_served_b1_guidance_has_no_retired_authoring_promise(
+        self, tmp_path: Path, test_settings, runtime,
+    ) -> None:
+        """Materialized create-skill and rendered adapter guidance agree on B1.
+
+        This exercises the two serving seams, rather than comparing source
+        strings: canonical materialization writes the task-only contract and
+        the Codex adapter renders the Skills Directory prompt.
+        """
+        from runtime.config import Settings
+        from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+
+        repo_root = Path(__file__).resolve().parents[1]
+        workspace = tmp_path / "workspace"
+        (workspace / "repos" / "example" / ".git").mkdir(parents=True)
+        materialize_workspace_skills(
+            workspace,
+            Settings(project_root=repo_root),
+            slug="test",
+            context="task",
+            provider="codex",
+            agent_name="dev_agent",
+            team="engineering",
+            skills_root=repo_root / "runtime" / "skills",
+        )
+        materialized = (
+            workspace / ".agents" / "skills" / "create-skill" / "SKILL.md"
+        ).read_text()
+        assert "B1 verified-agent custom-skill creation" in materialized
+        assert "active task session" in materialized
+        assert "not a direct-human" in materialized
+        assert "proposal workflow" in materialized
+        assert "hidden by default" in materialized
+        assert "future user-authored" not in materialized
+
+        CodexWorkspaceAdapter(test_settings, runtime, slug="test").write_agents_md(
+            workspace=workspace,
+            agent_name="dev_agent",
+            system_prompt="You are the Dev Agent.",
+        )
+        rendered = (workspace / "AGENTS.md").read_text()
+        assert "Only a verified agent in an active TASK session" in rendered
+        assert "not direct human" in rendered
+        assert "proposal workflow" in rendered
+        assert "new skill is needed" not in rendered
