@@ -368,7 +368,7 @@ The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 ## Running Tests
 
 ```bash
-uv run pytest tests/ -v                  # unit tests only (default)
+uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run pytest tests/ -v -m integration   # integration tests
 uv run pytest tests/ -v -m ""            # unit + integration
 ```

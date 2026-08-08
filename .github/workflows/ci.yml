@@ -28,8 +28,11 @@ jobs:
       - name: Sync dependencies (frozen)
         run: uv sync --frozen
       # pyproject addopts = -m 'not integration', so this default run is unit-only.
+      # -n 4 matches the standard GitHub-hosted runner's vCPU count; validated
+      # locally as flake-free (higher worker counts induced contention in a
+      # couple of real-subprocess timeout tests).
       - name: Run unit tests
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ -v -n 4
 
   web:
     name: Web (Node 24)

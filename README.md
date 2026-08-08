@@ -34,7 +34,7 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 git clone https://github.com/t-benze/happyranch.git
 cd happyranch
 uv sync
-uv run pytest tests/ -v
+uv run pytest tests/ -v -n 4
 ```
 
 ## Quick Start

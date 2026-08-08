@@ -37,8 +37,8 @@ scripts/local_ci.sh help         # List targets and caveats
 
 | Target | GHA job | Commands |
 |--------|---------|----------|
-| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v` |
+| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
 
@@ -57,10 +57,13 @@ tests — those are nightly in GitHub and run an isolated daemon (no port confli
 ### `python`
 
 Runs the full Python unit test suite with `uv sync --frozen` and
-`uv run pytest tests/ -v`. Uses your local installed Python interpreter;
+`uv run pytest tests/ -v -n 4`. Uses your local installed Python interpreter;
 does **not** reproduce the GHA 3.12/3.13/3.14 matrix. `pyproject.toml`
 addopts exclude integration tests by default (`-m 'not integration'`), so
-this is unit-only.
+this is unit-only. `-n 4` (pytest-xdist) runs the suite across 4 worker
+processes, matching the standard GitHub-hosted runner's vCPU count; the
+suite is written to be worker-safe (per-test `tmp_path`, no shared ports or
+fixed filesystem paths).
 
 ### `web`
 

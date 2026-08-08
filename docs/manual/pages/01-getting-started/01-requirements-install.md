@@ -50,7 +50,7 @@ do not need a global `pip` install.
 Run:
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -v -n 4
 ```
 
 If you want a faster first check, skip integration tests:

@@ -7,7 +7,7 @@
 #   scripts/local_ci.sh [TARGET]
 #
 # Targets:
-#   python       uv sync --frozen; uv run pytest tests/ -v
+#   python       uv sync --frozen; uv run pytest tests/ -v -n 4
 #   web          cd web; npm ci; npm run lint; npm run typecheck;
 #                npm run build; npx vitest run
 #   integration  uv sync --frozen; uv run pytest tests/ -v -m integration
@@ -26,7 +26,7 @@ NC='\033[0m'
 run_python() {
   echo -e "${GREEN}=== Python unit tests ===${NC}"
   uv sync --frozen
-  uv run pytest tests/ -v
+  uv run pytest tests/ -v -n 4
 }
 
 run_web() {
@@ -63,7 +63,7 @@ show_help() {
   echo ""
   echo "Targets:"
   echo "  python       Run Python unit tests"
-  echo "               (uv sync --frozen + uv run pytest tests/ -v)"
+  echo "               (uv sync --frozen + uv run pytest tests/ -v -n 4)"
   echo "  web          Run Web CI"
   echo "               (npm ci + lint + typecheck + build + vitest run)"
   echo "  integration  Run Python integration tests"
