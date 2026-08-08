@@ -10,17 +10,8 @@
 import { useData } from '@/design-system/providers/DataContext';
 
 export type {
-  AssignSkillRequest,
-  AssignSkillResponse,
   CatalogSkillItem,
-  CreateSkillRequest,
-  CreateSkillResponse,
-  EditSkillRequest,
-  EditSkillResponse,
   SkillDetail,
-  SkillStatusAssignment,
-  SkillStatusResponse,
-  ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
 
@@ -33,27 +24,6 @@ export const useSkillDetail: ReturnType<
   typeof useData
 >['skills']['useSkillDetail'] = (skillId) =>
   useData().skills.useSkillDetail(skillId);
-
-export const useCreateSkill: ReturnType<
-  typeof useData
->['skills']['useCreateSkill'] = () => useData().skills.useCreateSkill();
-
-export const useValidateSkill: ReturnType<
-  typeof useData
->['skills']['useValidateSkill'] = () => useData().skills.useValidateSkill();
-
-export const useEditSkill: ReturnType<
-  typeof useData
->['skills']['useEditSkill'] = () => useData().skills.useEditSkill();
-
-export const useSkillStatus: ReturnType<
-  typeof useData
->['skills']['useSkillStatus'] = (skillId) =>
-  useData().skills.useSkillStatus(skillId);
-
-export const useAssignSkill: ReturnType<
-  typeof useData
->['skills']['useAssignSkill'] = () => useData().skills.useAssignSkill();
 
 export const useSkillValidation: ReturnType<
   typeof useData

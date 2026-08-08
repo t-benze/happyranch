@@ -3,10 +3,10 @@ name: create-skill
 description: >
   Verified-agent custom-skill authoring from an active task session.
   Creates a standard_operational custom skill with server-verified
-  task/session/agent/org provenance. This is an ADDITIONAL verified-agent
-  authoring path; the skill is hidden by default. Eligibility and the Founder
-  web editor are separate supported surfaces. The legacy proposal-review
-  workflow and `happyranch skills propose` are retired.
+  task/session/agent/org provenance. This is the ONLY supported custom-skill
+  authoring path; the skill is hidden by default. Direct human authoring,
+  editing, validation, assignment, eligibility, and the legacy proposal-review
+  workflow are retired.
 ---
 
 # create-skill
@@ -29,9 +29,9 @@ injected only for TASK sessions with repo access.
 - On success, the server records an immutable version with a canonical
   content hash, validator version, findings, task/session/agent/org provenance,
   and a nonempty task-brief digest.
-- The created skill is **hidden by default**. No agent sees it or receives
-  materialization until the Founder configures eligibility through the
-  supported policy surface.
+- The created skill is **hidden by default**. No human authoring, editing,
+  validation, assignment, or eligibility remediation surface is currently
+  supported.
 
 ## What create-skill does NOT do
 
@@ -139,7 +139,7 @@ the entire transaction rolls back with zero residue.
 ## Not part of this agent path
 
 - Eligibility configuration or any visibility write.
-- Founder web editing (it is a separate bearer-authenticated console flow).
+- Founder or other human web editing, direct validation, or assignment.
 - `high_impact_policy` custom skills.
 - `happyranch skills propose` or any proposal/review/publish action; those
   legacy surfaces are retired and intentionally absent.
