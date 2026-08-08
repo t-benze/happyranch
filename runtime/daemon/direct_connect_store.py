@@ -337,9 +337,18 @@ class DirectConnectAuthorityStore:
         wrapper_sha256: str,
         wrapper_facts: dict[str, object],
         children: list[dict[str, object]],
+        workspace_adapter_id: str,
         now: float | None = None,
     ) -> DirectConnectReceipt:
-        """Atomically write and read back the Slice-A nonlaunchable receipt."""
+        """Atomically write and read back the Slice-A nonlaunchable receipt.
+
+        ``workspace_adapter_id`` is the candidate CLI's OWN declaration from
+        its ``/connect`` manifest — not the value (if any) set at mint time.
+        Only the connecting wrapper knows which workspace-bootstrap
+        convention (Claude-style vs AGENTS.md-style) its underlying CLI
+        expects; the founder's mint-time value is an unrelated activation
+        trigger for the Slice-1A authority row and is never read here.
+        """
         now = time.time() if now is None else now
         fingerprint = fingerprint_registration_token(token_plaintext)
         with self._lock, self._conn:
@@ -356,7 +365,7 @@ class DirectConnectAuthorityStore:
                 """INSERT INTO direct_connect_operations
                    (operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at)
                    VALUES (?, ?, 'received_nonlaunchable', ?, ?, ?)""",
-                (operation_id, fingerprint, authority.intended_profile_name, authority.workspace_adapter_id, now),
+                (operation_id, fingerprint, authority.intended_profile_name, workspace_adapter_id, now),
             )
             cursor.execute(
                 """INSERT INTO direct_connect_artifacts

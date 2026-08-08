@@ -83,6 +83,7 @@ def test_status_after_connect_reports_operation_and_null_profile_state(client, t
         json={"metadata": {}, "manifest": {
             "manifest_version": 2, "wrapper_sha256": wrapper_hash,
             "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
         }},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -119,6 +120,7 @@ def test_status_after_commit_reports_committed(client, tmp_path, monkeypatch):
         json={"metadata": {}, "manifest": {
             "manifest_version": 2, "wrapper_sha256": wrapper_hash,
             "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
         }},
         headers={"Authorization": f"Bearer {token}"},
     )
