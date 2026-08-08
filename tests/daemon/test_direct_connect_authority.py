@@ -275,6 +275,92 @@ def test_authority_store_has_no_org_input_or_yaml_projection(tmp_path) -> None:
     assert alpha.provenance == beta.provenance == "runtime-master-mint"
 
 
+def test_plan_projection_is_idempotent_per_operation(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_plan", name="custom-cli", intended_profile_name="profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    operation_id = store.reserve("hrreg_plan", now=2)
+    store.receive(
+        "hrreg_plan", operation_id, wrapper_sha256="a" * 64,
+        wrapper_facts={}, children=[], now=2,
+    )
+
+    assert store.plan_projection(operation_id, now=3) is True
+    assert store.plan_projection(operation_id, now=4) is False  # already planned
+    projection = store.get_projection(operation_id)
+    assert projection.state == "planned"
+
+
+def test_mark_committed_requires_planned_state(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    assert store.mark_committed("unknown-op", adapter_id="a", profile_name="p") is False
+
+    store.mint_authority(
+        token_plaintext="hrreg_commit", name="custom-cli", intended_profile_name="profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    operation_id = store.reserve("hrreg_commit", now=2)
+    store.receive("hrreg_commit", operation_id, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], now=2)
+    store.plan_projection(operation_id, now=3)
+
+    assert store.mark_committed(operation_id, adapter_id="custom-cli-adapter", profile_name="profile", now=4) is True
+    projection = store.get_projection(operation_id)
+    assert projection.state == "committed"
+    assert projection.adapter_id == "custom-cli-adapter"
+    # Retrying commit on an already-committed row is a no-op, not an error
+    assert store.mark_committed(operation_id, adapter_id="custom-cli-adapter", profile_name="profile", now=5) is False
+
+
+def test_mark_failed_from_planned_and_reopen_durability(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    path = tmp_path / "direct.db"
+    store = DirectConnectAuthorityStore(path, runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_fail", name="custom-cli", intended_profile_name="profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    operation_id = store.reserve("hrreg_fail", now=2)
+    store.receive("hrreg_fail", operation_id, wrapper_sha256="c" * 64, wrapper_facts={}, children=[], now=2)
+    store.plan_projection(operation_id, now=3)
+    assert store.mark_failed(operation_id, "conformance_probe_failed", now=4) is True
+    store.close()
+
+    reopened = DirectConnectAuthorityStore(path, runtime_root=tmp_path)
+    projection = reopened.get_projection(operation_id)
+    assert projection.state == "failed"
+    assert projection.reason == "conformance_probe_failed"
+
+
+def test_get_receipt_artifacts_returns_wrapper_and_children(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_art", name="custom-cli", intended_profile_name="profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    operation_id = store.reserve("hrreg_art", now=2)
+    store.receive(
+        "hrreg_art", operation_id, wrapper_sha256="d" * 64, wrapper_facts={"mode": 493},
+        children=[{"slot": "cli", "path": "/abs/child", "sha256": "e" * 64, "facts": {"version_probe_argv": ["/abs/child", "--version"]}}],
+        now=2,
+    )
+
+    artifacts = store.get_receipt_artifacts(operation_id)
+    assert artifacts.wrapper_path.name  # non-empty Path
+    assert artifacts.wrapper_sha256 == "d" * 64
+    assert artifacts.children == [{"slot": "cli", "executable": "/abs/child", "sha256": "e" * 64}]
+    assert artifacts.intended_profile_name == "profile"
+    assert artifacts.workspace_adapter_id == "codex"
+
+
 def test_direct_authority_reservation_has_one_concurrent_winner(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 

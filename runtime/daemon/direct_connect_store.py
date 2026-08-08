@@ -60,6 +60,26 @@ class DirectConnectReceipt:
     wrapper_sha256: str
 
 
+@dataclass(frozen=True)
+class DirectConnectProjection:
+    operation_id: str
+    token_fingerprint: str
+    state: str
+    adapter_id: str | None
+    profile_name: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class DirectConnectReceiptArtifacts:
+    operation_id: str
+    wrapper_path: Path
+    wrapper_sha256: str
+    children: list[dict[str, str]]
+    intended_profile_name: str
+    workspace_adapter_id: str
+
+
 class DirectConnectAuthorityStore:
     """Additive runtime-root SQLite authority store for direct mint intent."""
 
@@ -141,6 +161,21 @@ class DirectConnectAuthorityStore:
                 event_type TEXT NOT NULL,
                 detail TEXT NOT NULL,
                 created_at REAL NOT NULL
+            )"""
+        )
+        # THR-107 slice 1: durable projection state — tracks planned/committed/
+        # failed per operation, independent of the immutable receipt above, so
+        # a crash mid-projection or a retry never leaves ambiguous state.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_projections (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('planned', 'committed', 'failed')),
+                adapter_id TEXT,
+                profile_name TEXT,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
             )"""
         )
         self._conn.commit()
@@ -402,6 +437,136 @@ class DirectConnectAuthorityStore:
                 (str(uuid.uuid4()), fingerprint, reason, now),
             )
             return True
+
+    def get_receipt_artifacts(self, operation_id: str) -> DirectConnectReceiptArtifacts | None:
+        """Read back the immutable wrapper + children artifacts for a receipt.
+
+        Returns ``None`` when no ``received_nonlaunchable`` operation exists
+        for ``operation_id`` (or its authority row is missing).
+        """
+        with self._lock:
+            cursor = self._conn.cursor()
+            operation = cursor.execute(
+                """SELECT token_fingerprint, intended_profile_name, workspace_adapter_id
+                   FROM direct_connect_operations WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                return None
+            authority = self._read_authority(cursor, operation["token_fingerprint"])
+            if authority is None:
+                return None
+            rows = cursor.execute(
+                """SELECT slot, kind, declared_path, sha256 FROM direct_connect_artifacts
+                   WHERE operation_id = ? ORDER BY slot""",
+                (operation_id,),
+            ).fetchall()
+            wrapper_sha256 = ""
+            children: list[dict[str, str]] = []
+            for row in rows:
+                if row["kind"] == "immutable_wrapper":
+                    wrapper_sha256 = row["sha256"]
+                else:
+                    children.append({
+                        "slot": row["slot"], "executable": row["declared_path"], "sha256": row["sha256"],
+                    })
+            return DirectConnectReceiptArtifacts(
+                operation_id=operation_id,
+                wrapper_path=authority.wrapper_destination,
+                wrapper_sha256=wrapper_sha256,
+                children=children,
+                intended_profile_name=operation["intended_profile_name"],
+                workspace_adapter_id=operation["workspace_adapter_id"],
+            )
+
+    def plan_projection(self, operation_id: str, *, now: float | None = None) -> bool:
+        """Durably record projection intent exactly once per operation.
+
+        Returns ``False`` (no-op) when a projection row already exists —
+        the caller should treat that as "another attempt is/was in flight"
+        and fall back to reading the current state via ``get_projection``.
+        """
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            operation = cursor.execute(
+                "SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                raise RuntimeError("cannot plan projection for an unreceived operation")
+            try:
+                cursor.execute(
+                    """INSERT INTO direct_connect_projections
+                       (operation_id, token_fingerprint, state, adapter_id, profile_name, reason, created_at, updated_at)
+                       VALUES (?, ?, 'planned', NULL, NULL, NULL, ?, ?)""",
+                    (operation_id, operation["token_fingerprint"], now, now),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return True
+
+    def _read_projection(self, cursor: sqlite3.Cursor, operation_id: str) -> DirectConnectProjection | None:
+        row = cursor.execute(
+            """SELECT operation_id, token_fingerprint, state, adapter_id, profile_name, reason
+               FROM direct_connect_projections WHERE operation_id = ?""",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return DirectConnectProjection(
+            operation_id=row["operation_id"], token_fingerprint=row["token_fingerprint"],
+            state=row["state"], adapter_id=row["adapter_id"], profile_name=row["profile_name"],
+            reason=row["reason"],
+        )
+
+    def get_projection(self, operation_id: str) -> DirectConnectProjection | None:
+        with self._lock:
+            return self._read_projection(self._conn.cursor(), operation_id)
+
+    def mark_committed(
+        self, operation_id: str, *, adapter_id: str, profile_name: str, now: float | None = None
+    ) -> bool:
+        """Transition planned -> committed. Returns False if not in planned state."""
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            updated = cursor.execute(
+                """UPDATE direct_connect_projections
+                   SET state = 'committed', adapter_id = ?, profile_name = ?, updated_at = ?
+                   WHERE operation_id = ? AND state = 'planned'""",
+                (adapter_id, profile_name, now, operation_id),
+            ).rowcount
+            if updated:
+                cursor.execute(
+                    """INSERT INTO direct_connect_events
+                       (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                       SELECT ?, operation_id, token_fingerprint, 'committed', ?, ?
+                       FROM direct_connect_projections WHERE operation_id = ?""",
+                    (str(uuid.uuid4()), f"adapter={adapter_id} profile={profile_name}", now, operation_id),
+                )
+            return bool(updated)
+
+    def mark_failed(self, operation_id: str, reason: str, *, now: float | None = None) -> bool:
+        """Transition planned -> failed. Returns False if not in planned state."""
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            updated = cursor.execute(
+                """UPDATE direct_connect_projections
+                   SET state = 'failed', reason = ?, updated_at = ?
+                   WHERE operation_id = ? AND state = 'planned'""",
+                (reason, now, operation_id),
+            ).rowcount
+            if updated:
+                cursor.execute(
+                    """INSERT INTO direct_connect_events
+                       (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                       SELECT ?, operation_id, token_fingerprint, 'projection_failed', ?, ?
+                       FROM direct_connect_projections WHERE operation_id = ?""",
+                    (str(uuid.uuid4()), reason, now, operation_id),
+                )
+            return bool(updated)
 
     def counts(self) -> dict[str, int]:
         """Testing/operator seam; never returns raw authorization material."""
