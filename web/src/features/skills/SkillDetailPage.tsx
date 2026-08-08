@@ -5,10 +5,9 @@
  * Two screens in one route (handoff §5 folds the per-agent status table into
  * skill detail):
  *   1. SKILL DETAIL — source (bundled path / SKILL.md content), the skill-level
- *      validation badge + a "needs attention" label when validation failed, and
- *      a SOURCE-GATED affordance: bundled / system-contract skills are read-only
- *      (lock, NO edit / toggle / re-validate control); custom (user-authored)
- *      skills show an EDIT entry point that targets the Slice-4 edit screen.
+ *      validation badge + a "needs attention" label when validation failed.
+ *      The retired catalog is read-only for every source; it has no edit,
+ *      validation, or assignment controls.
  *   2. PER-AGENT EFFECTIVE / PROVENANCE — each agent's assigned-vs-effective
  *      state, a "takes effect next session" indicator on assigned-not-yet-
  *      effective, and a plain-language reason WHY the skill is / isn't effective
@@ -28,20 +27,16 @@ import {
   Info,
   Lock,
   Package,
-  Pencil,
   Sparkles,
   TriangleAlert,
 } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillDetail } from '@/hooks/skills';
-import { SkillAssignmentPanel } from './SkillAssignmentPanel';
 import { SkillStatusBadge } from './SkillStatusBadge';
 import type { ValidationTone } from './skills-catalog';
 import {
   agentProvenanceList,
   assignmentRollup,
-  editRoutePath,
-  isEditableSkill,
   needsAttention,
   readOnlyReason,
   skillSource,
@@ -121,7 +116,6 @@ export function SkillDetailPage(): JSX.Element {
 
   const skill = query.data;
   const source = skillSource(skill);
-  const editable = isEditableSkill(skill);
   const lockReason = readOnlyReason(skill);
   const attention = needsAttention(skill);
   const issues = validationIssues(skill);
@@ -178,29 +172,18 @@ export function SkillDetailPage(): JSX.Element {
             </p>
           </div>
 
-          {/* Source-gated affordance: Edit for custom, lock for read-only. */}
           <div className="shrink-0">
-            {editable ? (
-              <Link
-                to={editRoutePath(slug ?? '', skill.skill_id)}
-                className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
-              >
-                <Pencil size={14} aria-hidden="true" />
-                Edit skill
-              </Link>
-            ) : (
-              <span
-                className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
-                title={lockReason ?? undefined}
-              >
-                <Lock size={14} aria-hidden="true" />
-                Read-only
-              </span>
-            )}
+            <span
+              className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
+              title={lockReason ?? undefined}
+            >
+              <Lock size={14} aria-hidden="true" />
+              Read-only
+            </span>
           </div>
         </div>
 
-        {/* Read-only rationale (bundled / system contract). */}
+        {/* Read-only rationale for the retired catalog. */}
         {lockReason && (
           <p className="text-fg-subtle border-border-subtle mt-4 border-t pt-3 text-xs">
             {lockReason}
@@ -219,9 +202,8 @@ export function SkillDetailPage(): JSX.Element {
             Needs attention
           </div>
           <p className="text-fg-muted text-body-sm mt-1.5">
-            This skill did not pass validation, so it is not shown to any agent
-            yet. Editing it keeps the draft — nothing is lost. Fix the items
-            below and re-validate.
+            This retained record did not pass validation, so it is not shown to
+            any agent. Its recorded issues are shown below.
           </p>
           {issues.length > 0 && (
             <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-5">
@@ -257,21 +239,13 @@ export function SkillDetailPage(): JSX.Element {
         )}
       </section>
 
-      {/* ── Per-agent effective / provenance ──────────────────────
-          Custom (user-authored) skills get the interactive assignment +
-          config-review surface (Slice-5); bundled / system-contract skills
-          stay READ-ONLY (applied by context, no per-agent controls), keeping
-          the Slice-2 source-gating intact. */}
-      {editable ? (
-        <SkillAssignmentPanel slug={slug ?? ''} skillId={skill.skill_id} />
-      ) : (
+      {/* ── Per-agent effective / provenance (read-only) ─────────── */}
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
         <Eyebrow>Per-agent visibility</Eyebrow>
         <h2 className="text-h2 text-fg mb-1">Where this skill is effective</h2>
         <p className="text-fg-muted text-body-sm">
-          Which agents can see this skill as guidance, and why. Assigning a
-          skill changes guidance visibility only — it never changes the tools or
-          commands an agent can use.
+          Which agents can see this skill as guidance, and why. This read-only
+          view never changes the tools or commands an agent can use.
         </p>
 
         {assignments.length > 0 ? (
@@ -344,7 +318,6 @@ export function SkillDetailPage(): JSX.Element {
           </p>
         )}
       </section>
-      )}
 
       {/* ── Guidance-only footer ──────────────────────────────── */}
       <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
