@@ -24,6 +24,7 @@ build = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]

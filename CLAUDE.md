@@ -47,7 +47,7 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
 ## Commands
 
 ```bash
-uv run python -m pytest tests/ -v                  # unit tests only (default)
+uv run python -m pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run python -m pytest tests/ -v -m integration   # integration tests
 uv run python -m pytest tests/ -v -m ""            # unit + integration
 
