@@ -5,10 +5,9 @@
  * Two screens in one route (handoff §5 folds the per-agent status table into
  * skill detail):
  *   1. SKILL DETAIL — source (bundled path / SKILL.md content), the skill-level
- *      validation badge + a "needs attention" label when validation failed, and
- *      a SOURCE-GATED affordance: bundled / system-contract skills are read-only
- *      (lock, NO edit / toggle / re-validate control); custom (user-authored)
- *      skills show an EDIT entry point that targets the Slice-4 edit screen.
+ *      validation badge + a "needs attention" label when validation failed.
+ *      The retired catalog is read-only for every source; it has no edit,
+ *      validation, or assignment controls.
  *   2. PER-AGENT EFFECTIVE / PROVENANCE — each agent's assigned-vs-effective
  *      state, a "takes effect next session" indicator on assigned-not-yet-
  *      effective, and a plain-language reason WHY the skill is / isn't effective
@@ -184,7 +183,7 @@ export function SkillDetailPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Read-only rationale (bundled / system contract). */}
+        {/* Read-only rationale for the retired catalog. */}
         {lockReason && (
           <p className="text-fg-subtle border-border-subtle mt-4 border-t pt-3 text-xs">
             {lockReason}
@@ -203,9 +202,8 @@ export function SkillDetailPage(): JSX.Element {
             Needs attention
           </div>
           <p className="text-fg-muted text-body-sm mt-1.5">
-            This skill did not pass validation, so it is not shown to any agent
-            yet. Editing it keeps the draft — nothing is lost. Fix the items
-            below and re-validate.
+            This retained record did not pass validation, so it is not shown to
+            any agent. Its recorded issues are shown below.
           </p>
           {issues.length > 0 && (
             <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-5">
@@ -246,9 +244,8 @@ export function SkillDetailPage(): JSX.Element {
         <Eyebrow>Per-agent visibility</Eyebrow>
         <h2 className="text-h2 text-fg mb-1">Where this skill is effective</h2>
         <p className="text-fg-muted text-body-sm">
-          Which agents can see this skill as guidance, and why. Assigning a
-          skill changes guidance visibility only — it never changes the tools or
-          commands an agent can use.
+          Which agents can see this skill as guidance, and why. This read-only
+          view never changes the tools or commands an agent can use.
         </p>
 
         {assignments.length > 0 ? (

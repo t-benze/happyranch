@@ -362,7 +362,7 @@ repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
 These are resolved via the `SkillRegistry` and unioned with system contracts;
 release and system-contract slugs win on collision.
 
-**Custom-skill authoring (THR-055).** The legacy proposal/review workflow is retired: no proposal route, queue, claim/review/publish action, or happyranch skills propose command is supported. Verified agents create standard-operational skills only through happyranch skills create / POST /skills/agent, which retains server-derived provenance, protected-slug enforcement, validation, and default-hidden semantics. Founder web authoring and eligibility are separate supported bearer-authenticated surfaces. Eligibility controls future-session guidance visibility only; it does not grant permissions.
+**Custom-skill authoring (THR-055).** Direct human authoring and the legacy proposal/review workflow are deliberately retired: no proposal route, queue, claim/review/publish action, human editor, eligibility-remediation surface, or `happyranch skills propose` command is supported. Verified agents create standard-operational skills only through `happyranch skills create` / `POST /skills/agent`, which retains server-derived provenance, protected-slug enforcement, validation, default-hidden semantics, and its existing authorization boundary. B1 does not change eligibility or permissions; no live human editor or eligibility remedy is implied.
 
 ### Full codebase access
 
