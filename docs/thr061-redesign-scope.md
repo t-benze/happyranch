@@ -40,7 +40,7 @@ All slices are **PRESENTATION-only** and land on already-Direction-A foundations
 Additive, EM authority (no schema / auth / permission changes). TDD red-first; OpenAPI snapshot regenerated in-PR (MEM-094) + web openapi-coverage (MEM-054).
 
 1. **#314 Executor-prereq readiness** — additive read route `GET /api/v1/health/prereqs` → per-executor `{tool, present, path, hint}`, plus FE onboarding prereq messaging. **Test-safe:** must use an injectable/mockable presence check — a real `shutil.which()` in the executor-resolver path breaks executor tests on CI (local-green/CI-red, MEM-110/MEM-111).
-2. **Task-Revisit web write (G3)** — expose the **existing** revisit mechanism (`happyranch revisit` / run_step revisit path) via a guarded task-action route + FE Revisit affordance with confirmation UX (pattern like resolve-escalation). **Guardrail:** if it would require a NEW `TaskStatus` value or transition → STOP + ESCALATE (founder-gated, MEM-044). GitNexus impact on the Python route; route `detect_changes` verbatim to the checker (MEM-067).
+2. **Task-Revisit web write (G3)** — expose the **existing** revisit mechanism (`happyranch revisit` / run_step revisit path) via a guarded task-action route + FE Revisit affordance with confirmation UX (pattern like resolve-escalation). **Guardrail:** if it would require a NEW `TaskStatus` value or transition → STOP + ESCALATE (founder-gated, MEM-044). State blast radius on the Python route per CLAUDE.md § Native Impact Evidence (`git diff --stat` + targeted `rg` sweep + focused tests) and route the evidence bundle to the checker for review (supersedes the retired blast-radius-tool gate referenced in MEM-067).
 
 ---
 
