@@ -144,7 +144,7 @@ export function SkillsPage(): JSX.Element {
             title="No skills here yet"
             body={
               filter === 'Custom'
-                ? 'No custom skills yet. Custom skills you add will appear here.'
+                ? 'No custom skills are available. Verified agents create custom skills from active tasks.'
                 : 'No skills match this source.'
             }
           />

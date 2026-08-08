@@ -910,7 +910,7 @@ def validate_skill(
 
 # ── Route: PATCH /skills/{skill_id} (edit) ── LEGACY CUTOVER ──────────────
 
-@router.patch("/skills/{skill_id}")
+@router.patch("/skills/{skill_id}", status_code=410)
 def edit_skill(
     slug: str,
     skill_id: str,
