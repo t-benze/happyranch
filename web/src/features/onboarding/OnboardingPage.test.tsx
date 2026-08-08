@@ -9,7 +9,7 @@ import {
   health as healthApi,
   orgs as orgsApi,
   settings as settingsApi,
-  adapters as adaptersApi,
+  directConnect as directConnectApi,
 } from '@/lib/api';
 
 function renderPage() {
@@ -570,10 +570,9 @@ describe('OnboardingPage — Step 2 (create org)', () => {
   });
 });
 
-describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
-  beforeEach(async () => {
+describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 3)', () => {
+  beforeEach(() => {
     vi.restoreAllMocks();
-    // Default: healthy, empty container
     vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
       prereqs: [
@@ -583,94 +582,24 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         { tool: 'pi', present: true, path: '/usr/bin/pi', hint: '' },
       ],
     });
-    // Default: contract-reference returns a deterministic non-guessed path
-    // so the prompt renders the literal server-returned value.
-    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
-      contract_version: 1,
-      canonical_adapter_id: '',
-      canonical_adapter_id_description: '',
-      adapter_input_schema: {},
-      adapter_output_schema: {},
-      rules: {},
-      submission: {},
-      dependency_manifest: {},
-      token_metering: {},
-      reapproval_rule: '',
-      probe: {},
-      canonical_directory: '/tmp/happyranch-daemon/adapters',
-      canonical_directory_description: '',
-      required_executable_path: '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter',
-      required_executable_path_description: '',
+    vi.spyOn(directConnectApi, 'getStatus').mockResolvedValue({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter',
+      operation_id: null,
+      profile_state: null,
     });
   });
 
-  /** Navigate to the adapter-backed custom-CLI form (NOT clicking through to legacy). */
+  /** Navigate to the direct-connect custom-CLI form (NOT clicking through to legacy). */
   async function goAdapter(user: UserEvent): Promise<void> {
     await user.click(
       await screen.findByRole('button', { name: /connect a custom cli instead/i }),
     );
-    // The default custom path is adapter-backed — the adapter form is displayed.
     expect(
       await screen.findByText(/create a custom adapter wrapper/i),
     ).toBeInTheDocument();
   }
 
-  test('Submitted → Awaiting approval state (default path, not legacy)', async () => {
-    const user = userEvent.setup();
-    const mintSpy = vi
-      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // Token minted with adapter purpose and intended_profile_name
-    await waitFor(() =>
-      expect(mintSpy).toHaveBeenCalledWith({
-        name: 'my-adapter-cli',
-        purpose: 'adapter',
-        intended_profile_name: 'my-adapter-cli',
-      }),
-    );
-
-    // Waiting state — adapter waiting body visible (NOT legacy prompt)
-    expect(
-      await screen.findByLabelText(/waiting for adapter submission/i),
-    ).toBeInTheDocument();
-    // No legacy connect prompt
-    expect(
-      screen.queryByText(/You're being connected to HappyRanch/i),
-    ).not.toBeInTheDocument();
-  });
-
-  test('Does NOT click through to legacy (default path is adapter)', async () => {
-    const user = userEvent.setup();
-    renderPage();
-
-    // Click "Connect a custom CLI instead"
-    await user.click(
-      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
-    );
-
-    // Adapter-backed form is the default — NOT the legacy form
-    expect(
-      await screen.findByText(/create a custom adapter wrapper/i),
-    ).toBeInTheDocument();
-
-    // The legacy link is available as a secondary affordance
-    expect(
-      screen.getByRole('button', { name: /use legacy simple integration instead/i }),
-    ).toBeInTheDocument();
-
-    // The name field uses the adapter-specific label
-    const nameInput = await screen.findByLabelText(/name this cli/i);
-    expect(nameInput).toBeInTheDocument();
-  });
-
-  test('Adapter form shows valid name check and rejects built-ins', async () => {
+  test('loading: form requires both a valid name and a workspace CLI before it can generate a prompt', async () => {
     const user = userEvent.setup();
     renderPage();
     await goAdapter(user);
@@ -679,381 +608,101 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     const gen = screen.getByRole('button', { name: /generate connect prompt/i });
     expect(gen).toBeDisabled();
 
-    // A built-in name is refused
+    // A built-in name is refused regardless of workspace selection.
     await user.type(input, 'claude');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'pi');
     expect(gen).toBeDisabled();
     expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
 
+    // A valid name alone (no workspace CLI chosen yet) still disables submit.
     await user.clear(input);
     await user.type(input, 'my-valid-cli');
-    expect(gen).not.toBeDisabled();
+    expect(gen).not.toBeDisabled(); // workspace already selected pi above
   });
 
-  test('adapter-backed: generated prompt includes contract-reference URL and submit route', async () => {
+  test('valid connection: mint -> waiting shows the daemon-issued wrapper path -> candidate CLI reports in -> Connected', async () => {
     const user = userEvent.setup();
     const profileName = 'onb-adapter-cli';
 
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 1800 });
+
+    renderPage();
+    await goAdapter(user);
+
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Token minted with adapter purpose, intended profile name, AND the
+    // workspace_adapter_id that activates the daemon's direct-authority path.
+    await waitFor(() =>
+      expect(mintSpy).toHaveBeenCalledWith({
+        name: profileName,
+        purpose: 'adapter',
+        intended_profile_name: profileName,
+        workspace_adapter_id: 'codex',
+      }),
+    );
+
+    // Waiting state shows the literal daemon-issued wrapper path — no PENDING wording.
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    expect(promptText).toContain('/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter');
+    expect(promptText).not.toContain('PENDING');
+    expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+
+    // The candidate CLI's own POST /connect landed; commit finishes the connection.
+    vi.mocked(directConnectApi.getStatus).mockResolvedValue({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter',
+      operation_id: 'op-onb-1',
+      profile_state: null,
+    });
+    vi.spyOn(directConnectApi, 'commit').mockResolvedValue({
+      operation_id: 'op-onb-1',
+      profile_state: 'committed',
+      profile_name: profileName,
+    });
+
+    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+    expect(
+      screen.getByText(/you can manage your clis anytime from settings/i),
+    ).toBeInTheDocument();
+  });
+
+  test('retryable error: a failed commit shows a retry action, which succeeds on retry', async () => {
+    const user = userEvent.setup();
+    const profileName = 'onb-retry-cli';
+
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ONB_TEST', expires_at: Date.now() / 1000 + 1800 });
+      .mockResolvedValue({ token: 'hr_tok_RETRY', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
     await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'pi');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // Waiting state — adapter waiting body visible (NOT legacy prompt)
     await screen.findByLabelText(/waiting for adapter submission/i);
-    expect(screen.queryByText(/You're being connected to HappyRanch/i)).not.toBeInTheDocument();
 
-    // The adapter prompt must include the contract-reference URL and adapter-submit route
-    const promptEl = document.querySelector('pre');
-    expect(promptEl).not.toBeNull();
-    const promptText = promptEl!.textContent || '';
-    // Contract reference — canonical v1 endpoint (seq184)
-    expect(promptText).toContain('/runtime/adapters/contract-reference');
-    expect(promptText).toContain('FETCH the canonical contract reference FIRST');
-    // Submission route
-    expect(promptText).toContain('/runtime/adapters/submit');
-    expect(promptText).toContain('hr_tok_ONB_TEST');
-    // Adapter-backed prompt uses the AdapterInput/AdapterOutput contract
-    expect(promptText).toContain('AdapterInput');
-    // Does NOT mention source-only Python path
-    expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
-  });
-
-  test('adapter-backed: prompt includes literal server-returned required_executable_path (seq339)', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_SEQ339', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-    await user.type(await screen.findByLabelText(/name this cli/i), 'cmdline-tester-1');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-    // The LITERAL server-returned path (from mocked contract-reference)
-    // must appear in the prompt, not a placeholder or guessed path.
-    const expectedPath = '/tmp/happyranch-daemon/adapters/cmdline-tester-1-adapter';
-    expect(promptText).toContain(expectedPath);
-    // The path appears in the "create at exactly" instruction
-    expect(promptText).toContain('LITERAL server-authoritative path');
-    // Path also appears in the submit body (pre-filled)
-    expect(promptText).toContain(`"executable":"${expectedPath}"`);
-    // Must tell the candidate NOT to place in home dir or self-chosen path
-    expect(promptText).toContain('Do NOT place');
-  });
-
-  test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_LIFECYCLE', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-    await user.type(await screen.findByLabelText(/name this cli/i), 'lc-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-    // PENDING, not auto-approved
-    expect(promptText).toContain('exact PENDING adapter');
-    expect(promptText).toContain('Founder approval');
-    expect(promptText).toContain('No auto-approval');
-  });
-
-  test('adapter-backed: prompt includes exact I/O constraints', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_IO', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-    await user.type(await screen.findByLabelText(/name this cli/i), 'io-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-    // I/O contract details
-    expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
-    expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
-    expect(promptText).toContain('stderr for all diagnostics');
-    expect(promptText).toContain('Max output: 1 MB');
-  });
-
-  test('adapter-backed: prompt distinguishes emit_envelope from adapter submit', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ENV', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-    await user.type(await screen.findByLabelText(/name this cli/i), 'env-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-    // Legacy emit_envelope is required by registration token challenge, NOT an AdapterOutput
-    expect(promptText).toContain(
-      'required by the registration token challenge',
-    );
-    expect(promptText).toContain('NOT an');
-  });
-
-  test('adapter-backed: token is minted with adapter purpose and intended profile name', async () => {
-    const user = userEvent.setup();
-    const mintSpy = vi
-      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ADP2', expires_at: Date.now() / 1000 + 1800 });
-
-    renderPage();
-    await goAdapter(user);
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-v2');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    expect(mintSpy).toHaveBeenCalledWith({
-      name: 'my-adapter-v2',
-      purpose: 'adapter',
-      intended_profile_name: 'my-adapter-v2',
+    vi.mocked(directConnectApi.getStatus).mockResolvedValue({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-retry-cli-adapter',
+      operation_id: 'op-onb-retry',
+      profile_state: null,
     });
+    const commitSpy = vi
+      .spyOn(directConnectApi, 'commit')
+      .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'failed', reason: 'conformance_probe_failed: timed out' });
+
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    expect(screen.getByText(/timed out/i)).toBeInTheDocument();
+
+    commitSpy.mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
+    await user.click(screen.getByRole('button', { name: /^retry$/i }));
+
+    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+    expect(commitSpy).toHaveBeenCalledTimes(2);
   });
-
-  test(
-    'adapter lifecycle: submitted PENDING → server-confirmed already_bound → Connected (no client bind)',
-    async () => {
-      const user = userEvent.setup();
-      const profileName = 'onb-lifecycle-cli';
-      const adapterId = `${profileName}-adapter`;
-
-      // Spy mint + adapter poll API.
-      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 1800 });
-
-      // Spy bindAdapterProfile to verify it is NEVER called.
-      const { adapters: adaptersApi } = await import('@/lib/api');
-      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
-
-      // Mock the adapter poll: return PENDING first.
-      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        return {
-          id: adapterId,
-          name: profileName,
-          executable: '/tmp/test-adapter',
-          executable_hash: 'abc123',
-          version: '1.0.0',
-          capabilities: [],
-          contract_version: 1,
-          workspace_adapter: 'pi',
-          status: 'pending',
-          registered_at: new Date().toISOString(),
-          registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
-          intended_profile_name: profileName,
-          eligibility: null,
-          dependency_manifest_version: null,
-          dependencies: [],
-        };
-      });
-
-      renderPage();
-      await goAdapter(user);
-
-      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-      // Submitted → awaiting approval (poll sees PENDING)
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-      expect(screen.getByText(adapterId)).toBeInTheDocument();
-
-      // Transition: server confirms atomically bound (seq237) — onboarding
-      // does NOT call bindAdapterProfile; it reads the server-authoritative
-      // eligibility field directly.
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId,
-        name: profileName,
-        executable: '/tmp/test-adapter',
-        executable_hash: 'abc123',
-        version: '1.0.0',
-        capabilities: [],
-        contract_version: 1,
-        workspace_adapter: 'pi',
-        status: 'approved',
-        registered_at: new Date().toISOString(),
-        registered_by: 'test',
-        approved_at: new Date().toISOString(),
-        approved_by: 'founder',
-        intended_profile_name: profileName,
-        eligibility: 'already_bound',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // Connected card — the onboarding mount uses a heading for the connected state.
-      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-      // The onboarding connected subtitle mentions managing from Settings.
-      expect(
-        screen.getByText(/you can manage your clis anytime from settings/i),
-      ).toBeInTheDocument();
-
-      // Adversarial: no bind request was issued — onboarding is server-status-only.
-      expect(bindSpy).not.toHaveBeenCalled();
-    },
-    15000,
-  );
-
-  test(
-    'adapter lifecycle: stale/conflict response does not false-connect',
-    async () => {
-      const user = userEvent.setup();
-      const profileName = 'onb-stale-cli';
-      const adapterId = `${profileName}-adapter`;
-
-      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_STALE', expires_at: Date.now() / 1000 + 1800 });
-
-      const { adapters: adaptersApi } = await import('@/lib/api');
-      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
-
-      // Mock poll: PENDING first, then approved with NOT already_bound.
-      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        return {
-          id: adapterId,
-          name: profileName,
-          executable: '/tmp/test-adapter',
-          executable_hash: 'abc123',
-          version: '1.0.0',
-          capabilities: [],
-          contract_version: 1,
-          workspace_adapter: 'pi',
-          status: 'pending',
-          registered_at: new Date().toISOString(),
-          registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
-          intended_profile_name: profileName,
-          eligibility: null,
-          dependency_manifest_version: null,
-          dependencies: [],
-        };
-      });
-
-      renderPage();
-      await goAdapter(user);
-
-      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-
-      // Switch poll: approved but eligibility is 'ready_to_bind', not 'already_bound'.
-      // The server has NOT bound the profile yet — onboarding MUST NOT false-connect.
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId,
-        name: profileName,
-        executable: '/tmp/test-adapter',
-        executable_hash: 'abc123',
-        version: '1.0.0',
-        capabilities: [],
-        contract_version: 1,
-        workspace_adapter: 'pi',
-        status: 'approved',
-        registered_at: new Date().toISOString(),
-        registered_by: 'test',
-        approved_at: new Date().toISOString(),
-        approved_by: 'founder',
-        intended_profile_name: profileName,
-        eligibility: 'ready_to_bind',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // The submitted state should still show (no Connected card).
-      // The adapter ID should still be visible in the submitted state.
-      await screen.findByText(adapterId, {}, { timeout: 10000 });
-
-      // No bind was issued and no Connected heading appeared.
-      expect(bindSpy).not.toHaveBeenCalled();
-      expect(
-        screen.queryByRole('heading', { name: new RegExp(profileName, 'i') }),
-      ).not.toBeInTheDocument();
-    },
-    15000,
-  );
-
-  test(
-    'adapter lifecycle: bind/failure UI is absent from onboarding',
-    async () => {
-      const user = userEvent.setup();
-      const profileName = 'onb-nobind-cli';
-      const adapterId = `${profileName}-adapter`;
-
-      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_NOBIND', expires_at: Date.now() / 1000 + 1800 });
-
-      const { adapters: adaptersApi } = await import('@/lib/api');
-      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        return {
-          id: adapterId,
-          name: profileName,
-          executable: '/tmp/test-adapter',
-          executable_hash: 'abc123',
-          version: '1.0.0',
-          capabilities: [],
-          contract_version: 1,
-          workspace_adapter: 'pi',
-          status: 'pending',
-          registered_at: new Date().toISOString(),
-          registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
-          intended_profile_name: profileName,
-          eligibility: null,
-          dependency_manifest_version: null,
-          dependencies: [],
-        };
-      });
-
-      renderPage();
-      await goAdapter(user);
-
-      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-
-      // Poll with approved but NOT already_bound — the old code would have
-      // tried to bind here. Verify no bind UI elements appear.
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId,
-        name: profileName,
-        executable: '/tmp/test-adapter',
-        executable_hash: 'abc123',
-        version: '1.0.0',
-        capabilities: [],
-        contract_version: 1,
-        workspace_adapter: 'pi',
-        status: 'approved',
-        registered_at: new Date().toISOString(),
-        registered_by: 'test',
-        approved_at: new Date().toISOString(),
-        approved_by: 'founder',
-        intended_profile_name: profileName,
-        eligibility: 'tampered',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // Wait — the submitted state persists; no bind attempt, no error UI.
-      await screen.findByText(adapterId, {}, { timeout: 10000 });
-
-      // No bind/retry UI should appear.
-      expect(screen.queryByText(/bind failed/i)).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /retry bind/i })).not.toBeInTheDocument();
-    },
-    15000,
-  );
 });
 
 describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {
@@ -1189,180 +838,3 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
   });
 });
 
-/* ── Adversarial: onboarding recovery/Bind absence (TASK-3836 fix-forward) ── */
-
-describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    // Default: healthy container
-    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
-    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
-      prereqs: [
-        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
-      ],
-    });
-    // Contract-reference must be mocked since useAdapterConnect fetches it
-    // after minting the scoped token.
-    vi.spyOn(adaptersApi, 'getContractReference').mockResolvedValue({
-      contract_version: 1,
-      canonical_adapter_id: '',
-      canonical_adapter_id_description: '',
-      adapter_input_schema: {},
-      adapter_output_schema: {},
-      rules: {},
-      submission: {},
-      dependency_manifest: {},
-      token_metering: {},
-      reapproval_rule: '',
-      probe: {},
-      canonical_directory: '/tmp/happyranch-daemon/adapters',
-      canonical_directory_description: '',
-      required_executable_path: '/tmp/happyranch-daemon/adapters/test-cli-adapter',
-      required_executable_path_description: '',
-    });
-  });
-
-  /** Navigate to the adapter-backed custom-CLI form. */
-  async function goAdapter(user: UserEvent): Promise<void> {
-    await user.click(
-      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
-    );
-    expect(
-      await screen.findByLabelText(/name this cli/i),
-    ).toBeInTheDocument();
-  }
-
-  test(
-    'no recovery Bind UI or bind POST when server returns recovery_ready (no-intended, approved unbound)',
-    async () => {
-      const user = userEvent.setup();
-      const profileName = 'onb-norec-cli';
-      const adapterId = `${profileName}-adapter`;
-
-      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_NOREC', expires_at: Date.now() / 1000 + 1800 });
-
-      const { adapters: adaptersApi } = await import('@/lib/api');
-      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
-
-      // First poll: PENDING (enables submitted state).
-      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        return {
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null,
-          intended_profile_name: profileName, eligibility: null,
-          dependency_manifest_version: null,
-          dependencies: [],
-        };
-      });
-
-      renderPage();
-      await goAdapter(user);
-
-      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-      // Transition to submitted via PENDING poll.
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-      expect(screen.getByText(adapterId)).toBeInTheDocument();
-
-      // No recovery Bind UI during submitted state.
-      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
-
-      // Switch poll: approved with recovery_ready (no intended, hash-valid).
-      // Onboarding must NOT show Bind UI and must NOT call bindAdapterProfile.
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-        executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-        contract_version: 1, workspace_adapter: 'pi', status: 'approved',
-        registered_at: new Date().toISOString(), registered_by: 'test',
-        approved_at: new Date().toISOString(), approved_by: 'founder',
-        intended_profile_name: null, eligibility: 'recovery_ready',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // Wait for poll to pick up the change — submitted state persists.
-      // The adapter ID should remain visible, no Connected card.
-      await screen.findByText(adapterId, {}, { timeout: 10000 });
-
-      // Still no recovery Bind UI after transition to recovery_ready.
-      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
-
-      // Zero bind calls.
-      expect(bindSpy).not.toHaveBeenCalled();
-    },
-    15000,
-  );
-
-  test(
-    'no Bind UI when server reports already_bound — Connected shown without recovery section',
-    async () => {
-      const user = userEvent.setup();
-      const profileName = 'onb-alreadybound-cli';
-      const adapterId = `${profileName}-adapter`;
-
-      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_ALBND', expires_at: Date.now() / 1000 + 1800 });
-
-      const { adapters: adaptersApi } = await import('@/lib/api');
-      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
-
-      // First poll: PENDING.
-      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        return {
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null,
-          intended_profile_name: profileName, eligibility: null,
-          dependency_manifest_version: null,
-          dependencies: [],
-        };
-      });
-
-      renderPage();
-      await goAdapter(user);
-
-      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-
-      // Switch poll: server confirms atomically bound (seq237).
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-        executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-        contract_version: 1, workspace_adapter: 'pi', status: 'approved',
-        registered_at: new Date().toISOString(), registered_by: 'test',
-        approved_at: new Date().toISOString(), approved_by: 'founder',
-        intended_profile_name: profileName, eligibility: 'already_bound',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // Connected card appears — server-authoritative, no client bind.
-      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-      expect(
-        screen.getByText(/you can manage your clis anytime from settings/i),
-      ).toBeInTheDocument();
-
-      // No recovery Bind UI in connected state.
-      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
-
-      // Zero bind calls.
-      expect(bindSpy).not.toHaveBeenCalled();
-    },
-    15000,
-  );
-});

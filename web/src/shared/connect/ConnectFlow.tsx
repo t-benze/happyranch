@@ -25,17 +25,16 @@ import { Label } from '@/design-system/primitives/Label';
 import {
   BUILTINS,
   buildConnectPrompt,
-  buildAdapterConnectPrompt,
+  buildDirectConnectPrompt,
   CONFORMANCE_STEPS,
   FIELD_CLASS,
   KINDS,
   NAME_RE,
   useRuntimeConnect,
-  useAdapterConnect,
-  useAdapterRecovery,
+  useDirectConnect,
+  WORKSPACE_ADAPTER_IDS,
 } from './useRuntimeConnect';
-import type { Connected, ConnectMode, Kind, RecoverableAdapter } from './useRuntimeConnect';
-import { RecoveryBindCard } from './RecoveryBindCard';
+import type { Connected, ConnectMode, Kind, WorkspaceAdapterId } from './useRuntimeConnect';
 import { Spinner } from './Spinner';
 
 interface ConnectFlowProps {
@@ -56,9 +55,6 @@ interface ConnectFlowProps {
   /** Primary action rendered before "Connect another" on the connected card
    *  (onboarding: Continue → Step 2). Omit for none. */
   connectedPrimaryAction?: ReactNode;
-  /** Show the recovery section for approved unbound adapters.
-   *  Settings=true (default), onboarding=false. */
-  showRecovery?: boolean;
 }
 
 export function ConnectFlow({
@@ -69,16 +65,10 @@ export function ConnectFlow({
   waitingSkipSlot,
   connectedSubtitle,
   connectedPrimaryAction,
-  showRecovery = true,
 }: ConnectFlowProps): JSX.Element {
   const [mode, setMode] = useState<ConnectMode>('builtin');
   const [customSubMode, setCustomSubMode] = useState<'adapter' | 'legacy'>('adapter');
   const [connected, setConnected] = useState<Connected | null>(null);
-
-  // Mount recovery at the shared surface so fresh sessions in default
-  // (builtin) mode can see Bind actions for approved unbound adapters
-  // without requiring the operator to first choose custom CLI.
-  const recovery = useAdapterRecovery();
 
   const switchToCustom = (): void => {
     setMode('custom');
@@ -97,17 +87,6 @@ export function ConnectFlow({
         />
       ) : (
         <>
-          {/* Durable recovery at shared surface: visible in default builtin
-              AND custom modes, not only inside AdapterConnect.
-              Gated by showRecovery: onboarding is server-status-only. */}
-          {showRecovery && recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
-            <RecoverySection
-              adapters={recovery.state.adapters}
-              onBindSuccess={(name, executable) =>
-                setConnected({ name, path: executable, via: 'custom' })
-              }
-            />
-          )}
           {formHeading}
           {mode === 'builtin' ? (
             <BuiltinConnect
@@ -256,25 +235,26 @@ export function AdapterConnect({
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
   const [nameInput, setNameInput] = useState('');
+  const [workspaceAdapterId, setWorkspaceAdapterId] = useState<WorkspaceAdapterId | ''>('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
-  const flow = useAdapterConnect({ onConnected });
+  const flow = useDirectConnect({ onConnected });
 
   const nameIsBuiltin = BUILTINS.has(nameInput.trim());
   const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
 
   const generate = (): void => {
     const name = nameInput.trim();
-    if (nameValid) flow.start(name);
+    if (nameValid && workspaceAdapterId) flow.start(name, workspaceAdapterId);
   };
 
-  // Waiting state — prompt the CLI to create/submit wrapper
+  // Waiting state — the candidate CLI creates the wrapper and POSTs /connect
   if (flow.state.stage === 'waiting') {
     const s = flow.state;
     return (
       <AdapterWaitingBody
         name={s.name}
-        prompt={buildAdapterConnectPrompt(s.name, s.token, origin, s.requiredExecutablePath)}
+        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination)}
         expired={s.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}
@@ -284,25 +264,47 @@ export function AdapterConnect({
     );
   }
 
-  // Submitted state — adapter is PENDING, awaiting founder approval
-  if (flow.state.stage === 'submitted') {
+  // Committing state — the receipt landed; finishing the connection.
+  if (flow.state.stage === 'committing') {
     return (
-      <AdapterSubmittedBody
+      <div className="mt-6 max-w-lg">
+        <div className="border-accent/30 bg-accent/5 rounded-lg border p-4">
+          <div className="flex items-center gap-2">
+            <Spinner className="text-accent h-4 w-4" />
+            <p className="text-text-primary text-sm font-medium">
+              Finishing connection…
+            </p>
+          </div>
+          <p className="text-text-secondary mt-2 text-xs">
+            <span className="font-mono">{flow.state.name}</span> reported in.
+            HappyRanch is verifying it now — this takes a moment.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Failed state — the receipt landed but projection failed; retryable.
+  if (flow.state.stage === 'failed') {
+    return (
+      <AdapterBindFailedBody
         name={flow.state.name}
-        adapterId={flow.state.adapterId}
-        onReset={flow.back}
+        adapterId={flow.state.operationId}
+        error={flow.state.reason}
+        onRetry={flow.retryCommit}
+        onBack={flow.back}
       />
     );
   }
 
-  // Connected state — server confirmed atomically bound (seq237)
+  // Connected state
   if (flow.state.stage === 'connected') {
     return (
       <ConnectedCard
-        connected={{ name: flow.state.name, path: null, via: 'custom' }}
+        connected={{ name: flow.state.name, path: flow.state.wrapperDestination, via: 'custom' }}
         subtitle={(via) =>
           via === 'custom'
-            ? 'Your custom CLI is connected via an approved adapter. It is available to every org.'
+            ? 'Your custom CLI is connected directly. It is available to every org.'
             : ''
         }
         onReset={flow.back}
@@ -314,16 +316,15 @@ export function AdapterConnect({
 
   return (
     <div className="mt-6 max-w-lg">
-      <div className="border-accent/30 bg-accent/5 border-l-2 rounded-r-md px-3 py-2 mb-4">
+      <div className="border-accent/30 bg-accent/5 mb-4 rounded-r-md border-l-2 px-3 py-2">
         <p className="text-text-primary text-sm font-medium">
           Create a custom adapter wrapper
         </p>
         <p className="text-text-secondary mt-0.5 text-xs">
           Your CLI creates a small v1 adapter wrapper that speaks
-          HappyRanch&rsquo;s standard AdapterInput/AdapterOutput contract.
-          It reads the prompt from stdin, invokes your CLI, and returns a
-          normalized result. The adapter is submitted as PENDING for
-          founder approval.
+          HappyRanch&rsquo;s standard AdapterInput/AdapterOutput contract. It
+          reads the prompt from stdin, invokes your CLI, and returns a
+          normalized result. One POST connects it — no approval wait.
         </p>
       </div>
       <form
@@ -368,6 +369,31 @@ export function AdapterConnect({
             </span>
           )}
         </p>
+
+        <div className="space-y-2 pt-2">
+          <Label htmlFor="adapter-workspace">Workspace CLI</Label>
+          <p className="text-text-muted -mt-1 text-xs">
+            Which agentic CLI prepares this custom CLI&rsquo;s workspace
+            (bootstrap files, skills, permissions).
+          </p>
+          <select
+            id="adapter-workspace"
+            value={workspaceAdapterId}
+            onChange={(e) => {
+              setWorkspaceAdapterId(e.target.value as WorkspaceAdapterId | '');
+              flow.mint.reset();
+            }}
+            className={FIELD_CLASS}
+          >
+            <option value="">Choose…</option>
+            {WORKSPACE_ADAPTER_IDS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {flow.mint.isError && (
           <p className="text-feedback-danger text-sm" role="alert">
             {flow.mint.error instanceof ApiError
@@ -376,7 +402,7 @@ export function AdapterConnect({
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 pt-3">
-          <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
+          <Button type="submit" disabled={!nameValid || !workspaceAdapterId || flow.mint.isPending}>
             {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
           </Button>
           {onUseBuiltin && (
@@ -510,7 +536,7 @@ function ProfileStage({
 
   return (
     <div className="mt-6 max-w-lg">
-      <div className="border-border-warning/40 bg-surface-sunken border rounded-md px-3 py-2 mb-4">
+      <div className="border-border-warning/40 bg-surface-sunken mb-4 rounded-md border px-3 py-2">
         <p className="text-text-primary text-sm font-medium">
           Legacy / simple integration
         </p>
@@ -917,51 +943,8 @@ export function AdapterWaitingBody({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Adapter submitted — pending approval state                         */
+/*  Adapter connect failed — receipt landed, projection failed         */
 /* ------------------------------------------------------------------ */
-
-export function AdapterSubmittedBody({
-  name,
-  adapterId,
-  onReset,
-}: {
-  name: string;
-  adapterId: string;
-  onReset: () => void;
-}): JSX.Element {
-  return (
-    <div className="mt-6 max-w-lg">
-      <div className="border-accent/30 bg-accent/5 rounded-lg border p-4">
-        <div className="flex items-center gap-2">
-          <Spinner className="text-accent h-4 w-4" />
-          <p className="text-text-primary text-sm font-medium">
-            Adapter submitted — awaiting approval
-          </p>
-        </div>
-        <p className="text-text-secondary mt-2 text-xs">
-          Your adapter <code className="font-mono">{adapterId}</code> has
-          been submitted as PENDING for <code className="font-mono">{name}</code>.
-          The founder must approve it before the profile can be bound. This
-          screen will update automatically when approved.
-        </p>
-        <div className="bg-surface-sunken mt-3 rounded p-3">
-          <p className="text-text-muted text-xs font-mono">
-            Status: <span className="text-feedback-warning font-semibold">PENDING</span>
-          </p>
-          <p className="text-text-muted mt-1 text-xs font-mono">
-            Adapter ID: {adapterId}
-          </p>
-        </div>
-      </div>
-      <div className="mt-4">
-        <Button variant="outline" onClick={onReset}>
-          <ArrowLeft aria-hidden="true" size={14} />
-          Back
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 export function AdapterBindFailedBody({
   name,
@@ -971,6 +954,8 @@ export function AdapterBindFailedBody({
   onBack,
 }: {
   name: string;
+  /** The direct-connect operation id (not an adapter id, despite the prop
+   *  name — kept stable to avoid an unrelated churn in this component). */
   adapterId: string;
   error: string;
   onRetry: () => void;
@@ -982,26 +967,26 @@ export function AdapterBindFailedBody({
         <div className="flex items-center gap-2">
           <AlertTriangle className="text-feedback-danger h-4 w-4" />
           <p className="text-text-primary text-sm font-medium">
-            Bind failed
+            Connection failed
           </p>
         </div>
         <p className="text-text-secondary mt-2 text-xs">
-          The adapter <code className="font-mono">{adapterId}</code> was
-          approved for <code className="font-mono">{name}</code>, but the
-          profile binding step failed. This may be transient — retry below.
+          <span className="font-mono">{name}</span> reported in, but
+          HappyRanch could not finish connecting it. This may be transient —
+          retry below.
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
-          <p className="text-text-muted text-xs font-mono">
-            Adapter ID: {adapterId}
+          <p className="text-text-muted font-mono text-xs">
+            Operation: {adapterId}
           </p>
-          <p className="text-feedback-danger mt-1 text-xs font-mono">
+          <p className="text-feedback-danger mt-1 font-mono text-xs">
             Error: {error}
           </p>
         </div>
         <div className="mt-4 flex items-center gap-3">
           <Button onClick={onRetry}>
             <RefreshCw aria-hidden="true" size={15} />
-            Retry bind
+            Retry
           </Button>
           <Button variant="outline" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={14} />
@@ -1067,36 +1052,6 @@ export function ConnectedCard({
         </Button>
       </div>
     </>
-  );
-}
-
-/* ── Recovery section shared at top-level ConnectFlow — visible in
- *  default builtin AND custom modes without operator mode-switch ── */
-
-function RecoverySection({
-  adapters,
-  onBindSuccess,
-}: {
-  adapters: RecoverableAdapter[];
-  onBindSuccess: (name: string, executable: string) => void;
-}): JSX.Element {
-  return (
-    <div className="mb-6 space-y-3 max-w-lg">
-      <p className="text-text-primary text-sm font-medium">
-        Advanced recovery / legacy adapters
-      </p>
-      <p className="text-text-muted text-xs">
-        These adapters were approved without an automated profile binding.
-        Click <strong>Bind</strong> to connect each one to an executor profile.
-      </p>
-      {adapters.map((a) => (
-        <RecoveryBindCard
-          key={a.adapterId}
-          adapter={a}
-          onBindSuccess={onBindSuccess}
-        />
-      ))}
-    </div>
   );
 }
 

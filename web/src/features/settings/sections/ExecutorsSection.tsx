@@ -36,7 +36,6 @@ import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
-import { PendingAdaptersSection } from './PendingAdaptersSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
@@ -96,9 +95,6 @@ export function ExecutorsSection(): JSX.Element {
         <div className="space-y-6" data-testid="executors-list">
           {/* Registered list — the primary management view (Step-0 §6-1). */}
           <ExecutorBinariesSection />
-
-          {/* Pending adapter approvals — founder-only area ABOVE Custom CLIs. */}
-          <PendingAdaptersSection />
 
           {/* Custom CLIs connected via the shared custom flow — list + remove
               (THR-107 S4b), consuming the S4a list/remove backend. Adapter-backed

@@ -743,45 +743,16 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(screen.getByText('Custom CLIs')).toBeInTheDocument();
   });
 
-  test('seq334 integration: approving a named pending adapter atomically connects it as one Custom CLI row with truthful executable', async () => {
-    const adapterId = 'seq334-pending-adapter';
-    const profileName = 'seq334-custom-cli';
-    const executable = '/usr/local/bin/seq334-cli';
-    const hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-
-    const pendingAdapter = {
-      id: adapterId,
-      name: adapterId,
-      executable,
-      executable_hash: hash,
-      version: '1.0.0',
-      capabilities: ['token_metering'],
-      contract_version: 1,
-      workspace_adapter: 'pi',
-      status: 'pending',
-      registered_at: '2024-01-01T00:00:00Z',
-      registered_by: 'test',
-      approved_at: null,
-      approved_by: null,
-      intended_profile_name: profileName,
-      eligibility: null,
-      dependency_manifest_version: null,
-      dependencies: null,
-    };
-
-    const approvedAdapter = {
-      ...pendingAdapter,
-      status: 'approved',
-      approved_at: '2024-01-01T00:00:01Z',
-      approved_by: 'founder',
-      eligibility: 'already_bound',
-    };
+  test('THR-107 slice 3: direct connect lands as one Custom CLI row, no approval step', async () => {
+    const profileName = 'direct-custom-cli';
+    const executable = '/tmp/happyranch-daemon/adapters/direct-custom-cli-adapter';
+    const operationId = 'op-direct-334';
 
     const boundProfile = {
       name: profileName,
       command: null,
-      command_adapter_id: `custom-adapter:${adapterId}`,
-      workspace_adapter_id: 'pi',
+      command_adapter_id: `custom-adapter:${profileName}-adapter`,
+      workspace_adapter_id: 'codex',
       adapter: null,
       adapter_id: null,
       command_adapter: null,
@@ -790,93 +761,56 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       envelope_policy: 'strict',
     };
 
-    let adapterGets = 0;
-    let profileGets = 0;
-    let approved = false;
+    let connected = false;
+    let commitCalls = 0;
 
     server.use(
-      http.get('/api/v1/runtime/adapters', () => {
-        adapterGets += 1;
-        return HttpResponse.json(approved ? [approvedAdapter] : [pendingAdapter]);
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({ token: 'hrreg_direct_334', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
+      ),
+      http.get('/api/v1/runtime/custom-cli/status', () =>
+        HttpResponse.json({
+          wrapper_destination: executable,
+          operation_id: connected ? operationId : null,
+          profile_state: null,
+        }),
+      ),
+      http.post(`/api/v1/runtime/custom-cli/${operationId}/commit`, () => {
+        commitCalls += 1;
+        return HttpResponse.json({ operation_id: operationId, profile_state: 'committed', profile_name: profileName });
       }),
-      http.get('/api/v1/executors/runtime/profiles', () => {
-        profileGets += 1;
-        return HttpResponse.json({ profiles: approved ? [boundProfile] : [] });
-      }),
-      http.post(`/api/v1/runtime/adapters/${adapterId}/approve`, async ({ request }) => {
-        const body = (await request.json()) as Record<string, unknown>;
-        expect(body).toMatchObject({
-          executable,
-          executable_hash: hash,
-          version: '1.0.0',
-          capabilities: pendingAdapter.capabilities,
-          contract_version: 1,
-          workspace_adapter: 'pi',
-        });
-        approved = true;
-        return HttpResponse.json({
-          ...approvedAdapter,
-          profile_bound: {
-            profile_name: profileName,
-            command_adapter_id: `custom-adapter:${adapterId}`,
-            workspace_adapter_id: 'pi',
-            kind: 'custom',
-            status: 'connected',
-            adapter_id: adapterId,
-          },
-        });
-      }),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: connected ? [boundProfile] : [] }),
+      ),
     );
 
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
-    // Initial load: pending queue shows the adapter, Custom CLIs is empty.
-    await screen.findByTestId(`pending-adapter-row-${adapterId}`);
-    expect(
-      screen.getByTestId(`adapter-intended-profile-${adapterId}`),
-    ).toHaveTextContent(profileName);
-    expect(screen.getByTestId('custom-profiles-empty')).toBeInTheDocument();
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 
-    const getsBeforeApprove = { adapters: adapterGets, profiles: profileGets };
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    // Approve & connect.
-    await user.click(screen.getByTestId(`adapter-approve-${adapterId}`));
-    await user.click(screen.getByTestId(`adapter-confirm-approve-${adapterId}`));
+    // Waiting — no approval wording anywhere in the flow.
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/PENDING/)).not.toBeInTheDocument();
 
-    // After both refetches: pending queue is empty.
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId(`pending-adapter-row-${adapterId}`),
-      ).not.toBeInTheDocument();
-    });
-    expect(screen.queryByTestId('pending-adapter-rows')).not.toBeInTheDocument();
+    // Simulate the candidate CLI's own POST /connect landing.
+    connected = true;
 
-    // Custom CLIs shows the connected profile exactly once.
+    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+    expect(commitCalls).toBeGreaterThan(0);
+
+    // Done collapses back to the list → the newly connected CLI appears.
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
     await waitFor(() => {
       expect(screen.getByTestId(`profile-row-${profileName}`)).toBeInTheDocument();
     });
-    expect(screen.getAllByTestId(/^profile-row-/).length).toBe(1);
-
-    // No recovery affordances or duplicate pending surfaces.
-    expect(screen.queryByTestId('cli-recovery-rows')).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId(`cli-recovery-row-${adapterId}`),
-    ).not.toBeInTheDocument();
-
-    // Adapter-backed executable is displayed truthfully (from adapter, since command is null).
-    const row = screen.getByTestId(`profile-row-${profileName}`);
-    const executablePara = within(row).getByText(/Executable:/i).closest('p');
-    expect(executablePara).not.toBeNull();
-    expect(within(executablePara!).getByText(executable)).toBeInTheDocument();
-
-    // No standalone Custom Adapters section or adapter implementation terminology.
-    expect(screen.queryByText('Custom Adapters')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('adapter-management-section')).not.toBeInTheDocument();
-
-    // Both management queries were refetched after the approve mutation.
-    expect(adapterGets).toBeGreaterThan(getsBeforeApprove.adapters);
-    expect(profileGets).toBeGreaterThan(getsBeforeApprove.profiles);
   });
 
   test('manual absolute-path entry is DEMOTED behind an "Advanced" disclosure on each row', async () => {
@@ -1130,30 +1064,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(screen.getByText('Agents page')).toHaveAttribute('href', '../agents');
   });
 
-  test('ordinary Settings › Executors surface shows Custom CLIs and pending approvals with no visible adapter terminology', async () => {
+  test('THR-107 slice 3: ordinary Executors surface shows Custom CLIs with no pending-approval or adapter terminology', async () => {
     server.use(
-      http.get('/api/v1/runtime/adapters', () =>
-        HttpResponse.json([
-          {
-            id: 'pending-cli-1',
-            name: 'pending-cli-1',
-            executable: '/usr/local/bin/pending-cli',
-            executable_hash:
-              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-            version: '1.0.0',
-            capabilities: ['token_metering'],
-            contract_version: 1,
-            workspace_adapter: 'pi',
-            status: 'pending',
-            registered_at: '2024-01-01T00:00:00Z',
-            registered_by: 'test',
-            approved_at: null,
-            approved_by: null,
-            intended_profile_name: 'my-custom-cli',
-            eligibility: null,
-          },
-        ]),
-      ),
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({
           profiles: [
@@ -1176,167 +1088,30 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
-    // Wait for both the Custom CLIs list and the pending approvals section.
     await screen.findByTestId('profile-row-my-custom-cli');
-    await screen.findByTestId('pending-adapter-row-pending-cli-1');
 
     const bodyText = document.body.textContent ?? '';
-
-    // The page surfaces the Custom CLIs management list and pending approvals.
     expect(bodyText).toMatch(/Custom CLIs/i);
-    expect(bodyText).toMatch(/Pending CLI approvals/i);
-
+    // No pending-approval surface — direct-connect has no approval step.
+    expect(bodyText).not.toMatch(/pending/i);
+    expect(bodyText).not.toMatch(/approval/i);
     // No ordinary founder-visible /adapter/i wording remains.
     expect(bodyText).not.toMatch(/adapter/i);
   });
 
-  test('TASK-4038 regression: adapter-list failure with adapter-term payload renders CLI-neutral error and no page-wide adapter text', async () => {
-    let adapterGets = 0;
-    server.use(
-      http.get('/api/v1/runtime/adapters', () => {
-        adapterGets += 1;
-        return HttpResponse.json(
-          { detail: 'Adapter hash mismatch on retrieval' },
-          { status: 500 },
-        );
-      }),
-    );
-
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-
-    // Wait for the CLI-neutral failure surface.
-    await waitFor(() => {
-      expect(screen.getByText(/Could not load pending approvals/)).toBeInTheDocument();
-    });
-
-    // Retry affordance is present.
-    const retryBtn = screen.getByTestId('pending-adapters-retry');
-    expect(retryBtn).toHaveTextContent('Retry');
-
-    // Clicking Retry re-fetches the adapter list.
-    const user = userEvent.setup();
-    const getsBeforeRetry = adapterGets;
-    await user.click(retryBtn);
-    await waitFor(() => {
-      expect(adapterGets).toBeGreaterThan(getsBeforeRetry);
-    });
-
-    // The raw server error text (which deliberately contains an implementation
-    // term) must not appear anywhere on the ordinary founder-facing page.
-    const bodyText = document.body.textContent ?? '';
-    expect(bodyText).not.toMatch(/adapter hash mismatch on retrieval/i);
-    expect(bodyText).not.toMatch(/adapter/i);
-  });
-
-  test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip)', async () => {
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-
-    await openConnect(user);
-    await screen.findByLabelText(/pick your agentic cli/i);
-
-    expect(screen.queryByText(/step 1 of 2/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument();
-    expect(screen.queryByText(/skip/i)).not.toBeInTheDocument();
-
-    // The built-in↔custom mode toggle is NOT onboarding chrome — it is core to
-    // the shared flow (S3 built-in convergence) and SHOULD be present.
-    expect(screen.getByText(/connect a custom cli instead/i)).toBeInTheDocument();
-  });
-
-  test(
-    'adapter-backed: submitted PENDING → server-confirmed already_bound → Connected (no client bind)',
-    async () => {
-    const user = userEvent.setup();
-    const adapterId = 'test-adapter-cli-adapter';
-    const profileName = 'test-adapter-cli';
-
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({ token: 'hr_tok_ADAPTER_TEST', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
-      ),
-      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
-        HttpResponse.json({
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null, intended_profile_name: profileName,
-        }),
-      ),
-    );
-
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // Submitted → awaiting approval (first poll sees PENDING)
-    await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-    expect(screen.getByText(adapterId)).toBeInTheDocument();
-
-    // Transition: server confirms atomically bound (seq237).
-    // The flow uses the server-authoritative eligibility field — no client bind.
-    server.use(
-      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
-        HttpResponse.json({
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: new Date().toISOString(), approved_by: 'founder',
-          intended_profile_name: profileName,
-          eligibility: 'already_bound',
-        }),
-      ),
-    );
-
-    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
-  }, 15000);
-
-  // ── seq184 contract-reference prompt tests ──────────────────────
-
-  test('seq184: prompt includes contract-reference URL, not source-only path', async () => {
+  test('THR-107 slice 3: direct-connect prompt has no approval wording and includes the daemon-issued wrapper path', async () => {
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ184',
+          token: 'hrreg_settings_prompt',
           expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'seq184-test');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-
-    const promptEl = document.querySelector('pre');
-    expect(promptEl).not.toBeNull();
-    const promptText = promptEl!.textContent || '';
-
-    // Contract reference
-    expect(promptText).toContain('/runtime/adapters/contract-reference');
-    expect(promptText).toContain('FETCH the canonical contract reference FIRST');
-    // Does NOT mention source-only path
-    expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
-  });
-
-  test('seq184: prompt includes truthful PENDING-only lifecycle', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
+      http.get('/api/v1/runtime/custom-cli/status', () =>
         HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
+          wrapper_destination: '/tmp/happyranch-daemon/adapters/prompt-test-adapter',
+          operation_id: null,
+          profile_state: null,
         }),
       ),
     );
@@ -1346,169 +1121,25 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
     expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 
-    await user.type(await screen.findByLabelText(/name this cli/i), 'lifecycle-test');
+    await user.type(await screen.findByLabelText(/name this cli/i), 'prompt-test');
+    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'pi');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     await screen.findByLabelText(/waiting for adapter submission/i);
     const promptText = document.querySelector('pre')?.textContent || '';
 
-    expect(promptText).toContain('exact PENDING adapter');
-    expect(promptText).toContain('Founder approval');
-    expect(promptText).toContain('No auto-approval');
-  });
-
-  test('seq184: prompt includes exact I/O constraints', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'io-test');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
+    // The literal daemon-issued wrapper path appears, not a placeholder.
+    expect(promptText).toContain('/tmp/happyranch-daemon/adapters/prompt-test-adapter');
+    // Exact I/O contract carried over from the legacy prompt.
     expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
     expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
-    expect(promptText).toContain('stderr for all diagnostics');
-    expect(promptText).toContain('Max output: 1 MB');
-  });
-
-  test('seq339: prompt includes literal server-returned required_executable_path', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ339',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'seq339-test');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
-    // The LITERAL server-returned path (from mocked contract-reference)
-    // must appear in the prompt, not a placeholder or guessed path.
-    const expectedPath = '/tmp/happyranch-daemon/adapters/test-cli-adapter';
-    expect(promptText).toContain(expectedPath);
-    // The path appears in the "create at exactly" instruction
-    expect(promptText).toContain('LITERAL server-authoritative path');
-    // Path also appears in the submit body (pre-filled)
-    expect(promptText).toContain(`"executable":"${expectedPath}"`);
-    // Must tell the candidate NOT to place in home dir or self-chosen path
-    expect(promptText).toContain('Do NOT place');
-    // Must reference the contract-reference endpoint
-    expect(promptText).toContain('contract-reference');
-  });
-
-  test('seq184: prompt distinguishes emit_envelope from AdapterOutput', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'envelope-test');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
-    expect(promptText).toContain('required by the registration token challenge');
-    expect(promptText).toContain('NOT an');
-  });
-
-  // ── seq237 atomic approve-and-connect prompt test (TASK-3841 fix-forward) ──
-
-  test('seq237: normal prompt says atomic approve-and-connect, not approve-then-Bind', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ237',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'seq237-normal');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
-    // Normal flow: atomic approve-and-connect
-    expect(promptText).toContain('atomically approves');
-    expect(promptText).toContain('connects the');
-    expect(promptText).toContain('no follow-up bind needed');
-
-    // Must NOT contain obsolete approve-then-Bind lifecycle
-    expect(promptText).not.toContain('management bind');
-    expect(promptText).not.toContain('After approval, the existing authenticated');
-  });
-
-  test('seq370: prompt says PATH is inherited, NOT scrubbed', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hr_tok_SETTINGS_SEQ370',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'seq370-path');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
-    // MUST say Never selects via ambient PATH
-    expect(promptText).toContain('never selects');
-    // MUST say inherits normalized environment/PATH
-    expect(promptText).toContain('inherits');
-    // MUST say callbacks remain reachable
-    expect(promptText).toContain('reachable');
-    // MUST NOT say scrubs PATH
-    expect(promptText).not.toContain('scrubs PATH');
-    expect(promptText).not.toContain('scrub PATH');
-    // MUST NOT say ambient PATH resolution is not available
-    expect(promptText).not.toContain('not available');
+    // Dependency declaration + never-PATH wording carried over.
+    expect(promptText).toContain('never selects an agentic CLI via');
+    // Explicitly says there is no approval wait, and never mentions PENDING.
+    expect(promptText).not.toContain('PENDING');
+    expect(promptText).toContain('no approval step');
+    // Single POST connects — no separate submit/bind step.
+    expect(promptText).toContain('/runtime/custom-cli/connect');
   });
 });
 

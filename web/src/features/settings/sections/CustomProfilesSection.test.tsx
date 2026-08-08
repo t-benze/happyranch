@@ -1,4 +1,4 @@
-import { screen, within, waitFor } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -243,66 +243,18 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
 
   /* ---- seq334: approved-unbound recovery lives in the Custom CLIs area ---- */
 
-  test('approved ready_to_bind adapter renders a CLI-level recovery affordance', async () => {
-    const recoveryAdapter: AdapterEntry = {
-      ...APPROVED_ADAPTER,
-      eligibility: 'ready_to_bind',
-    };
+  test('THR-107 slice 3: no CLI-level recovery/bind affordance renders for any adapter eligibility (recovery UI removed)', async () => {
     stubProfiles([]);
-    stubAdapters([recoveryAdapter]);
+    stubAdapters([
+      { ...APPROVED_ADAPTER, eligibility: 'ready_to_bind' },
+      { ...APPROVED_ADAPTER, id: 'no-intended-adapter', intended_profile_name: null, eligibility: 'recovery_ready' },
+    ]);
     render();
 
-    await screen.findByTestId('cli-recovery-row-approved-adapter');
-    expect(screen.getByText(/Finish connecting this CLI/i)).toBeInTheDocument();
-    expect(screen.getByTestId('cli-recovery-name-approved-adapter')).toHaveValue('adapter-cli');
-    expect(screen.getByRole('button', { name: /Bind adapter-cli/i })).toBeInTheDocument();
-  });
-
-  test('approved recovery_ready adapter (no intended name) lets the founder name and bind the CLI', async () => {
-    let adapterStore: AdapterEntry[] = [
-      {
-        ...APPROVED_ADAPTER,
-        intended_profile_name: null,
-        eligibility: 'recovery_ready',
-      },
-    ];
-    stubProfiles([]);
-    server.use(
-      http.get('/api/v1/runtime/adapters', () => HttpResponse.json(adapterStore)),
-      http.post('/api/v1/runtime/adapters/approved-adapter/bind-profile', async ({ request }) => {
-        const body = (await request.json()) as { profile_name: string };
-        expect(body.profile_name).toBe('legacy-cli');
-        adapterStore = [
-          {
-            ...APPROVED_ADAPTER,
-            intended_profile_name: 'legacy-cli',
-            eligibility: 'already_bound',
-          },
-        ];
-        return HttpResponse.json({
-          profile_name: 'legacy-cli',
-          command_adapter_id: 'custom-adapter:approved-adapter',
-          workspace_adapter_id: 'pi',
-          kind: 'custom',
-          status: 'connected',
-          adapter_id: 'approved-adapter',
-        });
-      }),
-    );
-    render();
-
-    await screen.findByTestId('cli-recovery-row-approved-adapter');
-    const input = screen.getByTestId('cli-recovery-name-approved-adapter');
-    expect(input).toHaveValue('');
-
-    const user = userEvent.setup();
-    await user.type(input, 'legacy-cli');
-    await user.click(screen.getByTestId('cli-recovery-bind-approved-adapter'));
-
-    // After successful bind + refetch the recovery row disappears.
-    await waitFor(() => {
-      expect(screen.queryByTestId('cli-recovery-row-approved-adapter')).not.toBeInTheDocument();
-    });
+    await screen.findByTestId('custom-profiles-empty');
+    expect(screen.queryByTestId(/^cli-recovery-row-/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Finish connecting this CLI/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^bind /i })).not.toBeInTheDocument();
   });
 
   test('already_bound adapter does not render a recovery row when its profile is listed', async () => {

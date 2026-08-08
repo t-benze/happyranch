@@ -38,7 +38,6 @@ export function ConnectRuntimeStep({
   return (
     <ConnectFlow
       className="pt-6 sm:pt-10"
-      showRecovery={false}
       eyebrow={<StepEyebrow />}
       formHeading={
         <h1 className="font-display text-display text-text-primary mt-3 font-medium">
