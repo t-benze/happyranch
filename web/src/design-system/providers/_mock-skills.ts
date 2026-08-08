@@ -20,19 +20,11 @@
  * user_authored.
  */
 import type {
-  AssignSkillRequest,
-  AssignSkillResponse,
   CatalogSkillItem,
-  CreateSkillRequest,
-  CreateSkillResponse,
-  EditSkillRequest,
-  EditSkillResponse,
   SkillDetail,
-  SkillStatusResponse,
-  ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
-import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
+import type { QueryLike, SkillsApi } from './DataContext';
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
@@ -45,91 +37,6 @@ function notFound<T>(): QueryLike<T> {
     isError: true,
     error: new Error('skill not found'),
   } as QueryLike<T>;
-}
-
-/** Non-pending mutation whose `mutateAsync` resolves to `resolve(args)`. Used
- *  for the Slice-3 create/validate fixtures so the prototype + screenshot
- *  harness can exercise both the pass and the fail result without a daemon. */
-function mockMutation<TArgs, TResult>(
-  resolve: (args: TArgs) => TResult,
-): MutationLike<TArgs, TResult> {
-  return {
-    isPending: false,
-    mutateAsync: (args: TArgs) => Promise.resolve(resolve(args)),
-  };
-}
-
-// Slice-3 create/validate fixtures. A slug that opts into the failure path
-// (contains `fail`, or collides with a bundled slug) returns the
-// failed-validation draft; everything else validates. This lets the prototype
-// and the screenshot harness render BOTH the success and the failure result
-// (spec v3 §9.1: a failure still persists an editable draft).
-const BUNDLED_SLUGS = new Set(['kb-curation', 'web-fidelity-loop', 'jobs']);
-
-function wantsFailure(slug: string): boolean {
-  const s = slug.trim().toLowerCase();
-  return s.includes('fail') || BUNDLED_SLUGS.has(s);
-}
-
-function mockCreateResponse(body: CreateSkillRequest): CreateSkillResponse {
-  const skillId = `hr:${body.slug.trim() || 'draft'}`;
-  if (wantsFailure(body.slug)) {
-    return {
-      skill_id: skillId,
-      source: 'user_authored',
-      validation_state: 'in_catalog',
-      validation: {
-        ok: false,
-        errors: [
-          "slug collides with release skill 'kb-curation'",
-          'The references/pricing.md asset could not be resolved.',
-        ],
-      },
-    };
-  }
-  return {
-    skill_id: skillId,
-    source: 'user_authored',
-    validation_state: 'validated',
-    validation: { ok: true, errors: [] },
-  };
-}
-
-// Slice-4 edit fixture. A body whose name/skill_md opts into the failure path
-// (contains `fail`) returns the failed-validation draft; everything else
-// validates. The response echoes the submitted version so a bumped version
-// drives the edited-effective (takes-effect-next-session) result state
-// (spec v3 §9.5). A failure still persists an editable draft (§9.1a).
-function mockEditResponse(
-  skillId: string,
-  body: EditSkillRequest,
-): EditSkillResponse {
-  const version = (body.version ?? '').trim() || '0.0.0';
-  const optsFail = `${body.name ?? ''} ${body.skill_md ?? ''}`
-    .toLowerCase()
-    .includes('fail');
-  if (optsFail) {
-    return {
-      skill_id: skillId,
-      source: 'user_authored',
-      validation_state: 'in_catalog',
-      validation: {
-        ok: false,
-        errors: [
-          'SKILL.md is missing a required version field.',
-          'The references/pricing.md asset could not be resolved.',
-        ],
-      },
-      version,
-    };
-  }
-  return {
-    skill_id: skillId,
-    source: 'user_authored',
-    validation_state: 'validated',
-    validation: { ok: true, errors: [] },
-    version,
-  };
 }
 
 const FIXTURES: CatalogSkillItem[] = [
@@ -383,77 +290,6 @@ const DETAILS: Record<string, SkillDetail> = {
   },
 };
 
-// ── Slice-5 per-agent assignment status fixtures ────────────────────────
-// Keyed by skill_id. MATCHES PRODUCTION: the daemon's status endpoint returns
-// ONLY already-assigned agents (it skips unassigned agents), so these fixtures
-// carry assigned rows only. The full candidate roster (which surfaces the
-// unassigned, assignable agents) is derived by the panel from the real agents
-// source and unioned with this response — it is NOT seeded here. Coverage:
-// effective agents + an assigned-not-yet-effective agent.
-const STATUS: Record<string, SkillStatusResponse> = {
-  'sk-tourism-partner-playbook': {
-    skill_id: 'sk-tourism-partner-playbook',
-    source: 'user_authored',
-    in_catalog: true,
-    validated: true,
-    current_version: '1.2.0',
-    assignments: [
-      {
-        agent: 'partner_liaison',
-        assigned: true,
-        effective: true,
-        materialized_version: '1.2.0',
-        state: 'effective',
-      },
-      {
-        agent: 'itinerary_planner',
-        assigned: true,
-        effective: true,
-        materialized_version: '1.2.0',
-        state: 'effective',
-      },
-      {
-        agent: 'support_agent',
-        assigned: true,
-        effective: false,
-        materialized_version: '1.1.0',
-        state: 'assigned_not_yet_effective',
-      },
-    ],
-    last_validation: { ok: true, version: '1.2.0', at: '2026-07-14T10:00:00Z' },
-  },
-  // A failed-validation custom draft: not shown to any agent yet and not yet
-  // assignable — the panel renders the read-only "resolve validation first"
-  // state. Production returns no assigned agents for it.
-  'sk-vendor-comms-style': {
-    skill_id: 'sk-vendor-comms-style',
-    source: 'user_authored',
-    in_catalog: true,
-    validated: false,
-    current_version: '0.3.0',
-    assignments: [],
-    last_validation: { ok: false, version: null, at: '2026-07-14T09:00:00Z' },
-  },
-};
-
-// The post-commit success returned by the assign endpoint. `state` mirrors the
-// requested action; `materializes_on` communicates the next-session semantics
-// in transport terms (the UI renders its own guidance-visibility copy).
-function mockAssignResponse(
-  agentId: string,
-  skillId: string,
-  body: AssignSkillRequest,
-): AssignSkillResponse {
-  const assigning = body.action === 'allow';
-  return {
-    agent_id: agentId,
-    skill_id: skillId,
-    state: assigning ? 'assigned' : 'unassigned',
-    effective_hint: assigning ? 'assigned_not_yet_effective' : null,
-    materializes_on: assigning ? 'next_session' : null,
-  };
-}
-
 // ── Slice-6 Runtime Validation event fixtures ───────────────────────────
 // Coverage (spec v3 §8): multiple severities (pass / error / warn / info),
 // multiple sources (Custom / Bundled / Runtime), several named agents, AND a
@@ -587,44 +423,6 @@ export const mockSkillsApi: SkillsApi = {
     const detail = DETAILS[skillId];
     return detail ? ok(detail) : notFound<SkillDetail>();
   },
-  useCreateSkill: () =>
-    mockMutation<CreateSkillRequest, CreateSkillResponse>(mockCreateResponse),
-  useValidateSkill: () =>
-    mockMutation<{ skillId: string }, ValidateSkillResponse>(({ skillId }) => {
-      // Re-validation mirrors create: a slug embedded in the id opts into the
-      // failure path, otherwise it validates clean.
-      const failed = wantsFailure(skillId);
-      return {
-        skill_id: skillId,
-        validation_state: failed ? 'in_catalog' : 'validated',
-        validation: failed
-          ? { ok: false, errors: ['The references/pricing.md asset could not be resolved.'] }
-          : { ok: true, errors: [] },
-      };
-    }),
-  useEditSkill: () =>
-    mockMutation<{ skillId: string; body: EditSkillRequest }, EditSkillResponse>(
-      ({ skillId, body }) => mockEditResponse(skillId, body),
-    ),
-  useSkillStatus: (skillId) => {
-    if (!skillId) return notFound<SkillStatusResponse>();
-    const status = STATUS[skillId];
-    return status ? ok(status) : notFound<SkillStatusResponse>();
-  },
-  useAssignSkill: () =>
-    mockMutation<
-      { agentId: string; skillId: string; body: AssignSkillRequest },
-      AssignSkillResponse
-    >(({ agentId, skillId, body }) =>
-      mockAssignResponse(agentId, skillId, body),
-    ),
   useSkillValidation: (params) =>
     ok({ events: filterValidation(params), label: 'Runtime Validation' }),
-  useProposalsQueue: (_params) =>
-    ok({
-      items: [],
-      total: 0,
-      page: 1,
-      page_size: 20,
-    }),
 };

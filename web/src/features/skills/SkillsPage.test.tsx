@@ -120,18 +120,12 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.getAllByText('Validated').length).toBeGreaterThan(0);
   });
 
-  test('exposes a Proposals entry point to the proposals queue route', async () => {
+  test('exposes neither retired proposal review nor direct authoring navigation', async () => {
     mount();
     await screen.findByText('kb-curation');
-    const proposals = screen.getByRole('link', { name: /Proposals/i });
-    expect(proposals).toHaveAttribute('href', `/orgs/${SLUG}/skills/proposals`);
-  });
-
-  test('exposes an "Add custom skill" entry point to the create route', async () => {
-    mount();
-    await screen.findByText('kb-curation');
-    const add = screen.getByRole('link', { name: /Add custom skill/i });
-    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/new`);
+    expect(screen.queryByRole('link', { name: /Proposals/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /Add custom skill/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /Runtime Validation/i })).toBeNull();
   });
 
   test('read-only system contract shows no toggle/edit control', async () => {

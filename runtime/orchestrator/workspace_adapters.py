@@ -1878,7 +1878,7 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     Skill entries under BOTH ``.claude/skills`` and ``.agents/skills`` are
     daemon-materialized from the canonical skill store. This section
     directs agents NOT to edit these managed links and to use the
-    lifecycle/proposal workflow instead.
+    supported custom-skill workflow instead.
 
     **IMPORTANT:** This is operational guidance, NOT enforcement. The
     executor and daemon share the same OS identity — there is NO OS-level
@@ -1911,10 +1911,11 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "sources are not automatically repaired or trusted. Do not "
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",
-        "If a skill's content is wrong or a new skill is needed, propose the",
-        "change through the skill lifecycle instead of editing files directly:",
+        "Only a verified agent in an active TASK session may create reusable",
+        "guidance through the B1 create-skill path; it is not direct human",
+        "authoring or a proposal workflow:",
         "```",
-        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
+        "happyranch skills create --from-file <path> --session-id <your-session-id>",
         "```\n",
     ]
 

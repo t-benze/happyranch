@@ -1,19 +1,20 @@
 ---
 name: create-skill
 description: >
-  Verified-agent custom-skill authoring from an active task session.
+  B1 verified-agent custom-skill creation from an active task session.
   Creates a standard_operational custom skill with server-verified
-  task/session/agent/org provenance. This is an ADDITIONAL verified-agent
-  authoring path; the skill enters PROPOSED status and is hidden by default.
-  B2 eligibility, human web editor, effective visibility, migration/cutover,
-  and proposal-review resurrection are explicitly deferred.
+  task/session/agent/org provenance. This is the ONLY supported custom-skill
+  authoring path; the skill is hidden by default. Direct human authoring,
+  editing, validation, assignment, eligibility, and the legacy proposal-review
+  workflow are retired.
 ---
 
 # create-skill
 
-Use this skill when you have reusable guidance to capture as a custom skill
-from your current active task session. This is a system-contract skill
-injected only for TASK sessions with repo access.
+Use this skill only when you are a verified agent with reusable guidance to
+capture during your current active task session. This B1 system-contract skill
+is injected only for TASK sessions with repo access; it is not a direct-human
+authoring or proposal workflow.
 
 ## What create-skill does
 
@@ -29,9 +30,9 @@ injected only for TASK sessions with repo access.
 - On success, the server records an immutable version with a canonical
   content hash, validator version, findings, task/session/agent/org provenance,
   and a nonempty task-brief digest.
-- The created skill enters PROPOSED status and is **hidden by default**.
-  No agent sees it and no materialization occurs until a founder configures
-  eligibility (deferred to B2).
+- The created skill is **hidden by default**. No human authoring, editing,
+  validation, assignment, or eligibility remediation surface is currently
+  supported.
 
 ## What create-skill does NOT do
 
@@ -136,12 +137,10 @@ the entire transaction rolls back with zero residue.
 - Validation failure → HTTP 422 with structured error codes.
 - Server error → HTTP 500 with detail.
 
-## Deferred to B2 and later
+## Not part of this agent path
 
-- Eligibility configuration (org/team/agent scope, additive inheritance,
-  explicit deny).
-- Human web editor for custom skills.
-- Effective visibility / materialization of custom skills.
-- Migration/cutover from legacy proposal workflow.
+- Eligibility configuration or any visibility write.
+- Founder or other human web editing, direct validation, or assignment.
 - `high_impact_policy` custom skills.
-- Proposal-review queue resurrection.
+- `happyranch skills propose` or any proposal/review/publish action; those
+  legacy surfaces are retired and intentionally absent.
