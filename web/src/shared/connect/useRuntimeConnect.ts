@@ -296,9 +296,9 @@ export function useRuntimeConnect({
 /*  adapter connect path in the normal UI now.                          */
 /* ------------------------------------------------------------------ */
 
-/** The four first-party workspace-preparation adapters a direct-connect
- *  custom CLI must pick one of — mirrors the daemon's
- *  FIRST_PARTY_WORKSPACE_ADAPTER_IDS. */
+/** The four first-party workspace-bootstrap conventions a direct-connect
+ *  wrapper declares one of at /connect time (never chosen by the founder) —
+ *  mirrors the daemon's FIRST_PARTY_WORKSPACE_ADAPTER_IDS. */
 export const WORKSPACE_ADAPTER_IDS = ['claude', 'codex', 'opencode', 'pi'] as const;
 export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
 
@@ -308,7 +308,14 @@ export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
  *  wrapper's integrity (server-side hash/structural checks) and, once the
  *  browser calls /commit, connects it. `wrapperDestination` is the
  *  LITERAL server-returned path from GET /runtime/custom-cli/status —
- *  do NOT derive, fallback, or guess this path client-side. */
+ *  do NOT derive, fallback, or guess this path client-side.
+ *
+ *  The wrapper itself declares `workspace_adapter_id` in the manifest body
+ *  — this selects which convention (Claude-style `.claude/settings.json` +
+ *  `CLAUDE.md`, or AGENTS.md-style for codex/opencode/pi) HappyRanch uses
+ *  to bootstrap agent workspaces assigned to this CLI later. The founder
+ *  never picks this; only the wrapper author knows which convention their
+ *  CLI expects. */
 export function buildDirectConnectPrompt(
   name: string,
   token: string,
@@ -348,12 +355,22 @@ export function buildDirectConnectPrompt(
     `WRAPPER_SHA=$(shasum -a 256 "$WRAPPER" | cut -d' ' -f1)`,
     `CHILD_SHA=$(shasum -a 256 "$CHILD" | cut -d' ' -f1)`,
     ``,
-    `# 3. POST the manifest — this single call proves the wrapper's`,
+    `# 3. Pick the workspace-bootstrap convention agents on this CLI should`,
+    `#    use. This is about YOUR CLI's expectations, not HappyRanch's —`,
+    `#    pick whichever bootstrap file format your CLI actually reads:`,
+    `#      claude    -> .claude/settings.json + CLAUDE.md`,
+    `#      codex     -> AGENTS.md`,
+    `#      opencode  -> AGENTS.md + opencode.json`,
+    `#      pi        -> AGENTS.md`,
+    `#    If your CLI has no opinion, "pi" is a safe default (AGENTS.md).`,
+    `WORKSPACE_ADAPTER_ID=pi`,
+    ``,
+    `# 4. POST the manifest — this single call proves the wrapper's`,
     `#    integrity and creates the connection record.`,
     `curl --fail-with-body -sS -X POST "$BASE/runtime/custom-cli/connect" \\`,
     `  -H "Authorization: Bearer $TOKEN" \\`,
     `  -H "Content-Type: application/json" \\`,
-    `  -d "{\\"metadata\\":{},\\"manifest\\":{\\"manifest_version\\":2,\\"wrapper_sha256\\":\\"$WRAPPER_SHA\\",\\"upgradeable_children\\":[{\\"slot\\":\\"cli\\",\\"executable\\":\\"$CHILD\\",\\"version_probe_argv\\":[\\"$CHILD\\",\\"--version\\"]}]}}"`,
+    `  -d "{\\"metadata\\":{},\\"manifest\\":{\\"manifest_version\\":2,\\"wrapper_sha256\\":\\"$WRAPPER_SHA\\",\\"workspace_adapter_id\\":\\"$WORKSPACE_ADAPTER_ID\\",\\"upgradeable_children\\":[{\\"slot\\":\\"cli\\",\\"executable\\":\\"$CHILD\\",\\"version_probe_argv\\":[\\"$CHILD\\",\\"--version\\"]}]}}"`,
     `echo ""`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live —`,
@@ -370,13 +387,25 @@ export type DirectConnectState =
   | { stage: 'connected'; name: string; wrapperDestination: string }
   | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
 
+/** Mint-time value for the RuntimeRegistrationTokenMintRequest's
+ *  workspace_adapter_id field — this ONLY activates the daemon's Slice-1A
+ *  direct-authority mint path; it is never read for real bootstrap
+ *  behavior. The wrapper's own /connect manifest carries the value that
+ *  actually matters (see buildDirectConnectPrompt). Any of the four IDs
+ *  works here since it's discarded downstream — kept as a named constant
+ *  so the "this is a trigger, not a real choice" intent is explicit at
+ *  the call site rather than a bare magic string. */
+const MINT_ACTIVATION_TRIGGER: WorkspaceAdapterId = 'pi';
+
 /** Shared hook for the direct-connect custom-CLI flow (THR-107 slice 3).
- *  Mints an adapter-purpose token with workspace_adapter_id set (which
- *  activates the daemon's direct-authority mint path) → immediately reads
- *  GET .../status for the deterministic wrapper destination → the
- *  candidate CLI POSTs /connect itself (server-side, invisible to this
- *  hook — it only polls) → the moment status reports a received
- *  operation_id, this hook calls POST .../commit → Connected. */
+ *  Mints an adapter-purpose token (workspace_adapter_id is a fixed
+ *  internal trigger here, not founder-chosen — see
+ *  MINT_ACTIVATION_TRIGGER) → immediately reads GET .../status for the
+ *  deterministic wrapper destination → the candidate CLI POSTs /connect
+ *  itself, declaring its OWN workspace_adapter_id in the manifest
+ *  (server-side, invisible to this hook — it only polls) → the moment
+ *  status reports a received operation_id, this hook calls POST
+ *  .../commit → Connected. */
 export function useDirectConnect({
   onConnected,
 }: {
@@ -386,17 +415,17 @@ export function useDirectConnect({
   const [expiresAt, setExpiresAt] = useState(0);
 
   const mint = useMutation({
-    mutationFn: async ({ name, workspaceAdapterId }: { name: string; workspaceAdapterId: WorkspaceAdapterId }) => {
+    mutationFn: async (name: string) => {
       const resp = await settingsApi.mintRuntimeRegistrationToken({
         name,
         purpose: 'adapter',
         intended_profile_name: name,
-        workspace_adapter_id: workspaceAdapterId,
+        workspace_adapter_id: MINT_ACTIVATION_TRIGGER,
       });
       const status = await directConnect.getStatus(name);
       return { ...resp, wrapperDestination: status.wrapper_destination };
     },
-    onSuccess: (resp, { name }) => {
+    onSuccess: (resp, name) => {
       setExpiresAt(resp.expires_at);
       setState({
         stage: 'waiting',
@@ -470,12 +499,12 @@ export function useDirectConnect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusData, state.stage]);
 
-  const start = (name: string, workspaceAdapterId: WorkspaceAdapterId): void => {
-    if (name && !mint.isPending) mint.mutate({ name, workspaceAdapterId });
+  const start = (name: string): void => {
+    if (name && !mint.isPending) mint.mutate(name);
   };
   const regenerate = (): void => {
     if (state.stage === 'waiting' && !mint.isPending) {
-      mint.mutate({ name: state.name, workspaceAdapterId: 'pi' });
+      mint.mutate(state.name);
     }
   };
   const retryCommit = (): void => {
