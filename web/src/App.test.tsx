@@ -56,7 +56,7 @@ test.each([
   '/orgs/alpha/skills/new',
   '/orgs/alpha/skills/hr:legacy/edit',
 ])(
-  'retired proposal deep link %s renders not found rather than a skill detail',
+  'retired proposal or direct-authoring deep link %s renders not found rather than a skill detail',
   async (route) => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
