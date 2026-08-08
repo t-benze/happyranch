@@ -686,3 +686,17 @@ async def test_run_invocation_guardrail_mixed_escalated_and_delegated(
     assert "--task-id TASK-901 --decision continue" not in prompt
     assert '{"resolves": "TASK-900"}' in prompt
     assert '{"resolves": "TASK-901"}' in prompt
+    # Structural assertions (not just substring presence): the delegated
+    # TASK-901's block must be its own labeled block, separated from the
+    # escalated TASK-900 block by a blank line — not appended directly
+    # after it with no separator.
+    assert "**TASK-901**" in prompt, (
+        "delegated task must get its own **{tid}** label, matching the "
+        "escalated task's labeling"
+    )
+    assert '"resolves": "TASK-900"}\n\n**TASK-901**' in prompt, (
+        "per-task blocks must be separated by a blank line"
+    )
+    assert '"resolves": "TASK-900"}\n**TASK-901**' not in prompt, (
+        "no single-newline (unseparated) adjacency between blocks"
+    )

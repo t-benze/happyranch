@@ -1298,6 +1298,85 @@ def test_cmd_resolve_escalation_supersede_emits_brief_in_payload(tmp_path):
     assert payload["brief"] == "Build the successor feature."
 
 
+def test_resolve_escalation_parser_accepts_as_agent():
+    """The escalation-continue guardrail advises managers to self-attribute
+    via --as-agent (mirrors cancel's --as-agent pattern) so `continue`
+    doesn't silently record as the founder's action."""
+    from cli.main import build_parser
+
+    args = build_parser().parse_args([
+        "resolve-escalation", "--task-id", "TASK-900",
+        "--decision", "continue", "--as-agent", "engineering_head",
+    ])
+    assert args.as_agent == "engineering_head"
+
+
+def test_resolve_escalation_parser_as_agent_defaults_none():
+    from cli.main import build_parser
+
+    args = build_parser().parse_args([
+        "resolve-escalation", "--task-id", "TASK-900", "--decision", "continue",
+    ])
+    assert args.as_agent is None
+
+
+def test_cmd_resolve_escalation_includes_actor_when_set():
+    """cmd_resolve_escalation must emit `actor` in the POST payload when
+    --as-agent is passed, so the audit log doesn't misattribute the
+    resolution to the founder."""
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    ns = MagicMock()
+    ns.decision = "continue"
+    ns.rationale = "founder said proceed"
+    ns.brief_file = None
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-900"
+    ns.as_agent = "engineering_head"
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"new_status": "pending"}
+
+    with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+        mock_client = mock_client_cls.from_env.return_value
+        mock_client.post.return_value = mock_response
+        with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+            cmd_resolve_escalation(ns)
+
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["actor"] == "engineering_head"
+
+
+def test_cmd_resolve_escalation_omits_actor_when_unset():
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    ns = MagicMock()
+    ns.decision = "continue"
+    ns.rationale = "founder said proceed"
+    ns.brief_file = None
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-900"
+    ns.as_agent = None
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"new_status": "pending"}
+
+    with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+        mock_client = mock_client_cls.from_env.return_value
+        mock_client.post.return_value = mock_response
+        with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+            cmd_resolve_escalation(ns)
+
+    _, kwargs = mock_client.post.call_args
+    assert "actor" not in kwargs["json"]
+
+
 def test_cmd_resolve_escalation_supersede_no_brief_exits_with_error(tmp_path, capsys):
     """THR-080 #1: supersede with no brief -> actionable error that names
     --brief-file as the fix (not an opaque 422 from the daemon)."""

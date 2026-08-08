@@ -227,7 +227,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder resolves via `happyranch resolve-escalation --decision supersede|continue`. Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Continue re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
+**Resolution**: Founder or the escalating manager resolves via `happyranch resolve-escalation --decision supersede|continue` (an agent may self-attribute with `--as-agent <name>`; the CLI defaults to founder). Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Continue re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.
@@ -260,7 +260,7 @@ answer without re-escalating.
 #### States (7)
 - **pending** — created; no agent subprocess started yet.
 - **in_progress** — an agent subprocess is running, OR the task is a parent waiting on its own children/jobs. A parent waiting on its own children/jobs stays `in_progress`; the waiting reason is recorded in `block_kind` (`delegated` = waiting on one or more child subtasks to terminate; `blocked_on_job` = waiting on one or more background jobs to reach a terminal state, set when a completion report carries a non-empty `waiting_on_job_ids`); `block_kind IS NULL` ⟺ a subprocess is running now.
-- **escalated** — waiting on the founder (via `happyranch resolve-escalation`); was `blocked(escalated)`.
+- **escalated** — waiting on a founder or manager resolution (via `happyranch resolve-escalation`); was `blocked(escalated)`.
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
 - **cancelled** — terminal; founder-initiated stop, distinct from `failed`.

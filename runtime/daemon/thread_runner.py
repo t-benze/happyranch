@@ -174,10 +174,11 @@ def _purpose_note(
     return f"Message {triggering_seq} was posted to this thread"
 
 
-def _continue_cli_example(task_id: str) -> str:
+def _continue_cli_example(task_id: str, invoked_agent: str) -> str:
     return (
         f'  `happyranch resolve-escalation --task-id {task_id} '
-        f'--decision continue --rationale "<summarize the founder\'s reply>"`'
+        f'--decision continue --as-agent {invoked_agent} '
+        f'--rationale "<summarize the founder\'s reply>"`'
     )
 
 
@@ -246,7 +247,7 @@ def _maybe_unresolved_escalations_note(
                 f"new task-shaped work needed, resume the SAME task in "
                 f"place — original brief untouched, the reply is appended "
                 f"as an audited note:\n"
-                f"{_continue_cli_example(tid)}\n\n"
+                f"{_continue_cli_example(tid, invoked_agent)}\n\n"
                 f"- If the founder's reply requires new delegated work, "
                 f"your next self-dispatched task MUST include the explicit "
                 f"linkage:\n"
@@ -282,13 +283,15 @@ def _maybe_unresolved_escalations_note(
                 f"**{tid}** — if the founder's reply resolves this "
                 f"escalation with no new task-shaped work needed, resume "
                 f"it in place:\n"
-                f"{_continue_cli_example(tid)}\n"
+                f"{_continue_cli_example(tid, invoked_agent)}\n"
                 f"  Otherwise, if new delegated work is needed:\n"
                 f"{_resolves_json_example(tid)}"
             )
         else:
-            per_task_lines.append(_resolves_json_example(tid))
-    per_task_block = "\n".join(per_task_lines)
+            per_task_lines.append(
+                f"**{tid}** — {_resolves_json_example(tid).strip()}"
+            )
+    per_task_block = "\n\n".join(per_task_lines)
     return (
         "\n## Unresolved Escalations in This Thread\n\n"
         f"The following tasks escalated in this thread and are still "
