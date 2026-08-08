@@ -792,7 +792,6 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 
     await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     // Waiting — no approval wording anywhere in the flow.
@@ -1122,7 +1121,6 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 
     await user.type(await screen.findByLabelText(/name this cli/i), 'prompt-test');
-    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'pi');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     await screen.findByLabelText(/waiting for adapter submission/i);

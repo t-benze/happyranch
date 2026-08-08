@@ -32,9 +32,8 @@ import {
   NAME_RE,
   useRuntimeConnect,
   useDirectConnect,
-  WORKSPACE_ADAPTER_IDS,
 } from './useRuntimeConnect';
-import type { Connected, ConnectMode, Kind, WorkspaceAdapterId } from './useRuntimeConnect';
+import type { Connected, ConnectMode, Kind } from './useRuntimeConnect';
 import { Spinner } from './Spinner';
 
 interface ConnectFlowProps {
@@ -235,7 +234,6 @@ export function AdapterConnect({
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
   const [nameInput, setNameInput] = useState('');
-  const [workspaceAdapterId, setWorkspaceAdapterId] = useState<WorkspaceAdapterId | ''>('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useDirectConnect({ onConnected });
@@ -245,7 +243,7 @@ export function AdapterConnect({
 
   const generate = (): void => {
     const name = nameInput.trim();
-    if (nameValid && workspaceAdapterId) flow.start(name, workspaceAdapterId);
+    if (nameValid) flow.start(name);
   };
 
   // Waiting state — the candidate CLI creates the wrapper and POSTs /connect
@@ -370,30 +368,6 @@ export function AdapterConnect({
           )}
         </p>
 
-        <div className="space-y-2 pt-2">
-          <Label htmlFor="adapter-workspace">Workspace CLI</Label>
-          <p className="text-text-muted -mt-1 text-xs">
-            Which agentic CLI prepares this custom CLI&rsquo;s workspace
-            (bootstrap files, skills, permissions).
-          </p>
-          <select
-            id="adapter-workspace"
-            value={workspaceAdapterId}
-            onChange={(e) => {
-              setWorkspaceAdapterId(e.target.value as WorkspaceAdapterId | '');
-              flow.mint.reset();
-            }}
-            className={FIELD_CLASS}
-          >
-            <option value="">Choose…</option>
-            {WORKSPACE_ADAPTER_IDS.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-        </div>
-
         {flow.mint.isError && (
           <p className="text-feedback-danger text-sm" role="alert">
             {flow.mint.error instanceof ApiError
@@ -402,7 +376,7 @@ export function AdapterConnect({
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 pt-3">
-          <Button type="submit" disabled={!nameValid || !workspaceAdapterId || flow.mint.isPending}>
+          <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
             {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
           </Button>
           {onUseBuiltin && (
