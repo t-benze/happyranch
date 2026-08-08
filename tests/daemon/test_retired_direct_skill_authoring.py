@@ -34,3 +34,17 @@ def test_direct_skill_authoring_endpoints_are_retired(app, auth_headers) -> None
         detail = response.json()["detail"]
         assert detail["code"] == "legacy_cutover"
         assert "skill-lifecycle" not in detail["detail"]
+
+
+def test_direct_skill_authoring_openapi_declares_retirement(app) -> None:
+    """Every retired direct-authoring endpoint remains explicitly 410 in OpenAPI."""
+    paths = app.openapi()["paths"]
+    retired_operations = (
+        ("/api/v1/orgs/{slug}/skills", "post"),
+        ("/api/v1/orgs/{slug}/skills/{skill_id}/validate", "post"),
+        ("/api/v1/orgs/{slug}/skills/{skill_id}", "patch"),
+        ("/api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign", "post"),
+    )
+
+    for path, method in retired_operations:
+        assert "410" in paths[path][method]["responses"]

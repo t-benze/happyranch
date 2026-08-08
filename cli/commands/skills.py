@@ -607,9 +607,10 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     no Authorization header. The server derives identity from the session
     binding.
 
-    This is an ADDITIONAL verified-agent authoring path (§B1). The created
-    skill enters PROPOSED status and is hidden by default. B2 eligibility,
-    human editor, effective visibility, and migration/cutover are deferred.
+    This is the supported verified-agent authoring path (§B1). The created
+    skill is hidden by default. Human authoring, editing, validation,
+    assignment, and eligibility workflows are retired; no B2 surface is
+    available through this command.
     """
     if not args.from_file:
         print("error: --from-file <path> is required", file=sys.stderr)
@@ -685,8 +686,8 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
         if result.get("content_artifact_key"):
             print(f"  artifact:  {result['content_artifact_key']}")
         print()
-        print("This skill is now in PROPOSED status and hidden by default.")
-        print("It will not be visible to any agent until a founder configures eligibility (B2).")
+        print("This skill is hidden by default.")
+        print("No human authoring, editing, validation, assignment, or eligibility surface is available.")
     else:
         detail = resp.json().get("detail", resp.text)
         print(f"error ({resp.status_code}): {detail}", file=sys.stderr)

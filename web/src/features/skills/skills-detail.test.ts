@@ -3,7 +3,6 @@ import {
   agentProvenance,
   agentProvenanceList,
   assignmentRollup,
-  editRoutePath,
   isEditableSkill,
   isReadOnlySkill,
   needsAttention,
@@ -124,7 +123,7 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
   });
 });
 
-describe('skills-detail — rollup + edit route', () => {
+describe('skills-detail — rollup', () => {
   test('rollup counts assigned / effective / not-yet-effective', () => {
     const rows = [
       { agent: 'a', assigned: true, effective: true, state: 'effective' },
@@ -137,9 +136,5 @@ describe('skills-detail — rollup + edit route', () => {
       effective: 1,
       notYetEffective: 2,
     });
-  });
-
-  test('editRoutePath targets the Slice-4 edit screen', () => {
-    expect(editRoutePath('alpha', 'sk-x')).toBe('/orgs/alpha/skills/sk-x/edit');
   });
 });
