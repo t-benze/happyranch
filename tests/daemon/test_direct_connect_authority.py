@@ -361,6 +361,44 @@ def test_get_receipt_artifacts_returns_wrapper_and_children(tmp_path) -> None:
     assert artifacts.workspace_adapter_id == "codex"
 
 
+def test_get_latest_operation_for_profile_returns_none_before_receipt(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_status", name="custom-cli", intended_profile_name="status-profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+
+    assert store.get_latest_operation_for_profile("status-profile") is None
+    assert store.get_latest_operation_for_profile("no-such-profile") is None
+
+
+def test_get_latest_operation_for_profile_returns_most_recent_operation(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_status_a", name="custom-cli", intended_profile_name="status-profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    op_a = store.reserve("hrreg_status_a", now=2)
+    store.receive("hrreg_status_a", op_a, wrapper_sha256="a" * 64, wrapper_facts={}, children=[], now=2)
+
+    assert store.get_latest_operation_for_profile("status-profile") == op_a
+
+    # A second mint + receive for the same profile name (regenerate-prompt case)
+    # must surface as the newer operation.
+    store.mint_authority(
+        token_plaintext="hrreg_status_b", name="custom-cli", intended_profile_name="status-profile",
+        workspace_adapter_id="codex", issued_at=3, expires_at=200,
+    )
+    op_b = store.reserve("hrreg_status_b", now=4)
+    store.receive("hrreg_status_b", op_b, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], now=4)
+
+    assert store.get_latest_operation_for_profile("status-profile") == op_b
+
+
 def test_direct_authority_reservation_has_one_concurrent_winner(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 

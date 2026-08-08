@@ -438,6 +438,22 @@ class DirectConnectAuthorityStore:
             )
             return True
 
+    def get_latest_operation_for_profile(self, intended_profile_name: str) -> str | None:
+        """Return the most recently received operation_id for a profile name.
+
+        Used by the browser-facing status route to discover whether the
+        candidate CLI's ``/connect`` call has landed yet, without ever
+        touching token plaintext — the founder's browser knows only the
+        profile name it minted, not any receipt identity.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT operation_id FROM direct_connect_operations
+                   WHERE intended_profile_name = ? ORDER BY created_at DESC LIMIT 1""",
+                (intended_profile_name,),
+            ).fetchone()
+            return row["operation_id"] if row is not None else None
+
     def get_receipt_artifacts(self, operation_id: str) -> DirectConnectReceiptArtifacts | None:
         """Read back the immutable wrapper + children artifacts for a receipt.
 
