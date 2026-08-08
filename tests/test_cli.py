@@ -51,6 +51,19 @@ def test_init_agent_specific():
     assert args.agent == "dev_agent"
 
 
+def test_resolve_escalation_help_not_founder_only(capsys):
+    """The resolve-escalation subcommand's help text must not claim it is
+    founder-only — the underlying route has no such check (agents and the
+    founder share one bearer token), and the escalation guardrail now
+    directs managers to use --decision continue themselves."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "resolve-escalation" in out
+    assert "founder only" not in out.lower()
+
+
 def test_init_subcommand():
     parser = build_parser()
     args = parser.parse_args(["init", "/tmp/my-runtime"])
