@@ -770,9 +770,12 @@ def cmd_resolve_escalation(args: argparse.Namespace) -> None:
                 "Pass --brief-file <path> (preferred) or --brief '<text>'."
             )
             sys.exit(1)
+    payload = {"decision": args.decision, "rationale": args.rationale, "brief": brief}
+    if args.as_agent:
+        payload["actor"] = args.as_agent
     r = client.post(
         f"/api/v1/orgs/{slug}/tasks/{args.task_id}/resolve-escalation",
-        json={"decision": args.decision, "rationale": args.rationale, "brief": brief},
+        json=payload,
     )
     if not _ok(r):
         return
@@ -1080,7 +1083,7 @@ def register(sub) -> None:
     )
     p_prog.set_defaults(func=cmd_progress)
 
-    p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
+    p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task")
     p_resolve.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
     p_resolve.add_argument("--decision", required=True, choices=["supersede", "continue"])
@@ -1094,6 +1097,11 @@ def register(sub) -> None:
         "--brief", default=None,
         help="Inline successor brief text (required for --decision supersede). "
              "Prefer --brief-file for multi-line briefs.",
+    )
+    p_resolve.add_argument(
+        "--as-agent", default=None, metavar="NAME",
+        help="Attribute the resolution to this agent instead of the founder "
+             "(advisory; recorded in the audit log and task note)",
     )
     p_resolve.set_defaults(func=cmd_resolve_escalation)
 

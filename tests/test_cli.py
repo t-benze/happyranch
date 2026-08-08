@@ -51,6 +51,19 @@ def test_init_agent_specific():
     assert args.agent == "dev_agent"
 
 
+def test_resolve_escalation_help_not_founder_only(capsys):
+    """The resolve-escalation subcommand's help text must not claim it is
+    founder-only — the underlying route has no such check (agents and the
+    founder share one bearer token), and the escalation guardrail now
+    directs managers to use --decision continue themselves."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "resolve-escalation" in out
+    assert "founder only" not in out.lower()
+
+
 def test_init_subcommand():
     parser = build_parser()
     args = parser.parse_args(["init", "/tmp/my-runtime"])
@@ -1283,6 +1296,85 @@ def test_cmd_resolve_escalation_supersede_emits_brief_in_payload(tmp_path):
     payload = kwargs["json"] if "json" in kwargs else call_args[1]["json"]
     assert payload["decision"] == "supersede"
     assert payload["brief"] == "Build the successor feature."
+
+
+def test_resolve_escalation_parser_accepts_as_agent():
+    """The escalation-continue guardrail advises managers to self-attribute
+    via --as-agent (mirrors cancel's --as-agent pattern) so `continue`
+    doesn't silently record as the founder's action."""
+    from cli.main import build_parser
+
+    args = build_parser().parse_args([
+        "resolve-escalation", "--task-id", "TASK-900",
+        "--decision", "continue", "--as-agent", "engineering_head",
+    ])
+    assert args.as_agent == "engineering_head"
+
+
+def test_resolve_escalation_parser_as_agent_defaults_none():
+    from cli.main import build_parser
+
+    args = build_parser().parse_args([
+        "resolve-escalation", "--task-id", "TASK-900", "--decision", "continue",
+    ])
+    assert args.as_agent is None
+
+
+def test_cmd_resolve_escalation_includes_actor_when_set():
+    """cmd_resolve_escalation must emit `actor` in the POST payload when
+    --as-agent is passed, so the audit log doesn't misattribute the
+    resolution to the founder."""
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    ns = MagicMock()
+    ns.decision = "continue"
+    ns.rationale = "founder said proceed"
+    ns.brief_file = None
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-900"
+    ns.as_agent = "engineering_head"
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"new_status": "pending"}
+
+    with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+        mock_client = mock_client_cls.from_env.return_value
+        mock_client.post.return_value = mock_response
+        with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+            cmd_resolve_escalation(ns)
+
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["actor"] == "engineering_head"
+
+
+def test_cmd_resolve_escalation_omits_actor_when_unset():
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    ns = MagicMock()
+    ns.decision = "continue"
+    ns.rationale = "founder said proceed"
+    ns.brief_file = None
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-900"
+    ns.as_agent = None
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"new_status": "pending"}
+
+    with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+        mock_client = mock_client_cls.from_env.return_value
+        mock_client.post.return_value = mock_response
+        with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+            cmd_resolve_escalation(ns)
+
+    _, kwargs = mock_client.post.call_args
+    assert "actor" not in kwargs["json"]
 
 
 def test_cmd_resolve_escalation_supersede_no_brief_exits_with_error(tmp_path, capsys):

@@ -174,6 +174,18 @@ def _purpose_note(
     return f"Message {triggering_seq} was posted to this thread"
 
 
+def _continue_cli_example(task_id: str, invoked_agent: str) -> str:
+    return (
+        f'  `happyranch resolve-escalation --task-id {task_id} '
+        f'--decision continue --as-agent {invoked_agent} '
+        f'--rationale "<summarize the founder\'s reply>"`'
+    )
+
+
+def _resolves_json_example(task_id: str) -> str:
+    return f'  {task_id} → {{"resolves": "{task_id}"}}'
+
+
 def _maybe_unresolved_escalations_note(
     *,
     messages: list[ThreadMessage],
@@ -183,8 +195,12 @@ def _maybe_unresolved_escalations_note(
 ) -> str:
     """Guardrail: when a manager receives a REPLY/BOOTSTRAP invocation in a
     thread that carries unresolved ``task_escalated`` system messages whose live
-    task rows are still supersedable, surface the concrete task ids so the agent
-    knows to include ``resolves`` in any continuation dispatch.
+    task rows are still supersedable, surface the concrete task ids and the
+    resolution options available for each: ``continue`` (resume the SAME task
+    in place — only valid when the predecessor's block kind is
+    ``"escalated"``) and ``resolves`` (dispatch a new task naming the
+    predecessor — valid for both ``"escalated"`` and ``"delegated"`` block
+    kinds).
 
     Derived from thread messages + task status, never from brief prose.
     """
@@ -195,7 +211,10 @@ def _maybe_unresolved_escalations_note(
     teams = getattr(org_state, "teams", None)
     if teams is None or not teams.is_team_manager(invoked_agent):
         return ""
-    escalated_ids: list[str] = []
+    from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+
+    escalated: list[tuple[str, str]] = []  # (task_id, block_kind)
+    seen_ids: set[str] = set()
     for m in messages:
         if m.kind is not ThreadMessageKind.SYSTEM:
             continue
@@ -203,21 +222,44 @@ def _maybe_unresolved_escalations_note(
         if payload.get("kind_tag") != "task_escalated":
             continue
         task_id = payload.get("task_id", "")
-        if not task_id or task_id in escalated_ids:
+        if not task_id or task_id in seen_ids:
             continue
         task = org_state.db.get_task(task_id)
         if task is None:
             continue
-        # Check supersedability — same logic as _eligible_supersede_block_kind
-        # in routes/tasks.py; imported late to avoid circular imports.
-        from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
-        if _eligible_supersede_block_kind(org_state, task) is None:
+        block_kind = _eligible_supersede_block_kind(org_state, task)
+        if block_kind is None:
             continue
-        escalated_ids.append(task_id)
-    if not escalated_ids:
+        escalated.append((task_id, block_kind))
+        seen_ids.add(task_id)
+    if not escalated:
         return ""
-    if len(escalated_ids) == 1:
-        tid = escalated_ids[0]
+
+    if len(escalated) == 1:
+        tid, block_kind = escalated[0]
+        if block_kind == "escalated":
+            return (
+                "\n## Unresolved Escalation in This Thread\n\n"
+                f"Task **{tid}** escalated in this thread and is still "
+                f"awaiting a founder-authorized resolution. Pick the option "
+                f"that matches the founder's reply:\n\n"
+                f"- If the founder's reply resolves this escalation with no "
+                f"new task-shaped work needed, resume the SAME task in "
+                f"place — original brief untouched, the reply is appended "
+                f"as an audited note:\n"
+                f"{_continue_cli_example(tid, invoked_agent)}\n\n"
+                f"- If the founder's reply requires new delegated work, "
+                f"your next self-dispatched task MUST include the explicit "
+                f"linkage:\n"
+                f'  ```json\n'
+                f'  {{"resolves": "{tid}"}}\n'
+                f'  ```\n'
+                f"  Omitting this field leaves the predecessor open — the "
+                f"runtime cannot infer the relationship from brief prose "
+                f"alone.\n\n"
+            )
+        # block_kind == "delegated": continue is not valid (requires literal
+        # ESCALATED status) — resolves is the only option, unchanged text.
         return (
             "\n## Unresolved Escalation in This Thread\n\n"
             f"Task **{tid}** escalated in this thread and is still "
@@ -230,22 +272,37 @@ def _maybe_unresolved_escalations_note(
             f"Omitting this field leaves the predecessor open — the runtime cannot "
             f"infer the relationship from brief prose alone.\n\n"
         )
-    # Multiple unresolved escalations — show per-task valid examples.
-    per_task_lines = "\n".join(
-        f'  {tid} →' + ' {"resolves": "' + tid + '"}'
-        for tid in escalated_ids
-    )
-    ids_str = ", ".join(escalated_ids)
+
+    # Multiple unresolved escalations — show per-task options, each keyed to
+    # its own task id and its own block-kind eligibility.
+    ids_str = ", ".join(tid for tid, _ in escalated)
+    per_task_lines: list[str] = []
+    for tid, block_kind in escalated:
+        if block_kind == "escalated":
+            per_task_lines.append(
+                f"**{tid}** — if the founder's reply resolves this "
+                f"escalation with no new task-shaped work needed, resume "
+                f"it in place:\n"
+                f"{_continue_cli_example(tid, invoked_agent)}\n"
+                f"  Otherwise, if new delegated work is needed:\n"
+                f"{_resolves_json_example(tid)}"
+            )
+        else:
+            per_task_lines.append(
+                f"**{tid}** — {_resolves_json_example(tid).strip()}"
+            )
+    per_task_block = "\n\n".join(per_task_lines)
     return (
         "\n## Unresolved Escalations in This Thread\n\n"
         f"The following tasks escalated in this thread and are still "
-        f"awaiting a founder-authorized continuation: **{ids_str}**.\n\n"
-        f"If your next self-dispatched task is the continuation of one of these, "
-        f"you MUST include the explicit linkage for the specific predecessor "
-        f"your continuation supersedes:\n"
-        f"{per_task_lines}\n\n"
-        f"Omitting this field leaves the predecessor open — the runtime cannot "
-        f"infer the relationship from brief prose alone.\n\n"
+        f"awaiting a founder-authorized resolution: **{ids_str}**.\n\n"
+        f"For each, pick the option that matches the founder's reply. If "
+        f"your next self-dispatched task is the continuation of one of "
+        f"these via `resolves`, you MUST include the explicit linkage for "
+        f"the specific predecessor your continuation supersedes:\n"
+        f"{per_task_block}\n\n"
+        f"Omitting the `resolves` field leaves the predecessor open — the "
+        f"runtime cannot infer the relationship from brief prose alone.\n\n"
     )
 
 
