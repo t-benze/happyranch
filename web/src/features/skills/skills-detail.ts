@@ -9,10 +9,8 @@
  *   - NO permission / approve / admit / materialize-now language. Provenance
  *     describes GUIDANCE VISIBILITY only — never a tool/command grant
  *     (spec §2 copy-discipline invariant).
- *   - Source-gating: only user-authored (custom) skills are editable; bundled
- *     (managed) and system-contract skills are read-only here (brief:
- *     "system_contract / bundled rows are READ-ONLY … custom … show an EDIT
- *     entry point").
+ *   - The retired catalog is read-only for every source. It preserves source,
+ *     validation, and provenance information without a mutation entry point.
  *
  * The functions take minimal STRUCTURAL inputs (not the `@/lib/api/skills`
  * types) so this pure module stays decoupled from the data layer and clear of
@@ -34,28 +32,16 @@ export function skillSource(facts: SkillSourceFacts): SkillSource {
   return facts.type === 'user_authored' ? 'custom' : 'bundled';
 }
 
-/** Only user-authored custom skills are editable by the operator. Bundled and
- *  system-contract skills are platform-managed → read-only on the detail
- *  surface (no edit / re-validate entry point). A user-authored skill can
- *  never mint a system_contract (spec §3.4), but the guard is explicit. */
-export function isEditableSkill(facts: SkillSourceFacts): boolean {
-  return facts.type === 'user_authored' && !facts.system_contract;
-}
-
-export function isReadOnlySkill(facts: SkillSourceFacts): boolean {
-  return !isEditableSkill(facts);
-}
-
 /**
- * Read-only rationale in product language — source-specific so a managed
- * bundled skill (assignable via the Slice-3 config screen) is NOT told it
- * "cannot be unassigned", while a system contract (applied by context
- * predicate, never per-agent) is. Returns `null` for editable custom skills.
+ * Read-only rationale in product language. The retired catalog exposes no
+ * direct authoring, validation, or assignment action for any source.
  */
 export function readOnlyReason(facts: SkillSourceFacts): string | null {
-  if (isEditableSkill(facts)) return null;
   if (facts.system_contract) {
     return 'Read-only system contract — its guidance is applied by context and cannot be edited or unassigned.';
+  }
+  if (facts.type === 'user_authored') {
+    return 'Read-only custom skill record — its provenance and validation status are retained for inspection.';
   }
   return 'Bundled skill — its guidance is managed by the platform and cannot be edited here.';
 }

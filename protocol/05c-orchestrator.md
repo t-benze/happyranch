@@ -789,7 +789,7 @@ The legacy proposal/review lifecycle is retired. No skill-lifecycle proposal, cl
 
 **Verified-agent creation (B1).** happyranch skills create calls POST /api/v1/orgs/{slug}/skills/agent. It is bearer-free and derives org, task, agent, session, task-brief digest, protected-slug checks, and validation from verified server context. The record is hidden by default; this path cannot write eligibility, permissions, or materialize a skill.
 
-**Founder authoring.** The bearer-authenticated Skills console provides the supported New custom skill and edit flows at /skills/new and /skills/:skillId/edit, with deterministic validation and version history. Eligibility is the separate visibility gate; it never grants permissions.
+**Retired human authoring.** The bearer-authenticated Skills console has no supported New custom skill or edit flow: `/skills/new` and `/skills/:skillId/edit` are retired deep links that render Not Found, and direct human mutation endpoints return `410 legacy_cutover`. No eligibility remediation path is supported. This does not alter B1 verification, default-hidden status, or its authorization boundary.
 
 The retired proposal paths must remain ordinary not-found responses. Existing B1 provenance, protected-slug, and default-hidden semantics are preservation boundaries.
 
