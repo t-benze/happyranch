@@ -18,7 +18,12 @@
  */
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { executorBinaries, health as healthApi, settings as settingsApi } from '@/lib/api';
+import {
+  directConnect,
+  executorBinaries,
+  health as healthApi,
+  settings as settingsApi,
+} from '@/lib/api';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -515,6 +520,230 @@ export function useAdapterConnect({
   };
 
   return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back };
+}
+
+/* ------------------------------------------------------------------ */
+/*  DIRECT CONNECT — instant, no founder-approval step (THR-107 slice 3) */
+/*  mint (name + workspace_adapter_id) -> wrapper path from status ->   */
+/*  candidate CLI POSTs /connect itself -> poll status -> commit ->     */
+/*  Connected. Replaces the adapter-submit/PENDING/approve flow above   */
+/*  in the normal UI; that flow's code stays for now as the shared      */
+/*  engine other things may still reference until slice-3d deletes it.  */
+/* ------------------------------------------------------------------ */
+
+/** The four first-party workspace-preparation adapters a direct-connect
+ *  custom CLI must pick one of — mirrors the daemon's
+ *  FIRST_PARTY_WORKSPACE_ADAPTER_IDS. */
+export const WORKSPACE_ADAPTER_IDS = ['claude', 'codex', 'opencode', 'pi'] as const;
+export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
+
+/** Build the direct-connect prompt (THR-107 slice 3). Unlike the legacy
+ *  adapter-submit prompt, there is no separate conformance-checkin dance
+ *  and no PENDING/approval wait — one POST to /connect both proves the
+ *  wrapper's integrity (server-side hash/structural checks) and, once the
+ *  browser calls /commit, connects it. `wrapperDestination` is the
+ *  LITERAL server-returned path from GET /runtime/custom-cli/status —
+ *  do NOT derive, fallback, or guess this path client-side. */
+export function buildDirectConnectPrompt(
+  name: string,
+  token: string,
+  origin: string,
+  wrapperDestination: string,
+): string {
+  const base = `${origin}/api/v1`;
+  const TOKEN = shQuote(token);
+  const BASE = shQuote(base);
+  const WRAPPER = shQuote(wrapperDestination);
+  return [
+    `# Connect "${name}" to HappyRanch directly — no approval step.`,
+    `# Do all of this in one run, then stop.`,
+    ``,
+    `set -e`,
+    `TOKEN=${TOKEN}`,
+    `BASE=${BASE}`,
+    `WRAPPER=${WRAPPER}`,
+    ``,
+    `# 1. Create a v1 adapter wrapper executable at exactly:`,
+    `#      ${wrapperDestination}`,
+    `#    This is the LITERAL daemon-issued path — no other location,`,
+    `#    symlink, or alternate filename is accepted. Exact I/O contract:`,
+    `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
+    `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
+    `#      context from the input (the server prepares the workspace dir)`,
+    `#    - Write exactly one v1 AdapterOutput JSON object to stdout,`,
+    `#      nothing else on stdout — diagnostics go to stderr`,
+    `#    - Exit after writing the output (single-invocation wrapper)`,
+    `chmod +x "$WRAPPER"`,
+    ``,
+    `# 2. Declare EVERY child executable your wrapper invokes as an`,
+    `#    immutable dependency: absolute path (never a bare command name)`,
+    `#    plus its SHA-256. HappyRanch never selects an agentic CLI via`,
+    `#    ambient PATH — replace CHILD below with your CLI's absolute path.`,
+    `CHILD=/absolute/path/to/your-cli`,
+    `WRAPPER_SHA=$(shasum -a 256 "$WRAPPER" | cut -d' ' -f1)`,
+    `CHILD_SHA=$(shasum -a 256 "$CHILD" | cut -d' ' -f1)`,
+    ``,
+    `# 3. POST the manifest — this single call proves the wrapper's`,
+    `#    integrity and creates the connection record.`,
+    `curl --fail-with-body -sS -X POST "$BASE/runtime/custom-cli/connect" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d "{\\"metadata\\":{},\\"manifest\\":{\\"manifest_version\\":2,\\"wrapper_sha256\\":\\"$WRAPPER_SHA\\",\\"upgradeable_children\\":[{\\"slot\\":\\"cli\\",\\"executable\\":\\"$CHILD\\",\\"version_probe_argv\\":[\\"$CHILD\\",\\"--version\\"]}]}}"`,
+    `echo ""`,
+    ``,
+    `# This token is valid for about 30 minutes. This screen updates live —`,
+    `# once the POST above succeeds, HappyRanch finishes connecting`,
+    `# automatically. No founder-approval step.`,
+  ].join('\n');
+}
+
+/** Direct-connect state machine. */
+export type DirectConnectState =
+  | { stage: 'form' }
+  | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
+  | { stage: 'committing'; name: string; wrapperDestination: string }
+  | { stage: 'connected'; name: string; wrapperDestination: string }
+  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
+
+/** Shared hook for the direct-connect custom-CLI flow (THR-107 slice 3).
+ *  Mints an adapter-purpose token with workspace_adapter_id set (which
+ *  activates the daemon's direct-authority mint path) → immediately reads
+ *  GET .../status for the deterministic wrapper destination → the
+ *  candidate CLI POSTs /connect itself (server-side, invisible to this
+ *  hook — it only polls) → the moment status reports a received
+ *  operation_id, this hook calls POST .../commit → Connected. */
+export function useDirectConnect({
+  onConnected,
+}: {
+  onConnected: (c: Connected) => void;
+}) {
+  const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
+  const [expiresAt, setExpiresAt] = useState(0);
+
+  const mint = useMutation({
+    mutationFn: async ({ name, workspaceAdapterId }: { name: string; workspaceAdapterId: WorkspaceAdapterId }) => {
+      const resp = await settingsApi.mintRuntimeRegistrationToken({
+        name,
+        purpose: 'adapter',
+        intended_profile_name: name,
+        workspace_adapter_id: workspaceAdapterId,
+      });
+      const status = await directConnect.getStatus(name);
+      return { ...resp, wrapperDestination: status.wrapper_destination };
+    },
+    onSuccess: (resp, { name }) => {
+      setExpiresAt(resp.expires_at);
+      setState({
+        stage: 'waiting',
+        name,
+        token: resp.token,
+        expired: false,
+        wrapperDestination: resp.wrapperDestination,
+      });
+    },
+  });
+
+  // Time-based expiry
+  useEffect(() => {
+    if (state.stage !== 'waiting' || state.expired || !expiresAt) return;
+    const ms = expiresAt * 1000 - Date.now();
+    if (ms <= 0) {
+      setState((s) => (s.stage === 'waiting' ? { ...s, expired: true } : s));
+      return;
+    }
+    const t = window.setTimeout(() => {
+      setState((s) => (s.stage === 'waiting' ? { ...s, expired: true } : s));
+    }, ms);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.stage, expiresAt]);
+
+  const pollName = state.stage === 'waiting' && !state.expired ? state.name : '';
+  const { data: statusData } = useQuery({
+    queryKey: ['direct-connect', 'status', pollName],
+    queryFn: () => directConnect.getStatus(pollName),
+    enabled: pollName !== '',
+    refetchInterval: pollName !== '' ? 2500 : false,
+  });
+
+  const commitMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.commit(operationId),
+  });
+
+  // Transition: waiting -> committing the moment the candidate CLI's own
+  // /connect call has landed (operation_id appears, not yet projected).
+  useEffect(() => {
+    if (state.stage !== 'waiting' || state.expired) return;
+    if (!statusData?.operation_id || statusData.profile_state !== null) return;
+    const { name, wrapperDestination } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+    commitMutation.mutate(statusData.operation_id, {
+      onSuccess: (resp) => {
+        if (resp.profile_state === 'committed') {
+          setState({ stage: 'connected', name, wrapperDestination });
+          onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else {
+          setState({
+            stage: 'failed',
+            name,
+            wrapperDestination,
+            operationId: statusData.operation_id as string,
+            reason: resp.reason ?? 'The connection could not be completed.',
+          });
+        }
+      },
+      onError: () => {
+        setState({
+          stage: 'failed',
+          name,
+          wrapperDestination,
+          operationId: statusData.operation_id as string,
+          reason: 'Could not reach the daemon to finish connecting.',
+        });
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusData, state.stage]);
+
+  const start = (name: string, workspaceAdapterId: WorkspaceAdapterId): void => {
+    if (name && !mint.isPending) mint.mutate({ name, workspaceAdapterId });
+  };
+  const regenerate = (): void => {
+    if (state.stage === 'waiting' && !mint.isPending) {
+      mint.mutate({ name: state.name, workspaceAdapterId: 'pi' });
+    }
+  };
+  const retryCommit = (): void => {
+    if (state.stage !== 'failed') return;
+    const { name, wrapperDestination, operationId } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+    commitMutation.mutate(operationId, {
+      onSuccess: (resp) => {
+        if (resp.profile_state === 'committed') {
+          setState({ stage: 'connected', name, wrapperDestination });
+          onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else {
+          setState({
+            stage: 'failed', name, wrapperDestination, operationId,
+            reason: resp.reason ?? 'The connection could not be completed.',
+          });
+        }
+      },
+      onError: () => {
+        setState({
+          stage: 'failed', name, wrapperDestination, operationId,
+          reason: 'Could not reach the daemon to finish connecting.',
+        });
+      },
+    });
+  };
+  const back = (): void => {
+    setState({ stage: 'form' });
+    setExpiresAt(0);
+    mint.reset();
+  };
+
+  return { state, mint, start, regenerate, retryCommit, back };
 }
 
 /* ------------------------------------------------------------------ */
