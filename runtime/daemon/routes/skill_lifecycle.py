@@ -424,9 +424,8 @@ def submit_proposal_agent_only(
 
         try:
             protected_slugs = _get_protected_slugs(org)
-            pkg = _service.submit_proposal(
+            pkg = _service.submit_proposal_agent_direct(
                 db=_get_db(org),
-                actor_kind="agent",
                 slug=body.slug,
                 name=body.name,
                 description=body.description,
@@ -457,6 +456,7 @@ def submit_proposal_agent_only(
         "content_hash": pkg.content_hash,
         "content_artifact_key": pkg.content_artifact_key,
         "proposal_task_id": pkg.proposal_task_id,
+        "published": pkg.status == "published",
     }
 
 
@@ -464,7 +464,7 @@ def submit_proposal_agent_only(
 # Dual-auth routes (bearer OR session-binding)
 # ═══════════════════════════════════════════════════════════════════════════
 
-@dual_router.post("/proposals", status_code=201)
+@dual_router.post("/proposals", status_code=410)
 def submit_proposal(
     slug: str,
     org: OrgDep,
@@ -472,68 +472,32 @@ def submit_proposal(
     request: Request,
     has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
-    """Submit a skill proposal.
+    """[RETIRED — THR-136] Direct proposal creation is retired.
 
-    **Human-only.** This route requires the master bearer token.
-    Agent callers MUST use the dedicated agent-only route:
-    POST /skill-lifecycle/proposals/agent (opaque session-binding, no bearer).
-
-    Agent callers to this route receive 403 — the legacy dual-auth path
-    has been closed to prevent policy bypass.
+    Agent proposals now use POST /skill-lifecycle/proposals/agent which
+    synchronously validates and publishes with no human review gate.
+    Human/founder callers receive 410 Gone.
     """
-    # Close the legacy dual-auth bypass: non-bearer callers must use the
-    # dedicated /proposals/agent endpoint which enforces the fixed pilot
-    # policy BEFORE any artifact/ledger write.
     if not has_bearer:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "code": "human_only",
                 "detail": "Agent proposals must use the dedicated agent-only route: "
-                          "POST /skill-lifecycle/proposals/agent. This legacy "
-                          "dual-auth route is restricted to human/founder callers.",
+                          "POST /skill-lifecycle/proposals/agent.",
             },
         )
-
-    actor_kind = "human"
-    actor_name = "founder"
-
-    try:
-        protected_slugs = _get_protected_slugs(org)
-        pkg = _service.submit_proposal(
-            db=_get_db(org),
-            actor_kind=actor_kind,
-            slug=body.slug,
-            name=body.name,
-            description=body.description,
-            skill_md=body.skill_md,
-            version=body.version,
-            policy_class=body.policy_class,
-            references=body.references,
-            assets=body.assets,
-            task_id=None,
-            session_id=None,
-            proposer_agent=None,
-            purpose=body.purpose,
-            target_agent_suggestion=body.target_agent_suggestion,
-            protected_slugs=protected_slugs,
-            org_root=org.root,
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "version": pkg.version,
-        "status": pkg.status.value,
-        "content_hash": pkg.content_hash,
-        "content_artifact_key": pkg.content_artifact_key,
-        "proposal_task_id": pkg.proposal_task_id,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "Direct proposal creation is retired (THR-136). "
+                      "Agent-authored proposals are now synchronously validated "
+                      "and published via POST /skill-lifecycle/proposals/agent. "
+                      "Historical proposal rows remain readable for provenance.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
 @dual_router.get("/{skill_id}", dependencies=[Depends(_require_human)])
@@ -664,175 +628,124 @@ def get_events(
 # Human-only routes (bearer-token-gated — founder)
 # ═══════════════════════════════════════════════════════════════════════════
 
-@dual_router.post("/{skill_id}/claim", dependencies=[Depends(_require_human)])
+@dual_router.post("/{skill_id}/claim", dependencies=[Depends(_require_human)], status_code=410)
 def claim_proposal(
     slug: str,
     skill_id: str,
     org: OrgDep,
     body: ClaimProposalRequest,
 ) -> dict:
-    """Human-only: claim an agent proposal and promote to draft.
+    """[RETIRED — THR-136] Claim proposal route retired.
 
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Agent proposals are now synchronously validated and published via
+    POST /skill-lifecycle/proposals/agent. No human claim step is needed.
     """
-    try:
-        pkg = _service.claim_proposal(
-            db=_get_db(org),
-            actor_kind="human",
-            version_id=body.proposal_version_id,
-            sponsor="founder",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The claim proposal route is retired (THR-136). "
+                      "Agent-authored proposals are now synchronously published "
+                      "via POST /skill-lifecycle/proposals/agent with no human "
+                      "review gate.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/validate", dependencies=[Depends(_require_human)])
+@dual_router.post("/validate", dependencies=[Depends(_require_human)], status_code=410)
 def validate_version(
     slug: str,
     org: OrgDep,
     version_id: int = Query(...),
 ) -> dict:
-    """Human-only: record validation result for a draft version.
+    """[RETIRED — THR-136] Validation route retired.
 
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
-    Legacy route; uses a default validator_version for backward compatibility.
-    Prefer the v2 concurrency-protected /proposals/{version_id}/validate route.
+    Agent proposals are now synchronously validated with a deterministic
+    validator (THR-136/1.0.0) and published in a single atomic step via
+    POST /skill-lifecycle/proposals/agent.
     """
-    try:
-        pkg = _service.record_validation(
-            db=_get_db(org),
-            actor_kind="human",
-            version_id=version_id,
-            ok=True,
-            findings=[],
-            validator_version="LEGACY/1.0.0",
-            validator_key="LEGACY/1.0.0",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The validation route is retired (THR-136). "
+                      "Agent proposals are now synchronously validated and "
+                      "published via POST /skill-lifecycle/proposals/agent.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/submit-review", dependencies=[Depends(_require_human)])
+@dual_router.post("/submit-review", dependencies=[Depends(_require_human)], status_code=410)
 def submit_for_review(
     slug: str,
     org: OrgDep,
     body: SubmitForReviewRequest,
 ) -> dict:
-    """Human-only: submit a validated version for review.
+    """[RETIRED — THR-136] Submit-for-review route retired.
 
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
-    Legacy route; prefer the v2 concurrency-protected
-    POST /proposals/{version_id}/submit-review route.
+    Agent proposals are now synchronously validated and published in a
+    single atomic step. No human submit-review step is needed.
     """
-    try:
-        pkg = _service.submit_for_review(
-            db=_get_db(org),
-            actor_kind="human",
-            version_id=body.version_id,
-            sponsor="founder",
-            intended_audience=body.intended_audience,
-            review_notes=body.review_notes,
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The submit-for-review route is retired (THR-136). "
+                      "Agent proposals are now synchronously validated and "
+                      "published via POST /skill-lifecycle/proposals/agent.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/review", dependencies=[Depends(_require_human)])
+@dual_router.post("/review", dependencies=[Depends(_require_human)], status_code=410)
 def review_decision(
     slug: str,
     org: OrgDep,
     body: ReviewDecisionRequest,
 ) -> dict:
-    """Human-only: reviewer approves or rejects a submitted version.
+    """[RETIRED — THR-136] Review decision route retired.
 
-    Reviewer must be distinct from author (maker-checker).
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Agent proposals are now synchronously validated and published in a
+    single atomic step via POST /skill-lifecycle/proposals/agent.
+    No human review/approve/reject step is needed.
     """
-    try:
-        pkg = _service.review_decision(
-            db=_get_db(org),
-            actor_kind="human",
-            version_id=body.version_id,
-            decision=body.decision,
-            rationale=body.rationale,
-            reviewer="founder",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "decision": body.decision,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The review decision route is retired (THR-136). "
+                      "Agent proposals are now synchronously validated and "
+                      "published via POST /skill-lifecycle/proposals/agent.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/publish", dependencies=[Depends(_require_human)])
+@dual_router.post("/publish", dependencies=[Depends(_require_human)], status_code=410)
 def publish(
     slug: str,
     org: OrgDep,
     body: PublishRequest,
 ) -> dict:
-    """Human-only: publish an approved version to the custom catalog.
+    """[RETIRED — THR-136] Publish route retired.
 
-    Enforces the two-published-cap and requires matching approval event id.
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Agent proposals are now published synchronously as part of the
+    single atomic proposal-submission step via
+    POST /skill-lifecycle/proposals/agent.
     """
-    try:
-        pkg = _service.publish(
-            db=_get_db(org),
-            actor_kind="human",
-            version_id=body.version_id,
-            approval_event_id=body.approval_event_id,
-            publisher="founder",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-        "published_at": pkg.published_at.isoformat() if pkg.published_at else None,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The publish route is retired (THR-136). "
+                      "Agent proposals are now synchronously published "
+                      "via POST /skill-lifecycle/proposals/agent.",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
 @dual_router.post("/assign", dependencies=[Depends(_require_human)])
@@ -841,32 +754,22 @@ def assign_skill(
     org: OrgDep,
     body: AssignRequest,
 ) -> dict:
-    """Human-only: assign a published version to a named agent.
+    """Per-agent assignment (THR-136 — catalog/detail enablement).
 
-    Requires explicit skill_id (e.g. "hr:my-skill") in the request body.
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Founders assign a published skill version to an agent. This is the
+    canonical enablement path — direct admission publishes, but only
+    explicit assignment materializes the skill into an agent's session.
     """
-    try:
-        assign = _service.assign(
-            db=_get_db(org),
-            actor_kind="human",
-            skill_id=body.skill_id,
-            agent_name=body.agent_name,
-            version_id=body.version_id,
-            assigner="founder",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
+    service = SkillLifecycleService()
+    result = service.assign(
+        _get_db(org), "human", body.skill_id, body.agent_name, body.version_id,
+    )
     return {
-        "skill_id": assign.skill_id,
-        "agent_name": assign.agent_name,
-        "version": assign.version,
-        "content_hash": assign.content_hash,
-        "assigned_at": assign.assigned_at.isoformat(),
+        "skill_id": result.skill_id,
+        "agent_name": result.agent_name,
+        "version": result.version,
+        "content_hash": result.content_hash,
+        "assigned_at": result.assigned_at.isoformat() if result.assigned_at else None,
     }
 
 
@@ -878,102 +781,12 @@ def rollback(
     reason: str = Query(""),
     target_version_id: int | None = Query(None),
 ) -> dict:
-    """Human-only: emergency rollback — deactivate all assignments for a skill.
+    """Rollback/deactivate all assignments for a skill (THR-136).
 
-    Atomically unassigns affected assignments while retaining immutable
-    history/content references. All operations execute within an explicit
-    ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so assignment deactivation
-    and event insertion roll back together.
-
-    After the ledger transaction commits, prior materialized custom-skill
-    workspace residue is cleaned from agent workspaces.
-
-    Guarded: REJECTED packages cannot be rolled back. Package decision status
-    is never mutated — assignment is a separate append-only projection.
-
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Emergency deactivation — part of the catalog/detail assignment control.
     """
-    import shutil
-    from pathlib import Path
-
-    db = _get_db(org)
-    conn = db._conn if hasattr(db, '_conn') else db
-    # Disable implicit transactions so explicit BEGIN IMMEDIATE works.
-    # The route manages transactions explicitly.
-    prev_isolation = getattr(conn, 'isolation_level', None)
-
-    try:
-        conn.isolation_level = None
-        # Explicit transaction wrapping for atomicity on the raw connection
-        conn.execute("BEGIN IMMEDIATE")
-        count = _service.rollback(
-            db=db,
-            actor_kind="human",
-            skill_id=skill_id,
-            reason=reason,
-            rolled_back_by="founder",
-            target_version_id=target_version_id,
-        )
-        conn.execute("COMMIT")
-    except LifecycleError as e:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-    except Exception as e:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"code": "rollback_failed", "skill_id": skill_id, "error": str(e)},
-        )
-    finally:
-        if prev_isolation is not None:
-            conn.isolation_level = prev_isolation
-
-    # Clean prior materialized custom-skill workspace residue.
-    # The ledger transaction has committed; now remove the old skill
-    # directories from all agent workspaces so no stale content lingers.
-    # Uses the declared OrgPaths seam (not an invented field on OrgState).
-    slug_match = skill_id
-    if skill_id.startswith("hr:"):
-        slug_match = skill_id[3:]
-    from runtime.orchestrator._paths import OrgPaths
-    workspaces_dir = OrgPaths(org.root).workspaces_dir
-    cleanup_errors: list[str] = []
-    if workspaces_dir.is_dir():
-        for agent_ws in workspaces_dir.iterdir():
-            if not agent_ws.is_dir():
-                continue
-            for skills_dir_name in (".claude", ".agents"):
-                skill_dir = agent_ws / skills_dir_name / "skills" / slug_match
-                if skill_dir.exists():
-                    try:
-                        shutil.rmtree(skill_dir)
-                    except Exception as e:
-                        cleanup_errors.append(f"{skill_dir}: {e}")
-    if cleanup_errors:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "code": "rollback_cleanup_failed",
-                "detail": f"Ledger rollback committed ({count} assignments deactivated) but workspace cleanup failed.",
-                "cleanup_errors": cleanup_errors,
-            },
-        )
-
-    return {
-        "skill_id": skill_id,
-        "assignments_deactivated": count,
-        "reason": reason,
-        "cleanup_errors": cleanup_errors if cleanup_errors else None,
-    }
+    service = SkillLifecycleService()
+    return service.rollback(_get_db(org), "human", skill_id, reason, target_version_id)
 
 
 @dual_router.post("/retire", dependencies=[Depends(_require_human)])
@@ -983,35 +796,12 @@ def retire(
     skill_id: str = Query(...),
     reason: str = Query(""),
 ) -> dict:
-    """Human-only: retire a published skill.
+    """Retire a skill (THR-136 — catalog/detail assignment control).
 
-    Deactivates all assignments without mutating package decision status.
-    Only PUBLISHED packages may be retired; REJECTED and all non-PUBLISHED
-    states are rejected.
-
-    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    Marks the skill as retired and deactivates all active assignments.
     """
-    db = _get_db(org)
-
-    try:
-        pkg = _service.retire(
-            db=db,
-            actor_kind="human",
-            skill_id=skill_id,
-            reason=reason,
-            retired_by="founder",
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "status": pkg.status.value,
-        "reason": reason,
-    }
+    service = SkillLifecycleService()
+    return service.retire(_get_db(org), "human", skill_id, reason)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1077,7 +867,7 @@ def _run_concurrent_mutation(
         if prev_isolation is not None:
             conn.isolation_level = prev_isolation
 
-@dual_router.get("/proposals/queue", dependencies=[Depends(_require_human)])
+@dual_router.get("/proposals/queue", dependencies=[Depends(_require_human)], status_code=410)
 def get_proposals_queue(
     slug: str,
     org: OrgDep,
@@ -1090,311 +880,217 @@ def get_proposals_queue(
     submitted_after: str | None = Query(None),
     submitted_before: str | None = Query(None),
 ) -> dict:
-    """Founder-only: paginated/filterable proposal queue.
+    """[RETIRED — THR-136] Proposal queue route retired.
 
-    Server-authoritative filters based on immutable ledger/event facts:
-    - status: decision status (proposed, draft, validated, etc.)
-    - validation_outcome: 'validated', 'validation_failed', or 'unvalidated'
-    - search: case-insensitive match on skill_id, slug, or name
-    - proposer: exact proposer_agent match
-    - submitted_after / submitted_before: ISO-8601 date bounds on created_at
-
-    Default ordering: actionable first, then oldest submission.
-    Returns display facts: validation result + deterministic identifiers,
-    provenance, projection summary, permitted action.
+    The proposal review queue is retired. Agent-authored proposals are now
+    synchronously published and visible immediately in the Skills catalog.
+    Historical proposal rows remain readable via the existing lifecycle
+    detail routes for provenance/audit.
     """
-    # Validate validation_outcome enum
-    if validation_outcome not in (None, "validated", "validation_failed", "unvalidated"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "invalid_validation_outcome",
-                "detail": "validation_outcome must be 'validated', 'validation_failed', or 'unvalidated'.",
-            },
-        )
-
-    try:
-        result = _service.get_proposals_queue(
-            _get_db(org), status=status_filter, page=page, page_size=page_size,
-            validation_outcome=validation_outcome,
-            search=search,
-            proposer=proposer,
-            submitted_after=submitted_after,
-            submitted_before=submitted_before,
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-    return result
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The proposal queue route is retired (THR-136). "
+                      "Published agent-authored skills are visible in the "
+                      "Skills catalog. Historical proposals are readable "
+                      "via lifecycle detail routes.",
+            "replacement": "Skills catalog (GET /skill-lifecycle/catalog/custom)",
+        },
+    )
 
 
-@dual_router.get("/proposals/{version_id}", dependencies=[Depends(_require_human)])
+@dual_router.get("/proposals/{version_id}", dependencies=[Depends(_require_human)], status_code=410)
 def get_proposal_detail(
     slug: str,
     version_id: int,
     org: OrgDep,
 ) -> dict:
-    """Founder-only: full proposal detail by immutable version/proposal ID.
+    """[RETIRED — THR-136] Proposal detail route retired.
 
-    Renders all exact immutable package/provenance data: read-only canonical
-    SKILL.md bytes loaded from the ArtifactStore, package hash/manifest
-    reference, creation-event purpose/target-agent data, immutable proposer/
-    task/session vs claimant/time, append-only events, separate assignment/
-    materialization projections. Safely represents missing/malformed legacy
-    artifacts (skill_md: null), never fabricates bytes or exposes arbitrary paths.
-
-    Returns a concurrency marker (last_event_id) for state-changing operations.
+    The proposal detail page is retired. Published agent-authored skills
+    are visible in the Skills catalog detail page with full provenance.
+    Historical proposals remain readable via the existing lifecycle
+    detail routes for provenance/audit.
     """
-    try:
-        org_root_str = str(org.root) if org.root is not None else None
-        detail = _service.get_proposal_detail(_get_db(org), version_id, org_root=org_root_str)
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
-    return detail
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The proposal detail route is retired (THR-136). "
+                      "Published skills are visible in the Skills catalog. "
+                      "Historical proposals are readable via lifecycle detail routes.",
+            "replacement": "Skills catalog detail (GET /skill-lifecycle/{skill_id})",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/claim", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/claim", dependencies=[Depends(_require_human)], status_code=410)
 def claim_proposal_v2(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: ClaimProposalV2Request,
 ) -> dict:
-    """Founder-only: claim proposal with atomic concurrency protection.
+    """[RETIRED — THR-136] V2 claim proposal route retired.
 
-    Accepts expected_event_id as concurrency marker.
-    Check + mutation execute in one serialized transaction — two
-    identical-marker requests produce exactly one success and one 409.
-    Returns 409 with conflict details if the marker is stale.
+    Agent proposals are now synchronously validated and published.
+    No human claim step is needed.
     """
-    try:
-        pkg = _run_concurrent_mutation(
-            _get_db(org), version_id, body.expected_event_id,
-            lambda db: _service.claim_proposal_v2(
-                db=db, actor_kind="human", version_id=version_id, sponsor="founder",
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-        "claimed_by": pkg.claimed_by,
-        "claimed_at": pkg.claimed_at.isoformat() if pkg.claimed_at else None,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The claim proposal route is retired (THR-136).",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/validate", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/validate", dependencies=[Depends(_require_human)], status_code=410)
 def validate_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: ValidateProposalRequest,
 ) -> dict:
-    """Founder-only: validate proposal with reproducible metadata and atomic concurrency.
+    """[RETIRED — THR-136] V2 validate proposal route retired.
 
-    Records validator_version and a stable deterministic validator_key.
-    Re-runs append new events rather than overwriting history.
-    Check + mutation execute in one serialized transaction.
-    Returns 409 on stale concurrency marker.
+    Agent proposals are now synchronously validated with a deterministic
+    validator (THR-136/1.0.0) and published in a single atomic step.
     """
-    try:
-        pkg = _run_concurrent_mutation(
-            _get_db(org), version_id, body.expected_event_id,
-            lambda db: _service.validate_proposal(
-                db=db, actor_kind="human", version_id=version_id,
-                validator_version=body.validator_version,
-                validator_key=body.validator_version,
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The validate proposal route is retired (THR-136).",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/submit-review", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/submit-review", dependencies=[Depends(_require_human)], status_code=410)
 def submit_review_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: SubmitReviewProposalRequest,
 ) -> dict:
-    """Founder-only: submit-review (VALIDATED → IN_REVIEW) with atomic concurrency.
-
-    V2 proposal-scoped route. Check + mutation execute in one serialized
-    transaction. Returns 409 on stale concurrency marker.
-    """
-    try:
-        pkg = _run_concurrent_mutation(
-            _get_db(org), version_id, body.expected_event_id,
-            lambda db: _service.submit_review_proposal(
-                db=db, actor_kind="human", version_id=version_id, sponsor="founder",
-                intended_audience=body.intended_audience,
-                review_notes=body.review_notes,
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-    }
+    """[RETIRED — THR-136] V2 submit-review route retired."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The submit-review route is retired (THR-136).",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/review", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/review", dependencies=[Depends(_require_human)], status_code=410)
 def review_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: ReviewProposalRequest,
 ) -> dict:
-    """Founder-only: review decision with atomic concurrency protection.
-
-    REJECTED is terminal — blocks all subsequent mutations.
-    Check + mutation execute in one serialized transaction.
-    Returns 409 on stale concurrency marker.
-    """
-    try:
-        pkg = _run_concurrent_mutation(
-            _get_db(org), version_id, body.expected_event_id,
-            lambda db: _service.review_proposal(
-                db=db, actor_kind="human", version_id=version_id,
-                decision=body.decision, rationale=body.rationale, reviewer="founder",
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "decision": body.decision,
-    }
+    """[RETIRED — THR-136] V2 review decision route retired."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The review decision route is retired (THR-136).",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/publish", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/publish", dependencies=[Depends(_require_human)], status_code=410)
 def publish_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: PublishProposalRequest,
 ) -> dict:
-    """Founder-only: publish with approval event id and atomic concurrency.
-
-    Check + mutation execute in one serialized transaction.
-    Returns 409 on stale concurrency marker.
-    """
-    try:
-        pkg = _run_concurrent_mutation(
-            _get_db(org), version_id, body.expected_event_id,
-            lambda db: _service.publish_proposal(
-                db=db, actor_kind="human", version_id=version_id,
-                approval_event_id=body.approval_event_id, publisher="founder",
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "status": pkg.status.value,
-        "version": pkg.version,
-        "published_at": pkg.published_at.isoformat() if pkg.published_at else None,
-    }
+    """[RETIRED — THR-136] V2 publish proposal route retired."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The publish proposal route is retired (THR-136).",
+            "replacement": "POST /skill-lifecycle/proposals/agent (agent-only)",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/assign", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/assign", dependencies=[Depends(_require_human)], status_code=410)
 def assign_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: AssignProposalRequest,
 ) -> dict:
-    """Founder-only: assign to agent with atomic concurrency protection.
+    """[RETIRED — THR-136] V2 assign proposal route retired.
 
-    Check + mutation execute in one serialized transaction.
-    Returns 409 on stale concurrency marker.
+    Skill assignment is now managed through the catalog/detail per-agent
+    assignment control surface.
     """
-    db = _get_db(org)
-    # Resolve skill_id from the version (read-only, outside the transaction)
-    pkg_lookup = lifecycle_stores.get_package_version(db, version_id)
-    if pkg_lookup is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "detail": f"Version {version_id} not found."},
-        )
-    skill_id = pkg_lookup.skill_id
-
-    try:
-        assign = _run_concurrent_mutation(
-            db, version_id, body.expected_event_id,
-            lambda d: _service.assign_proposal(
-                db=d, actor_kind="human", skill_id=skill_id,
-                agent_name=body.agent_name, version_id=version_id, assigner="founder",
-            ),
-        )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": assign.skill_id,
-        "agent_name": assign.agent_name,
-        "version": assign.version,
-        "content_hash": assign.content_hash,
-        "assigned_at": assign.assigned_at.isoformat(),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The assign proposal route is retired (THR-136).",
+            "replacement": "Catalog/detail per-agent assignment control",
+        },
+    )
 
 
-@dual_router.post("/proposals/{version_id}/rollback", dependencies=[Depends(_require_human)])
+@dual_router.post("/proposals/{version_id}/rollback", dependencies=[Depends(_require_human)], status_code=410)
 def rollback_proposal(
     slug: str,
     version_id: int,
     org: OrgDep,
     body: RollbackProposalRequest,
 ) -> dict:
-    """Founder-only: rollback (assignment-level only) with atomic concurrency.
+    """[RETIRED — THR-136] V2 rollback proposal route retired.
 
-    Does NOT mutate package decision status. Assignment is a separate projection.
-    Check + mutation execute in one serialized transaction.
-    Returns 409 on stale concurrency marker.
+    Assignment deactivation is now managed through the catalog/detail
+    per-agent assignment control surface.
     """
-    db = _get_db(org)
-    # Resolve skill_id from the version (read-only, outside the transaction)
-    pkg_lookup = lifecycle_stores.get_package_version(db, version_id)
-    if pkg_lookup is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "detail": f"Version {version_id} not found."},
-        )
-    skill_id = pkg_lookup.skill_id
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "route_retired_thr136",
+            "detail": "The rollback proposal route is retired (THR-136).",
+            "replacement": "Catalog/detail per-agent assignment control",
+        },
+    )
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Read-only immutable-version provenance (THR-136 Fix 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dual_router.get(
+    "/provenance/{version_id}",
+    dependencies=[Depends(_require_human)],
+)
+def get_version_provenance(
+    slug: str,
+    version_id: int,
+    org: OrgDep,
+) -> dict:
+    """Read-only immutable-version lifecycle provenance for audit (THR-136).
+
+    Returns the package version record, immutable content hash/artifact key,
+    and append-only lifecycle events.  No SKILL.md content, assignments,
+    materializations, or mutable state.  Founder/human only; agents denied.
+    """
+    service = SkillLifecycleService()
     try:
-        count = _run_concurrent_mutation(
-            db, version_id, body.expected_event_id,
-            lambda d: _service.rollback_proposal(
-                db=d, actor_kind="human", skill_id=skill_id,
-                reason=body.reason, rolled_back_by="founder",
-                target_version_id=version_id,
-            ),
-            rollback_on_lifecycle=False,
+        return service.get_version_provenance(_get_db(org), version_id)
+    except LifecycleError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "detail": e.detail},
         )
-    except HTTPException:
-        raise
-    return {
-        "skill_id": skill_id,
-        "assignments_deactivated": count,
-        "reason": body.reason,
-    }

@@ -22,20 +22,11 @@ import {
 import type {
   AssignSkillRequest,
   AssignSkillResponse,
-  CreateSkillRequest,
-  CreateSkillResponse,
-  EditSkillRequest,
-  EditSkillResponse,
-  ValidateSkillResponse,
 } from '@/lib/api/skills';
 // THR-055 lifecycle client — canonical mutation surface.
 import {
   assignSkill as lifecycleAssign,
-  getLifecycleStatus,
-  getProposalsQueue,
   listCustomCatalog,
-  submitProposal,
-  type ProposalQueueResponse,
 } from '@/lib/api/skillLifecycle';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
@@ -67,138 +58,6 @@ function useSkillDetail(
     enabled: !!slug && !!skillId,
     staleTime: 30_000,
   }) as QueryLike<SkillDetail>;
-}
-
-// THR-055 lifecycle cutover: Create → submitProposal
-// The `CreateSkillRequest` contract is preserved for API compatibility.
-// The lifecycle `submitProposal` response is mapped into the legacy
-// response shape expected by callers. A proposal submission reflects the
-// true lifecycle status (proposed) — NOT a fabricated validation pass.
-// Validation requires a founder-only lifecycle transition.
-function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse> {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: CreateSkillRequest) => {
-      const resp = await submitProposal(slug, {
-        slug: body.slug,
-        name: body.name,
-        description: body.summary ?? '',
-        skill_md: body.skill_md,
-        version: body.version,
-        policy_class: body.policy_class,
-        references: body.references,
-        assets: body.assets,
-      });
-      return {
-        skill_id: resp.skill_id,
-        source: 'lifecycle',
-        validation_state: 'proposed' as const,
-        validation: { ok: false, errors: [] },
-      };
-    },
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
-      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
-    },
-  });
-}
-
-// THR-055 lifecycle cutover: Validate → read lifecycle status.
-// Agent-side "validate" reflects the CURRENT lifecycle state of the proposal.
-// Does NOT fabricate validated — only the founder-only lifecycle validation
-// transition sets the validated state.
-export function lifecycleStatusToValidationState(
-  status: string | null,
-): 'proposed' | 'validated' | 'failed_validation' {
-  switch (status) {
-    case 'validation_failed':
-      return 'failed_validation';
-    case 'validated':
-    case 'approved':
-    case 'published':
-      return 'validated';
-    case 'proposed':
-    default:
-      return 'proposed';
-  }
-}
-
-/**
- * Seam-level response builder — the pure mapping from a raw lifecycle status
- * response to the ``ValidateSkillResponse`` shape consumed by callers.
- * Directly testable: proposed yields validation_state=proposed + ok=false;
- * validated yields validation_state=validated + ok=true.
- */
-export function buildValidationFromLifecycleStatus(status: {
-  current_status: string | null;
-  skill_id: string;
-}): ValidateSkillResponse {
-  const state = lifecycleStatusToValidationState(status.current_status);
-  return {
-    skill_id: status.skill_id,
-    validation_state: state,
-    validation: { ok: state === 'validated', errors: [] },
-  };
-}
-
-function useValidateSkill(): MutationLike<
-  { skillId: string },
-  ValidateSkillResponse
-> {
-  const slug = useRealOrgSlug();
-  return useMutation({
-    mutationFn: async ({ skillId }: { skillId: string }) => {
-      const status = await getLifecycleStatus(slug, skillId);
-      return buildValidationFromLifecycleStatus(status);
-    },
-  });
-}
-
-// THR-055 lifecycle cutover: PATCH edit → new proposal submission.
-// Editing creates a new version via the submitProposal lifecycle endpoint.
-// Reflects the true lifecycle status (proposed) — NOT a fabricated validated.
-function useEditSkill(): MutationLike<
-  { skillId: string; body: EditSkillRequest },
-  EditSkillResponse
-> {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      skillId,
-      body,
-    }: {
-      skillId: string;
-      body: EditSkillRequest;
-    }) => {
-      // Derive slug from skill_id (format: "hr:<slug>")
-      const derivedSlug = skillId.startsWith('hr:')
-        ? skillId.slice(3)
-        : skillId;
-      const resp = await submitProposal(slug, {
-        slug: derivedSlug,
-        name: body.name ?? derivedSlug,
-        description: body.summary ?? '',
-        skill_md: body.skill_md ?? '',
-        version: body.version,
-        references: body.references,
-        assets: body.assets,
-      });
-      return {
-        skill_id: resp.skill_id,
-        source: 'lifecycle',
-        validation_state: 'proposed' as const,
-        validation: { ok: false, errors: [] },
-        version: resp.version,
-      };
-    },
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
-      qc.invalidateQueries({ queryKey: ['skill-status', slug, res.skill_id] });
-      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
-    },
-  });
 }
 
 // Per-agent assignment status for one skill (Slice-5) — the authoritative
@@ -295,38 +154,10 @@ function useSkillValidation(params?: {
   }) as QueryLike<{ events: ValidationEvent[]; label: string }>;
 }
 
-/** Founder-only proposal queue (THR-055 Slice 3A). Server-authoritative
- *  read-only listing with filter/query params. Never re-sorts or re-counts
- *  client-side. */
-function useProposalsQueue(
-  params?: {
-    status?: string;
-    page?: number;
-    page_size?: number;
-    validation_outcome?: 'validated' | 'validation_failed' | 'unvalidated';
-    search?: string;
-    proposer?: string;
-    submitted_after?: string;
-    submitted_before?: string;
-  },
-): QueryLike<ProposalQueueResponse> {
-  const slug = useRealOrgSlug();
-  return useQuery({
-    queryKey: ['proposals-queue', slug, params ?? null],
-    queryFn: () => getProposalsQueue(slug, params),
-    enabled: !!slug,
-    staleTime: 15_000,
-  }) as QueryLike<ProposalQueueResponse>;
-}
-
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
-  useCreateSkill,
-  useValidateSkill,
-  useEditSkill,
   useSkillStatus,
   useAssignSkill,
   useSkillValidation,
-  useProposalsQueue,
 };

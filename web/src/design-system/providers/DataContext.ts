@@ -38,13 +38,8 @@ import type {
   AssignSkillRequest,
   AssignSkillResponse,
   CatalogSkillItem,
-  CreateSkillRequest,
-  CreateSkillResponse,
-  EditSkillRequest,
-  EditSkillResponse,
   SkillDetail,
   SkillStatusResponse,
-  ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
@@ -455,25 +450,6 @@ export interface SkillsApi {
   /** Single-skill detail (source, validation, per-agent assignments[]).
    *  Backs the Slice-2 Skill Detail + provenance surface. */
   useSkillDetail: (skillId: string | undefined) => QueryLike<SkillDetail>;
-  /** Author / import a user-authored custom skill (Slice-3). Runs the
-   *  technical validate guard synchronously; a content-validation failure
-   *  still persists an editable draft (`validation.ok=false`), so the
-   *  mutation resolves rather than rejects on that path. */
-  useCreateSkill: () => MutationLike<CreateSkillRequest, CreateSkillResponse>;
-  /** Re-run the technical validate guard for an existing draft (Slice-3). */
-  useValidateSkill: () => MutationLike<
-    { skillId: string },
-    ValidateSkillResponse
-  >;
-  /** Edit a user-authored custom skill and re-validate (Slice-4). The PATCH
-   *  can never mint/alter a system_contract (no policy_class field). A
-   *  content-validation failure still persists an editable draft
-   *  (`validation.ok=false`), so the mutation resolves rather than rejects on
-   *  that path (spec v3 §9.5 / §9.1a). */
-  useEditSkill: () => MutationLike<
-    { skillId: string; body: EditSkillRequest },
-    EditSkillResponse
-  >;
   /** Per-agent assignment status for one skill (Slice-5). Drives the custom-
    *  skill assignment table: each agent's assigned/effective state +
    *  materialized version. This is the authoritative assignment source, apart
@@ -500,25 +476,6 @@ export interface SkillsApi {
     severity?: string;
     limit?: number;
   }) => QueryLike<{ events: ValidationEvent[]; label: string }>;
-
-  /** Founder-only proposal queue (THR-055 Slice 3A). Server-authoritative
-   *  read-only listing. Supported filter/query params: status,
-   *  validation_outcome, search, proposer, submitted_after, submitted_before,
-   *  page, page_size. Never re-sorts or re-counts client-side. */
-  useProposalsQueue: (
-    params?: {
-      status?: string;
-      page?: number;
-      page_size?: number;
-      validation_outcome?: 'validated' | 'validation_failed' | 'unvalidated';
-      search?: string;
-      proposer?: string;
-      submitted_after?: string;
-      submitted_before?: string;
-    },
-  ) => QueryLike<
-    import('@/lib/api/skillLifecycle').ProposalQueueResponse
-  >;
 }
 
 // ---------------------------------------------------------------------------

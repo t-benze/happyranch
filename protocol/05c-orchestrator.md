@@ -783,14 +783,61 @@ exposure directly from disk (no daemon round-trip):
   a skill is or isn't available, including both gate results and
   eligibility provenance.
 
-### 4.5 THR-055 Lifecycle-Ledger Custom Skills (Internal Pilot)
+### 4.5 THR-136 Lifecycle-Ledger Custom Skills (Supersedes THR-055)
+
+> **SUPERSESSION NOTICE (THR-136):** The multi-step Founder review chain
+> (proposed → draft → validated → in_review → approved → published) and
+> all Founder review routes, UI, and proposal-specific assignment are
+> RETIRED. Agent-authored proposals are now **synchronously validated and
+> published** in a single atomic step via
+> ``POST /skill-lifecycle/proposals/agent``. The Skills catalog with
+> per-agent explicit assignment is the **sole enablement path**. Historical
+> proposal rows remain immutable and founder-readable for provenance/audit
+> with NO migration. The legacy THR-055 review flow documented below is
+> preserved for historical reference only.
 
 User-authored custom skills are governed by an immutable lifecycle ledger,
 replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 
-**Lifecycle states:** `proposed → draft → validated → in_review → approved
-→ published → assigned`. `rolled_back` and `retired` are terminal re-assignment
-states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
+**Lifecycle states (THR-136 simplified):** Agent proposals enter at
+``published`` directly after synchronous deterministic validation.
+``rejected`` is terminal (blocks all subsequent mutations). ``retired``
+and ``rolled_back`` are assignment-level terminal states only.
+``legacy_quarantined`` marks pre-lifecycle data that is read-only.
+
+**Agent authority (THR-136).** Agents submit proposals through the dedicated
+agent-only route. Submission is a single atomic step:
+
+1. **Deterministic content validation** (non-empty SKILL.md, safe paths,
+   policy class, protected slug check) with fixed validator version
+   ``THR-136/1.0.0``.
+2. **Immediate publication** — the proposal enters as ``published`` with
+   full ArtifactStore manifest/content_hash, append-only
+   authored/validation/publication events, and server-derived immutable
+   proposer_agent/task/session provenance.
+3. **ZERO side effects** — no assignment rows, eligibility/config writes,
+   workspace links/materializations, or prompt-index/session exposure are
+   created. The already-shipped Skills catalog/detail per-agent assignment
+   control is the ONLY enablement path.
+
+**Founder review routes — ALL RETIRED.** All v1/v2 mutation endpoints
+(claim, validate, submit-review, approve/reject, publish, assign,
+rollback, retire) and read endpoints (proposal queue, proposal detail)
+return **410 Gone** with machine-readable error code
+``route_retired_thr136`` and a ``replacement`` field naming the active
+surface. Agent-vs-human auth behavior is preserved (agents receive 403
+for human-only routes; humans receive 410).
+
+**No migration.** Historical proposal rows/columns/status/events/artifacts
+remain immutable and founder-readable. No column drops, semantic changes,
+or automatic status transitions are applied to existing rows.
+
+**Legacy historical reference (THR-055, superseded).** The multi-step
+Founder review flow documented below (claim → draft → validate →
+submit-review → approve/reject → publish → assign) is RETIRED. The
+proposal queue/detail UI, "Add custom skill", and "Proposals" nav
+entry are removed — old bookmarked URLs redirect to the Skills catalog.
+The catalog/detail assignment control is the sole enablement surface.
 
 **Agent authority.** Agents may submit proposals and create skills through
 two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
