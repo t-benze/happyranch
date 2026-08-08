@@ -193,6 +193,31 @@ Slice A's `received_nonlaunchable` receipt:
   consumer remains, but the routes and Slice-1-era tests stay intact for
   manual/scripted operator use).
 
+**Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen
+(post-slice-3 follow-up).** The Slice 1 paragraph above and the original
+Slice 1A mint-authority paragraph both describe `workspace_adapter_id` as
+a mint-time founder choice; that shipped, then was reversed after tracing
+where the field is actually consumed. It is read ONLY at `happyranch
+init-agent` time (`ContextBuilder._adapter()`, `runtime/orchestrator/
+context_builder.py`), to pick which workspace-bootstrap convention an
+agent's workspace uses (`.claude/settings.json` + `CLAUDE.md` vs
+`AGENTS.md`-style) — it plays no role in the connect/probe handshake
+itself, and the wrapper author is the only one who actually knows which
+convention their CLI expects. `DirectManifestV2` now carries a REQUIRED
+`workspace_adapter_id` field (one of `claude`/`codex`/`opencode`/`pi`),
+declared by the connecting wrapper in its own `POST /connect` body.
+`DirectConnectAuthorityStore.receive()` takes this as an explicit
+parameter and stores it on `direct_connect_operations`, superseding
+whatever value was set at mint time — which remains ONLY the pre-existing
+Slice-1A authority-row activation trigger (the founder's browser now sends
+a fixed internal value; the founder never picks one). Downstream
+(`get_receipt_artifacts` → projection → `AdapterEntry.workspace_adapter` +
+the bound runtime profile) is unaffected, since it already read from this
+same column. The Settings/onboarding "Workspace CLI" dropdown described
+above no longer exists — `AdapterConnect`'s form is name-only; the
+generated connect prompt instead has the wrapper author pick their own
+convention and send it in the manifest body.
+
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,
   and capabilities; submitted to a bounded stdin/stdout conformance probe; then

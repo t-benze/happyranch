@@ -129,6 +129,20 @@ shapes. The normal Settings/onboarding UI now drives Connect → Connected
 in one flow; the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.
 
+**Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**
+The Slice 1A paragraph above describes `workspace_adapter_id` as a
+mint-time founder choice; that shipped, then was reversed once tracing
+showed the field is read ONLY at `happyranch init-agent` time (to pick a
+workspace-bootstrap convention) and plays no role in the connect/probe
+handshake — the connecting wrapper is the only party that actually knows
+which convention its CLI expects. The `/connect` manifest now carries a
+REQUIRED `workspace_adapter_id` declared by the wrapper itself; `receive()`
+stores that value (not the mint-time one) onto `direct_connect_operations`,
+which projection already reads from. The mint-time value is now just a
+fixed internal trigger for the Slice-1A authority row, never founder-chosen
+and never read for real behavior. See `protocol/05b-agent-runtime.md`'s
+matching correction for the full contract.
+
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest
 (``dependency_manifest_version: 1``, non-empty ``dependencies`` list of
