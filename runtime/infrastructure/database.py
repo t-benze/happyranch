@@ -1417,6 +1417,28 @@ class Database:
             )
             self._conn.commit()
 
+        # ── THR-055 Custom Skill Creation + Eligibility: additive tables ──
+        self._migrate_eligibility_tables_if_needed()
+
+    def _migrate_eligibility_tables_if_needed(self) -> None:
+        """Additive migration: custom_skills, eligibility rules, and audit tables.
+
+        No alteration/drop/reinterpretation of existing columns.
+        Uses the eligibility_stores module's CREATE statements.
+        """
+        try:
+            from runtime.skills.lifecycle import eligibility_stores
+            eligibility_stores.migrate_eligibility(self)
+        except ImportError:
+            pass  # Module not available (shouldn't happen, but be safe)
+        except Exception as exc:
+            # Log the error but don't block startup.
+            # The tables may already exist from a previous migration.
+            import logging
+            logging.getLogger("happyranch.db").warning(
+                "Eligibility table migration: %s", exc
+            )
+
     def _migrate_session_token_usage_scope_columns(self) -> None:
         """Add scope columns and make task_id nullable for conversation usage."""
         columns = {
