@@ -1,9 +1,13 @@
-"""Tests for the TASK-1201 thread escalation guardrail.
+"""Tests for the TASK-1201 thread escalation guardrail (extended to surface
+``continue`` — docs/superpowers/specs/2026-08-08-escalation-continue-guardrail-design.md).
 
 When a manager receives a REPLY/BOOTSTRAP invocation in a thread that carries
 unresolved ``task_escalated`` system messages whose live task rows are still
-supersedable, the prompt MUST name the concrete task ids and instruct the agent
-to include ``resolves`` in any continuation dispatch payload.
+supersedable, the prompt MUST name the concrete task ids and the resolution
+options available for each: ``continue`` (resume the SAME task in place —
+only valid when the predecessor's block kind is ``"escalated"``) and
+``resolves`` (dispatch a new task naming the predecessor — valid for both
+``"escalated"`` and ``"delegated"`` block kinds).
 """
 from __future__ import annotations
 
@@ -262,6 +266,48 @@ def test_no_note_when_no_escalation_messages():
     assert note == ""
 
 
+def test_note_offers_continue_for_escalated_predecessor():
+    """A literally-ESCALATED predecessor gets both the continue CLI example
+    and the resolves JSON example."""
+    db = FakeDB({"TASK-900": _escalated_task("TASK-900")})
+    org = FakeOrgState(db=db, teams=FakeTeams({"engineering_head"}))
+    msgs = [
+        _system_msg(1, {"kind_tag": "task_escalated", "task_id": "TASK-900", "status": "escalated"}),
+    ]
+    note = _maybe_unresolved_escalations_note(
+        messages=msgs,
+        org_state=org,
+        purpose="reply",
+        invoked_agent="engineering_head",
+    )
+    assert "--task-id TASK-900 --decision continue" in note
+    assert "resolve-escalation" in note
+    assert '{"resolves": "TASK-900"}' in note
+
+
+def test_note_omits_continue_for_multiple_escalated_predecessors_labels_each():
+    """Two ESCALATED predecessors — both get a continue example, each keyed
+    to its own task id (never a comma-joined --task-id)."""
+    db = FakeDB({
+        "TASK-900": _escalated_task("TASK-900"),
+        "TASK-901": _escalated_task("TASK-901"),
+    })
+    org = FakeOrgState(db=db, teams=FakeTeams({"engineering_head"}))
+    msgs = [
+        _system_msg(1, {"kind_tag": "task_escalated", "task_id": "TASK-900", "status": "escalated"}),
+        _system_msg(2, {"kind_tag": "task_escalated", "task_id": "TASK-901", "status": "escalated"}),
+    ]
+    note = _maybe_unresolved_escalations_note(
+        messages=msgs,
+        org_state=org,
+        purpose="reply",
+        invoked_agent="engineering_head",
+    )
+    assert "--task-id TASK-900 --decision continue" in note
+    assert "--task-id TASK-901 --decision continue" in note
+    assert "--task-id TASK-900, TASK-901 --decision continue" not in note
+
+
 def test_does_not_dup_same_task_id():
     """Same TASK-900 escalated twice (e.g. revisit chain) → note names it once."""
     db = FakeDB({"TASK-900": _escalated_task("TASK-900")})
@@ -277,7 +323,11 @@ def test_does_not_dup_same_task_id():
         purpose="reply",
         invoked_agent="engineering_head",
     )
-    assert note.count("TASK-900") == 2  # one in intro, one in JSON field name
+    # Three legitimate mentions now that the note offers both resolution
+    # options for a continue-eligible (ESCALATED) predecessor: the intro
+    # sentence, the `continue` CLI example's --task-id, and the `resolves`
+    # JSON example. Still exactly one note block for the one deduped task id.
+    assert note.count("TASK-900") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +449,25 @@ def _insert_delegated_task_with_live_child(db, task_id: str = "TASK-900",
     ))
 
 
+def _insert_delegated_task_with_terminal_child(db, task_id: str = "TASK-900",
+                                                team: str = "engineering",
+                                                agent: str = "engineering_head") -> None:
+    """Insert an in_progress(delegated) task whose only child is terminal —
+    supersedable via `resolves` (Gap-B safety gate passes), but NOT
+    continue-eligible: `continue` requires the predecessor's own status to be
+    literally ESCALATED, and this task's status is IN_PROGRESS."""
+    db.insert_task(TaskRecord(
+        id=task_id, brief="delegated work", team=team,
+        assigned_agent=agent, status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    db.insert_task(TaskRecord(
+        id=f"{task_id}-child", brief="child work", team=team,
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        parent_task_id=task_id,
+    ))
+
+
 @pytest.mark.asyncio
 async def test_run_invocation_injects_guardrail_for_supersedable_escalation(
     tmp_path, monkeypatch
@@ -448,6 +517,8 @@ async def test_run_invocation_injects_guardrail_for_supersedable_escalation(
     assert "Unresolved Escalation" in cap._prompt
     assert "TASK-900" in cap._prompt
     assert '"resolves"' in cap._prompt
+    assert "--decision continue" in cap._prompt
+    assert "resolve-escalation" in cap._prompt
 
 
 @pytest.mark.asyncio
@@ -498,3 +569,120 @@ async def test_run_invocation_skips_guardrail_for_non_supersedable_predecessor(
     )
     assert cap._prompt is not None, "executor was invoked"
     assert "Unresolved Escalation" not in cap._prompt
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_guardrail_omits_continue_for_delegated_predecessor(
+    tmp_path, monkeypatch
+):
+    """A delegated (in_progress, all children terminal) predecessor is
+    supersedable via resolves but is NOT continue-eligible — continue
+    requires the predecessor's own status to be literally ESCALATED. The
+    guardrail must offer resolves without ever mentioning continue."""
+    from runtime.infrastructure.database import Database
+    from runtime.config import Settings
+    from runtime.daemon import thread_runner as runner_mod
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Delegated follow-up"))
+    db.add_thread_participant("THR-001", "engineering_head", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated",
+                         "task_id": "TASK-900",
+                         "status": "escalated"},
+    )
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="status?",
+    )
+    _insert_delegated_task_with_terminal_child(db, "TASK-900")
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="engineering_head",
+        triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    cap = _CapturingExecutor()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: cap,
+    )
+
+    org = _make_org_state_with_teams(db, tmp_path)
+    await runner_mod.run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert cap._prompt is not None, "executor was invoked"
+    assert "Unresolved Escalation" in cap._prompt
+    assert '"resolves"' in cap._prompt
+    assert "--decision continue" not in cap._prompt
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_guardrail_mixed_escalated_and_delegated(
+    tmp_path, monkeypatch
+):
+    """Two unresolved escalations in one thread: TASK-900 is literally
+    ESCALATED (continue-eligible) and TASK-901 is delegated with terminal
+    children (resolves-only). The note must label each correctly, not
+    apply continue's eligibility to both uniformly."""
+    from runtime.infrastructure.database import Database
+    from runtime.config import Settings
+    from runtime.daemon import thread_runner as runner_mod
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Mixed follow-up"))
+    db.add_thread_participant("THR-001", "engineering_head", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated",
+                         "task_id": "TASK-900",
+                         "status": "escalated"},
+    )
+    db.append_thread_message(
+        thread_id="THR-001", speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated",
+                         "task_id": "TASK-901",
+                         "status": "escalated"},
+    )
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="status on both?",
+    )
+    _insert_escalated_task(db, "TASK-900")
+    _insert_delegated_task_with_terminal_child(db, "TASK-901")
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="engineering_head",
+        triggering_seq=3, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    cap = _CapturingExecutor()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: cap,
+    )
+
+    org = _make_org_state_with_teams(db, tmp_path)
+    await runner_mod.run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    prompt = cap._prompt
+    assert prompt is not None, "executor was invoked"
+    assert "Unresolved Escalations" in prompt  # plural header
+    assert "--task-id TASK-900 --decision continue" in prompt
+    assert "--task-id TASK-901 --decision continue" not in prompt
+    assert '{"resolves": "TASK-900"}' in prompt
+    assert '{"resolves": "TASK-901"}' in prompt
