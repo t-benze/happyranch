@@ -3,29 +3,22 @@ import {
   agentProvenance,
   agentProvenanceList,
   assignmentRollup,
-  editRoutePath,
-  isEditableSkill,
-  isReadOnlySkill,
   needsAttention,
   readOnlyReason,
   skillSource,
   validationIssues,
 } from './skills-detail';
 
-describe('skills-detail — source gating', () => {
-  test('user_authored is custom + editable', () => {
+describe('skills-detail — read-only catalog', () => {
+  test('user_authored is custom with a read-only provenance rationale', () => {
     const facts = { type: 'user_authored', system_contract: false };
     expect(skillSource(facts)).toBe('custom');
-    expect(isEditableSkill(facts)).toBe(true);
-    expect(isReadOnlySkill(facts)).toBe(false);
-    expect(readOnlyReason(facts)).toBeNull();
+    expect(readOnlyReason(facts)).toMatch(/provenance and validation status/i);
   });
 
   test('managed bundled is read-only (no edit), reason omits "unassigned"', () => {
     const facts = { type: 'managed', system_contract: false };
     expect(skillSource(facts)).toBe('bundled');
-    expect(isEditableSkill(facts)).toBe(false);
-    expect(isReadOnlySkill(facts)).toBe(true);
     const reason = readOnlyReason(facts);
     expect(reason).toMatch(/managed by the platform/i);
     expect(reason).not.toMatch(/unassign/i);
@@ -34,7 +27,6 @@ describe('skills-detail — source gating', () => {
   test('system_contract is read-only + applied by context, cannot be unassigned', () => {
     const facts = { type: 'system_contract', system_contract: true };
     expect(skillSource(facts)).toBe('bundled');
-    expect(isEditableSkill(facts)).toBe(false);
     expect(readOnlyReason(facts)).toMatch(/cannot be edited or unassigned/i);
   });
 });
@@ -124,7 +116,7 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
   });
 });
 
-describe('skills-detail — rollup + edit route', () => {
+describe('skills-detail — rollup', () => {
   test('rollup counts assigned / effective / not-yet-effective', () => {
     const rows = [
       { agent: 'a', assigned: true, effective: true, state: 'effective' },
@@ -137,9 +129,5 @@ describe('skills-detail — rollup + edit route', () => {
       effective: 1,
       notYetEffective: 2,
     });
-  });
-
-  test('editRoutePath targets the Slice-4 edit screen', () => {
-    expect(editRoutePath('alpha', 'sk-x')).toBe('/orgs/alpha/skills/sk-x/edit');
   });
 });
