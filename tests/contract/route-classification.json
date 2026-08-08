@@ -139,12 +139,12 @@
     "POST /api/v1/runtime/adapters/{adapter_id}/approve",
     "POST /api/v1/runtime/adapters/{adapter_id}/reject",
     "GET /api/v1/runtime/adapters",
-    "GET /api/v1/runtime/adapters/contract-reference"
+    "GET /api/v1/runtime/adapters/contract-reference",
+    "POST /api/v1/runtime/custom-cli/{operation_id}/commit",
+    "GET /api/v1/runtime/custom-cli/status"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
-    "POST /api/v1/runtime/custom-cli/{operation_id}/commit": "THR-107 slice 1: master-bearer-authed follow-up to /connect that projects a receipt to Connected; Settings/onboarding UI wiring + TS binding lands in slice 3 (UI cutover)",
-    "GET /api/v1/runtime/custom-cli/status": "THR-107 slice 3: master-bearer-authed polling route for the founder's browser (wrapper destination + operation/projection state by intended_profile_name); TS binding lands in the same slice, next commit",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/progress": "agent callback",
     "POST /api/v1/orgs/{slug}/agents/manage": "agent enrollment via skill",

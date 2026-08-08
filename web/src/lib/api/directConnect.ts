@@ -1,0 +1,38 @@
+/** Direct custom-CLI connect API client (THR-107 slice 3).
+
+GET  /api/v1/runtime/custom-cli/status                      - wrapper destination + operation/projection state, by profile name
+POST /api/v1/runtime/custom-cli/{operation_id}/commit        - project a received receipt to a durable Connected profile
+
+Note: POST /api/v1/runtime/custom-cli/connect is intentionally NOT bound
+here — it is called by the candidate CLI itself (via the copy-pasted
+curl script), authenticated with the scoped registration token, never by
+the browser. See tests/contract/route-classification.json.
+ */
+import { request } from './client';
+
+export type ProfileState = 'planned' | 'committed' | 'failed' | null;
+
+export interface DirectConnectStatus {
+  wrapper_destination: string;
+  operation_id: string | null;
+  profile_state: ProfileState;
+}
+
+export function getStatus(intendedProfileName: string): Promise<DirectConnectStatus> {
+  return request<DirectConnectStatus>('/runtime/custom-cli/status', {
+    params: { intended_profile_name: intendedProfileName },
+  });
+}
+
+export interface CommitResponse {
+  operation_id: string;
+  profile_state: ProfileState;
+  profile_name?: string;
+  reason?: string;
+}
+
+export function commit(operationId: string): Promise<CommitResponse> {
+  return request<CommitResponse>(`/runtime/custom-cli/${operationId}/commit`, {
+    method: 'POST',
+  });
+}
