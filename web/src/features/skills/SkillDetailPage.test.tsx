@@ -190,15 +190,19 @@ describe('SkillDetailPage — detail + provenance (THR-092 Slice 2)', () => {
     expect(screen.queryByRole('button', { name: /review & apply/i })).toBeNull();
   });
 
-  test('failed validation shows a Needs attention label + plain-language issues', async () => {
+  test('failed custom record remains read-only while preserving status, provenance, and issues', async () => {
     mount(CUSTOM_FAILED.skill_id);
     await screen.findByText('vendor-comms-style');
     expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
     expect(
       screen.getByText('SKILL.md is missing a required version field.'),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /edit skill/i })).toBeNull();
-    expect(screen.queryByRole('link', { name: /re-?validate skill/i })).toBeNull();
+    expect(screen.getByText(/^Read-only$/)).toBeInTheDocument();
+    expect(screen.getByText(/provenance and validation status are retained/i)).toBeInTheDocument();
+    const main = document.querySelector('main')?.textContent ?? '';
+    expect(main).not.toMatch(/editing it keeps|fix the items|re-?validate/i);
+    expect(screen.queryByRole('link', { name: /edit|re-?validate/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /edit|re-?validate|assign|unassign/i })).toBeNull();
   });
 
   test('per-agent provenance: effective, takes-effect-next-session, and not-assigned', async () => {
