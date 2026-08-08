@@ -143,6 +143,7 @@
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
+    "POST /api/v1/runtime/custom-cli/{operation_id}/commit": "THR-107 slice 1: master-bearer-authed follow-up to /connect that projects a receipt to Connected; Settings/onboarding UI wiring + TS binding lands in slice 3 (UI cutover)",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/progress": "agent callback",
     "POST /api/v1/orgs/{slug}/agents/manage": "agent enrollment via skill",

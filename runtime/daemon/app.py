@@ -18,6 +18,7 @@ from runtime.daemon.routes import (
     auth,
     dashboard,
     direct_connect,
+    direct_connect_commit,
     dreams,
     executor_binaries,
     executors,
@@ -377,6 +378,7 @@ def create_app(state: DaemonState) -> FastAPI:
     # Slice A direct ingress is registration-token-only and must precede
     # master-bearer adapter catch-alls.
     app.include_router(direct_connect.router, prefix="/api/v1", tags=["direct-connect"])
+    app.include_router(direct_connect_commit.router, prefix="/api/v1", tags=["direct-connect"])
     # seq184 contract-reference endpoint — isolated from master-bearer auth;
     # accepts ONLY registration-token auth (loopback + hrreg_ token, adapter-purpose).
     # Read-only; does not consume the token.
