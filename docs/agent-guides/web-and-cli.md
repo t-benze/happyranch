@@ -173,11 +173,14 @@ daemon state.
 
 **Custom-adapter lifecycle management (THR-107 slices 1–3).** The ordinary
 Settings/onboarding "Connect a CLI → connect a custom CLI instead" flow is
-now instant: the founder mints a token (naming the CLI and picking its
-workspace CLI), the candidate CLI's copy-pasted script both writes its
-wrapper at the daemon-issued path and POSTs it directly, and the browser
-auto-finishes the connection the moment it lands — no PENDING wait, no
-founder-approval click, no separate Bind step. Approved-unbound recovery
+now instant: the founder mints a token by naming the CLI — nothing else —
+the candidate CLI's copy-pasted script both writes its wrapper at the
+daemon-issued path and POSTs it directly, and the browser auto-finishes the
+connection the moment it lands — no PENDING wait, no founder-approval
+click, no separate Bind step. The wrapper's own `/connect` POST declares
+its `workspace_adapter_id` (which workspace-bootstrap convention its
+agents should use); the founder never picks this — only the wrapper author
+knows which convention their CLI expects. Approved-unbound recovery
 affordances, the pending-approval queue, and the standalone Bind card were
 **removed from the ordinary UI** in slice 3 (not hidden behind an advanced
 panel) — a connect that doesn't finish shows a retryable "Connection
