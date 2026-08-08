@@ -478,12 +478,17 @@ def build_thread_delta_prompt(
     )
 
 
-def _build_executor_for_provider(provider: str, settings: Settings, paths):
+def _build_executor_for_provider(
+    provider: str, settings: Settings, paths,
+    direct_connect_store=None,
+):
     """Construct the right executor for a given provider string.
 
     Delegates to the shared registry factory (THR-052).
+    THR-107 v9 Slice 1 fix-forward (TASK-4639): accepts per-org
+    direct_connect_store for multi-org store isolation.
     """
-    return build_executor(provider, settings, paths)
+    return build_executor(provider, settings, paths, direct_connect_store=direct_connect_store)
 
 
 def _persist_thread_token_usage(
@@ -570,7 +575,10 @@ async def run_invocation(
     # Issue #568: forward AgentDef.model to executor.run for thread invocations.
     model_name: str | None = agent_def.model if agent_def else None
 
-    executor = _build_executor_for_provider(executor_name, settings, paths)
+    executor = _build_executor_for_provider(
+        executor_name, settings, paths,
+        direct_connect_store=getattr(org_state, '_direct_connect_store', None),
+    )
 
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):

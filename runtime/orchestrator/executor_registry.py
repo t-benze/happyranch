@@ -29,6 +29,12 @@ if TYPE_CHECKING:
         PiExecutor,
         AgentExecutor,
     )
+    from runtime.infrastructure.direct_connect_store import DirectConnectStore
+
+# ── THR-107 v9 Slice 1: per-registry store reference for COMMITTED-only eligibility ──
+# The authoritative Database.direct_connect store is wired to the ExecutorRegistry
+# instance during daemon startup (OrgState.load). Tests wire via set_direct_connect_store.
+# When no store is wired, eligibility fails closed (no authority source).
 
 # ---------------------------------------------------------------------------
 # Placeholders supported in custom-profile argv templates.
@@ -228,6 +234,24 @@ class ExecutorRegistry:
         self._profiles: dict[str, ExecutorProfile] = {}
         self._register_builtins()
 
+    # THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F5):
+    # Multi-org store isolation. The direct_connect_store is NEVER a
+    # process-global singleton on the registry. Instead, each OrgState
+    # carries its own store, and it is passed as a parameter to
+    # eligibility checks and build_executor.
+    # Tests may still set a global store for compatibility via the
+    # deprecated set_direct_connect_store (test-only backward compat).
+    _deprecated_direct_connect_store: "DirectConnectStore | None" = None
+
+    @classmethod
+    def set_direct_connect_store(cls, store: "DirectConnectStore | None") -> None:
+        """DEPRECATED: test-only backward compat.
+
+        Production code uses the per-OrgState store passed through
+        _resolve_custom_adapter_eligibility.
+        """
+        cls._deprecated_direct_connect_store = store
+
     def _register_builtins(self) -> None:
         """Register the four built-in executor profiles.
 
@@ -384,13 +408,17 @@ class ExecutorRegistry:
         return existing is not None
 
     @classmethod
-    def _resolve_custom_adapter_eligibility(cls, profile: ExecutorProfile) -> dict | None:
+    def _resolve_custom_adapter_eligibility(
+        cls, profile: ExecutorProfile,
+        direct_connect_store: "DirectConnectStore | None" = None,
+    ) -> dict | None:
         """Check whether a custom-adapter profile is launchable.
 
         Returns a dict with ``{executable, hash, version, contract_version}``
-        when the adapter is APPROVED, hash-verified, and on-disk executable
-        is intact. Returns ``None`` when the adapter is pending, tampered,
-        missing, or otherwise not launchable.
+        when the adapter is APPROVED, hash-verified, on-disk executable
+        is intact, AND has a durable COMMITTED direct-connect operation.
+        Returns ``None`` when the adapter is pending, tampered, missing,
+        or otherwise not launchable.
 
         This is the SINGLE central eligibility predicate consumed by:
         - ``/health/prereqs`` (present flag)
@@ -399,13 +427,36 @@ class ExecutorRegistry:
         - ``build_executor`` (resolve → validate → build)
         - ``CustomAdapterExecutor`` (pre-launch verification)
 
-        It performs the same exact resolve_adapter → hash check as the
-        launch path without side effects.
+        THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F5):
+        Multi-org store isolation. The store parameter comes from the
+        per-org OrgState, not a process-global singleton. When absent,
+        eligibility fails closed.
+
+        THR-107 v9 Slice 1: COMMITTED-only launch fence. Only a durable
+        matching COMMITTED direct_connect_operation grants eligibility.
         """
         cmd_adapter = profile.command_adapter_id or ""
         if not cmd_adapter.startswith("custom-adapter:"):
             return None
         adapter_id = cmd_adapter[len("custom-adapter:"):]
+
+        # ── THR-107 v9 Slice 1: COMMITTED-only authority fence ────────────
+        # A profile must have a durable COMMITTED direct-connect operation;
+        # no other state (YAML, registry, approval, pending, bind, recovery,
+        # token text) is accepted as launch authority.
+        # The store comes from the caller (per-org OrgState), with fallback
+        # to deprecated test-only global for backward compat.
+        store = direct_connect_store or cls._deprecated_direct_connect_store
+        if store is None:
+            # No authority source wired — fail closed. This covers:
+            # - Daemon not yet fully started
+            # - Missing Database (shouldn't happen in production)
+            # - Test environments that haven't wired a store
+            return None
+        op = store.get_committed_operation(profile.name, adapter_id)
+        if op is None:
+            return None
+
         from runtime.orchestrator.custom_adapter_registry import resolve_adapter
         entry = resolve_adapter(adapter_id)
         if entry is None:
@@ -690,6 +741,7 @@ def reset_registry() -> None:
     """Reset the registry singleton (test seam)."""
     global _registry
     _registry = ExecutorRegistry()
+    ExecutorRegistry._deprecated_direct_connect_store = None
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +753,7 @@ def build_executor(
     name: str,
     settings: Settings,
     paths: OrgPaths | None = None,
+    direct_connect_store: "DirectConnectStore | None" = None,
 ) -> "AgentExecutor":
     """Build an executor instance for a registered profile name.
 
@@ -794,13 +847,15 @@ def build_executor(
     if cmd_adapter.startswith("custom-adapter:"):
         # Central eligibility check — same predicate as health/prereqs,
         # runtime profiles, Agent-page, and CustomAdapterExecutor pre-launch.
-        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(
+            profile, direct_connect_store=direct_connect_store,
+        )
         if binding is None:
             adapter_id = cmd_adapter[len("custom-adapter:"):]
             raise ValueError(
                 f"Custom adapter {adapter_id!r} for profile {name!r} is not "
-                f"launchable: adapter is pending, tampered, missing, or not "
-                f"approved. Register, approve, and bind the adapter first."
+                f"launchable: no durable COMMITTED direct-connect operation found. "
+                f"Complete the direct connect flow for this adapter."
             )
         from runtime.orchestrator.executors import CustomAdapterExecutor
         executor = CustomAdapterExecutor(

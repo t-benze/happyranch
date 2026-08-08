@@ -218,7 +218,10 @@ async def run_dream(
     )
 
     executor_name = _prov  # already resolved above (TASK-2511)
-    executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(executor_name, settings, paths)
+    executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(
+        executor_name, settings, paths,
+        direct_connect_store=getattr(org_state, '_direct_connect_store', None),
+    )
 
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):

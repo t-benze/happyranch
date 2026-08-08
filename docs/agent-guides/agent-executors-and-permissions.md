@@ -199,6 +199,65 @@ Custom-adapter profiles do **not** require a separate ``executors.json`` record
 keyed by their profile name — the approved adapter's absolute path IS the launch
 artifact, verified by hash at every launch.
 
+**THR-107 v9 Slice 1 — COMMITTED-only launch eligibility.** As of v9,
+custom-adapter profiles additionally require a durable COMMITTED
+direct-connect operation in the SQLite operation journal. An adapter with
+APPROVED/hash-verified binding but no COMMITTED direct-connect record is
+**not launchable**. The eligibility check fails closed with an actionable,
+non-secret error before any executor subprocess (Popen) is reachable.
+The direct-connect operation journal is the sole authority source; YAML
+profile/adapter stores and the transient registry are materialized projections
+only.
+
+**Authority model (TASK-4639 fix-forward):**
+
+- **No raw-token persistence.** The ``direct_connect_operations`` table stores
+  only a domain-separated one-way CAS hash fingerprint of the authority.
+  Raw tokens are consumed in-memory for CAS computation and never persisted
+  to durable storage, audit payloads, error messages, or receipts.
+- **Per-org store isolation.** The direct-connect authority store is scoped
+  to the loading org (``OrgState._direct_connect_store``) and passed through
+  the executor build path. It is never stored on the process-global
+  ``ExecutorRegistry`` singleton. A record created in org A's store is
+  visible only to org A; an org mismatch neither grants nor withdraws
+  authority.
+- **Shipping audit writer.** All operation lifecycle events (reserve,
+  terminalize, commit, receipt verify/fail, compensation residue) write
+  audit_log rows through the Database's ``insert_audit_log_uncommitted``
+  seam using the ``config:direct_connect:<operation_id>`` task_id scope
+  prefix. Audit payloads contain no secret token material.
+- **COMMITTED receipt proof.** The atomic COMMITTED transition requires
+  every receipt to be completed with nonempty verified ``actual_state``
+  (read-back proof) and no compensation residue. Failed commits remain
+  non-launchable and preserve terminal/residue evidence.
+- **Claim-before-parse coordinator.** The ``DirectConnectCoordinator``
+  computes the CAS fingerprint from the raw token in-memory, checks replay
+  identity in durable state, then atomically reserves the operation with
+  only the CAS hash. Validation (expiry, owner match) occurs AFTER the
+  durable claim. Every failure terminalizes the same operation under its
+  stable replay identity.
+
+This is an interim serial boundary — the full submit/commit API,
+artifact binding tables, and cutover remain deferred to Slice 2/3.
+
+**Failure modes (Slice 1 interim boundary):**
+- No COMMITTED operation → ``ValueError`` with message
+  ``"no durable COMMITTED direct-connect operation found"`` — retryable after
+  completing the direct-connect flow.
+- Store unavailable (daemon not fully started, org not loaded) → fail closed,
+  same error. The per-org store is propagated through the executor build path
+  from ``OrgState._direct_connect_store``; if absent, no custom adapter is
+  launchable.
+- Terminal/malformed/expired/owner-mismatch/CAS-replay operation → fail
+  closed with durable terminal residue (never reusable).
+- Incomplete receipts (pending, failed, empty actual_state) → COMMITTED
+  transition fails; operation remains non-launchable.
+- All error messages are actionable and contain no secret token material.
+
+This guide describes the current Slice-1 behavior. The final D7B policy (Slice
+2/3) will include: direct submit/commit HTTP routes, artifact binding tables,
+dependency observation history, reconciler/cutover, and updated OpenAPI/UI.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during

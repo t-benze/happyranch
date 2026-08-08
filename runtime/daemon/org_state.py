@@ -49,6 +49,10 @@ class OrgState:
     schedule_queue: ScheduleQueue = field(default_factory=ScheduleQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
+    # THR-107 v9 Slice 1 fix-forward (TASK-4639): per-org durable
+    # direct-connect authority — NEVER process-global, NEVER overwritten
+    # by loading the next org.
+    _direct_connect_store: object | None = field(default=None, init=False)
     # Dashboard projection: per-org durable last-known-good cache, refreshed
     # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
     # from this projection; it never calls compose_dashboard_summary directly.
@@ -129,6 +133,13 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
+        # THR-107 v9 Slice 1 fix-forward (TASK-4639, reviewer F5):
+        # Multi-org store isolation. The authoritative Database.direct_connect
+        # store is scoped to this OrgState and passed to eligibility checks
+        # through the executor build path. It is NEVER written to the
+        # process-global registry, which would leak org A's authority into
+        # org B's tasks.
+        state._direct_connect_store = db.direct_connect
         # THR-107: the per-org executor_profiles config surface is removed
         # — the machine-global runtime store (executor_profiles.yaml under
         # daemon home) is the sole definition surface, loaded once at
