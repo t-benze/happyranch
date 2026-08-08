@@ -9,7 +9,7 @@ Commands:
   skills catalog validate   — validate registry + eligibility policy
   skills effective          — show effective skills for an agent
   skills policy explain     — explain why a skill is/isn't available
-  skills propose            — submit a custom-skill proposal (agent-only)
+  skills create             — create a verified-agent custom skill
 """
 
 from __future__ import annotations
@@ -589,105 +589,6 @@ def _fmt_pc(pc) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Command: skills propose --from-file <path> --session-id <session-id>
-# ---------------------------------------------------------------------------
-
-def cmd_skills_propose(args: argparse.Namespace) -> None:
-    """Submit a custom-skill proposal via the agent-only session-bound route.
-
-    Agent callers must supply only their opaque active session ID — the
-    server derives org, task_id, and agent_name from the SessionTracker
-    context. The proposal file must contain only package metadata/content
-    (slug, name, description, skill_md, version, policy_class, references,
-    assets, purpose, target_agent_suggestion). It must NOT contain org,
-    agent, task, session, proposer_agent, eligibility, or permission
-    identity — any such fields are rejected by the server.
-
-    This command does NOT send the master bearer token; it uses the
-    session-binding authentication path exclusively.
-    """
-    if not args.from_file:
-        print("error: --from-file <path> is required", file=sys.stderr)
-        sys.exit(1)
-    if not args.session_id:
-        print("error: --session-id <session-id> is required", file=sys.stderr)
-        sys.exit(1)
-
-    # Read proposal file
-    try:
-        body = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"Error reading proposal file {args.from_file}: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    # Reject forbidden identity fields in the proposal body
-    forbidden = {"org", "agent", "agent_name", "task_id", "task",
-                 "session_id", "session", "proposer_agent", "proposer",
-                 "actor", "eligibility", "permission", "identity"}
-    for key in forbidden:
-        if key in body:
-            print(
-                f"error: proposal file must not contain identity field '{key}'. "
-                f"Org, agent, task, and session identity are derived from the "
-                f"server's verified session context.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # Build a minimal token-free transport — this route uses
-    # opaque session-binding, NOT the master bearer token.
-    import httpx
-    from cli.client.client import port_file
-
-    port_path = port_file()
-    if not port_path.exists():
-        print("error: daemon not running — start it with scripts/daemon.sh start",
-              file=sys.stderr)
-        sys.exit(1)
-    port = port_path.read_text().strip()
-    base_url = f"http://127.0.0.1:{port}"
-    # Deliberately NO Authorization header — this is the agent
-    # session-binding path. bearer-free by construction.
-    token_free_client = httpx.Client(
-        base_url=base_url,
-        headers={"X-HappyRanch-Surface": "cli"},
-        timeout=30.0,
-    )
-
-    # Resolve org for routing (the server cross-checks against session context)
-    from cli._shared import resolve_org_slug
-    try:
-        r = token_free_client.get("/api/v1/orgs")
-        available = [o["slug"] for o in r.json().get("orgs", [])] if r.status_code == 200 else []
-    except Exception:
-        available = []
-    org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
-
-    resp = token_free_client.post(
-        f"/api/v1/orgs/{org}/skill-lifecycle/proposals/agent",
-        json=body,
-        params={"session_id": args.session_id},
-    )
-
-    if resp.status_code == 201:
-        result = resp.json()
-        print(f"Proposal submitted successfully.")
-        print(f"  skill_id:  {result['skill_id']}")
-        print(f"  version_id: {result['version_id']}")
-        print(f"  version:   {result['version']}")
-        print(f"  status:    {result['status']}")
-        print(f"  content_hash: {result['content_hash']}")
-        if result.get("content_artifact_key"):
-            print(f"  artifact:  {result['content_artifact_key']}")
-        print()
-        print("This proposal is now visible to the founder for review and publication.")
-    else:
-        detail = resp.json().get("detail", resp.text)
-        print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
 # Command: skills create --from-file <path> --session-id <session-id>
 # ---------------------------------------------------------------------------
 
@@ -706,9 +607,10 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     no Authorization header. The server derives identity from the session
     binding.
 
-    This is an ADDITIONAL verified-agent authoring path (§B1). The created
-    skill enters PROPOSED status and is hidden by default. B2 eligibility,
-    human editor, effective visibility, and migration/cutover are deferred.
+    This is the supported verified-agent authoring path (§B1). The created
+    skill is hidden by default. Human authoring, editing, validation,
+    assignment, and eligibility workflows are retired; no B2 surface is
+    available through this command.
     """
     if not args.from_file:
         print("error: --from-file <path> is required", file=sys.stderr)
@@ -784,8 +686,8 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
         if result.get("content_artifact_key"):
             print(f"  artifact:  {result['content_artifact_key']}")
         print()
-        print("This skill is now in PROPOSED status and hidden by default.")
-        print("It will not be visible to any agent until a founder configures eligibility (B2).")
+        print("This skill is hidden by default.")
+        print("No human authoring, editing, validation, assignment, or eligibility surface is available.")
     else:
         detail = resp.json().get("detail", resp.text)
         print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
@@ -961,22 +863,6 @@ def register(sub) -> None:
     p_exp.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
     p_exp.set_defaults(func=cmd_skills_policy_explain)
-
-    # --- skills propose --from-file <path> --session-id <session-id> ---
-    p_propose = skills_sub.add_parser(
-        "propose",
-        help="Submit a custom-skill proposal (agent-only, session-bound)",
-    )
-    p_propose.add_argument(
-        "--from-file", dest="from_file", required=True,
-        help="Path to proposal JSON file (package metadata/content only)",
-    )
-    p_propose.add_argument(
-        "--session-id", dest="session_id", required=True,
-        help="Opaque active session ID (from task context)",
-    )
-    p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
-    p_propose.set_defaults(func=cmd_skills_propose)
 
     # --- skills create --from-file <path> --session-id <session-id> ---
     p_create = skills_sub.add_parser(
