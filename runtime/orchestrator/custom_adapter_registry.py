@@ -1108,6 +1108,27 @@ def list_adapters() -> list[AdapterEntry]:
     return list(load_adapters().values())
 
 
+
+def _cleanup_binding_audit(audit_task_id: str) -> int:
+    """Delete audit rows for a specific task_id during compensation.
+
+    Opens a fresh Database connection to runtime-audit.db, deletes any
+    rows matching ``audit_task_id``, and returns the count.  Idempotent —
+    returns 0 when no rows match.  Used by both the in-function binding
+    compensation and the post-return caller-level submit compensation.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    if not audit_db_path.exists():
+        return 0
+    db = Database(audit_db_path)
+    try:
+        return db.delete_audit_logs_by_task_id(audit_task_id)
+    finally:
+        db.close()
+
+
 def _perform_adapter_profile_binding(
     adapter_id: str,
     profile_name: str,
@@ -1211,6 +1232,8 @@ def _perform_adapter_profile_binding(
         )
 
     durable_committed = False
+    audit_committed = False
+    audit_task_id = f"executor:{profile_name}"
     try:
         # 6. Write the durable runtime store first
         save_runtime_profile(profile_name, profile_cfg)
@@ -1224,7 +1247,7 @@ def _perform_adapter_profile_binding(
         db = Database(audit_db_path)
         try:
             db.insert_audit_log_uncommitted(
-                task_id=f"executor:{profile_name}",
+                task_id=audit_task_id,
                 agent="founder",
                 action="executor_registered",
                 payload={
@@ -1235,11 +1258,18 @@ def _perform_adapter_profile_binding(
                 },
             )
             db.commit()
+            audit_committed = True
         finally:
             db.close()
     except BaseException:
         if durable_committed:
             # Compensating rollback: restore both durable and in-memory surfaces
+            if audit_committed:
+                # Delete any committed audit rows
+                try:
+                    _cleanup_binding_audit(audit_task_id)
+                except Exception:
+                    pass
             if profile_name in pre_request_profiles:
                 save_runtime_profile(profile_name, pre_request_profiles[profile_name])
             else:
@@ -1260,6 +1290,8 @@ def _perform_adapter_profile_binding(
         "kind": profile.kind,
         "status": "connected",
         "adapter_id": adapter_id,
+        "audit_committed": True,
+        "audit_task_id": audit_task_id,
     }
 
 
@@ -1508,6 +1540,469 @@ def approve_adapter(
         return approved_entry
     finally:
         release_store_lock()
+
+
+def submit_and_connect_adapter(
+    executable: str,
+    version: str,
+    capabilities: list[str],
+    workspace_adapter: str = "pi",
+    dependency_manifest_version: int | None = None,
+    dependencies: list[dict] | None = None,
+    intended_profile_name: str | None = None,
+) -> AdapterEntry:
+    """Unified scoped submit-and-connect transaction (THR-107 seq363).
+
+    This is the SINGLE production-seam transaction for the scoped adapter
+    submission path (``POST /runtime/adapters/submit``).  Under one
+    ``acquire_store_lock()`` the server:
+
+    1. Validates every identity/conformance/path/dependency/profile fact.
+    2. Compares an existing durable adapter/profile snapshot fully before
+       considering idempotent success.
+    3. Creates/adopts the adapter as PENDING, immediately approves it,
+       and binds the intended custom profile — all in ONE lock scope.
+    4. Mutates the adapter store, the runtime profile store, the in-memory
+       registry, and the audit log.
+
+    On ANY failure (ValueError, OSError, RuntimeError, …) the function
+    restores the complete pre-request state:
+    - Adapter entry removed (if newly created)
+    - Profile binding removed from durable store + in-memory registry
+    - Audit/registry residues cleaned
+
+    Idempotent for the same durable snapshot: when the exact adapter
+    (same executable, hash, version, capabilities, contract_version,
+    workspace_adapter, dependency_manifest, dependencies) is already
+    APPROVED and the intended profile is already bound, the existing
+    connected entry is returned without mutation or token consumption.
+    A body with different version/capabilities/dependencies/profile facts
+    MUST fail closed — never silently return already_bound on mismatch.
+
+    Compatibility: legacy PENDING, APPROVED/unbound, APPROVED/bound, and
+    generic records are NEVER silently auto-bound, launched, or deleted.
+
+    Returns the connected ``AdapterEntry`` with ``profile_bound`` set.
+    """
+    if not intended_profile_name or not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
+        raise ValueError("intended_profile_name must be a non-empty string")
+    intended_profile_name = intended_profile_name.strip()
+
+    # ── Step 0: canonical-path enforcement ────────────────────────────
+    adapter_id = generate_adapter_id(f"{intended_profile_name}-adapter")
+    _canonical_dir, _required_path = compute_canonical_adapter_path(adapter_id)
+    required_str = str(_required_path)
+
+    if not executable or not os.path.isabs(executable):
+        raise ValueError(
+            f"executable must be an absolute path, got {executable!r}. "
+            f"The scoped adapter wrapper must be created at the exact "
+            f"canonical path: {required_str}."
+        )
+    if _has_traversal_spelling_registry(executable):
+        raise ValueError(
+            f"executable path contains traversal spelling: "
+            f"{executable!r}. The scoped adapter wrapper must be "
+            f"created at exactly the canonical path: {required_str}."
+        )
+    if executable != required_str:
+        raise ValueError(
+            f"Scoped adapter {adapter_id!r} requires the executable at the "
+            f"server-owned canonical path: {required_str}. "
+            f"Received: {executable!r}."
+        )
+
+    # ── Step 1: validate inputs (no side effects) ─────────────────────
+    executable_path = validate_executable_path(executable)
+    version = validate_version(version)
+    if not version:
+        raise ValueError("version must be a non-empty string after trimming whitespace")
+    capabilities = validate_capabilities(capabilities)
+    workspace_adapter = validate_workspace_adapter(workspace_adapter)
+    dep_manifest_version, normalized_deps = validate_dependency_manifest(
+        dependency_manifest_version, dependencies
+    )
+
+    # Post-resolve canonical recheck
+    if str(executable_path) != required_str:
+        raise ValueError(
+            f"Scoped adapter {adapter_id!r} requires the executable at the "
+            f"server-owned canonical path: {required_str}. "
+            f"Received: {executable_path}."
+        )
+
+    # ── Step 2: compute SHA-256 ───────────────────────────────────────
+    file_hash = compute_sha256(str(executable_path))
+
+    # ── Step 3: conformance probe (no durable residue on failure) ─────
+    conformance_output = run_conformance_probe(str(executable_path), adapter_id)
+    if "token_metering" in capabilities:
+        if conformance_output.token_usage is None:
+            raise ValueError(
+                f"Adapter {adapter_id!r} declares token_metering capability "
+                f"but the conformance probe returned no token_usage."
+            )
+        tu = conformance_output.token_usage
+        if (tu.input_tokens is None and tu.output_tokens is None
+                and tu.cache_read_tokens is None and tu.cache_creation_tokens is None
+                and tu.reasoning_tokens is None):
+            raise ValueError(
+                f"Adapter {adapter_id!r} declares token_metering capability "
+                f"but the conformance probe returned token_usage with all "
+                f"accounting fields null."
+            )
+
+    # ── Step 4: acquire lock — EVERYTHING below is atomic ─────────────
+    acquire_store_lock()
+    adapter_created = False
+    pre_existing_entry = None  # Snapshot of pre-existing adapter if any
+    profile_bound_name: str | None = None
+    pre_request_profiles: dict[str, dict] = {}
+    pre_request_in_memory = None
+    audit_committed = False
+    audit_task_id: str | None = None
+
+    try:
+        from runtime.orchestrator.runtime_executor_store import (
+            load_runtime_profiles,
+            remove_runtime_profile,
+            save_runtime_profile,
+        )
+        from runtime.orchestrator.executor_registry import (
+            ExecutorRegistry,
+            get_registry,
+        )
+        from runtime.infrastructure.database import Database
+        from runtime.runtime import daemon_home
+
+        registry = get_registry()
+
+        # Snapshot pre-request state BEFORE any mutation for compensation
+        pre_request_profiles = dict(load_runtime_profiles())
+        pre_request_in_memory = registry.get_profile(intended_profile_name)
+        pre_existing_entry = get_adapter(adapter_id)
+
+        # ── 4a: check for already-bound profile (idempotent replay) ──
+        runtime_profiles = pre_request_profiles
+        bound_profile = _find_active_profile_bound(adapter_id, runtime_profiles)
+
+        if bound_profile is not None and pre_existing_entry is not None:
+            # Full snapshot comparison: EVERY material fact must match.
+            _entry_deps = pre_existing_entry.dependencies or []
+            _req_deps = normalized_deps or []
+            if (pre_existing_entry.executable == str(executable_path)
+                    and pre_existing_entry.executable_hash == file_hash
+                    and pre_existing_entry.version == version
+                    and pre_existing_entry.capabilities == capabilities
+                    and pre_existing_entry.contract_version == 1
+                    and pre_existing_entry.workspace_adapter == workspace_adapter
+                    and pre_existing_entry.dependency_manifest_version == dep_manifest_version
+                    and _entry_deps == _req_deps
+                    and pre_existing_entry.status == "approved"
+                    and bound_profile == intended_profile_name):
+                # Idempotent replay: exact same snapshot, already connected.
+                logger.info(
+                    "submit_and_connect_adapter: adapter %r already connected "
+                    "with identical snapshot — idempotent success", adapter_id
+                )
+                pre_existing_entry.profile_bound = {  # type: ignore[attr-defined]
+                    "profile_name": bound_profile,
+                    "command_adapter_id": f"custom-adapter:{adapter_id}",
+                    "workspace_adapter_id": workspace_adapter,
+                    "kind": "custom",
+                    "status": "connected",
+                    "adapter_id": adapter_id,
+                }
+                return pre_existing_entry
+
+            # Bound but snapshot differs → fail closed.
+            raise ValueError(
+                f"Profile {bound_profile!r} is already bound to adapter "
+                f"{adapter_id!r} but the submitted snapshot differs from "
+                f"the existing durable entry. Remove the profile first "
+                f"(Settings → Executors → Custom CLIs), then retry with "
+                f"the updated snapshot."
+            )
+
+        # Bound profile exists but adapter entry is missing — inconsistent.
+        if bound_profile is not None:
+            raise ValueError(
+                f"Profile {bound_profile!r} is bound to adapter "
+                f"{adapter_id!r} but the adapter entry is missing. "
+                f"Remove the profile first (Settings → Executors → "
+                f"Custom CLIs), then retry."
+            )
+
+        # ── 4b: check active profile conflict ─────────────────────────
+        bound_profile_check = _find_active_profile_bound(adapter_id, runtime_profiles)
+        if bound_profile_check is not None:
+            raise ValueError(
+                f"Cannot register adapter {adapter_id!r}: the runtime "
+                f"profile {bound_profile_check!r} is currently bound to it. "
+                f"Remove the profile first then retry."
+            )
+
+        # ── 4c: create/adopt adapter as PENDING ───────────────────────
+        now = datetime.now(timezone.utc).isoformat()
+        entry = AdapterEntry(
+            id=adapter_id,
+            name=intended_profile_name,
+            executable=str(executable_path),
+            executable_hash=file_hash,
+            version=version,
+            capabilities=capabilities,
+            contract_version=1,
+            workspace_adapter=workspace_adapter,
+            status="pending",
+            registered_at=now,
+            registered_by=f"adapter-submission:{intended_profile_name}",
+            approved_at=None,
+            approved_by=None,
+            intended_profile_name=intended_profile_name,
+            dependency_manifest_version=dep_manifest_version,
+            dependencies=normalized_deps,
+        )
+
+        # Re-registration guard
+        if pre_existing_entry is not None:
+            _entry_deps2 = pre_existing_entry.dependencies or []
+            if (pre_existing_entry.executable == str(executable_path) and
+                    pre_existing_entry.executable_hash == file_hash and
+                    pre_existing_entry.version == version and
+                    pre_existing_entry.capabilities == capabilities and
+                    pre_existing_entry.workspace_adapter == workspace_adapter and
+                    pre_existing_entry.dependency_manifest_version == dep_manifest_version and
+                    _entry_deps2 == (_req_deps := normalized_deps or [])):
+                entry = AdapterEntry(
+                    id=entry.id, name=entry.name,
+                    executable=entry.executable, executable_hash=entry.executable_hash,
+                    version=entry.version, capabilities=entry.capabilities,
+                    contract_version=entry.contract_version,
+                    workspace_adapter=entry.workspace_adapter,
+                    status="pending",
+                    registered_at=pre_existing_entry.registered_at,
+                    registered_by=pre_existing_entry.registered_by,
+                    approved_at=None, approved_by=None,
+                    intended_profile_name=intended_profile_name,
+                    dependency_manifest_version=dep_manifest_version,
+                    dependencies=normalized_deps,
+                )
+
+        _save_adapter_locked(entry)
+        adapter_created = True
+
+        # ── 4d: approve the adapter (transition PENDING → APPROVED) ───
+        approved_entry = AdapterEntry(
+            id=entry.id, name=entry.name,
+            executable=entry.executable, executable_hash=entry.executable_hash,
+            version=entry.version, capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            status="approved",
+            registered_at=entry.registered_at, registered_by=entry.registered_by,
+            approved_at=now, approved_by=f"adapter-submission:{intended_profile_name}",
+            intended_profile_name=intended_profile_name,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
+        )
+        _save_adapter_locked(approved_entry)
+
+        # ── 4e: bind the profile ──────────────────────────────────────
+        # Set profile_bound_name BEFORE the call so that compensation
+        # can clean up the profile even when the call partially commits
+        # (durable save + audit) then raises.
+        profile_bound_name = intended_profile_name
+        audit_task_id = f"executor:{intended_profile_name}"
+        profile_bind_result = _perform_adapter_profile_binding(
+            adapter_id=adapter_id,
+            profile_name=intended_profile_name,
+            workspace_adapter=workspace_adapter,
+        )
+        audit_committed = profile_bind_result.get("audit_committed", False)
+
+        # ── Success: attach binding result ─────────────────────────────
+        approved_entry.profile_bound = profile_bind_result  # type: ignore[attr-defined]
+        logger.info(
+            "submit_and_connect_adapter: adapter %r registered, approved, "
+            "and bound to profile %r in one transaction",
+            adapter_id, intended_profile_name,
+        )
+        return approved_entry
+
+    except BaseException:
+        # ── Full compensation on ANY failure ───────────────────────────
+        # Restore pre-request state: adapter, profile, registry, audit.
+        _compensate_submit_failure(
+            adapter_id=adapter_id,
+            adapter_created=adapter_created,
+            pre_existing_entry=pre_existing_entry,
+            profile_bound_name=profile_bound_name,
+            pre_request_profiles=pre_request_profiles,
+            audit_committed=audit_committed,
+            audit_task_id=audit_task_id,
+        )
+        raise
+    finally:
+        release_store_lock()
+
+
+def _compensate_submit_failure(
+    adapter_id: str,
+    adapter_created: bool,
+    pre_existing_entry: AdapterEntry | None,
+    profile_bound_name: str | None,
+    pre_request_profiles: dict[str, dict],
+    audit_committed: bool = False,
+    audit_task_id: str | None = None,
+) -> None:
+    """Restore complete pre-request state after a submit-and-connect failure.
+
+    Compensates: adapter entry, profile binding, registry, audit residues.
+    Called from inside the lock scope — lock is still held.
+
+    When ``audit_committed`` is True, deletes any audit rows that were
+    committed before the failure occurred.  Audit cleanup failures are
+    logged but do not suppress the original error or block the rest of
+    in-lock compensation.
+    """
+    audit_cleanup_failed = False
+    try:
+        from runtime.orchestrator.runtime_executor_store import (
+            load_runtime_profiles,
+            remove_runtime_profile,
+            save_runtime_profile,
+        )
+        from runtime.orchestrator.executor_registry import get_registry
+
+        # 0. Delete any committed audit rows BEFORE restoring
+        #    adapter/profile state (cleanest rollback order).
+        if audit_committed and audit_task_id:
+            try:
+                _cleanup_binding_audit(audit_task_id)
+            except Exception as exc:
+                audit_cleanup_failed = True
+                logger.error(
+                    "submit_and_connect_adapter: audit cleanup failed for "
+                    "task_id=%r during compensation: %s", audit_task_id, exc,
+                )
+
+        # 1. Restore the adapter entry
+        if adapter_created:
+            current = load_adapters()
+            if pre_existing_entry is not None:
+                current[adapter_id] = pre_existing_entry
+            else:
+                current.pop(adapter_id, None)
+            _save_all_adapters(current)
+
+        # 2. Restore profile binding
+        if profile_bound_name is not None:
+            registry = get_registry()
+            if profile_bound_name in (pre_request_profiles or {}):
+                save_runtime_profile(profile_bound_name, pre_request_profiles[profile_bound_name])
+            else:
+                remove_runtime_profile(profile_bound_name)
+                try:
+                    registry.unregister_custom_profile(profile_bound_name)
+                except Exception:
+                    pass
+
+        logger.warning(
+            "submit_and_connect_adapter: compensated failure for %r "
+            "(adapter_created=%s, profile_bound=%s, audit_committed=%s, "
+            "audit_cleanup_failed=%s)",
+            adapter_id, adapter_created, profile_bound_name,
+            audit_committed, audit_cleanup_failed,
+        )
+    except Exception as exc:
+        logger.error(
+            "submit_and_connect_adapter: compensation itself failed for %r: %s",
+            adapter_id, exc,
+        )
+
+
+def undo_submit_and_connect(
+    adapter_id: str,
+    profile_name: str,
+    audit_task_id: str | None = None,
+) -> None:
+    """Undo a successfully committed submit_and_connect_adapter.
+
+    Called from the route when token finalization (``commit_runtime``)
+    returns False or raises — the adapter/profile/registry/audit state
+    is already committed but the scoped registration token was not
+    consumed.  This function compensates by removing the adapter,
+    unbinding the profile, unregistering from the in-memory registry,
+    and deleting any committed audit rows.
+
+    Acquires the adapter store lock internally — the caller does NOT
+    hold the lock (``submit_and_connect_adapter`` released it).
+
+    Failures during compensation are logged but do not raise — the
+    server will return 500 to the client with a diagnostic message.
+    """
+    from runtime.orchestrator.runtime_executor_store import (
+        load_runtime_profiles,
+        remove_runtime_profile,
+    )
+    from runtime.orchestrator.executor_registry import get_registry
+
+    logger.warning(
+        "undo_submit_and_connect: compensating adapter %r profile %r "
+        "(audit_task_id=%s)", adapter_id, profile_name, audit_task_id,
+    )
+
+    # 1. Delete audit rows (before lock — independent DB)
+    if audit_task_id:
+        try:
+            _cleanup_binding_audit(audit_task_id)
+        except Exception as exc:
+            logger.error(
+                "undo_submit_and_connect: audit cleanup failed: %s", exc,
+            )
+
+    # 2. Acquire lock and undo adapter + profile
+    acquire_store_lock()
+    try:
+        # Remove adapter entry
+        current = load_adapters()
+        current.pop(adapter_id, None)
+        _save_all_adapters(current)
+
+        # Unbind profile
+        profiles = dict(load_runtime_profiles())
+        if profile_name in profiles:
+            remove_runtime_profile(profile_name)
+        # Unregister from in-memory registry
+        try:
+            registry = get_registry()
+            registry.unregister_custom_profile(profile_name)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error(
+            "undo_submit_and_connect: adapter/profile compensation failed: %s",
+            exc,
+        )
+    finally:
+        release_store_lock()
+
+
+def _save_all_adapters(entries: dict[str, AdapterEntry]) -> None:
+    """Overwrite the full adapter store (caller must hold the lock)."""
+    import yaml as _yaml
+    # Derive the store path from daemon home
+    override = os.environ.get("HAPPYRANCH_DAEMON_HOME")
+    from runtime.runtime import daemon_home as _daemon_home
+    base = Path(override) if override else _daemon_home()
+    path = base / "adapters.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, dict] = {}
+    for key, entry in entries.items():
+        data[key] = entry.to_dict()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(_yaml.safe_dump(data, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+    os.replace(str(tmp), str(path))
 
 
 def resolve_adapter(adapter_id: str) -> AdapterEntry | None:

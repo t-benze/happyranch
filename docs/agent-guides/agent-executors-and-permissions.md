@@ -233,12 +233,32 @@ validates ``body.executable`` against this server-owned canonical target:
 - Existing APPROVED adapters at arbitrary locations remain hash-valid and
   launchable — no automatic migration, invalidation, or rewriting occurs.
 
-**Adapter lifecycle:**
+**Adapter lifecycle (two paths):**
+
+There are two registration paths with different lifecycle outcomes:
+
+**A. Scoped submission — normal Connect path (THR-107 seq363):**
 
 0. **Fetch contract-reference** — candidate CLI fetches
    ``GET /api/v1/runtime/adapters/contract-reference`` with the scoped
    adapter-purpose ``hrreg_`` token to learn the exact
-   ``AdapterInput``/``AdapterOutput`` JSON Schemas (loopback-only, read-only).
+   ``AdapterInput``/``AdapterOutput`` JSON Schemas and the server-owned
+   canonical directory/required-executable-path (loopback-only, read-only,
+   token is NOT consumed).
+1. **Submit & Connect** — candidate CLI writes the conformance-passing adapter
+   wrapper at the exact canonical ``required_executable_path`` returned by
+   contract-reference, then submits via ``POST /runtime/adapters/submit``.
+   The server validates every identity/conformance/path/dependency/profile
+   fact and **atomically creates, approves, and binds** the intended custom
+   profile in a single coherent transaction. The normal user-visible result
+   is **Connected** (``eligibility: already_bound``), with no PENDING
+   approval wait, no approve action, and no separate bind action.
+   Idempotent only for the same durable snapshot/profile binding;
+   incompatible replays/conflicts fail closed.
+
+**B. Master-bearer registration — legacy/operator path:**
+
+0. **Fetch contract-reference** — same as above.
 1. **Register** — operator submits executable path, version, capabilities via
    ``POST /api/v1/runtime/adapters/register`` → PENDING adapter entry with
    SHA-256 hash computed at registration.
@@ -250,20 +270,18 @@ validates ``body.executable`` against this server-owned canonical target:
    path, hash, version, capabilities, and contract_version. **When the adapter
    has an ``intended_profile_name``**, the server atomically approves the snapshot
    AND creates/binds that named custom profile (``command_adapter_id: custom-adapter:<id>``)
-   in one transaction — no client-side bind follow-up is needed. Adapters without
-   an intended profile (master-bearer registration) are approved without auto-binding
-   and retain explicit advanced Bind recovery via Settings.
+   in one transaction. Adapters without an intended profile are approved without
+   auto-binding and retain explicit advanced Bind recovery via Settings.
 4. **Advanced Bind recovery** — for approved adapters without an intended profile
    (``recovery_ready`` eligibility) or where atomic binding did not succeed
    (``ready_to_bind`` eligibility), the founder provides an explicit profile name
    through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. In the ordinary
    Settings UI this recovery affordance lives inside **Settings → Executors →
-   Custom CLIs**, not in a separate adapter list or the pending queue. Only
-   APPROVED adapters with hash-verified artifacts can bind. The registration
-   route rejects binding to PENDING, unknown, removed, tampered, non-regular, or
-   non-executable adapters before any durable mutation, registry mutation, audit
-   write, or token consumption. **This path is secondary to atomic
-   approve-and-bind (seq237).**
+   Custom CLIs**, not in a separate adapter list. This path is secondary to
+   scoped submission (path A) and atomic approve-and-bind (seq237).
+
+**Both paths share:**
+
 5. **Remove (THR-107)** — the authenticated ``DELETE /api/v1/runtime/adapters/{adapter_id}``
    route still exists, but the ordinary Settings UI no longer exposes a standalone
    Custom Adapters list. Adapter-backed custom CLIs are managed inside
@@ -277,6 +295,12 @@ validates ``body.executable`` against this server-owned canonical target:
    durably removed and an audit entry (scope ``adapter:<id>``, action
    ``adapter_removed``) is written. The adapter's on-disk executable is never
    touched.
+
+**Compatibility:** Legacy PENDING, APPROVED/unbound, APPROVED/bound, and
+generic records are preserved unchanged — never silently auto-bound,
+auto-launched, or deleted. The master-bearer approve/reject/bind routes
+remain as authenticated operator-only recovery paths, hidden from normal
+Settings and onboarding UI.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before

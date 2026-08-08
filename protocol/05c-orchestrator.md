@@ -90,8 +90,18 @@ contract surface for external consumers** is the versioned
 which returns server-generated JSON Schemas. **THR-107 seq339/340:** the
 contract-reference response now also returns ``canonical_directory`` and
 ``required_executable_path`` — the daemon-managed canonical adapter path.
-Scoped submissions (``POST /runtime/adapters/submit``) enforce that the
-wrapper is at exactly this path; the registration seam independently rechecks.
+Scoped submissions (``POST /runtime/adapters/submit``, **THR-107 seq363**)
+enforce that the wrapper is at exactly this path; the registration seam
+independently rechecks. The scoped submission is a production-seam direct
+register-and-connect transaction: after validating all identity/conformance/
+path/dependency/profile facts, the server atomically creates the adapter,
+approves it, and binds the intended custom profile in a single coherent step.
+The normal user-visible result is Connected (``eligibility: already_bound``),
+with no PENDING approval wait, approve action, or separate bind action.
+Idempotent only for the same durable snapshot/profile binding; incompatible
+replays/conflicts fail closed. The master-bearer ``/register`` route remains a
+separate legacy/operator path that creates PENDING entries requiring founder
+approval.
 The normative prose is the signed
 architecture §2. Key invariants: exact approved artifact SHA-256 verified at
 EVERY launch (including throttle retries — the check is inside the per-attempt

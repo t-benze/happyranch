@@ -745,7 +745,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(promptText).toContain('Do NOT place');
   });
 
-  test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
+  test('adapter-backed: prompt includes truthful lifecycle — direct connect, no founder approval', async () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
       .mockResolvedValue({ token: 'hr_tok_LIFECYCLE', expires_at: Date.now() / 1000 + 1800 });
@@ -757,10 +757,10 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
 
     await screen.findByLabelText(/waiting for adapter submission/i);
     const promptText = document.querySelector('pre')?.textContent || '';
-    // PENDING, not auto-approved
-    expect(promptText).toContain('exact PENDING adapter');
-    expect(promptText).toContain('Founder approval');
-    expect(promptText).toContain('No auto-approval');
+    // seq363: direct connect, no PENDING approval wait
+    expect(promptText).toContain('directly registers and connects');
+    expect(promptText).toContain('No founder approval wait');
+    expect(promptText).not.toContain('PENDING');
   });
 
   test('adapter-backed: prompt includes exact I/O constraints', async () => {
@@ -820,7 +820,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
   });
 
   test(
-    'adapter lifecycle: submitted PENDING → server-confirmed already_bound → Connected (no client bind)',
+    'adapter lifecycle: direct connect → server-confirmed already_bound → Connected (no client bind, seq363)',
     async () => {
       const user = userEvent.setup();
       const profileName = 'onb-lifecycle-cli';
@@ -834,7 +834,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       const { adapters: adaptersApi } = await import('@/lib/api');
       const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
 
-      // Mock the adapter poll: return PENDING first.
+      // seq363: scoped submission directly connects — the adapter appears as
+      // approved+already_bound immediately after the CLI submits.
       vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
         return {
           id: adapterId,
@@ -845,13 +846,13 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           capabilities: [],
           contract_version: 1,
           workspace_adapter: 'pi',
-          status: 'pending',
+          status: 'approved',
           registered_at: new Date().toISOString(),
           registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
+          approved_at: new Date().toISOString(),
+          approved_by: 'test',
           intended_profile_name: profileName,
-          eligibility: null,
+          eligibility: 'already_bound',
           dependency_manifest_version: null,
           dependencies: [],
         };
@@ -863,34 +864,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       await user.type(await screen.findByLabelText(/name this cli/i), profileName);
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-      // Submitted → awaiting approval (poll sees PENDING)
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
-      expect(screen.getByText(adapterId)).toBeInTheDocument();
-
-      // Transition: server confirms atomically bound (seq237) — onboarding
-      // does NOT call bindAdapterProfile; it reads the server-authoritative
-      // eligibility field directly.
-      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
-        id: adapterId,
-        name: profileName,
-        executable: '/tmp/test-adapter',
-        executable_hash: 'abc123',
-        version: '1.0.0',
-        capabilities: [],
-        contract_version: 1,
-        workspace_adapter: 'pi',
-        status: 'approved',
-        registered_at: new Date().toISOString(),
-        registered_by: 'test',
-        approved_at: new Date().toISOString(),
-        approved_by: 'founder',
-        intended_profile_name: profileName,
-        eligibility: 'already_bound',
-        dependency_manifest_version: null,
-        dependencies: [],
-      });
-
-      // Connected card — the onboarding mount uses a heading for the connected state.
+      // seq363: Connected immediately — the hook polls and sees already_bound.
       await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
       // The onboarding connected subtitle mentions managing from Settings.
       expect(
@@ -927,13 +901,13 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           capabilities: [],
           contract_version: 1,
           workspace_adapter: 'pi',
-          status: 'pending',
+          status: 'approved',
           registered_at: new Date().toISOString(),
           registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
+          approved_at: new Date().toISOString(),
+          approved_by: 'test',
           intended_profile_name: profileName,
-          eligibility: null,
+          eligibility: 'already_bound',
           dependency_manifest_version: null,
           dependencies: [],
         };
@@ -945,7 +919,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       await user.type(await screen.findByLabelText(/name this cli/i), profileName);
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      await screen.findByText(/your custom cli is connected via an approved adapter/i, {}, { timeout: 10000 });
 
       // Switch poll: approved but eligibility is 'ready_to_bind', not 'already_bound'.
       // The server has NOT bound the profile yet — onboarding MUST NOT false-connect.
@@ -1003,13 +977,13 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           capabilities: [],
           contract_version: 1,
           workspace_adapter: 'pi',
-          status: 'pending',
+          status: 'approved',
           registered_at: new Date().toISOString(),
           registered_by: 'test',
-          approved_at: null,
-          approved_by: null,
+          approved_at: new Date().toISOString(),
+          approved_by: 'test',
           intended_profile_name: profileName,
-          eligibility: null,
+          eligibility: 'already_bound',
           dependency_manifest_version: null,
           dependencies: [],
         };
@@ -1021,7 +995,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       await user.type(await screen.findByLabelText(/name this cli/i), profileName);
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      await screen.findByText(/your custom cli is connected via an approved adapter/i, {}, { timeout: 10000 });
 
       // Poll with approved but NOT already_bound — the old code would have
       // tried to bind here. Verify no bind UI elements appear.
@@ -1250,10 +1224,10 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
         return {
           id: adapterId, name: profileName, executable: '/tmp/test-adapter',
           executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
           registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null,
-          intended_profile_name: profileName, eligibility: null,
+          approved_at: new Date().toISOString(), approved_by: 'test',
+          intended_profile_name: profileName, eligibility: 'already_bound',
           dependency_manifest_version: null,
           dependencies: [],
         };
@@ -1266,7 +1240,7 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
       // Transition to submitted via PENDING poll.
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      await screen.findByText(/your custom cli is connected via an approved adapter/i, {}, { timeout: 10000 });
       expect(screen.getByText(adapterId)).toBeInTheDocument();
 
       // No recovery Bind UI during submitted state.
@@ -1320,10 +1294,10 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
         return {
           id: adapterId, name: profileName, executable: '/tmp/test-adapter',
           executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
           registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null,
-          intended_profile_name: profileName, eligibility: null,
+          approved_at: new Date().toISOString(), approved_by: 'test',
+          intended_profile_name: profileName, eligibility: 'already_bound',
           dependency_manifest_version: null,
           dependencies: [],
         };
@@ -1335,7 +1309,7 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
       await user.type(await screen.findByLabelText(/name this cli/i), profileName);
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      await screen.findByText(/your custom cli is connected via an approved adapter/i, {}, { timeout: 10000 });
 
       // Switch poll: server confirms atomically bound (seq237).
       vi.mocked(adaptersApi.getAdapter).mockResolvedValue({

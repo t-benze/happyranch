@@ -53,6 +53,15 @@ export interface AdapterEntry {
   dependency_manifest_version: number | null;
   /** THR-107 seq244: declared child executable dependencies. */
   dependencies: Array<{ executable: string; sha256: string }>;
+  /** THR-107 seq363: profile binding result (present when bound via submit/approve). */
+  profile_bound?: {
+    profile_name: string;
+    command_adapter_id: string;
+    workspace_adapter_id: string;
+    kind: string;
+    status: string;
+    adapter_id: string;
+  } | null;
 }
 
 export interface AdapterListResponse {

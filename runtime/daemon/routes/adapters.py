@@ -168,6 +168,14 @@ class AdapterEntryResponse(BaseModel):
     intended_profile_name: str | None = None
     dependency_manifest_version: int | None = None
     dependencies: list[dict] = []
+    profile_bound: dict | None = Field(
+        None,
+        description=(
+            "Profile binding result. Present when the adapter is bound to a profile. "
+            "Includes profile_name, command_adapter_id, workspace_adapter_id, kind, "
+            "status, and adapter_id."
+        ),
+    )
     eligibility: str | None = Field(
         None,
         description=(
@@ -254,7 +262,7 @@ class ContractReferenceResponse(BaseModel):
     submission: dict = Field(..., description="Submit endpoint metadata (method, path, content-type, body schema)")
     dependency_manifest: dict = Field(..., description="Dependency manifest schema and rules")
     token_metering: dict = Field(..., description="Token-metering expectations for adapters declaring the capability")
-    reapproval_rule: str = Field(..., description="Rule: any change requires re-submission and founder re-approval")
+    reapproval_rule: str = Field(..., description="Rule: re-submission uses the same submit-and-connect path for scoped tokens, or master-bearer approval for the legacy operator path")
     probe: dict = Field(..., description="Minimal self-test input/output fixture for the conformance probe")
     canonical_directory: str = Field(
         ..., description="Absolute canonical path to the daemon-managed adapters directory"
@@ -833,31 +841,40 @@ def submit_adapter(
     request: Request,
     body: AdapterSubmitRequest,
 ) -> AdapterEntryResponse:
-    """Submit a custom adapter executable via a scoped registration token.
+    """Submit and directly connect a custom adapter via a scoped token.
 
     Loopback-only, registration-token-scoped adapter submission endpoint
-    (THR-107 seq141). The candidate CLI submits its v1 adapter wrapper
-    executable for a specific intended profile.
+    (THR-107 seq141 + seq363). The candidate CLI submits its v1 adapter
+    wrapper executable for a specific intended profile.
+
+    **seq363**: The scoped submission is a production-seam direct
+    register-and-connect transaction.  After validating all
+    identity/conformance/path/dependency/profile facts, the server
+    atomically creates the adapter, approves it, and binds the intended
+    custom profile — all in a single coherent step.  The normal
+    user-visible result is Connected (eligibility: already_bound), with
+    no PENDING approval wait, approve action, or separate bind action.
+
+    Idempotent only for the same durable snapshot/profile binding:
+    a repeat submission of an already-connected adapter returns the
+    existing connected state without consuming the token.  Incompatible
+    replays/conflicts fail closed.
 
     Gating checks (exact order, every rejection returns 422 with a
     concrete error detail):
-    1. Request is loopback (127.0.0.1, ::1, localhost)
-       (checked by require_registration_token dependency)
-    2. Token is a valid ``hrreg_`` runtime registration token
-       (checked by require_registration_token dependency)
+    1. Request is loopback (checked by require_registration_token)
+    2. Valid ``hrreg_`` runtime registration token (same dependency)
     3. Token purpose is exactly ``'adapter'``
     4. Token's intended_profile_name is present and non-empty
     5. Conformance challenge is complete
     6. Server-derived adapter id (``<profile>-adapter``) is computed
-       — the candidate request MUST NOT choose a different target
-    7. The submission creates/re-registers ONLY that exact adapter,
-       ONLY as PENDING
+    7. Body.executable matches the server-owned canonical path exactly
 
     The token is consumed on success. On any failure the token is
     released so it remains retryable (within TTL boundaries).
 
-    Never approves, resolves, launches, binds a profile, or accepts
-    master bearer as an alternative.
+    Compatible with existing PENDING/APPROVED/bound records — never
+    silently deletes, upgrades, rebinds, or auto-launches legacy records.
     """
     # Extract raw token from Authorization header
     raw_token = _extract_registration_token(request)
@@ -992,29 +1009,85 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
+    # 8. Call the unified direct-register-and-connect transaction.
+    #    Under one lock this validates, registers, approves, and binds
+    #    the profile in a single atomic operation. On ANY failure full
+    #    compensation restores the pre-request state (no adapter or
+    #    profile residue). The token is released so it remains retryable.
+    from runtime.orchestrator.custom_adapter_registry import (
+        submit_and_connect_adapter,
+        undo_submit_and_connect,
+    )
     try:
-        entry = register_custom_adapter(
+        connected_entry = submit_and_connect_adapter(
             executable=body.executable,
             version=body.version,
             capabilities=body.capabilities,
             workspace_adapter=body.workspace_adapter,
-            registered_by=f"adapter-submission:{intended_profile}",
-            intended_profile_name=intended_profile,
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
+            intended_profile_name=intended_profile,
         )
     except ValueError as exc:
-        # Release the token on failure so it remains retryable
         store.release_runtime(raw_token)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        # OSError, RuntimeError, or any other unexpected failure —
+        # release the token so it stays retryable and surface the error.
+        store.release_runtime(raw_token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Adapter submission failed: {exc}",
+        )
 
-    # Consume the token permanently on success
-    store.commit_runtime(raw_token)
+    # 9. Consume the token permanently as the final compensating step.
+    #    ``commit_runtime`` can return False (token not reserved, wrong
+    #    org, or missing record) or raise an exception.  Either way the
+    #    adapter/profile/registry/audit state is already committed —
+    #    compensate by undoing the entire submission so no residue remains.
+    audit_task_id = f"executor:{intended_profile}"
+    try:
+        committed = store.commit_runtime(raw_token)
+        if not committed:
+            undo_submit_and_connect(
+                adapter_id=scoped_adapter_id,
+                profile_name=intended_profile,
+                audit_task_id=audit_task_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Adapter registered and connected but token "
+                    "consumption failed — state has been compensated. "
+                    "Retry with a fresh token."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Token commit raised unexpectedly — compensate the adapter state.
+        undo_submit_and_connect(
+            adapter_id=scoped_adapter_id,
+            profile_name=intended_profile,
+            audit_task_id=audit_task_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Token consumption failed: {exc}. "
+                f"Adapter state has been compensated. "
+                f"Retry with a fresh token."
+            ),
+        )
 
-    return _entry_to_response(entry)
+    response = _entry_to_response(connected_entry).model_dump()
+    profile_bound = getattr(connected_entry, "profile_bound", None)
+    if profile_bound is not None:
+        response["profile_bound"] = profile_bound
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1218,11 +1291,13 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
             "description": (
                 "Submit the adapter wrapper executable for the intended profile. "
                 "Requires the same adapter-purpose hrreg_ token and a completed "
-                "conformance challenge. Submission creates ONLY the exact PENDING "
-                "adapter; founder approval is a separate Settings-only step. "
-                "For adapters with an intended profile, approval atomically creates "
-                "and connects the profile (seq237); explicit Bind is only needed for "
-                "advanced recovery of approved no-intended adapters. "
+                "conformance challenge. Submission directly registers and "
+                "connects — the server atomically validates identity, "
+                "conformance, path, and dependency facts, then creates, "
+                "approves, and binds the profile in a single transaction. "
+                "No separate founder approval step, no client-side bind. "
+                "For adapters without an intended profile, explicit "
+                "Bind is available as authenticated operator recovery. "
                 "New submissions MUST include dependency_manifest_version: 1 and a "
                 "non-empty dependencies list declaring every child executable the "
                 "adapter wrapper invokes."
@@ -1316,9 +1391,13 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
         },
         reapproval_rule=(
             "Any change to the adapter executable, its hash, declared dependencies, "
-            "or capabilities requires re-submission and founder re-approval. The "
-            "approved snapshot is immutable — a tampered or stale dependency blocks "
-            "launch with an actionable error."
+            "or capabilities requires re-submission through the same path. "
+            "For scoped tokens: re-submit via POST /runtime/adapters/submit "
+            "(the server validates the new snapshot and directly connects the "
+            "profile — no separate founder re-approval is needed). For the "
+            "master-bearer legacy path: re-register, re-conform, and obtain "
+            "founder re-approval. The approved snapshot is immutable — a "
+            "tampered or stale dependency blocks launch with an actionable error."
         ),
         probe={
             "description": (

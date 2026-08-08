@@ -758,13 +758,13 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       capabilities: ['token_metering'],
       contract_version: 1,
       workspace_adapter: 'pi',
-      status: 'pending',
+      status: 'approved',
       registered_at: '2024-01-01T00:00:00Z',
       registered_by: 'test',
-      approved_at: null,
-      approved_by: null,
+      approved_at: new Date().toISOString(),
+      approved_by: 'test',
       intended_profile_name: profileName,
-      eligibility: null,
+      eligibility: 'already_bound',
       dependency_manifest_version: null,
       dependencies: null,
     };
@@ -1144,13 +1144,13 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
             capabilities: ['token_metering'],
             contract_version: 1,
             workspace_adapter: 'pi',
-            status: 'pending',
+            status: 'approved',
             registered_at: '2024-01-01T00:00:00Z',
             registered_by: 'test',
-            approved_at: null,
-            approved_by: null,
+            approved_at: new Date().toISOString(),
+            approved_by: 'test',
             intended_profile_name: 'my-custom-cli',
-            eligibility: null,
+            eligibility: 'already_bound',
           },
         ]),
       ),
@@ -1259,9 +1259,9 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
         HttpResponse.json({
           id: adapterId, name: profileName, executable: '/tmp/test-adapter',
           executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
           registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null, intended_profile_name: profileName,
+          approved_at: new Date().toISOString(), approved_by: 'test', intended_profile_name: profileName,
         }),
       ),
     );
@@ -1275,7 +1275,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     // Submitted → awaiting approval (first poll sees PENDING)
-    await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+    await screen.findByText(/your custom cli is connected via an approved adapter/i, {}, { timeout: 10000 });
     expect(screen.getByText(adapterId)).toBeInTheDocument();
 
     // Transition: server confirms atomically bound (seq237).

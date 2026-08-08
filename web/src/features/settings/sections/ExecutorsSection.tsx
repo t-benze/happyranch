@@ -69,6 +69,7 @@ export function ExecutorsSection(): JSX.Element {
       {connecting ? (
         <div data-testid="executors-connect">
         <ConnectFlow
+          showRecovery={false}
           connectedSubtitle={connectedSubtitle}
           formHeading={
             <div className="mb-1">

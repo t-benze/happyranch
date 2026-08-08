@@ -134,38 +134,63 @@ runner fences, and UI cutover remain later slices.
 - **Registration → conformance → founder approval or rejection:** a custom
   adapter executable is registered with its absolute path, SHA-256 hash, version,
   and capabilities; submitted to a bounded stdin/stdout conformance probe; then
-  enters **PENDING** and cannot bind to any profile or launch. From PENDING, the
-  founder has two exact-snapshot management actions:
-  - **PENDING exact-snapshot founder approve:** ``POST /runtime/adapters/{id}/approve``
-    atomically validates the six material identity facts (executable, executable_hash,
-    version, capabilities, contract_version, workspace_adapter) of the exact durable
-    snapshot. Any mismatch, missing adapter, non-PENDING state, or already-approved
-    incompatible repeat fails before persistence. **THR-107 seq237:** When the adapter
-    has an ``intended_profile_name``, the server atomically approves the snapshot AND
-    creates/binds that named custom profile in one transaction — ``eligibility`` becomes
-    ``already_bound`` immediately, and no client-side bind follow-up is needed. Adapters
-    without an intended profile (master-bearer registration path) are approved without
-    auto-binding; they retain explicit advanced Bind recovery via Settings.
-  - **PENDING exact-snapshot founder reject/removal:**
-  - **PENDING exact-snapshot founder reject/removal:**
-    ``POST /runtime/adapters/{id}/reject`` atomically validates the same six
-    material identity facts and removes the PENDING durable entry. Rejects stale,
-    hash-changed (re-registered), and non-PENDING snapshots without mutation. No
-    persisted rejected status — the PENDING entry is removed. No SQLite/schema change.
+  enters **PENDING** and cannot bind to any profile or launch. There are two
+  registration paths with different lifecycle outcomes:
+
+  - **Scoped submission (normal Connect path, THR-107 seq363):** Settings/onboarding
+    mints an adapter-purpose, intended-profile scoped, loopback-only,
+    short-lived/single-use registration token. The candidate CLI fetches the
+    server-owned public contract/reference and exact canonical daemon wrapper path,
+    writes/conforms/submits the exact wrapper and declared absolute hash-pinned
+    child dependencies via ``POST /runtime/adapters/submit``. The server validates
+    all identity/conformance/path/dependency/profile facts and **atomically
+    creates, approves, and binds** the intended custom profile in a single
+    coherent transaction. The normal user-visible result is **Connected**
+    (``eligibility: already_bound``), with no PENDING approval wait, approve action,
+    or separate bind action. It is idempotent only for the same durable
+    snapshot/profile binding; incompatible replays/conflicts fail closed.
+
+  - **Master-bearer registration (legacy/operator path):** ``POST /runtime/
+    adapters/register`` creates a PENDING adapter that requires separate founder
+    approval. From PENDING, the founder has two exact-snapshot management actions:
+    - **PENDING exact-snapshot founder approve:** ``POST /runtime/adapters/{id}/approve``
+      atomically validates the six material identity facts (executable, executable_hash,
+      version, capabilities, contract_version, workspace_adapter) of the exact durable
+      snapshot. Any mismatch, missing adapter, non-PENDING state, or already-approved
+      incompatible repeat fails before persistence. **THR-107 seq237:** When the adapter
+      has an ``intended_profile_name``, the server atomically approves the snapshot AND
+      creates/binds that named custom profile in one transaction — ``eligibility`` becomes
+      ``already_bound`` immediately, and no client-side bind follow-up is needed. Adapters
+      without an intended profile (master-bearer registration path) are approved without
+      auto-binding; they retain explicit advanced Bind recovery via Settings.
+    - **PENDING exact-snapshot founder reject/removal:**
+      ``POST /runtime/adapters/{id}/reject`` atomically validates the same six
+      material identity facts and removes the PENDING durable entry. Rejects stale,
+      hash-changed (re-registered), and non-PENDING snapshots without mutation. No
+      persisted rejected status — the PENDING entry is removed. No SQLite/schema change.
   - **APPROVED bind (recovery / legacy):** ``POST /runtime/adapters/{id}/bind-profile``
     binds a profile name to the APPROVED adapter. For adapters with a non-null
     ``intended_profile_name``, the caller must supply the exact intended name.
     For adapters without an intended profile (``recovery_ready`` eligibility), the
-    founder explicitly provides the desired profile name. After binding, the server
+    caller explicitly provides the desired profile name. After binding, the server
     reports ``eligibility: already_bound`` for that adapter. The durable UI must
     retain and render the adapter as Connected after a fresh render from a server
-    ``already_bound`` response — not filter or unmount it. **This route is now
-    secondary to atomic approve-and-bind (seq237) for adapters with intended profiles.**
+    ``already_bound`` response — not filter or unmount it. **This route is a
+    secondary recovery path for legacy/master-bearer registrations; normal scoped
+    submissions (seq363) connect directly without a separate bind step.**
   - **Approved-only removal:** ``DELETE /runtime/adapters/{id}`` removes an
     APPROVED custom adapter with an exact snapshot of all material identity/binding
     facts. Rejects stale, re-registered, wrong-target, and profile-referenced
     snapshots. Preserves approved-only semantics — the reject path above is the
     separate PENDING removal.
+
+  **Compatibility:** Do not silently delete, upgrade, rebind, or auto-launch
+  currently PENDING, APPROVED/unbound, approved-and-bound, or legacy generic-cli
+  records. Existing master-bearer/generic registration semantics stay a
+  legacy/operator path. Retain the existing exact-snapshot approve/reject/bind
+  capabilities only as a narrow explicit operator recovery path for those legacy
+  records (documented, authenticated as today, hidden from normal
+  Settings/onboarding and never selected by normal Connect).
 - **Exact hash verified at EVERY launch:** before each ``Popen``, the
   ``CustomAdapterExecutor`` re-verifies path type (exists, regular file, executable)
   and SHA-256 against the approved binding. Hash mismatch, removal, non-regular, or

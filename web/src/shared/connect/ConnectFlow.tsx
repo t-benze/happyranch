@@ -284,7 +284,9 @@ export function AdapterConnect({
     );
   }
 
-  // Submitted state — adapter is PENDING, awaiting founder approval
+  // Submitted state — adapter is PENDING (legacy path; normal scoped
+  // submissions go directly to connected via seq363).  Kept for
+  // backward compatibility with pre-existing PENDING records.
   if (flow.state.stage === 'submitted') {
     return (
       <AdapterSubmittedBody
@@ -295,7 +297,7 @@ export function AdapterConnect({
     );
   }
 
-  // Connected state — server confirmed atomically bound (seq237)
+  // Connected state — server directly connected (seq363)
   if (flow.state.stage === 'connected') {
     return (
       <ConnectedCard
@@ -322,8 +324,8 @@ export function AdapterConnect({
           Your CLI creates a small v1 adapter wrapper that speaks
           HappyRanch&rsquo;s standard AdapterInput/AdapterOutput contract.
           It reads the prompt from stdin, invokes your CLI, and returns a
-          normalized result. The adapter is submitted as PENDING for
-          founder approval.
+          normalized result. Submission connects directly — no founder
+          approval needed.
         </p>
       </div>
       <form
@@ -895,8 +897,8 @@ export function AdapterWaitingBody({
           </div>
           <p className="text-text-muted mt-1 text-xs">
             Your CLI should create a v1 adapter wrapper, complete the
-            conformance checks, and submit it. This screen updates when the
-            adapter appears.
+            conformance checks, and submit it. The server validates and
+            connects directly — this screen updates live.
           </p>
         </div>
       )}
@@ -935,14 +937,14 @@ export function AdapterSubmittedBody({
         <div className="flex items-center gap-2">
           <Spinner className="text-accent h-4 w-4" />
           <p className="text-text-primary text-sm font-medium">
-            Adapter submitted — awaiting approval
+            Adapter submitted — pending confirmation
           </p>
         </div>
         <p className="text-text-secondary mt-2 text-xs">
           Your adapter <code className="font-mono">{adapterId}</code> has
-          been submitted as PENDING for <code className="font-mono">{name}</code>.
-          The founder must approve it before the profile can be bound. This
-          screen will update automatically when approved.
+          been submitted for <code className="font-mono">{name}</code>.
+          This screen will update automatically when the adapter is
+          connected.
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
           <p className="text-text-muted text-xs font-mono">
