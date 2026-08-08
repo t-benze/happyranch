@@ -1,6 +1,6 @@
 /**
  * Map a thrown save error (ApiError or otherwise) to a flat list of messages
- * to render in the blocking error panel. The server returns 422 with `detail`
+ * to render in a blocking error panel. The server returns 422 with `detail`
  * that is either a string OR `{errors: string[]}` (or FastAPI's validation
  * list). The client only SURFACES these — it never reimplements the rules.
  */

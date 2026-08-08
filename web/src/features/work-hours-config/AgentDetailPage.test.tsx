@@ -143,6 +143,18 @@ describe('Work-Hours Agent Detail (S2)', () => {
     expect(screen.getAllByText('This agent').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Org default').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/Team: eng/).length).toBeGreaterThanOrEqual(1);
+
+    // Manage operating control link present.
+    const manageLink = screen.getByText('Manage operating control');
+    expect(manageLink.tagName).toBe('A');
+    expect(manageLink.getAttribute('href')).toBe(
+      `/orgs/${SLUG}/settings/organization`,
+    );
+
+    // No Eligibility button on the agent detail page.
+    expect(
+      screen.queryByRole('button', { name: 'Eligibility' }),
+    ).not.toBeInTheDocument();
   });
 
   test('renders the read-only routine tasks bullets', async () => {
