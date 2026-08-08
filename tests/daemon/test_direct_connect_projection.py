@@ -27,7 +27,7 @@ def _mint_and_receive(store, tmp_path, *, token="hrreg_proj", profile_name="cust
     store.receive(
         token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts={},
         children=[{"slot": "cli", "path": str(child), "sha256": child_hash, "facts": {}}],
-        now=2,
+        workspace_adapter_id=adapter, now=2,
     )
     return operation_id, wrapper
 

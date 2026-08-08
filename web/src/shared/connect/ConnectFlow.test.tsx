@@ -1,9 +1,14 @@
 /**
- * ConnectFlow direct-connect tests (THR-107 slice 3).
+ * ConnectFlow direct-connect tests (THR-107 slice 3 + workspace_adapter_id
+ * self-declaration follow-up).
  *
  * Validates the instant Connect -> Connected flow:
- *  1. Mint requires both a valid name and a workspace CLI selection.
- *  2. Waiting state shows the daemon-issued wrapper path from GET status.
+ *  1. Mint requires a valid, non-built-in name -- and nothing else. There
+ *     is no workspace-CLI dropdown: the connecting wrapper declares its own
+ *     workspace_adapter_id in its /connect manifest, not the founder.
+ *  2. Waiting state shows the daemon-issued wrapper path from GET status,
+ *     and the generated prompt guides the wrapper author to declare
+ *     workspace_adapter_id themselves.
  *  3. The moment status reports a landed operation_id, the hook calls
  *     commit and transitions to Connected on success.
  *  4. A failed commit shows a retryable error, never a false-Connected.
@@ -43,9 +48,9 @@ async function goCustomAdapter(user: ReturnType<typeof userEvent.setup>): Promis
   expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 }
 
-async function mockMint(token = 'hrreg_test'): Promise<void> {
+async function mockMint(token = 'hrreg_test') {
   const { settings: api } = await import('@/lib/api');
-  vi.spyOn(api, 'mintRuntimeRegistrationToken').mockResolvedValue({
+  return vi.spyOn(api, 'mintRuntimeRegistrationToken').mockResolvedValue({
     token,
     expires_at: Date.now() / 1000 + 1800,
   });
@@ -73,36 +78,34 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
   beforeEach(() => { vi.restoreAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  test('form requires a valid non-built-in name AND a workspace CLI before submit is enabled', async () => {
+  test('form requires only a valid non-built-in name -- no workspace-CLI field exists', async () => {
     const user = userEvent.setup();
     renderConnect();
     await goCustomAdapter(user);
+
+    expect(screen.queryByLabelText(/workspace cli/i)).not.toBeInTheDocument();
 
     const gen = screen.getByRole('button', { name: /generate connect prompt/i });
     expect(gen).toBeDisabled();
 
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    expect(gen).toBeDisabled(); // no workspace CLI chosen yet
-
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
     expect(gen).not.toBeDisabled();
   });
 
-  test('built-in name is refused regardless of workspace selection', async () => {
+  test('built-in name is refused', async () => {
     const user = userEvent.setup();
     renderConnect();
     await goCustomAdapter(user);
 
     await user.type(screen.getByLabelText(/name this cli/i), 'codex');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'pi');
 
     expect(screen.getByRole('button', { name: /generate connect prompt/i })).toBeDisabled();
     expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
   });
 
-  test('waiting state shows the daemon-issued wrapper path from GET status, no PENDING wording', async () => {
+  test('waiting state shows the daemon-issued wrapper path, no PENDING wording, and the prompt tells the wrapper to declare its own workspace_adapter_id', async () => {
     const user = userEvent.setup();
-    await mockMint();
+    const mintSpy = await mockMint();
     await mockStatus(() => ({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: null,
@@ -112,14 +115,25 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     renderConnect();
     await goCustomAdapter(user);
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     await screen.findByLabelText(/waiting for adapter submission/i);
+
+    // The mint request never carries a founder-chosen workspace_adapter_id
+    // choice -- only the fixed internal activation trigger.
+    expect(mintSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'my-cli', purpose: 'adapter', intended_profile_name: 'my-cli' }),
+    );
+
     const promptText = document.querySelector('pre')?.textContent ?? '';
     expect(promptText).toContain('/tmp/happyranch-daemon/adapters/my-cli-adapter');
     expect(promptText).not.toContain('PENDING');
     expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+    // The prompt guides the wrapper author to pick their own convention and
+    // send it in the POST body -- not something the founder chose upstream.
+    expect(promptText).toContain('WORKSPACE_ADAPTER_ID');
+    expect(promptText).toContain('workspace_adapter_id');
+    expect(promptText).toContain('YOUR CLI\'s expectations');
   });
 
   test('the moment status reports a landed operation, commit is called and Connected renders on success', async () => {
@@ -139,7 +153,6 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     renderConnect();
     await goCustomAdapter(user);
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByLabelText(/waiting for adapter submission/i);
 
@@ -166,7 +179,6 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     renderConnect();
     await goCustomAdapter(user);
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
@@ -189,7 +201,6 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     renderConnect();
     await goCustomAdapter(user);
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
 

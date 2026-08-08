@@ -39,7 +39,7 @@ def _commit_direct_connect_profile(tmp_path, monkeypatch, *, profile_name="fence
     store.receive(
         "hrreg_fence", operation_id, wrapper_sha256=wrapper_hash, wrapper_facts={},
         children=[{"slot": "cli", "path": str(child), "sha256": child_hash, "facts": {}}],
-        now=2,
+        workspace_adapter_id="codex", now=2,
     )
 
     def fake_probe(executable, adapter_id):
@@ -120,7 +120,8 @@ def test_uncommitted_operation_has_no_registered_profile_and_fails_closed(tmp_pa
     operation_id = store.reserve("hrreg_uncommitted", now=2)
     wrapper_hash = hashlib.sha256(authority.wrapper_destination.read_bytes()).hexdigest()
     store.receive(
-        "hrreg_uncommitted", operation_id, wrapper_sha256=wrapper_hash, wrapper_facts={}, children=[], now=2,
+        "hrreg_uncommitted", operation_id, wrapper_sha256=wrapper_hash, wrapper_facts={}, children=[],
+        workspace_adapter_id="codex", now=2,
     )
     # Deliberately no project()/commit call — this operation stays received_nonlaunchable.
 

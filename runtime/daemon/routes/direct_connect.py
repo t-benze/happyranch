@@ -7,7 +7,7 @@ import os
 import stat
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -41,6 +41,16 @@ class DirectManifestV2(BaseModel):
     manifest_version: Annotated[int, Field(strict=True, ge=2, le=2)]
     wrapper_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     upgradeable_children: Annotated[list[UpgradeableChild], Field(min_length=1)]
+    workspace_adapter_id: Literal["claude", "codex", "opencode", "pi"] = Field(
+        ...,
+        description=(
+            "Which first-party workspace-bootstrap convention this CLI's "
+            "agent workspaces should use (Claude-style .claude/settings.json "
+            "+ CLAUDE.md, or AGENTS.md-style for codex/opencode/pi). Declared "
+            "by the connecting wrapper, not chosen by the founder — only the "
+            "wrapper author knows which convention their CLI expects."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -170,7 +180,7 @@ async def connect(request: Request) -> dict[str, str]:
             children.append({"slot": child.slot, "path": str(child_path), "sha256": child_hash, "facts": child_facts})
         receipt = authority_store.receive(
             token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts=wrapper_facts,
-            children=children, now=now,
+            children=children, workspace_adapter_id=body.manifest.workspace_adapter_id, now=now,
         )
     except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
         authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)

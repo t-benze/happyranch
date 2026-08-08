@@ -240,16 +240,19 @@ seq141 scoped-token adapter-submission mechanism
 (``POST /runtime/adapters/submit``) — it still exists at the API level and
 its tests remain, but the ordinary Settings/onboarding "Connect a custom
 CLI" UI no longer drives it. The normal UI now uses the THR-107 slice 1
-direct-connect mechanism instead: mint (with ``workspace_adapter_id``) →
-read the daemon-issued wrapper path from ``GET /runtime/custom-cli/status``
-→ the candidate CLI's single ``POST /runtime/custom-cli/connect`` both
-proves wrapper integrity and creates the connection record → the browser
-auto-calls ``POST /runtime/custom-cli/{operation_id}/commit`` the moment it
-lands → Connected, no PENDING wait, no founder click. See
+direct-connect mechanism instead: mint (name only — the founder never picks
+a workspace convention) → read the daemon-issued wrapper path from
+``GET /runtime/custom-cli/status`` → the candidate CLI's single
+``POST /runtime/custom-cli/connect`` declares its OWN
+``workspace_adapter_id`` in the manifest and both proves wrapper integrity
+and creates the connection record → the browser auto-calls
+``POST /runtime/custom-cli/{operation_id}/commit`` the moment it lands →
+Connected, no PENDING wait, no founder click. See
 ``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
-UI cutover" for the full contract. The PENDING/approve/reject/bind-profile
-routes below remain as operator-only one-time disposition tooling for
-legacy records — a new custom CLI should always use the ordinary Connect
+UI cutover" (and its `workspace_adapter_id` correction note) for the full
+contract. The PENDING/approve/reject/bind-profile routes below remain as
+operator-only one-time disposition tooling for legacy records — a new
+custom CLI should always use the ordinary Connect
 flow instead.
 
 **Adapter lifecycle (legacy scoped-submission mechanism — operator-only, not the normal UI path):**

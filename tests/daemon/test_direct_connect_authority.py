@@ -286,7 +286,7 @@ def test_plan_projection_is_idempotent_per_operation(tmp_path) -> None:
     operation_id = store.reserve("hrreg_plan", now=2)
     store.receive(
         "hrreg_plan", operation_id, wrapper_sha256="a" * 64,
-        wrapper_facts={}, children=[], now=2,
+        wrapper_facts={}, children=[], workspace_adapter_id="codex", now=2,
     )
 
     assert store.plan_projection(operation_id, now=3) is True
@@ -306,7 +306,7 @@ def test_mark_committed_requires_planned_state(tmp_path) -> None:
         workspace_adapter_id="codex", issued_at=1, expires_at=100,
     )
     operation_id = store.reserve("hrreg_commit", now=2)
-    store.receive("hrreg_commit", operation_id, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], now=2)
+    store.receive("hrreg_commit", operation_id, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], workspace_adapter_id="codex", now=2)
     store.plan_projection(operation_id, now=3)
 
     assert store.mark_committed(operation_id, adapter_id="custom-cli-adapter", profile_name="profile", now=4) is True
@@ -327,7 +327,7 @@ def test_mark_failed_from_planned_and_reopen_durability(tmp_path) -> None:
         workspace_adapter_id="codex", issued_at=1, expires_at=100,
     )
     operation_id = store.reserve("hrreg_fail", now=2)
-    store.receive("hrreg_fail", operation_id, wrapper_sha256="c" * 64, wrapper_facts={}, children=[], now=2)
+    store.receive("hrreg_fail", operation_id, wrapper_sha256="c" * 64, wrapper_facts={}, children=[], workspace_adapter_id="codex", now=2)
     store.plan_projection(operation_id, now=3)
     assert store.mark_failed(operation_id, "conformance_probe_failed", now=4) is True
     store.close()
@@ -342,15 +342,18 @@ def test_get_receipt_artifacts_returns_wrapper_and_children(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 
     store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    # The mint-time workspace_adapter_id is an unrelated activation trigger —
+    # only the value the CLI declares at receive() time should end up on the
+    # receipt artifacts, proving the founder's mint choice never wins.
     store.mint_authority(
         token_plaintext="hrreg_art", name="custom-cli", intended_profile_name="profile",
-        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+        workspace_adapter_id="claude", issued_at=1, expires_at=100,
     )
     operation_id = store.reserve("hrreg_art", now=2)
     store.receive(
         "hrreg_art", operation_id, wrapper_sha256="d" * 64, wrapper_facts={"mode": 493},
         children=[{"slot": "cli", "path": "/abs/child", "sha256": "e" * 64, "facts": {"version_probe_argv": ["/abs/child", "--version"]}}],
-        now=2,
+        workspace_adapter_id="pi", now=2,
     )
 
     artifacts = store.get_receipt_artifacts(operation_id)
@@ -358,7 +361,7 @@ def test_get_receipt_artifacts_returns_wrapper_and_children(tmp_path) -> None:
     assert artifacts.wrapper_sha256 == "d" * 64
     assert artifacts.children == [{"slot": "cli", "executable": "/abs/child", "sha256": "e" * 64}]
     assert artifacts.intended_profile_name == "profile"
-    assert artifacts.workspace_adapter_id == "codex"
+    assert artifacts.workspace_adapter_id == "pi"
 
 
 def test_get_latest_operation_for_profile_returns_none_before_receipt(tmp_path) -> None:
@@ -383,7 +386,7 @@ def test_get_latest_operation_for_profile_returns_most_recent_operation(tmp_path
         workspace_adapter_id="codex", issued_at=1, expires_at=100,
     )
     op_a = store.reserve("hrreg_status_a", now=2)
-    store.receive("hrreg_status_a", op_a, wrapper_sha256="a" * 64, wrapper_facts={}, children=[], now=2)
+    store.receive("hrreg_status_a", op_a, wrapper_sha256="a" * 64, wrapper_facts={}, children=[], workspace_adapter_id="codex", now=2)
 
     assert store.get_latest_operation_for_profile("status-profile") == op_a
 
@@ -394,7 +397,7 @@ def test_get_latest_operation_for_profile_returns_most_recent_operation(tmp_path
         workspace_adapter_id="codex", issued_at=3, expires_at=200,
     )
     op_b = store.reserve("hrreg_status_b", now=4)
-    store.receive("hrreg_status_b", op_b, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], now=4)
+    store.receive("hrreg_status_b", op_b, wrapper_sha256="b" * 64, wrapper_facts={}, children=[], workspace_adapter_id="codex", now=4)
 
     assert store.get_latest_operation_for_profile("status-profile") == op_b
 

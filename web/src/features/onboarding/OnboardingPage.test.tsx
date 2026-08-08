@@ -599,25 +599,25 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     ).toBeInTheDocument();
   }
 
-  test('loading: form requires both a valid name and a workspace CLI before it can generate a prompt', async () => {
+  test('loading: form requires only a valid name -- there is no workspace-CLI field', async () => {
     const user = userEvent.setup();
     renderPage();
     await goAdapter(user);
+
+    expect(screen.queryByLabelText(/workspace cli/i)).not.toBeInTheDocument();
 
     const input = await screen.findByLabelText(/name this cli/i);
     const gen = screen.getByRole('button', { name: /generate connect prompt/i });
     expect(gen).toBeDisabled();
 
-    // A built-in name is refused regardless of workspace selection.
+    // A built-in name is refused.
     await user.type(input, 'claude');
-    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'pi');
     expect(gen).toBeDisabled();
     expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
 
-    // A valid name alone (no workspace CLI chosen yet) still disables submit.
     await user.clear(input);
     await user.type(input, 'my-valid-cli');
-    expect(gen).not.toBeDisabled(); // workspace already selected pi above
+    expect(gen).not.toBeDisabled();
   });
 
   test('valid connection: mint -> waiting shows the daemon-issued wrapper path -> candidate CLI reports in -> Connected', async () => {
@@ -632,18 +632,21 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     await goAdapter(user);
 
     await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'codex');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    // Token minted with adapter purpose, intended profile name, AND the
-    // workspace_adapter_id that activates the daemon's direct-authority path.
+    // Token minted with adapter purpose and intended profile name. The
+    // workspace_adapter_id sent here is a fixed internal activation
+    // trigger, never founder-chosen -- the real value is declared by the
+    // wrapper itself in its /connect manifest, asserted via the prompt text
+    // below.
     await waitFor(() =>
-      expect(mintSpy).toHaveBeenCalledWith({
-        name: profileName,
-        purpose: 'adapter',
-        intended_profile_name: profileName,
-        workspace_adapter_id: 'codex',
-      }),
+      expect(mintSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: profileName,
+          purpose: 'adapter',
+          intended_profile_name: profileName,
+        }),
+      ),
     );
 
     // Waiting state shows the literal daemon-issued wrapper path — no PENDING wording.
@@ -652,6 +655,8 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     expect(promptText).toContain('/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter');
     expect(promptText).not.toContain('PENDING');
     expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+    // The prompt tells the wrapper to declare its own workspace_adapter_id.
+    expect(promptText).toContain('workspace_adapter_id');
 
     // The candidate CLI's own POST /connect landed; commit finishes the connection.
     vi.mocked(directConnectApi.getStatus).mockResolvedValue({
@@ -681,7 +686,6 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     renderPage();
     await goAdapter(user);
     await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-    await user.selectOptions(await screen.findByLabelText(/workspace cli/i), 'pi');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByLabelText(/waiting for adapter submission/i);
 
