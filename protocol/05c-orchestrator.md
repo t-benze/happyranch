@@ -111,8 +111,23 @@ after canonical wrapper and v2 manifest validation; it has no projection,
 profile/adapter state, executor eligibility, runner effect, or browser client.
 If the final registration-token commit fails, Slice A compensates the
 receipt/event boundary. Existing adapter mints that omit the optional field
-retain the legacy PENDING submission behavior. Direct projection, COMMITTED
-eligibility, launcher fencing, and UI changes are explicit later serial slices.
+retain the legacy PENDING submission behavior.
+
+**THR-107 Slices 1–3 landed** (full contract in `protocol/05b-agent-runtime.md`
+§ "Slices 1–3: projection, launch fence, UI cutover"). Summary for the
+orchestrator/executor surface this doc covers: a separate master-bearer
+`POST .../{operation_id}/commit` route (never `/connect`, which stays
+zero-subprocess) projects a receipt through `planned → committed|failed` and
+durably writes the SAME `AdapterEntry`/runtime-profile shape the legacy
+founder-approval path writes (`registered_by`/`approved_by:
+"direct-connect"`) — so `build_executor()` / `CustomAdapterExecutor`'s
+existing APPROVED + hash-reverified-at-every-Popen launch fence covers a
+direct-connect profile with zero origin-specific branching. No new gating
+code was needed for the launch fence; `tests/test_thr107_launch_fence.py`
+proves this across the ordinary-task and thread/wake/dream/schedule call
+shapes. The normal Settings/onboarding UI now drives Connect → Connected
+in one flow; the PENDING/approve/reject/bind-profile routes remain as
+operator-only disposition tooling, no longer wired into the normal UI.
 
 **THR-107 seq244 dependency manifest:** new adapter registrations and
 submissions MUST declare a versioned dependency manifest

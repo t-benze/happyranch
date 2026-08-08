@@ -18,7 +18,12 @@
  */
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { executorBinaries, health as healthApi, settings as settingsApi } from '@/lib/api';
+import {
+  directConnect,
+  executorBinaries,
+  health as healthApi,
+  settings as settingsApi,
+} from '@/lib/api';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -281,167 +286,124 @@ export function useRuntimeConnect({
   return { state, name, token, expired, mint, start, regenerate, back };
 }
 
-/** Build the adapter-backed connect prompt (THR-107 seq184/seq339). The prompt
- *  directs the candidate CLI to FETCH the canonical contract reference
- *  FIRST (a self-contained v1 daemon endpoint with the authoritative
- *  AdapterInput/AdapterOutput JSON Schemas), build a v1 wrapper, complete
- *  the conformance challenge, and submit via POST /runtime/adapters/submit.
- *  The adapter becomes PENDING; this screen updates live.
- *
- *  ``requiredExecutablePath`` is the LITERAL server-returned path from the
- *  contract-reference response — the browser fetches it with the scoped
- *  token after minting.  Do NOT derive, fallback, or guess this path
- *  client-side. */
-export function buildAdapterConnectPrompt(
+
+/* ------------------------------------------------------------------ */
+/*  DIRECT CONNECT — instant, no founder-approval step (THR-107 slice 3) */
+/*  mint (name + workspace_adapter_id) -> wrapper path from status ->   */
+/*  candidate CLI POSTs /connect itself -> poll status -> commit ->     */
+/*  Connected. Replaces the deleted adapter-submit/PENDING/approve flow */
+/*  and the deleted durable-recovery hook — this is the only custom-    */
+/*  adapter connect path in the normal UI now.                          */
+/* ------------------------------------------------------------------ */
+
+/** The four first-party workspace-preparation adapters a direct-connect
+ *  custom CLI must pick one of — mirrors the daemon's
+ *  FIRST_PARTY_WORKSPACE_ADAPTER_IDS. */
+export const WORKSPACE_ADAPTER_IDS = ['claude', 'codex', 'opencode', 'pi'] as const;
+export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
+
+/** Build the direct-connect prompt (THR-107 slice 3). Unlike the legacy
+ *  adapter-submit prompt, there is no separate conformance-checkin dance
+ *  and no PENDING/approval wait — one POST to /connect both proves the
+ *  wrapper's integrity (server-side hash/structural checks) and, once the
+ *  browser calls /commit, connects it. `wrapperDestination` is the
+ *  LITERAL server-returned path from GET /runtime/custom-cli/status —
+ *  do NOT derive, fallback, or guess this path client-side. */
+export function buildDirectConnectPrompt(
   name: string,
   token: string,
   origin: string,
-  requiredExecutablePath: string,
+  wrapperDestination: string,
 ): string {
   const base = `${origin}/api/v1`;
+  const TOKEN = shQuote(token);
+  const BASE = shQuote(base);
+  const WRAPPER = shQuote(wrapperDestination);
   return [
-    `# Connect "${name}" to HappyRanch as a custom-adapter-backed CLI.`,
-    `# Do all of this in one run, then stop. Send this header on every request:`,
-    `#   Authorization: Bearer ${token}`,
+    `# Connect "${name}" to HappyRanch directly — no approval step.`,
+    `# Do all of this in one run, then stop.`,
     ``,
-    `# 0. FETCH the canonical contract reference FIRST:`,
-    `#    GET ${base}/runtime/adapters/contract-reference`,
-    `#    This returns the authoritative v1 AdapterInput and AdapterOutput`,
-    `#    JSON Schemas (generated from the shipping Pydantic models), plus`,
-    `#    version, output rules, dependency manifest schema, token-metering`,
-    `#    expectations, and submission metadata. The response includes your`,
-    `#    canonical_adapter_id — you MUST use that exact value for`,
-    `#    adapter_metadata.adapter in every AdapterOutput (never a display`,
-    `#    name or provider string).`,
-    `#    The response also includes required_executable_path — the exact`,
-    `#    absolute canonical path where your wrapper MUST live. Create`,
-    `#    your executable at that path; the directory is already prepared.`,
-    `#    No other location, symlink, or alternate filename is accepted.`,
-    `#    Follow these schemas — the server-derived schema is canonical.`,
+    `set -e`,
+    `TOKEN=${TOKEN}`,
+    `BASE=${BASE}`,
+    `WRAPPER=${WRAPPER}`,
     ``,
     `# 1. Create a v1 adapter wrapper executable at exactly:`,
-    `#       ${requiredExecutablePath}`,
-    `#    This is the LITERAL server-authoritative path resolved for`,
-    `#    your adapter — it was fetched by the Settings/Onboarding flow`,
-    `#    from GET /runtime/adapters/contract-reference using your scoped`,
-    `#    adapter-purpose token.  Do NOT place the wrapper in`,
-    `#    ~/.happyranch, a project folder, or any self-chosen path.`,
-    `#    Exact I/O contract:`,
+    `#      ${wrapperDestination}`,
+    `#    This is the LITERAL daemon-issued path — no other location,`,
+    `#    symlink, or alternate filename is accepted. Exact I/O contract:`,
     `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
-    `#    - The server prepares/creates the workspace directory — you do`,
-    `#      not need to create it`,
     `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
-    `#      context from the input`,
-    `#    - You have one 30-second wall-clock deadline (including post-EOF`,
-    `#      wait for your subprocess to exit after closing stdout)`,
-    `#    - Write exactly one v1 AdapterOutput JSON object to stdout`,
-    `#    - No non-JSON diagnostics on stdout`,
-    `#    - Use stderr for all diagnostics, logging, and errors`,
+    `#      context from the input (the server prepares the workspace dir)`,
+    `#    - Write exactly one v1 AdapterOutput JSON object to stdout,`,
+    `#      nothing else on stdout — diagnostics go to stderr`,
     `#    - Exit after writing the output (single-invocation wrapper)`,
-    `#    - Max output: 1 MB stdout, 1 MB stderr`,
-    `#    - A syntactically valid AdapterOutput with success=false returns`,
-    `#      a 4xx error with your error field and stderr_tail for debugging`,
-    `#    - Declare EVERY child executable as an immutable dependency:`,
-    `#      absolute path (never a bare command name), SHA-256 of the file.`,
-    `#      The adapter wrapper MUST invoke child executables by their `,
-    `#      exact declared absolute paths. HappyRanch never selects an `,
-    `#      agentic CLI via ambient PATH — adapter wrapper and every `,
-    `#      declared child CLI dependency are daemon-approved exact `,
-    `#      absolute paths, hash-pinned/revalidated; no bare executor `,
-    `#      command/name fallback. The wrapper inherits HappyRanch's `,
-    `#      normalized environment/PATH; normal utilities and required `,
-    `#      callbacks such as happyranch report-completion remain reachable.`,
-    `#    - Declare token_metering capability ONLY if your real conformance`,
-    `#      probe emits valid non-null token_usage with at least one numeric`,
-    `#      accounting field (zero is legitimate).`,
-    `#    - Changing the wrapper, dependencies, or capabilities requires`,
-    `#      re-submission and founder re-approval.`,
-    `#    Follow the schemas from step 0 exactly. The self-test fixture in`,
-    `#    the contract reference shows a minimal valid input/output pair.`,
+    `chmod +x "$WRAPPER"`,
     ``,
-    `# 2. Complete the conformance challenge — POST each step id to`,
-    `#    ${base}/executors/runtime/conformance-checkin`,
-    `#    body {"step_id":"<id>"} for each of:`,
-    `#      workspace_access   loopback_reachable   cli_callback`,
-    `#    Then for emit_envelope, POST a sample legacy v1 result-envelope`,
-    `#    (required by the registration token challenge — this is NOT an`,
-    `#    AdapterOutput sample):`,
-    `#      body {"step_id":"emit_envelope",`,
-    `#           "envelope":{"envelope_version":1,`,
-    `#                       "token_usage":{"input_tokens":1,"output_tokens":1}}}`,
+    `# 2. Declare EVERY child executable your wrapper invokes as an`,
+    `#    immutable dependency: absolute path (never a bare command name)`,
+    `#    plus its SHA-256. HappyRanch never selects an agentic CLI via`,
+    `#    ambient PATH — replace CHILD below with your CLI's absolute path.`,
+    `CHILD=/absolute/path/to/your-cli`,
+    `WRAPPER_SHA=$(shasum -a 256 "$WRAPPER" | cut -d' ' -f1)`,
+    `CHILD_SHA=$(shasum -a 256 "$CHILD" | cut -d' ' -f1)`,
     ``,
-    `# 3. Submit your adapter — POST to`,
-    `#    ${base}/runtime/adapters/submit`,
-    `#    body {"executable":"${requiredExecutablePath}","version":"1.0.0",`,
-    `#         "capabilities":["token_metering"],"workspace_adapter":"pi",`,
-    `#         "dependency_manifest_version":1,`,
-    `#         "dependencies":[{"executable":"<absolute-path>","sha256":"<hex>"}]}`,
-    `#    The executable field is ALREADY filled in with your literal`,
-    `#    required_executable_path from the contract-reference — the`,
-    `#    server rejects any other location. Dependency records remain`,
-    `#    absolute path + SHA-256 with normal absolute-path validation`,
-    `#    (no location constraint).`,
+    `# 3. POST the manifest — this single call proves the wrapper's`,
+    `#    integrity and creates the connection record.`,
+    `curl --fail-with-body -sS -X POST "$BASE/runtime/custom-cli/connect" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d "{\\"metadata\\":{},\\"manifest\\":{\\"manifest_version\\":2,\\"wrapper_sha256\\":\\"$WRAPPER_SHA\\",\\"upgradeable_children\\":[{\\"slot\\":\\"cli\\",\\"executable\\":\\"$CHILD\\",\\"version_probe_argv\\":[\\"$CHILD\\",\\"--version\\"]}]}}"`,
+    `echo ""`,
     ``,
-    `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
-    `# is a separate, Settings-only step. When the founder approves, the`,
-    `# server atomically approves AND connects the "${name}" profile — one`,
-    `# action, no follow-up bind needed.`,
-    `# No auto-approval, no token disclosure beyond this prompt.`,
-    ``,
-    `# This token is valid for about 30 minutes. This screen updates live.`,
+    `# This token is valid for about 30 minutes. This screen updates live —`,
+    `# once the POST above succeeds, HappyRanch finishes connecting`,
+    `# automatically. No founder-approval step.`,
   ].join('\n');
 }
 
-/** Adapter-backed connection status matching the adapter lifecycle. */
-export type AdapterState =
+/** Direct-connect state machine. */
+export type DirectConnectState =
   | { stage: 'form' }
-  | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string; requiredExecutablePath: string }
-  | { stage: 'submitted'; name: string; adapterId: string; status: string }
-  | { stage: 'connected'; name: string; adapterId: string };
+  | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
+  | { stage: 'committing'; name: string; wrapperDestination: string }
+  | { stage: 'connected'; name: string; wrapperDestination: string }
+  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
 
-/** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
- *  Mints an adapter-purpose token → fetches contract reference to obtain
- *  the literal server-derived ``required_executable_path`` → CLI
- *  creates/submits v1 adapter wrapper → UI polls adapter status →
- *  Connected when server reports already_bound.  Normal intended-profile
- *  approval is atomic (seq237): the server approves and connects in one
- *  transaction — no client-side bind. */
-export function useAdapterConnect({
+/** Shared hook for the direct-connect custom-CLI flow (THR-107 slice 3).
+ *  Mints an adapter-purpose token with workspace_adapter_id set (which
+ *  activates the daemon's direct-authority mint path) → immediately reads
+ *  GET .../status for the deterministic wrapper destination → the
+ *  candidate CLI POSTs /connect itself (server-side, invisible to this
+ *  hook — it only polls) → the moment status reports a received
+ *  operation_id, this hook calls POST .../commit → Connected. */
+export function useDirectConnect({
   onConnected,
 }: {
   onConnected: (c: Connected) => void;
 }) {
-  const [state, setState] = useState<AdapterState>({ stage: 'form' });
-  const [name, setName] = useState('');
-  const [token, setToken] = useState('');
+  const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
 
   const mint = useMutation({
-    mutationFn: async (n: string) => {
+    mutationFn: async ({ name, workspaceAdapterId }: { name: string; workspaceAdapterId: WorkspaceAdapterId }) => {
       const resp = await settingsApi.mintRuntimeRegistrationToken({
-        name: n,
+        name,
         purpose: 'adapter',
-        intended_profile_name: n,
+        intended_profile_name: name,
+        workspace_adapter_id: workspaceAdapterId,
       });
-      // Immediately fetch the contract reference with the scoped token
-      // to obtain the literal server-derived required_executable_path.
-      // The browser is an INTENTIONAL consumer of this scoped-token endpoint.
-      const { adapters } = await import('@/lib/api');
-      const contract = await adapters.getContractReference(resp.token);
-      return { ...resp, requiredExecutablePath: contract.required_executable_path };
+      const status = await directConnect.getStatus(name);
+      return { ...resp, wrapperDestination: status.wrapper_destination };
     },
-    onSuccess: (resp, n) => {
-      const aid = `${n}-adapter`;
-      setName(n);
-      setToken(resp.token);
+    onSuccess: (resp, { name }) => {
       setExpiresAt(resp.expires_at);
       setState({
         stage: 'waiting',
-        name: n,
+        name,
         token: resp.token,
         expired: false,
-        adapterId: aid,
-        requiredExecutablePath: resp.requiredExecutablePath,
+        wrapperDestination: resp.wrapperDestination,
       });
     },
   });
@@ -451,151 +413,100 @@ export function useAdapterConnect({
     if (state.stage !== 'waiting' || state.expired || !expiresAt) return;
     const ms = expiresAt * 1000 - Date.now();
     if (ms <= 0) {
-      setState((s) =>
-        s.stage === 'waiting' ? { ...s, expired: true } : s,
-      );
+      setState((s) => (s.stage === 'waiting' ? { ...s, expired: true } : s));
       return;
     }
     const t = window.setTimeout(() => {
-      setState((s) =>
-        s.stage === 'waiting' ? { ...s, expired: true } : s,
-      );
+      setState((s) => (s.stage === 'waiting' ? { ...s, expired: true } : s));
     }, ms);
     return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.stage, expiresAt]);
 
-  // Poll the adapter endpoint for status changes
-  const adapterIdForPoll = 'adapterId' in state ? (state as { adapterId: string }).adapterId : '';
-  const pollEnabled =
-    (state.stage === 'waiting' && !('expired' in state ? state.expired : false)) ||
-    state.stage === 'submitted';
-
-  const { data: adapterEntry } = useQuery({
-    queryKey: ['adapter', adapterIdForPoll],
-    queryFn: () => import('@/lib/api').then(({ adapters }) => adapters.getAdapter(adapterIdForPoll)),
-    enabled: pollEnabled && adapterIdForPoll !== '',
-    refetchInterval: pollEnabled && adapterIdForPoll !== '' ? 2500 : false,
+  const pollName = state.stage === 'waiting' && !state.expired ? state.name : '';
+  const { data: statusData } = useQuery({
+    queryKey: ['direct-connect', 'status', pollName],
+    queryFn: () => directConnect.getStatus(pollName),
+    enabled: pollName !== '',
+    refetchInterval: pollName !== '' ? 2500 : false,
   });
 
-  // Transition: waiting → submitted when adapter appears as PENDING
-  useEffect(() => {
-    if (state.stage !== 'waiting' || 'expired' in state && state.expired) return;
-    if (adapterEntry && adapterEntry.status === 'pending') {
-      setState({
-        stage: 'submitted',
-        name,
-        adapterId: adapterIdForPoll,
-        status: adapterEntry.status,
-      });
-    }
-  }, [adapterEntry, state.stage, name, adapterIdForPoll]);
+  const commitMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.commit(operationId),
+  });
 
-  // Transition: submitted → connected when server confirms atomically bound.
-  // No client-side bind — approval is an atomic server transaction (seq237).
-  // The server-authoritative ``eligibility`` value is the single source of truth.
+  // Transition: waiting -> committing the moment the candidate CLI's own
+  // /connect call has landed (operation_id appears, not yet projected).
   useEffect(() => {
-    if (state.stage !== 'submitted') return;
-    if (adapterEntry && adapterEntry.eligibility === 'already_bound') {
-      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
-      onConnected({ name, path: null, via: 'custom' });
-    }
-  }, [adapterEntry, state.stage, adapterIdForPoll, onConnected, name]);
+    if (state.stage !== 'waiting' || state.expired) return;
+    if (!statusData?.operation_id || statusData.profile_state !== null) return;
+    const { name, wrapperDestination } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+    commitMutation.mutate(statusData.operation_id, {
+      onSuccess: (resp) => {
+        if (resp.profile_state === 'committed') {
+          setState({ stage: 'connected', name, wrapperDestination });
+          onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else {
+          setState({
+            stage: 'failed',
+            name,
+            wrapperDestination,
+            operationId: statusData.operation_id as string,
+            reason: resp.reason ?? 'The connection could not be completed.',
+          });
+        }
+      },
+      onError: () => {
+        setState({
+          stage: 'failed',
+          name,
+          wrapperDestination,
+          operationId: statusData.operation_id as string,
+          reason: 'Could not reach the daemon to finish connecting.',
+        });
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusData, state.stage]);
 
-  const start = (n: string): void => {
-    if (n && !mint.isPending) mint.mutate(n);
+  const start = (name: string, workspaceAdapterId: WorkspaceAdapterId): void => {
+    if (name && !mint.isPending) mint.mutate({ name, workspaceAdapterId });
   };
   const regenerate = (): void => {
-    if (name && !mint.isPending) mint.mutate(name);
+    if (state.stage === 'waiting' && !mint.isPending) {
+      mint.mutate({ name: state.name, workspaceAdapterId: 'pi' });
+    }
+  };
+  const retryCommit = (): void => {
+    if (state.stage !== 'failed') return;
+    const { name, wrapperDestination, operationId } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+    commitMutation.mutate(operationId, {
+      onSuccess: (resp) => {
+        if (resp.profile_state === 'committed') {
+          setState({ stage: 'connected', name, wrapperDestination });
+          onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else {
+          setState({
+            stage: 'failed', name, wrapperDestination, operationId,
+            reason: resp.reason ?? 'The connection could not be completed.',
+          });
+        }
+      },
+      onError: () => {
+        setState({
+          stage: 'failed', name, wrapperDestination, operationId,
+          reason: 'Could not reach the daemon to finish connecting.',
+        });
+      },
+    });
   };
   const back = (): void => {
     setState({ stage: 'form' });
-    setToken('');
     setExpiresAt(0);
     mint.reset();
   };
 
-  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Durable recovery — discover APPROVED unbound adapters from server  */
-/* ------------------------------------------------------------------ */
-
-/** An adapter that is APPROVED but not yet bound to a profile. */
-export interface RecoverableAdapter {
-  adapterId: string;
-  profileName: string;
-  executable: string;
-  workspaceAdapter: string;
-}
-
-export type RecoveryState =
-  | { stage: 'loading' }
-  | { stage: 'empty' }
-  | { stage: 'ready'; adapters: RecoverableAdapter[] }
-  | { stage: 'error'; message: string };
-
-/**
- * Discover APPROVED bindable adapters from durable server state using the
- * server-authoritative ``eligibility`` field (TASK-3784).  The browser MUST
- * NOT recompute hash/tamper eligibility — this hook uses the server's
- * ``eligibility`` value directly.
- *
- * Used by Settings → Executors to show
- * a truthful "Bind <profile>" recovery action after refresh or a
- * new session.  Only adapters with ``eligibility === 'ready_to_bind'``
- * are shown as recoverable.
- */
-export function useAdapterRecovery(): {
-  state: RecoveryState;
-  refetch: () => void;
-} {
-  const [recoveryState, setRecoveryState] = useState<RecoveryState>({ stage: 'loading' });
-
-  const adaptersQuery = useQuery({
-    queryKey: ['adapters', 'list'],
-    queryFn: () =>
-      import('@/lib/api').then(({ adapters }) => adapters.listAdapters()),
-    staleTime: 15_000,
-  });
-
-  useEffect(() => {
-    if (adaptersQuery.isLoading) {
-      setRecoveryState({ stage: 'loading' });
-      return;
-    }
-    if (adaptersQuery.isError) {
-      setRecoveryState({
-        stage: 'error',
-        message: 'Could not load adapter state from the daemon.',
-      });
-      return;
-    }
-
-    const adapters = adaptersQuery.data ?? [];
-
-    // Use the server-authoritative eligibility field — never recompute.
-    const recoverable: RecoverableAdapter[] = [];
-    for (const a of adapters) {
-      if (a.eligibility !== 'ready_to_bind') continue;
-      recoverable.push({
-        adapterId: a.id,
-        profileName: a.intended_profile_name ?? '',
-        executable: a.executable,
-        workspaceAdapter: a.workspace_adapter,
-      });
-    }
-
-    if (recoverable.length === 0) {
-      setRecoveryState({ stage: 'empty' });
-    } else {
-      setRecoveryState({ stage: 'ready', adapters: recoverable });
-    }
-  }, [adaptersQuery.data, adaptersQuery.isLoading, adaptersQuery.isError]);
-
-  const refetch = (): void => {
-    void adaptersQuery.refetch();
-  };
-
-  return { state: recoveryState, refetch };
+  return { state, mint, start, regenerate, retryCommit, back };
 }

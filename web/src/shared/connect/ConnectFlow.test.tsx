@@ -1,18 +1,16 @@
 /**
- * ConnectFlow recovery tests (THR-107 fix-forward TASK-3784).
+ * ConnectFlow direct-connect tests (THR-107 slice 3).
  *
- * Validates:
- *  1. Server-authoritative eligibility (all negative cases)
- *  2. Durable bind completion (refetch + verify server state)
- *  3. Recovery visible in default builtin mode
- *
- * Key behavioral changes from TASK-3780:
- *  - Eligibility is now computed SERVER-SIDE (field: eligibility).
- *    The browser NEVER recomputes hash/tamper status.
- *  - Bind success → verifies server state → Connected
- *    (no longer calls setConnected directly from bind response).
+ * Validates the instant Connect -> Connected flow:
+ *  1. Mint requires both a valid name and a workspace CLI selection.
+ *  2. Waiting state shows the daemon-issued wrapper path from GET status.
+ *  3. The moment status reports a landed operation_id, the hook calls
+ *     commit and transitions to Connected on success.
+ *  4. A failed commit shows a retryable error, never a false-Connected.
+ *  5. No pending-approval / recovery-bind UI exists anywhere in the flow
+ *     (that surface was deleted in this slice).
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -34,374 +32,185 @@ function renderConnect(): QueryClient {
   const qc = makeClient();
   render(
     <QueryClientProvider client={qc}>
-      <ConnectFlow
-        connectedSubtitle={() => 'Your CLI is connected.'}
-      />
+      <ConnectFlow connectedSubtitle={() => 'Your CLI is connected.'} />
     </QueryClientProvider>,
   );
   return qc;
 }
 
-/** Factory: creates an adapter entry with all fields.
- *  ``overrides`` set the per-test eligibility and other key fields. */
-function makeAdapter(
-  overrides: Partial<{
-    id: string; name: string; status: string; intended_profile_name: string | null;
-    eligibility: string | null; executable: string; executable_hash: string;
-  }> = {},
-): import('@/lib/api/adapters').AdapterEntry {
-  const id = overrides.id ?? 'kimi-adapter';
-  return {
-    id,
-    name: overrides.name ?? 'kimi-adapter',
-    executable: overrides.executable ?? '/opt/kimi/cli',
-    executable_hash: overrides.executable_hash ?? 'abc123hash',
-    version: '1.0.0',
-    capabilities: [],
-    contract_version: 1,
-    workspace_adapter: 'pi',
-    status: overrides.status ?? 'approved',
-    registered_at: '2026-07-01T00:00:00Z',
-    registered_by: 'testuser',
-    approved_at: '2026-07-02T00:00:00Z',
-    approved_by: 'founder',
-    intended_profile_name: overrides.intended_profile_name ?? 'kimi',
-    eligibility: (overrides.eligibility ?? 'ready_to_bind') as import('@/lib/api/adapters').AdapterEligibility,
-    dependency_manifest_version: null,
-    dependencies: [],
-  };
+async function goCustomAdapter(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+  expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
 }
 
-async function mockListAdapters(...adapters: import('@/lib/api/adapters').AdapterEntry[]): Promise<void> {
-  const { adapters: api } = await import('@/lib/api');
-  vi.spyOn(api, 'listAdapters').mockResolvedValue(adapters);
-}
-
-async function mockBindSuccess(profileName: string, adapterId: string): Promise<void> {
-  const { adapters: api } = await import('@/lib/api');
-  vi.spyOn(api, 'bindAdapterProfile').mockResolvedValue({
-    profile_name: profileName,
-    command_adapter_id: `custom-adapter:${adapterId}`,
-    workspace_adapter_id: 'pi',
-    kind: 'custom',
-    status: 'connected',
-    adapter_id: adapterId,
+async function mockMint(token = 'hrreg_test'): Promise<void> {
+  const { settings: api } = await import('@/lib/api');
+  vi.spyOn(api, 'mintRuntimeRegistrationToken').mockResolvedValue({
+    token,
+    expires_at: Date.now() / 1000 + 1800,
   });
 }
 
-async function mockBindError(msg = 'Adapter artifact changed before bind.'): Promise<void> {
-  const { adapters: api } = await import('@/lib/api');
-  vi.spyOn(api, 'bindAdapterProfile').mockRejectedValue(new Error(msg));
+async function mockStatus(
+  impl: (name: string) => import('@/lib/api/directConnect').DirectConnectStatus,
+): Promise<void> {
+  const { directConnect: api } = await import('@/lib/api');
+  vi.spyOn(api, 'getStatus').mockImplementation(async (name: string) => impl(name));
+}
+
+async function mockCommit(
+  impl: () => import('@/lib/api/directConnect').CommitResponse,
+): Promise<void> {
+  const { directConnect: api } = await import('@/lib/api');
+  vi.spyOn(api, 'commit').mockImplementation(async () => impl());
 }
 
 /* ------------------------------------------------------------------ */
 /*  Tests                                                              */
 /* ------------------------------------------------------------------ */
 
-describe('ConnectFlow — server-authoritative recovery eligibility', () => {
+describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
   beforeEach(() => { vi.restoreAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  /* ---- positive: ready_to_bind ---- */
-
-  test('ready_to_bind adapter shows Bind card in default builtin mode', async () => {
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    renderConnect();
-
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
-    expect(screen.getByRole('button', { name: /bind kimi/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: already_bound ---- */
-
-  test('already_bound adapter does NOT show Bind (false-Connected protection)', async () => {
-    await mockListAdapters(makeAdapter({
-      id: 'bound-adapter',
-      intended_profile_name: 'bound-cli',
-      eligibility: 'already_bound',
-    }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: cross_profile ---- */
-
-  test('cross_profile adapter does NOT show Bind (profile bound to DIFFERENT adapter)', async () => {
-    await mockListAdapters(makeAdapter({
-      id: 'cross-adapter',
-      intended_profile_name: 'other-cli',
-      eligibility: 'cross_profile',
-    }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: builtin_collision ---- */
-
-  test('builtin_collision adapter does NOT show Bind', async () => {
-    await mockListAdapters(makeAdapter({
-      intended_profile_name: 'claude',
-      eligibility: 'builtin_collision',
-    }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: tampered ---- */
-
-  test('tampered adapter (hash mismatch / missing) does NOT show Bind', async () => {
-    await mockListAdapters(makeAdapter({ eligibility: 'tampered' }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: pending ---- */
-
-  test('PENDING adapter does NOT show Bind (eligibility is null, not ready_to_bind)', async () => {
-    await mockListAdapters(makeAdapter({
-      status: 'pending',
-      eligibility: null,
-    }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- negative: recovery_ready (Settings consumer, showRecovery=true) ---- */
-
-  test('recovery_ready adapter (no intended profile) does NOT show Bind through ConnectFlow recovery section', async () => {
-    await mockListAdapters(makeAdapter({
-      intended_profile_name: null,
-      eligibility: 'recovery_ready',
-    }));
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-  }, 10000);
-
-  /* ---- explicit: approval without profile shows Bind, not Connected ---- */
-
-  test('approval-without-profile shows Bind, not false-connected', async () => {
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    renderConnect();
-
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
-
-    // Section explicitly says approval is NOT profile creation
-    expect(screen.getByText(/approved without an automated profile binding/i)).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: /kimi connected/i })).not.toBeInTheDocument();
-  }, 10000);
-});
-
-/* ------------------------------------------------------------------ */
-/*  Durable bind completion tests                                      */
-/* ------------------------------------------------------------------ */
-
-describe('ConnectFlow — durable bind completion', () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  test('bind success → verifying → connected after server confirms', async () => {
+  test('form requires a valid non-built-in name AND a workspace CLI before submit is enabled', async () => {
     const user = userEvent.setup();
+    renderConnect();
+    await goCustomAdapter(user);
 
-    // Initial: adapter is ready_to_bind
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindSuccess('kimi', 'kimi-adapter');
+    const gen = screen.getByRole('button', { name: /generate connect prompt/i });
+    expect(gen).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    expect(gen).toBeDisabled(); // no workspace CLI chosen yet
+
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
+    expect(gen).not.toBeDisabled();
+  });
+
+  test('built-in name is refused regardless of workspace selection', async () => {
+    const user = userEvent.setup();
+    renderConnect();
+    await goCustomAdapter(user);
+
+    await user.type(screen.getByLabelText(/name this cli/i), 'codex');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'pi');
+
+    expect(screen.getByRole('button', { name: /generate connect prompt/i })).toBeDisabled();
+    expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
+  });
+
+  test('waiting state shows the daemon-issued wrapper path from GET status, no PENDING wording', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: null,
+      profile_state: null,
+    }));
 
     renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-    await user.click(bindButton);
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent ?? '';
+    expect(promptText).toContain('/tmp/happyranch-daemon/adapters/my-cli-adapter');
+    expect(promptText).not.toContain('PENDING');
+    expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+  });
 
-    // Verifying state should appear
-    await screen.findByText(/confirming profile binding with the server/i, {}, { timeout: 5000 });
+  test('the moment status reports a landed operation, commit is called and Connected renders on success', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    let landed = false;
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: landed ? 'op-1' : null,
+      profile_state: null,
+    }));
+    const commitSpy = vi.fn(() => ({
+      operation_id: 'op-1', profile_state: 'committed' as const, profile_name: 'my-cli',
+    }));
+    await mockCommit(commitSpy);
 
-    // Now mock the server response to show already_bound
-    const { adapters: api } = await import('@/lib/api');
-    vi.mocked(api.listAdapters).mockResolvedValue([
-      makeAdapter({ eligibility: 'already_bound' }),
-    ]);
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByLabelText(/waiting for adapter submission/i);
 
-    // Wait for the verification poll to succeed → Connected
-    await screen.findByRole('heading', { name: /kimi connected/i }, { timeout: 10000 });
+    landed = true;
+
+    await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
     expect(screen.getByText('Your CLI is connected.')).toBeInTheDocument();
+    expect(commitSpy).toHaveBeenCalled();
   }, 15000);
 
-  test('bind API error shows error message, does NOT transition to verifying', async () => {
+  test('a failed commit shows a retryable error, never a false Connected card', async () => {
     const user = userEvent.setup();
-
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindError('Hash mismatch — adapter artifact changed.');
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1',
+      profile_state: null,
+    }));
+    const { directConnect: api } = await import('@/lib/api');
+    vi.spyOn(api, 'commit').mockResolvedValueOnce({
+      operation_id: 'op-1', profile_state: 'failed', reason: 'conformance_probe_failed: boom',
+    });
 
     renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-    await user.click(bindButton);
-
-    // Error message appears — NOT verifying
-    await screen.findByText(/Hash mismatch — adapter artifact changed/i, {}, { timeout: 5000 });
-    expect(screen.queryByText(/confirming profile binding/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: /kimi connected/i })).not.toBeInTheDocument();
-  }, 10000);
-
-  test('verification times out without server confirmation — shows error', async () => {
-    const user = userEvent.setup();
-
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindSuccess('kimi', 'kimi-adapter');
-
-    renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
-
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-    await user.click(bindButton);
-
-    // Verifying state appears
-    await screen.findByText(/confirming profile binding with the server/i, {}, { timeout: 5000 });
-
-    // Server keeps returning ready_to_bind (never confirms already_bound)
-    // This causes the verification to time out after MAX_TRIES (6 × 1.5s = 9s)
-    // Wait for timeout error message
-    await screen.findByText(/server verification timed out/i, {}, { timeout: 15000 });
-    expect(screen.queryByRole('heading', { name: /kimi connected/i })).not.toBeInTheDocument();
-  }, 20000);
-
-  test('stale/partial success: bind API returns success but server still shows ready_to_bind → eventually times out', async () => {
-    const user = userEvent.setup();
-
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindSuccess('kimi', 'kimi-adapter');
-    // Server continues returning ready_to_bind — never confirms
-
-    renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
-
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-    await user.click(bindButton);
-
-    await screen.findByText(/confirming profile binding/i, {}, { timeout: 5000 });
-    await screen.findByText(/server verification timed out/i, {}, { timeout: 15000 });
-    expect(screen.queryByRole('heading', { name: /kimi connected/i })).not.toBeInTheDocument();
-  }, 20000);
-
-  test('race-idempotent: double bind succeeds once, second click is no-op', async () => {
-    const user = userEvent.setup();
-
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindSuccess('kimi', 'kimi-adapter');
-
-    renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
-
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-
-    // First click
-    await user.click(bindButton);
-    await screen.findByText(/confirming profile binding/i, {}, { timeout: 5000 });
-
-    // Button should be disabled during binding/verifying
-    expect(screen.getByRole('button', { name: /verifying/i })).toBeDisabled();
-
-    // Now confirm server state → Connected
-    const { adapters: api } = await import('@/lib/api');
-    vi.mocked(api.listAdapters).mockResolvedValue([
-      makeAdapter({ eligibility: 'already_bound' }),
-    ]);
-
-    await screen.findByRole('heading', { name: /kimi connected/i }, { timeout: 10000 });
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    expect(screen.getByText(/boom/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
   }, 15000);
 
-  test('bind verification: only shows Connected when server confirms correct adapter id', async () => {
+  test('retry after a failed commit can reach Connected', async () => {
     const user = userEvent.setup();
-
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
-    await mockBindSuccess('kimi', 'kimi-adapter');
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1',
+      profile_state: null,
+    }));
+    const { directConnect: api } = await import('@/lib/api');
+    const commitSpy = vi.spyOn(api, 'commit')
+      .mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'failed', reason: 'transient error' });
 
     renderConnect();
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.selectOptions(screen.getByLabelText(/workspace cli/i), 'codex');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
 
-    const bindButton = screen.getByRole('button', { name: /bind kimi/i });
-    await user.click(bindButton);
+    commitSpy.mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'committed', profile_name: 'my-cli' });
+    await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
-    await screen.findByText(/confirming profile binding/i, {}, { timeout: 5000 });
-
-    // Server returns already_bound — correct
-    const { adapters: api } = await import('@/lib/api');
-    vi.mocked(api.listAdapters).mockResolvedValue([
-      makeAdapter({ id: 'kimi-adapter', eligibility: 'already_bound' }),
-    ]);
-
-    await screen.findByRole('heading', { name: /kimi connected/i }, { timeout: 10000 });
-    // The connected card shows the name and subtitle
-    expect(screen.getByText('Your CLI is connected.')).toBeInTheDocument();
-    expect(screen.getByText('/opt/kimi/cli')).toBeInTheDocument();
+    await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
+    expect(commitSpy).toHaveBeenCalledTimes(2);
   }, 15000);
-});
 
-/* ------------------------------------------------------------------ */
-/*  Recovery visible at shared surface (not just custom mode)          */
-/* ------------------------------------------------------------------ */
-
-describe('ConnectFlow — recovery surface visibility', () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  test('recovery visible in default builtin mode, not only custom mode', async () => {
-    await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
+  test('no pending-approval or recovery-bind UI exists anywhere in the flow', async () => {
+    const user = userEvent.setup();
     renderConnect();
 
-    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
+    // Default (builtin) mode.
+    expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pending/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^bind /i })).not.toBeInTheDocument();
 
-    // The built-in dropdown confirms we are in default builtin mode
-    const select = screen.getByLabelText(/pick your agentic cli/i);
-    expect(select.tagName).toBe('SELECT');
-    expect(screen.getByRole('button', { name: /bind kimi/i })).toBeInTheDocument();
-  }, 10000);
-
-  test('no recovery section when no adapters are ready_to_bind', async () => {
-    await mockListAdapters(
-      makeAdapter({ eligibility: 'already_bound', id: 'b1' }),
-      makeAdapter({ eligibility: 'pending', id: 'b2' }),
-      makeAdapter({ eligibility: null, id: 'b3' }),
-    );
-    renderConnect();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
-  }, 10000);
+    await goCustomAdapter(user);
+    expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/founder must approve/i)).not.toBeInTheDocument();
+  });
 });

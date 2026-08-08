@@ -23,15 +23,8 @@
 import { useState } from 'react';
 import { CheckCircle2, Terminal, Trash2, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
-import { Input } from '@/design-system/primitives/Input';
-import { Label } from '@/design-system/primitives/Label';
 import { ApiError } from '@/lib/api';
-import {
-  ADAPTERS_KEY,
-  useAdapters,
-  useBindAdapterProfile,
-  type AdapterEntry,
-} from '@/hooks/adapters';
+import { useAdapters, type AdapterEntry } from '@/hooks/adapters';
 import {
   RUNTIME_PROFILES_KEY,
   useRemoveRuntimeProfile,
@@ -71,14 +64,6 @@ function findAdapter(
 ): AdapterEntry | undefined {
   const id = adapterIdFromProfile(profile);
   return id ? adapters.find((a) => a.id === id) : undefined;
-}
-
-/** Whether an adapter is approved and requires CLI-level recovery binding. */
-function needsRecovery(adapter: AdapterEntry): boolean {
-  return (
-    adapter.status === 'approved' &&
-    (adapter.eligibility === 'ready_to_bind' || adapter.eligibility === 'recovery_ready')
-  );
 }
 
 /** Present/path health pill — mirrors ExecutorBinariesSection's ValidityPill.
@@ -232,101 +217,11 @@ function ProfileRow({
   );
 }
 
-/* ── CLI-level recovery affordance for approved-unbound adapters ── */
-
-function RecoveryRow({
-  adapter,
-  onBound,
-}: {
-  adapter: AdapterEntry;
-  onBound: () => void;
-}): JSX.Element {
-  const [profileName, setProfileName] = useState(adapter.intended_profile_name ?? '');
-  const [error, setError] = useState<string | null>(null);
-  const bind = useBindAdapterProfile();
-
-  const doBind = async (): Promise<void> => {
-    const name = profileName.trim();
-    if (!name) return;
-    setError(null);
-    try {
-      await bind.mutateAsync({ id: adapter.id, body: { profile_name: name } });
-      onBound();
-    } catch (err) {
-      setError(errMessage(err, 'Could not connect this CLI. Retry or contact the founder.'));
-    }
-  };
-
-  return (
-    <div
-      className="border-border-default bg-surface rounded-lg border p-4"
-      data-testid={`cli-recovery-row-${adapter.id}`}
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <Terminal size={16} aria-hidden className="text-text-secondary shrink-0" />
-        <span className="text-text-primary text-sm font-medium">Finish connecting this CLI</span>
-      </div>
-      <p className="text-text-secondary mb-3 text-sm">
-        This custom CLI is approved but not yet connected. Bind it to a profile name so
-        agents can launch it.
-      </p>
-      <div className="space-y-2">
-        <Label htmlFor={`recovery-name-${adapter.id}`}>Profile name</Label>
-        <Input
-          id={`recovery-name-${adapter.id}`}
-          value={profileName}
-          onChange={(e) => setProfileName(e.target.value)}
-          placeholder="e.g. my-custom-cli"
-          disabled={bind.isPending}
-          data-testid={`cli-recovery-name-${adapter.id}`}
-        />
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          type="button"
-          onClick={() => void doBind()}
-          disabled={!profileName.trim() || bind.isPending}
-          data-testid={`cli-recovery-bind-${adapter.id}`}
-        >
-          {bind.isPending ? 'Binding…' : `Bind ${profileName.trim() || '…'}`}
-        </Button>
-      </div>
-      {error && (
-        <p
-          className="text-feedback-danger mt-2 text-sm"
-          role="alert"
-          data-testid={`cli-recovery-error-${adapter.id}`}
-        >
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function CustomProfilesSection(): JSX.Element {
   const query = useRuntimeProfiles();
   const profiles = query.data?.profiles ?? [];
   const adaptersQuery = useAdapters();
   const adapters = adaptersQuery.data ?? [];
-  const qc = useQueryClient();
-
-  // Adapter-backed CLIs already represented in the profiles list should not
-  // also render a recovery row.
-  const boundAdapterIds = new Set(
-    profiles
-      .map(adapterIdFromProfile)
-      .filter((id): id is string => id !== null),
-  );
-
-  const recoveryAdapters = adapters.filter(
-    (a) => needsRecovery(a) && !boundAdapterIds.has(a.id),
-  );
-
-  const onBound = (): void => {
-    void qc.invalidateQueries({ queryKey: ADAPTERS_KEY });
-    void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
-  };
 
   return (
     <section className="space-y-3" data-testid="custom-profiles-section">
@@ -366,14 +261,6 @@ export function CustomProfilesSection(): JSX.Element {
             ))}
           </div>
         ))}
-
-      {recoveryAdapters.length > 0 && (
-        <div className="space-y-3" data-testid="cli-recovery-rows">
-          {recoveryAdapters.map((adapter) => (
-            <RecoveryRow key={adapter.id} adapter={adapter} onBound={onBound} />
-          ))}
-        </div>
-      )}
     </section>
   );
 }
