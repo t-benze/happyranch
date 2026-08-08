@@ -267,6 +267,16 @@ def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():
     assert "fanout" in tail.lower()
 
 
+def test_manager_prompt_marks_supersede_as_default_off_internal_pilot():
+    p = build_capabilities_prompt(
+        agents=[], step_number=1, max_steps=10, manager_name="engineering_manager",
+    )
+    assert '"action": "supersede"' in p
+    assert "default OFF" in p
+    assert "kill switch" in p
+    assert "Thread-originated roots are rejected in phase 1" in p
+
+
 def test_self_only_prompt_advertises_fanout_as_unavailable():
     """The self-only prompt must mention fanout exists but is unavailable
     in self-only mode, so non-manager owners are not confused by its absence."""

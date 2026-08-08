@@ -137,6 +137,15 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
+        "**supersede** -- Internal-pilot replanning only (default OFF):",
+        "```json",
+        '{"action": "supersede", "successor_brief": "<nonblank replacement brief>", "rationale": "<nonblank factual reason>"}',
+        "```",
+        "Available only to the assigned manager of its currently claimed root in the configured pilot team. "
+        "It is disabled unless the operator enables the pilot and is immediately stopped by its kill switch. "
+        "It never accepts a target, actor, team, assignment, revisit, or override field. "
+        "Escalate instead for policy/product intent, budget/external commitments, permissions, cross-team ownership, schema/auth/security/privacy/data access, or any unresolved Founder gate. "
+        "Thread-originated roots are rejected in phase 1; dispatch handling is deliberately deferred to phase 2.\n",
         "**fanout** (`parallel` accepted as alias) -- Spawn N parallel sub-tasks "
         "(Phase 2 with pipeline, team-manager only):\n",
         "```json\n",

@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -173,7 +173,7 @@ class FanoutChild(BaseModel):
 
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate", "fanout", "parallel"]
+    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede"]
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
@@ -202,6 +202,32 @@ class NextStep(BaseModel):
     join_summary: str | None = None
     summary: str | None = None
     reason: str | None = None
+    successor_brief: str | None = None
+    rationale: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _supersede_is_a_closed_payload(cls, value: object) -> object:
+        """Keep the manager supersession decision deliberately non-extensible.
+
+        The target and authority come only from the claimed task/session, never
+        from a manager-supplied override.  Other decisions retain legacy
+        permissive-extra parsing for wire compatibility.
+        """
+        if not isinstance(value, dict) or value.get("action") != "supersede":
+            return value
+        allowed = {"action", "successor_brief", "rationale"}
+        extra = set(value) - allowed
+        if extra:
+            raise ValueError(
+                "supersede accepts only action, successor_brief, and rationale; "
+                f"forbidden fields: {', '.join(sorted(extra))}"
+            )
+        for field_name in ("successor_brief", "rationale"):
+            field_value = value.get(field_name)
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise ValueError(f"supersede.{field_name} must be a nonblank string")
+        return value
 
 
 class LocalCiEvidence(BaseModel):
