@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from datetime import datetime, timezone
 
@@ -100,6 +102,39 @@ class FakeOrgState:
         self.db = db
         self.root = root
         self.slug = "test"
+
+
+CLAUDE_CREDIT_EXHAUSTED_RESULT = (
+    '{"type":"result","subtype":"error_during_execution","is_error":true,'
+    '"duration_ms":12543,"num_turns":1,"session_id":"sess-credit-limit",'
+    '"total_cost_usd":0.0142,"usage":{"input_tokens":1643,"output_tokens":0,'
+    '"cache_read_input_tokens":0,"cache_creation_input_tokens":0,'
+    '"service_tier":"standard"},"modelUsage":{"claude-opus-4-1":'
+    '{"inputTokens":1643,"outputTokens":0,"cacheReadInputTokens":0,'
+    '"cacheCreationInputTokens":0}},"permission_denials":[],'
+    '"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},'
+    '"api_error_status":429,"terminal_reason":"credit_exhausted",'
+    '"result":"Your account has insufficient credits to run this request. '
+    'Please add credits or wait for the billing limit to reset before retrying."}'
+)
+
+
+def test_executor_error_detail_retains_credit_exhaustion_diagnostics() -> None:
+    """A realistic Claude result envelope fits within the shared 2 KB cap."""
+    from runtime.daemon.thread_runner import _executor_error_detail
+
+    assert 300 < len(CLAUDE_CREDIT_EXHAUSTED_RESULT) <= 2000
+    result = SimpleNamespace(
+        error=f"Command exited with code 1: {CLAUDE_CREDIT_EXHAUSTED_RESULT}",
+        stderr_tail="",
+    )
+
+    detail = _executor_error_detail(result, 1)
+
+    assert detail == CLAUDE_CREDIT_EXHAUSTED_RESULT
+    assert '"api_error_status":429' in detail
+    assert '"terminal_reason":"credit_exhausted"' in detail
+    assert '"result":"Your account has insufficient credits' in detail
 
 
 @pytest.mark.asyncio
@@ -262,6 +297,71 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
     assert "529 Overloaded" in inv_after.decline_reason
     # The executor's redundant "Command exited with code N" envelope is stripped.
     assert "Command exited with code" not in inv_after.decline_reason
+
+
+@pytest.mark.asyncio
+async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
+    tmp_path, monkeypatch,
+):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FailExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            result = FakeExecutorResult(
+                success=False,
+                error=(
+                    "Command exited with code 1: "
+                    f"{CLAUDE_CREDIT_EXHAUSTED_RESULT}"
+                ),
+            )
+            result.returncode = 1
+            return result
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FailExec(),
+    )
+
+    await run_invocation(
+        org_state=FakeOrgState(db=db, root=tmp_path),
+        invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.decline_reason is not None
+    assert len(inv_after.decline_reason) > 300
+    for diagnostic in (
+        '"api_error_status":429',
+        '"terminal_reason":"credit_exhausted"',
+        '"result":"Your account has insufficient credits',
+    ):
+        assert diagnostic in inv_after.decline_reason
+
+    audit_row = next(
+        row for row in db.get_audit_logs("THR-001")
+        if row["action"] == "thread_invocation_failed"
+    )
+    assert audit_row["payload"]["reason"] == inv_after.decline_reason
 
 
 @pytest.mark.asyncio
