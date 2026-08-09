@@ -186,6 +186,38 @@ def _claimed_manager_root(db, task_id: str = "T-SUP") -> None:
     ))
 
 
+def test_persisted_null_supersede_attestation_never_reaches_write_path(runtime, db):
+    """A malformed persisted callback must not create a successor or audit row."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    db.insert_task_result(
+        task_id="T-SUP",
+        agent="engineering_head",
+        session_id="session-sup",
+        status="completed",
+        output_summary="replace the plan",
+        confidence_score=90,
+        decision_json='{"action":"supersede","successor_brief":"replacement plan",'
+                      '"rationale":"new evidence","attestation":null}',
+    )
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+
+    report = orch._read_completion_from_db("T-SUP", "engineering_head", "session-sup")
+
+    assert report is not None
+    assert report.decision is None
+    assert db.get_task("T-SUP").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM tasks WHERE id != 'T-SUP'").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'manager_supersession'"
+    ).fetchone()[0] == 0
+
+
 @pytest.mark.parametrize(
     ("enabled", "pilot_team"),
     [(None, "engineering"), ("1", "other"), ("0", "engineering")],

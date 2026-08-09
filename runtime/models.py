@@ -263,6 +263,8 @@ class NextStep(BaseModel):
                 raise ValueError(f"supersede.{field_name} must be a nonblank string")
         if "attestation" not in value:
             raise ValueError("supersede.attestation is required")
+        if value.get("attestation") is None:
+            raise ValueError("supersede.attestation must not be null")
         return value
 
 

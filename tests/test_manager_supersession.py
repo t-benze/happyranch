@@ -44,6 +44,16 @@ def test_supersede_payload_is_closed_and_nonblank(payload: dict) -> None:
         NextStep(**payload)
 
 
+def test_supersede_payload_rejects_null_attestation() -> None:
+    with pytest.raises(ValidationError):
+        NextStep.model_validate({
+            "action": "supersede",
+            "successor_brief": "next",
+            "rationale": "because",
+            "attestation": None,
+        })
+
+
 def _db(tmp_path: Path) -> Database:
     db = Database(tmp_path / "state.db")
     db.insert_task(TaskRecord(
