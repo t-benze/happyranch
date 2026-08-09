@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -171,9 +171,42 @@ class FanoutChild(BaseModel):
     attachments: list[TaskAttachmentRef] | None = None
 
 
+class ManagerSupersessionAttestation(BaseModel):
+    """Manager-supplied postmortem evidence for a THR-152 supersession."""
+
+    model_config = {"extra": "forbid", "strict": True}
+
+    recovery_reason: StrictStr
+    policy_product_intent_unchanged: StrictBool
+    no_budget_or_external_commitment: StrictBool
+    no_permission_or_cross_team_change: StrictBool
+    no_schema_auth_security_privacy_or_data_access_change: StrictBool
+    no_unresolved_founder_gate: StrictBool
+
+    @field_validator("recovery_reason")
+    @classmethod
+    def _recovery_reason_is_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("supersede.attestation.recovery_reason must be a nonblank string")
+        return value
+
+    @field_validator(
+        "policy_product_intent_unchanged",
+        "no_budget_or_external_commitment",
+        "no_permission_or_cross_team_change",
+        "no_schema_auth_security_privacy_or_data_access_change",
+        "no_unresolved_founder_gate",
+    )
+    @classmethod
+    def _declaration_must_affirm_no_known_gate(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("supersede attestation declarations must affirm no known gate")
+        return value
+
+
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate", "fanout", "parallel"]
+    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede"]
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
@@ -202,6 +235,37 @@ class NextStep(BaseModel):
     join_summary: str | None = None
     summary: str | None = None
     reason: str | None = None
+    successor_brief: str | None = None
+    rationale: str | None = None
+    attestation: ManagerSupersessionAttestation | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _supersede_is_a_closed_payload(cls, value: object) -> object:
+        """Keep the manager supersession decision deliberately non-extensible.
+
+        The target and authority come only from the claimed task/session, never
+        from a manager-supplied override.  Other decisions retain legacy
+        permissive-extra parsing for wire compatibility.
+        """
+        if not isinstance(value, dict) or value.get("action") != "supersede":
+            return value
+        allowed = {"action", "successor_brief", "rationale", "attestation"}
+        extra = set(value) - allowed
+        if extra:
+            raise ValueError(
+                "supersede accepts only action, successor_brief, and rationale; "
+                f"forbidden fields: {', '.join(sorted(extra))}"
+            )
+        for field_name in ("successor_brief", "rationale"):
+            field_value = value.get(field_name)
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise ValueError(f"supersede.{field_name} must be a nonblank string")
+        if "attestation" not in value:
+            raise ValueError("supersede.attestation is required")
+        if value.get("attestation") is None:
+            raise ValueError("supersede.attestation must not be null")
+        return value
 
 
 class LocalCiEvidence(BaseModel):

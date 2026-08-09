@@ -85,6 +85,72 @@ def _insert_task_result(db: Database, task_id: str, agent: str,
     )
 
 
+def test_zombie_consumer_rejects_thread_originated_manager_supersession(
+    tmp_path, monkeypatch,
+):
+    """The zombie path must use the same phase-1 completion guard."""
+    import json
+
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.runtime import RuntimeDir
+
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+    )
+    db = Database(paths.db_path)
+    db.insert_task(TaskRecord(
+        id="T-ZOMBIE-SUP", brief="original", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        current_session_id="sess-zombie",
+    ))
+    db.execute(
+        "UPDATE tasks SET dispatched_from_thread_id = 'THR-152' WHERE id = 'T-ZOMBIE-SUP'"
+    )
+    db._conn.commit()
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=paths, slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
+    orch._queue = MagicMock()
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
+
+    _consume_zombie_fingerprint(
+        db,
+        "T-ZOMBIE-SUP",
+        {
+            "agent": "engineering_head",
+            "status": "completed",
+            "confidence_score": 90,
+            "output_summary": "replace",
+            "decision_json": json.dumps({
+                "action": "supersede", "successor_brief": "replacement",
+                "rationale": "new evidence",
+                "attestation": {
+                    "recovery_reason": "Evidence invalidated the old plan.",
+                    "policy_product_intent_unchanged": True,
+                    "no_budget_or_external_commitment": True,
+                    "no_permission_or_cross_team_change": True,
+                    "no_schema_auth_security_privacy_or_data_access_change": True,
+                    "no_unresolved_founder_gate": True,
+                },
+            }),
+        },
+        db.get_task("T-ZOMBIE-SUP"),
+        orch,
+    )
+
+    assert db.get_task("T-ZOMBIE-SUP").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    orch._queue.put_nowait.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # predicate — allowlist + AND-gate
 # ---------------------------------------------------------------------------

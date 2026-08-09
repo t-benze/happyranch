@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import sqlite3
@@ -638,6 +639,32 @@ class Database:
                 payload TEXT,
                 timestamp TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS manager_supersessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predecessor_task_id TEXT NOT NULL UNIQUE,
+                successor_task_id TEXT NOT NULL UNIQUE,
+                original_root_task_id TEXT NOT NULL,
+                actor_agent TEXT NOT NULL,
+                actor_session_id TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                attestation_evidence TEXT NOT NULL,
+                predecessor_brief TEXT NOT NULL,
+                successor_brief TEXT NOT NULL,
+                predecessor_brief_sha256 TEXT NOT NULL,
+                successor_brief_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(predecessor_task_id) REFERENCES tasks(id),
+                FOREIGN KEY(successor_task_id) REFERENCES tasks(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_manager_supersessions_original_root
+                ON manager_supersessions(original_root_task_id);
+            CREATE TRIGGER IF NOT EXISTS manager_supersessions_no_update
+                BEFORE UPDATE ON manager_supersessions
+                BEGIN SELECT RAISE(ABORT, 'manager supersessions are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS manager_supersessions_no_delete
+                BEFORE DELETE ON manager_supersessions
+                BEGIN SELECT RAISE(ABORT, 'manager supersessions are append-only'); END;
 
             CREATE TABLE IF NOT EXISTS task_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2547,6 +2574,136 @@ class Database:
             )
         self._conn.commit()
         return cursor.rowcount == 1
+
+    @_synchronized
+    def try_manager_supersede(
+        self,
+        task_id: str,
+        *,
+        actor_agent: str,
+        actor_session_id: str,
+        expected_team: str,
+        successor_brief: str,
+        rationale: str,
+        attestation: dict[str, object],
+    ) -> str | None:
+        """Atomically replace one eligible claimed root with a pending successor.
+
+        This intentionally has no generic target/actor override: callers supply
+        only the server-derived current claim and the two decision fields.  A
+        false return has no write side effects; exceptions roll the entire
+        operation back.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None or (
+                row["status"] != TaskStatus.IN_PROGRESS.value
+                or row["block_kind"] is not None
+                or row["cancelled_at"] is not None
+                or row["task_type"] != "task"
+                or row["parent_task_id"] is not None
+                or row["assigned_agent"] != actor_agent
+                or row["team"] != expected_team
+                or row["current_session_id"] != actor_session_id
+                or row["active_chain"] is not None
+                or row["active_fanout"] is not None
+                or row["blocked_on_job_ids"] is not None
+                or row["dispatched_from_thread_id"] not in (None, "")
+            ):
+                self._conn.rollback()
+                return None
+            live_work = self._conn.execute(
+                """WITH RECURSIVE family(id) AS (
+                       SELECT ?
+                       UNION ALL
+                       SELECT t.id FROM tasks t JOIN family f ON t.parent_task_id = f.id
+                   )
+                   SELECT 1 FROM tasks
+                    WHERE id IN family AND id != ?
+                      AND status NOT IN ('completed', 'failed', 'cancelled', 'superseded')
+                   UNION ALL
+                   SELECT 1 FROM jobs
+                    WHERE task_id IN family AND status IN ('pending', 'running')
+                   LIMIT 1""",
+                (task_id, task_id),
+            ).fetchone()
+            if live_work is not None:
+                self._conn.rollback()
+                return None
+            predecessor = row["id"]
+            prior = self._conn.execute(
+                "SELECT original_root_task_id FROM manager_supersessions WHERE successor_task_id = ?",
+                (predecessor,),
+            ).fetchone()
+            original_root = prior["original_root_task_id"] if prior else predecessor
+            if self._conn.execute(
+                "SELECT 1 FROM manager_supersessions WHERE original_root_task_id = ? LIMIT 1",
+                (original_root,),
+            ).fetchone() is not None:
+                self._conn.rollback()
+                return None
+            successor_id = self.next_task_id()
+            now = datetime.now(timezone.utc).isoformat()
+            predecessor_brief = row["brief"]
+            predecessor_hash = hashlib.sha256(predecessor_brief.encode()).hexdigest()
+            successor_hash = hashlib.sha256(successor_brief.encode()).hexdigest()
+            attestation_evidence = {
+                "rule_version": "manager_supersession_attestation.v1",
+                "actor_agent": actor_agent,
+                "actor_session_id": actor_session_id,
+                "attestation": attestation,
+            }
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief, task_type,
+                       revision_count, created_at, updated_at, parent_task_id,
+                       orchestration_step_count, session_timeout_seconds)
+                   VALUES (?, 'pending', ?, ?, ?, 'task', 0, ?, ?, NULL, 0, ?)""",
+                (successor_id, actor_agent, row["team"], successor_brief, now, now,
+                 row["session_timeout_seconds"]),
+            )
+            self._conn.execute(
+                """INSERT INTO manager_supersessions
+                   (predecessor_task_id, successor_task_id, original_root_task_id,
+                    actor_agent, actor_session_id, rationale, attestation_evidence, predecessor_brief,
+                    successor_brief, predecessor_brief_sha256, successor_brief_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (predecessor, successor_id, original_root, actor_agent, actor_session_id,
+                 rationale, json.dumps(attestation_evidence, sort_keys=True), predecessor_brief, successor_brief, predecessor_hash,
+                 successor_hash, now),
+            )
+            self._conn.execute(
+                """UPDATE tasks SET status = 'superseded', block_kind = NULL,
+                       blocked_on_job_ids = NULL, active_chain = NULL, active_fanout = NULL,
+                       note = ?, completed_at = ?, updated_at = ?
+                   WHERE id = ? AND status = 'in_progress' AND block_kind IS NULL
+                     AND current_session_id = ?""",
+                (f"manager-superseded by {successor_id}", now, now, predecessor,
+                 actor_session_id),
+            )
+            if self._conn.execute("SELECT changes()").fetchone()[0] != 1:
+                raise RuntimeError("supersession claim became stale")
+            payload = {
+                "original_root_task_id": original_root,
+                "actor_session_id": actor_session_id,
+                "rationale": rationale,
+                "attestation_evidence": attestation_evidence,
+                "predecessor_brief_sha256": predecessor_hash,
+                "successor_brief_sha256": successor_hash,
+            }
+            for audit_task_id, counterpart_task_id in (
+                (predecessor, successor_id), (successor_id, predecessor),
+            ):
+                audit_payload = {**payload, "counterpart_task_id": counterpart_task_id}
+                self._conn.execute(
+                    "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
+                    (audit_task_id, actor_agent, "manager_supersession", json.dumps(audit_payload), now),
+                )
+            self._conn.commit()
+            return successor_id
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def try_delegate(

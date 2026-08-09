@@ -145,6 +145,198 @@ class _SlugQueue:
         return self._q.get_nowait()
 
 
+def _consume_manager_supersede(orch, task_id: str) -> None:
+    from runtime.models import CompletionReport, NextStep
+    from runtime.orchestrator.run_step import _consume_completion_report
+
+    _consume_completion_report(
+        orch,
+        task_id,
+        CompletionReport(
+            task_id=task_id,
+            agent="engineering_head",
+            status="completed",
+            confidence=90,
+            output_summary="replace the plan",
+            decision=NextStep(
+                action="supersede",
+                successor_brief="replacement plan",
+                rationale="new evidence",
+                attestation={
+                    "recovery_reason": "Evidence invalidated the old plan.",
+                    "policy_product_intent_unchanged": True,
+                    "no_budget_or_external_commitment": True,
+                    "no_permission_or_cross_team_change": True,
+                    "no_schema_auth_security_privacy_or_data_access_change": True,
+                    "no_unresolved_founder_gate": True,
+                },
+            ),
+        ),
+    )
+
+
+def _claimed_manager_root(db, task_id: str = "T-SUP") -> None:
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief="original plan",
+        team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS,
+        current_session_id="session-sup",
+    ))
+
+
+def test_persisted_null_supersede_attestation_never_reaches_write_path(runtime, db):
+    """A malformed persisted callback must not create a successor or audit row."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    db.insert_task_result(
+        task_id="T-SUP",
+        agent="engineering_head",
+        session_id="session-sup",
+        status="completed",
+        output_summary="replace the plan",
+        confidence_score=90,
+        decision_json='{"action":"supersede","successor_brief":"replacement plan",'
+                      '"rationale":"new evidence","attestation":null}',
+    )
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+
+    report = orch._read_completion_from_db("T-SUP", "engineering_head", "session-sup")
+
+    assert report is not None
+    assert report.decision is None
+    assert db.get_task("T-SUP").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM tasks WHERE id != 'T-SUP'").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'manager_supersession'"
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("enabled", "pilot_team"),
+    [(None, "engineering"), ("1", "other"), ("0", "engineering")],
+    ids=["default_off", "wrong_pilot_team", "kill_switch"],
+)
+def test_completion_consumer_denies_disabled_manager_supersession(
+    runtime, db, monkeypatch, enabled: str | None, pilot_team: str,
+):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    if enabled is None:
+        monkeypatch.delenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", enabled)
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", pilot_team)
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    _consume_manager_supersede(orch, "T-SUP")
+
+    assert db.get_task("T-SUP").status is TaskStatus.FAILED
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert orch._queue.qsize() == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_status"),
+    [
+        ("assigned_agent", "dev_agent", TaskStatus.FAILED),
+        ("current_session_id", None, TaskStatus.FAILED),
+        ("parent_task_id", "T-PARENT", TaskStatus.IN_PROGRESS),
+    ],
+    ids=["current_manager", "current_session", "root"],
+)
+def test_completion_consumer_enforces_manager_session_and_root_gates(
+    runtime, db, monkeypatch, field: str, value: str | None, expected_status: TaskStatus,
+):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    db.execute(f"UPDATE tasks SET {field} = ? WHERE id = 'T-SUP'", (value,))
+    db._conn.commit()
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    _consume_manager_supersede(orch, "T-SUP")
+
+    assert db.get_task("T-SUP").status is expected_status
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert orch._queue.qsize() == 0
+
+
+def test_completion_consumer_rejects_thread_origin_without_founder_side_effects(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    db.execute("UPDATE tasks SET dispatched_from_thread_id = 'THR-152' WHERE id = 'T-SUP'")
+    db._conn.commit()
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+    founder_notifications: list[dict] = []
+    orch.notify_escalated = lambda **kwargs: founder_notifications.append(kwargs)
+
+    _consume_manager_supersede(orch, "T-SUP")
+
+    assert db.get_task("T-SUP").status is TaskStatus.IN_PROGRESS
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert [row["action"] for row in db.get_audit_logs("T-SUP") if row["action"] == "escalation"] == []
+    assert founder_notifications == []
+    assert orch._queue.qsize() == 0
+
+
+@pytest.mark.parametrize("enqueue_fails", [False, True], ids=["enqueue", "recovery"])
+def test_completion_consumer_supersedes_and_leaves_successor_recoverable(
+    runtime, db, monkeypatch, enqueue_fails: bool,
+):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _claimed_manager_root(db)
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+    founder_notifications: list[dict] = []
+    orch.notify_escalated = lambda **kwargs: founder_notifications.append(kwargs)
+    if enqueue_fails:
+        def fail_enqueue(slug: str, task_id: str) -> None:
+            raise RuntimeError("injected queue outage")
+        monkeypatch.setattr(orch._queue, "put_nowait", fail_enqueue)
+
+    _consume_manager_supersede(orch, "T-SUP")
+
+    successor = db.get_task("TASK-001")
+    assert db.get_task("T-SUP").status is TaskStatus.SUPERSEDED
+    assert successor is not None and successor.status is TaskStatus.PENDING
+    assert successor.assigned_agent == "engineering_head"
+    assert founder_notifications == []
+    assert orch._queue.qsize() == (0 if enqueue_fails else 1)
+
+
 
 def test_run_step_done_completes_task_and_enqueues_parent(
     runtime, db, monkeypatch,

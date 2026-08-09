@@ -429,6 +429,55 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         # parent stays in_progress(delegated) until this task reaches a terminal.
         return
 
+    if decision.action == "supersede":
+        # THR-152 phase 1: a deliberately small, default-deny internal pilot.
+        # The decision model rejects every caller-supplied identity/target field;
+        # the database method re-checks this current claimed root under its lock.
+        import os
+        enabled = os.environ.get("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED") == "1"
+        pilot_team = os.environ.get(
+            "HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering"
+        )
+        if not enabled or task.team != pilot_team or not orch.teams.is_team_manager(agent):
+            _fail(orch, task_id, note="manager supersession is disabled or not authorized")
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+        try:
+            expected_manager = orch.teams.manager_for_team(task.team).name
+        except (KeyError, ValueError):
+            expected_manager = None
+        if expected_manager != agent or task.current_session_id is None:
+            _fail(orch, task_id, note="manager supersession claim is not current")
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+        successor_id = db.try_manager_supersede(
+            task_id,
+            actor_agent=agent,
+            actor_session_id=task.current_session_id,
+            expected_team=pilot_team,
+            successor_brief=decision.successor_brief or "",
+            rationale=decision.rationale or "",
+            attestation=decision.attestation.model_dump() if decision.attestation else {},
+        )
+        if successor_id is None:
+            # The claim may have been superseded by cancellation or a competing
+            # consumer.  Never cancel/alter live work just to make it eligible.
+            return
+        try:
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, successor_id)
+        except Exception:
+            # The committed successor remains pending. Startup recovery
+            # idempotently re-enqueues pending tasks; never reopen predecessor.
+            logger.exception("manager supersession %s enqueue failed", successor_id)
+        return
+
     if decision.action == "fanout":
         # Phase 1: read-only native fan-out core.
         # Validate structural correctness (width, cap ack, no per-child then/verdict).
