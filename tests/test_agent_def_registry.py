@@ -45,12 +45,18 @@ class TestAgentDefWithRegistryExecutors:
         agent = parse_agent_text(text, expected_name="x")
         assert agent.executor == "openclaw"
 
-    def test_rejects_unregistered_executor(self) -> None:
+    def test_accepts_unregistered_executor(self) -> None:
+        """Parsing must not enforce registry membership: an org must be able
+        to attach (and stay reachable via manage-agent/set-executor) even
+        when an agent references a not-currently-registered executor.
+        Registry enforcement remains fail-closed at launch time
+        (executor_registry.build_executor) and at write time
+        (PUT /agents/{name}/executor)."""
         text = (
             "---\nname: x\nteam: t\nrole: worker\nexecutor: gpt5\n---\nbody\n"
         )
-        with pytest.raises(AgentParseError, match="registered"):
-            parse_agent_text(text, expected_name="x")
+        agent = parse_agent_text(text, expected_name="x")
+        assert agent.executor == "gpt5"
 
     def test_rejects_empty_executor_string(self) -> None:
         text = (

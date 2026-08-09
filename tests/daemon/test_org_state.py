@@ -129,14 +129,18 @@ executor_profiles:
     reset_registry()
 
 
-def test_org_state_load_fails_when_custom_profile_unregistered_and_agent_declares_it(
+def test_org_state_load_succeeds_when_custom_profile_unregistered_and_agent_declares_it(
     tmp_path: Path, monkeypatch,
 ) -> None:
     """An active agent declaring a custom executor that is NOT registered
     (THR-107: e.g. a legacy config block that is no longer parsed, here a
-    malformed one that cannot even be lifted) must fail validation — the
-    agent depends on an unregistered profile."""
-    from runtime.orchestrator.executor_registry import reset_registry
+    malformed one that cannot even be lifted) must NOT block org attach.
+    A single agent depending on a not-currently-registered profile would
+    otherwise lock the whole org out of every management route (they all
+    require attach) — including the routes needed to fix it. The registry
+    is still enforced fail-closed at launch time (build_executor) and at
+    write time (PUT /agents/{name}/executor)."""
+    from runtime.orchestrator.executor_registry import get_registry, reset_registry
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
     reset_registry()
 
@@ -166,6 +170,12 @@ def test_org_state_load_fails_when_custom_profile_unregistered_and_agent_declare
     )
     (paths.agents_dir / "dev_agent.md").write_text(render_agent_text(agent))
 
-    # Must fail validation because openclaw is not a registered profile.
-    with pytest.raises(ValueError, match="registered profile"):
-        OrgState.load(slug="badorg", root=org_root, settings=Settings())
+    org = OrgState.load(slug="badorg", root=org_root, settings=Settings())
+    try:
+        loaded = prompt_loader.load_agent(paths, "dev_agent")
+        assert loaded is not None
+        assert loaded.executor == "openclaw"
+        assert not get_registry().is_registered("openclaw")
+    finally:
+        org.close()
+        reset_registry()

@@ -9,8 +9,6 @@ from typing import Literal
 
 import yaml
 
-from runtime.orchestrator.executor_registry import get_registry
-
 _NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _REPO_KEY_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n(.*)", re.DOTALL)
@@ -21,10 +19,11 @@ class AgentParseError(ValueError):
 
 
 Role = Literal["worker", "manager"]
-# Executor is now a plain string validated against the registry at parse time
-# (THR-052: capability-registered, not name-listed). The Literal type is kept
-# for backward compatibility with typed code that imports it; runtime
-# validation uses executor_registry.is_registered().
+# Executor is a plain string (THR-052: capability-registered, not name-listed).
+# NOT validated against the registry at parse time — an org must be able to
+# attach even when an agent references a currently-unregistered executor; see
+# the executor-handling comment in parse_agent_text. The Literal type is kept
+# for backward compatibility with typed code that imports it.
 Executor = str  # type: ignore[assignment]
 
 
@@ -103,12 +102,15 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
     executor = fm["executor"]
     if not isinstance(executor, str) or not executor:
         raise AgentParseError(f"executor must be a non-empty string, got {executor!r}")
-    registry = get_registry()
-    if not registry.is_registered(executor):
-        raise AgentParseError(
-            f"executor must be a registered profile, got {executor!r}. "
-            f"Registered: {', '.join(registry.list_profile_names())}"
-        )
+    # Registry membership is intentionally NOT enforced here. An org must be
+    # able to attach (and stay reachable via manage-agent/set-executor) even
+    # when an agent references an executor that isn't currently registered
+    # on this machine — otherwise a single stale/unregistered profile locks
+    # the whole org out of every management route (they all require attach).
+    # The registry is still enforced fail-closed at the two points that
+    # actually matter: launch time (executor_registry.build_executor raises,
+    # caught per-task in run_step._run_task) and write time (PUT
+    # /agents/{name}/executor validates before persisting a new value).
 
     raw_rules = fm.get("allow_rules") or []
     if not isinstance(raw_rules, list):

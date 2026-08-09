@@ -86,12 +86,14 @@ def test_parse_rejects_invalid_role() -> None:
         parse_agent_text(text, expected_name="x")
 
 
-def test_parse_rejects_invalid_executor() -> None:
+def test_parse_accepts_unregistered_executor() -> None:
+    """Registry membership is not enforced at parse time (see
+    tests/test_agent_def_registry.py) — only structural validity is."""
     text = (
         "---\nname: x\nteam: t\nrole: worker\nexecutor: gpt\n---\nbody\n"
     )
-    with pytest.raises(AgentParseError, match="executor"):
-        parse_agent_text(text, expected_name="x")
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.executor == "gpt"
 
 
 @pytest.mark.parametrize("executor", ["claude", "codex", "opencode", "pi"])
