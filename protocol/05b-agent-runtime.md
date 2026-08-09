@@ -451,6 +451,14 @@ repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
 These are resolved via the `SkillRegistry` and unioned with system contracts;
 release and system-contract slugs win on collision.
 
+**THR-055 B2 additive custom-skill schema (dark).** The runtime also carries
+the additive, currently unwired B2 tables: `custom_skills`, immutable
+`custom_skill_versions`, `custom_skill_eligibility_rules`,
+`custom_skill_eligibility_events`, `custom_skill_materializations`, and
+`custom_skill_events`. They establish identity/version provenance,
+eligibility audit, and per-session evidence only; until the A2/A3 slices land,
+they do not affect routing, resolution, or workspace materialization.
+
 **Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
 custom skills are governed exclusively by the immutable lifecycle ledger
 (`skill_lifecycle_packages`, `skill_lifecycle_assignments`). Only PUBLISHED

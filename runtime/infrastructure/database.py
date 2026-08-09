@@ -983,6 +983,109 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_sve_agent
                 ON skill_validation_events(agent);
 
+            -- THR-055 B2 Slice A1: additive custom-skill schema. These tables
+            -- are intentionally dark until the later route/resolver slices.
+            CREATE TABLE IF NOT EXISTS custom_skills (
+                id                  TEXT PRIMARY KEY,
+                org_slug            TEXT NOT NULL,
+                slug                TEXT NOT NULL,
+                name                TEXT NOT NULL,
+                description         TEXT NOT NULL DEFAULT '',
+                policy_class        TEXT NOT NULL DEFAULT 'standard_operational' CHECK (policy_class = 'standard_operational'),
+                origin_kind         TEXT NOT NULL CHECK (origin_kind IN ('agent', 'human')),
+                origin_agent        TEXT,
+                created_at          TEXT NOT NULL,
+                created_by          TEXT NOT NULL,
+                current_version_id  INTEGER,
+                retired_at          TEXT,
+                retired_by          TEXT,
+                retired_reason      TEXT,
+                FOREIGN KEY (current_version_id) REFERENCES custom_skill_versions(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_skills_org_slug
+                ON custom_skills(org_slug, slug);
+            CREATE INDEX IF NOT EXISTS idx_custom_skills_origin_agent
+                ON custom_skills(origin_agent) WHERE origin_agent IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS custom_skill_versions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id               TEXT NOT NULL REFERENCES custom_skills(id),
+                parent_version_id      INTEGER REFERENCES custom_skill_versions(id),
+                content_hash           TEXT NOT NULL,
+                content_artifact_key   TEXT NOT NULL,
+                skill_md_cache         TEXT,
+                references_manifest    TEXT,
+                assets_manifest        TEXT,
+                validation_state       TEXT NOT NULL DEFAULT 'validation_required' CHECK (validation_state IN ('valid', 'invalid', 'validation_required')),
+                validator_version       TEXT,
+                validation_findings     TEXT,
+                created_at              TEXT NOT NULL,
+                author_kind             TEXT NOT NULL CHECK (author_kind IN ('agent', 'human')),
+                author_identity          TEXT NOT NULL,
+                source_task_id           TEXT,
+                source_session_id        TEXT,
+                task_brief_digest         TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_csv_skill_id ON custom_skill_versions(skill_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_csv_skill_hash ON custom_skill_versions(skill_id, content_hash);
+
+            CREATE TABLE IF NOT EXISTS custom_skill_eligibility_rules (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id      TEXT NOT NULL REFERENCES custom_skills(id),
+                scope_type    TEXT NOT NULL CHECK (scope_type IN ('org', 'team', 'agent')),
+                scope_target  TEXT,
+                effect        TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+                created_at    TEXT NOT NULL,
+                created_by    TEXT NOT NULL,
+                superseded_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_cser_skill_current
+                ON custom_skill_eligibility_rules(skill_id) WHERE superseded_at IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cser_current_scope_unique
+                ON custom_skill_eligibility_rules(skill_id, scope_type, COALESCE(scope_target, '')) WHERE superseded_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS custom_skill_eligibility_events (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id                TEXT NOT NULL REFERENCES custom_skills(id),
+                actor                   TEXT NOT NULL,
+                preview_revision        INTEGER NOT NULL,
+                rule_set_json           TEXT NOT NULL,
+                affected_newly_visible  TEXT NOT NULL,
+                affected_newly_hidden   TEXT NOT NULL,
+                created_at              TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_csee_skill_id ON custom_skill_eligibility_events(skill_id);
+
+            CREATE TABLE IF NOT EXISTS custom_skill_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id        TEXT NOT NULL REFERENCES custom_skills(id),
+                agent_name      TEXT NOT NULL,
+                task_id         TEXT,
+                session_context TEXT NOT NULL CHECK (session_context IN ('task', 'thread', 'wake', 'dream')),
+                session_id      TEXT NOT NULL,
+                version_id      INTEGER NOT NULL REFERENCES custom_skill_versions(id),
+                content_hash    TEXT NOT NULL,
+                success         INTEGER NOT NULL DEFAULT 0,
+                error_message   TEXT,
+                created_at      TEXT NOT NULL,
+                CHECK ((session_context = 'task' AND task_id IS NOT NULL) OR (session_context != 'task'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_csm_skill_agent ON custom_skill_materializations(skill_id, agent_name);
+            CREATE INDEX IF NOT EXISTS idx_csm_session ON custom_skill_materializations(session_id);
+
+            CREATE TABLE IF NOT EXISTS custom_skill_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id      TEXT NOT NULL REFERENCES custom_skills(id),
+                event_type    TEXT NOT NULL CHECK (event_type IN ('created', 'version_saved', 'validated', 'retired', 'restored')),
+                actor         TEXT NOT NULL,
+                version_id    INTEGER REFERENCES custom_skill_versions(id),
+                metadata_json TEXT,
+                created_at    TEXT NOT NULL,
+                task_id       TEXT,
+                session_id    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_cse_skill_id ON custom_skill_events(skill_id);
+
             -- THR-055: custom-skill lifecycle ledger (additive, immutable)
             CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
