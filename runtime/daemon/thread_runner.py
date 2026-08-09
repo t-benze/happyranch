@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Cap for the underlying-error detail appended to a no_callback reason so a
 # multi-KB stdout/stderr tail can't bloat the audit row.
-_REASON_DETAIL_CAP = 300
+_REASON_DETAIL_CAP = 2000
 
 
 def _executor_error_detail(result, rc) -> str:
