@@ -1,4 +1,4 @@
-/** Mirror of src/daemon/routes/skills.py — PHASE 1 read + PHASE 2 write endpoints */
+/** Mirror of src/daemon/routes/skills.py — supported read endpoints. */
 import { request } from './client';
 
 export interface CatalogSkillItem {
@@ -11,7 +11,7 @@ export interface CatalogSkillItem {
   policy_class: string;
   status: string;
   version: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   assigned_agent_count: number;
   effective_agent_count: number;
   has_assigned_not_yet_effective: boolean;
@@ -72,49 +72,6 @@ export const getAgentSkillsEffective = (
 ): Promise<{ skills: AgentSkillEffective[]; agent_id: string }> =>
   request(`/orgs/${slug}/agents/${agentId}/skills/effective`);
 
-// ── PHASE 2 write endpoints ─────────────────────────────────────────────
-
-export interface CreateSkillRequest {
-  slug: string;
-  name: string;
-  version?: string;
-  policy_class?: string;
-  summary?: string;
-  skill_md: string;
-  references?: Record<string, string>;
-  assets?: Record<string, string>;
-}
-
-export interface EditSkillRequest {
-  name?: string;
-  summary?: string;
-  version?: string;
-  skill_md?: string;
-  references?: Record<string, string>;
-  assets?: Record<string, string>;
-}
-
-export interface CreateSkillResponse {
-  skill_id: string;
-  source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
-  validation: { ok: boolean; errors: string[] };
-}
-
-export interface ValidateSkillResponse {
-  skill_id: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
-  validation: { ok: boolean; errors: string[] };
-}
-
-export interface EditSkillResponse {
-  skill_id: string;
-  source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
-  validation: { ok: boolean; errors: string[] };
-  version: string;
-}
-
 export interface ValidationEvent {
   id: number;
   skill_id: string;
@@ -129,31 +86,6 @@ export interface ValidationEvent {
   created_at: string;
 }
 
-export const createSkill = (
-  slug: string,
-  body: CreateSkillRequest,
-): Promise<CreateSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use submitProposal from skillLifecycle.ts */
-  request(`/orgs/${slug}/skills`, { method: 'POST', body: JSON.stringify(body) });
-
-export const validateSkill = (
-  slug: string,
-  skillId: string,
-): Promise<ValidateSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use validateVersion from skillLifecycle.ts */
-  request(`/orgs/${slug}/skills/${skillId}/validate`, { method: 'POST' });
-
-export const editSkill = (
-  slug: string,
-  skillId: string,
-  body: EditSkillRequest,
-): Promise<EditSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use submitForReview/reviewDecision from skillLifecycle.ts */
-  request(`/orgs/${slug}/skills/${skillId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
-
 export const listSkillValidation = (
   slug: string,
   params?: {
@@ -166,60 +98,3 @@ export const listSkillValidation = (
   },
 ): Promise<{ events: ValidationEvent[]; label: string }> =>
   request(`/orgs/${slug}/skills/validation`, { params });
-
-// ── PHASE 3a assign endpoint ───────────────────────────────────────────
-
-export interface AssignSkillRequest {
-  action: 'allow' | 'remove';
-}
-
-export interface AssignSkillResponse {
-  agent_id: string;
-  skill_id: string;
-  state: 'assigned' | 'unassigned';
-  effective_hint: string | null;
-  materializes_on: string | null;
-}
-
-/** @deprecated Legacy route retired (410 Gone). Use assignSkill from skillLifecycle.ts */
-export const assignSkill = (
-  slug: string,
-  agentId: string,
-  skillId: string,
-  body: AssignSkillRequest,
-): Promise<AssignSkillResponse> =>
-  request(`/orgs/${slug}/agents/${agentId}/skills/${skillId}/assign`, {
-    method: 'POST',
-    body,
-  });
-
-// ── Phase 3b status endpoint ──────────────────────────────────────────
-
-export interface SkillStatusAssignment {
-  agent: string;
-  assigned: boolean;
-  effective: boolean;
-  materialized_version: string | null;
-  state: 'effective' | 'assigned_not_yet_effective';
-}
-
-export interface SkillStatusResponse {
-  skill_id: string;
-  source: string;
-  in_catalog: boolean;
-  validated: boolean;
-  current_version: string;
-  assignments: SkillStatusAssignment[];
-  last_validation: {
-    ok: boolean;
-    version: string | null;
-    at: string | null;
-  } | null;
-}
-
-export const getSkillStatus = (
-  slug: string,
-  skillId: string,
-  params?: { agent?: string },
-): Promise<SkillStatusResponse> =>
-  request(`/orgs/${slug}/skills/${skillId}/status`, { params });
