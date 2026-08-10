@@ -18,14 +18,16 @@ from runtime.runtime import RuntimeDir
 def runtime(tmp_path: Path) -> OrgPaths:
     rt = RuntimeDir.init(tmp_path / "rt")
     paths = OrgPaths(root=rt.orgs_dir / "test")
-    # Seed a minimal teams.yaml so engineering_head is recognized as a manager
-    # and dev_agent/product_manager/payment_agent as workers.
+    # Seed managers for two teams so manager-root decisions can prove team scope.
     paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
     paths.teams_config_path.write_text(
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
         "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_head\n"
+        "    workers: [content_agent]\n"
     )
     return paths
 
@@ -145,7 +147,7 @@ class _SlugQueue:
         return self._q.get_nowait()
 
 
-def _consume_manager_supersede(orch, task_id: str) -> None:
+def _consume_manager_supersede(orch, task_id: str, agent: str = "engineering_head") -> None:
     from runtime.models import CompletionReport, NextStep
     from runtime.orchestrator.run_step import _consume_completion_report
 
@@ -154,7 +156,7 @@ def _consume_manager_supersede(orch, task_id: str) -> None:
         task_id,
         CompletionReport(
             task_id=task_id,
-            agent="engineering_head",
+            agent=agent,
             status="completed",
             confidence=90,
             output_summary="replace the plan",
@@ -175,12 +177,18 @@ def _consume_manager_supersede(orch, task_id: str) -> None:
     )
 
 
-def _claimed_manager_root(db, task_id: str = "T-SUP") -> None:
+def _claimed_manager_root(
+    db,
+    task_id: str = "T-SUP",
+    *,
+    team: str = "engineering",
+    agent: str = "engineering_head",
+) -> None:
     db.insert_task(TaskRecord(
         id=task_id,
         brief="original plan",
-        team="engineering",
-        assigned_agent="engineering_head",
+        team=team,
+        assigned_agent=agent,
         status=TaskStatus.IN_PROGRESS,
         current_session_id="session-sup",
     ))
@@ -218,22 +226,34 @@ def test_persisted_null_supersede_attestation_never_reaches_write_path(runtime, 
     ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize(
-    ("enabled", "pilot_team"),
-    [(None, "engineering"), ("1", "other"), ("0", "engineering")],
-    ids=["default_off", "wrong_pilot_team", "kill_switch"],
-)
-def test_completion_consumer_denies_disabled_manager_supersession(
-    runtime, db, monkeypatch, enabled: str | None, pilot_team: str,
+def test_completion_consumer_allows_any_team_without_legacy_supersession_env_gates(
+    runtime, db, monkeypatch,
 ):
     from runtime.orchestrator.orchestrator import Orchestrator
 
+    monkeypatch.delenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", raising=False)
+    _claimed_manager_root(db, team="content", agent="content_head")
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    _consume_manager_supersede(orch, "T-SUP", agent="content_head")
+
+    successor = db.get_task("TASK-001")
+    assert db.get_task("T-SUP").status is TaskStatus.SUPERSEDED
+    assert successor is not None and successor.status is TaskStatus.PENDING
+    assert successor.assigned_agent == "content_head"
+
+
+def test_completion_consumer_ignores_legacy_supersession_env_gate(runtime, db, monkeypatch):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "0")
+    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "other")
     _claimed_manager_root(db)
-    if enabled is None:
-        monkeypatch.delenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", enabled)
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", pilot_team)
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),
@@ -242,9 +262,10 @@ def test_completion_consumer_denies_disabled_manager_supersession(
 
     _consume_manager_supersede(orch, "T-SUP")
 
-    assert db.get_task("T-SUP").status is TaskStatus.FAILED
-    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
-    assert orch._queue.qsize() == 0
+    assert db.get_task("T-SUP").status is TaskStatus.SUPERSEDED
+    assert db.get_task("TASK-001").assigned_agent == "engineering_head"
+    source = Path(__file__).resolve().parents[1] / "runtime/orchestrator/run_step.py"
+    assert "HAPPYRANCH_MANAGER_SUPERSESSION" not in source.read_text()
 
 
 @pytest.mark.parametrize(
@@ -257,15 +278,13 @@ def test_completion_consumer_denies_disabled_manager_supersession(
     ids=["current_manager", "current_session", "root"],
 )
 def test_completion_consumer_enforces_manager_session_and_root_gates(
-    runtime, db, monkeypatch, field: str, value: str | None, expected_status: TaskStatus,
+    runtime, db, field: str, value: str | None, expected_status: TaskStatus,
 ):
     from runtime.orchestrator.orchestrator import Orchestrator
 
     _claimed_manager_root(db)
     db.execute(f"UPDATE tasks SET {field} = ? WHERE id = 'T-SUP'", (value,))
     db._conn.commit()
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),
@@ -279,16 +298,12 @@ def test_completion_consumer_enforces_manager_session_and_root_gates(
     assert orch._queue.qsize() == 0
 
 
-def test_completion_consumer_rejects_thread_origin_without_founder_side_effects(
-    runtime, db, monkeypatch,
-):
+def test_completion_consumer_rejects_thread_origin_without_founder_side_effects(runtime, db):
     from runtime.orchestrator.orchestrator import Orchestrator
 
     _claimed_manager_root(db)
     db.execute("UPDATE tasks SET dispatched_from_thread_id = 'THR-152' WHERE id = 'T-SUP'")
     db._conn.commit()
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),
@@ -313,8 +328,6 @@ def test_completion_consumer_supersedes_and_leaves_successor_recoverable(
     from runtime.orchestrator.orchestrator import Orchestrator
 
     _claimed_manager_root(db)
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED", "1")
-    monkeypatch.setenv("HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering")
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),

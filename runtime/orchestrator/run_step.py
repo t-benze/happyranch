@@ -430,21 +430,8 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         return
 
     if decision.action == "supersede":
-        # THR-152 phase 1: a deliberately small, default-deny internal pilot.
         # The decision model rejects every caller-supplied identity/target field;
         # the database method re-checks this current claimed root under its lock.
-        import os
-        enabled = os.environ.get("HAPPYRANCH_MANAGER_SUPERSESSION_ENABLED") == "1"
-        pilot_team = os.environ.get(
-            "HAPPYRANCH_MANAGER_SUPERSESSION_PILOT_TEAM", "engineering"
-        )
-        if not enabled or task.team != pilot_team or not orch.teams.is_team_manager(agent):
-            _fail(orch, task_id, note="manager supersession is disabled or not authorized")
-            _enqueue_parent_if_waiting(orch, task_id)
-            _maybe_post_thread_followup(
-                orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
-            )
-            return
         try:
             expected_manager = orch.teams.manager_for_team(task.team).name
         except (KeyError, ValueError):
@@ -460,7 +447,7 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             task_id,
             actor_agent=agent,
             actor_session_id=task.current_session_id,
-            expected_team=pilot_team,
+            expected_team=task.team,
             successor_brief=decision.successor_brief or "",
             rationale=decision.rationale or "",
             attestation=decision.attestation.model_dump() if decision.attestation else {},
