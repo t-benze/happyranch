@@ -157,10 +157,17 @@ def cmd_web(args: argparse.Namespace) -> None:
         webbrowser.open(url)
 
 
-def _get_custom_cli_status(client: OpcClient, intended_profile_name: str) -> dict[str, object]:
+def _get_custom_cli_status(
+    client: OpcClient, intended_profile_name: str, *, timeout: float | None = None,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "params": {"intended_profile_name": intended_profile_name},
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     response = client.get(
         "/api/v1/runtime/custom-cli/status",
-        params={"intended_profile_name": intended_profile_name},
+        **kwargs,
     )
     if not _ok(response):
         raise AssertionError("_ok exits for non-successful responses")
@@ -185,17 +192,31 @@ def cmd_custom_cli_status(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    body = _get_custom_cli_status(client, args.intended_profile_name)
     if not args.wait:
+        body = _get_custom_cli_status(client, args.intended_profile_name)
         _print_custom_cli_status(body, args.intended_profile_name)
         return
 
-    remaining = _WAIT_SECONDS
-    while body.get("profile_state") not in _TERMINAL_PROFILE_STATES and remaining > 0:
+    deadline = time.monotonic() + _WAIT_SECONDS
+    body = _get_custom_cli_status(
+        client,
+        args.intended_profile_name,
+        timeout=max(0.0, deadline - time.monotonic()),
+    )
+    while body.get("profile_state") not in _TERMINAL_PROFILE_STATES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         delay = min(_POLL_INTERVAL_SECONDS, remaining)
         time.sleep(delay)
-        remaining -= delay
-        body = _get_custom_cli_status(client, args.intended_profile_name)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        body = _get_custom_cli_status(
+            client,
+            args.intended_profile_name,
+            timeout=remaining,
+        )
 
     _print_custom_cli_status(body, args.intended_profile_name)
     if body.get("profile_state") not in _TERMINAL_PROFILE_STATES:
