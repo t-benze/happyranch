@@ -458,10 +458,10 @@ the additive B2 tables: `custom_skills`, immutable
 `custom_skill_events`. They establish identity/version provenance,
 eligibility audit, and per-session evidence only. Slice A2's unit-tested pure
 visibility resolver is now wired through tested custom-skill CRUD, eligibility
-store/preview/write/resolve/explain routes, and the Effective Skills
-read-projection extension. Workspace materialization (visibility to actual
-session-content injection) remains pending a follow-up round. The `create-skill`
-CLI/skill-doc path still uses the B1 `/skills/agent` route until Slice C repoints
+store/preview/write/resolve/explain routes, the Effective Skills read-projection
+extension, and next-task-session canonical-store materialization with per-session
+success/failure evidence. The `create-skill` CLI/skill-doc path still uses the B1
+`/skills/agent` route until Slice C repoints
 it in a later PR.
 
 **Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored

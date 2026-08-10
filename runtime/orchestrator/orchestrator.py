@@ -703,6 +703,7 @@ class Orchestrator:
             team = "engineering"
         skills_root = self._settings.project_root / "runtime" / "skills"
         org_root = self._paths.root
+        session_id = self._build_session_id()
 
         # Issue #536: serialize the complete pre-spawn skill materialization
         # transaction under a process-local workspace lock so concurrent
@@ -724,6 +725,8 @@ class Orchestrator:
             skills_root=skills_root,
             org_root=org_root,
             db=self.db,
+            task_id=task_id,
+            session_id=session_id,
         )
 
         # ── Pre-launch integrity validation ─────────────────────────
@@ -803,8 +806,6 @@ class Orchestrator:
         # Workspace is initialized once at `happyranch init-agent` — not per session.
         # Brief is injected here:
         brief = task.brief if task else ""
-        session_id = self._build_session_id()
-
         # THR-032 Phase 2: build the per-task memory digest from the agent's
         # MemoryStore. Ancestor task ids boost memories authored in the same
         # task lineage. Budget is org-configurable; 0 disables the digest.

@@ -196,6 +196,7 @@
     "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
     "PATCH /api/v1/orgs/{slug}/custom-skills/{skill_id}": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
     "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}/versions": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
+    "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}/versions/{a}/diff/{b}": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/versions": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/retire": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/restore": "Slice B (frontend, next PR in this THR-055 B2 build) adds the TS client mirror and moves this route to included",

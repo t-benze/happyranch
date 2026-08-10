@@ -64,3 +64,19 @@ def replace_rules(conn, *, skill_id: str, actor: str, revision: int, rules: list
     conn.execute("""INSERT INTO custom_skill_eligibility_events
        (skill_id,actor,preview_revision,rule_set_json,affected_newly_visible,affected_newly_hidden,created_at)
        VALUES (?,?,?,?,?,?,?)""", (skill_id, actor, revision, json.dumps(rules), json.dumps(newly_visible), json.dumps(newly_hidden), now()))
+
+
+def record_materialization(
+    conn, *, skill_id: str, agent_name: str, task_id: str | None,
+    session_context: str, session_id: str, version_id: int, content_hash: str,
+    success: bool, error_message: str | None = None,
+) -> None:
+    """Persist one per-session custom-skill materialization outcome."""
+    conn.execute(
+        """INSERT INTO custom_skill_materializations
+           (skill_id,agent_name,task_id,session_context,session_id,version_id,
+            content_hash,success,error_message,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, agent_name, task_id, session_context, session_id, version_id,
+         content_hash, int(success), error_message, now()),
+    )

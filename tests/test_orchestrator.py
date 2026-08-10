@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from unittest.mock import MagicMock, patch
@@ -136,6 +137,123 @@ def test_create_task_with_team(orchestrator):
     task_id = orchestrator.create_task("Add Alipay", team="engineering")
     task = orchestrator._db.get_task(task_id)
     assert task.team == "engineering"
+
+
+def test_custom_skill_materializes_only_after_eligibility_on_next_task_session(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """The real task-spawn seam only writes evidence for a new eligible session."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    conn = orchestrator.db._conn
+    content = "# Visible custom skill\n"
+    artifact_key = ArtifactStore(test_runtime.artifacts_dir).put(
+        "custom-skills/visible/SKILL.md", content.encode(),
+    ).name
+    conn.execute(
+        "INSERT INTO custom_skills (id, org_slug, slug, name, origin_kind, created_at, created_by) "
+        "VALUES ('custom:visible', 'test', 'visible', 'Visible', 'human', 'now', 'founder')"
+    )
+    conn.execute(
+        "INSERT INTO custom_skill_versions "
+        "(skill_id, content_hash, content_artifact_key, skill_md_cache, validation_state, "
+        "created_at, author_kind, author_identity) VALUES (?,?,?,?,?,?,?,?)",
+        ("custom:visible", hashlib.sha256(content.encode()).hexdigest(), artifact_key,
+         content, "valid", "now", "human", "founder"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id='custom:visible'", (version_id,))
+    conn.commit()
+
+    sessions = iter(("sess-before", "sess-after"))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(sessions))
+    executor = MagicMock()
+    executor.run.side_effect = [
+        ExecutorResult(success=True, duration_seconds=1, session_id="sess-before"),
+        ExecutorResult(success=True, duration_seconds=1, session_id="sess-after"),
+    ]
+    with patch.object(orchestrator, "_build_executor", return_value=executor):
+        first_task = orchestrator.create_task("before eligibility")
+        orchestrator._run_agent(first_task, "dev_agent", "")
+        assert conn.execute("SELECT count(*) FROM custom_skill_materializations").fetchone()[0] == 0
+
+        conn.execute(
+            "INSERT INTO custom_skill_eligibility_rules "
+            "(skill_id, scope_type, scope_target, effect, created_at, created_by) "
+            "VALUES ('custom:visible', 'org', NULL, 'allow', 'now', 'founder')"
+        )
+        conn.commit()
+        second_task = orchestrator.create_task("after eligibility")
+        orchestrator._run_agent(second_task, "dev_agent", "")
+
+    rows = conn.execute(
+        "SELECT task_id, session_id, version_id, content_hash, success "
+        "FROM custom_skill_materializations WHERE skill_id='custom:visible'"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (second_task, "sess-after", version_id, hashlib.sha256(content.encode()).hexdigest(), 1)
+    ]
+
+
+def test_custom_skill_materialization_failure_does_not_abort_task_spawn(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """A broken visible custom skill is recorded without suppressing siblings."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    conn = orchestrator.db._conn
+    good_content = "# Good custom skill\n"
+    good_hash = hashlib.sha256(good_content.encode()).hexdigest()
+    good_key = ArtifactStore(test_runtime.artifacts_dir).put(
+        "custom-skills/good/SKILL.md", good_content.encode(),
+    ).name
+    for skill_id, skill_slug, content_hash, artifact_key in (
+        ("custom:good", "good", good_hash, good_key),
+        ("custom:broken", "broken", "0" * 64, "custom-skills/broken/missing/SKILL.md"),
+    ):
+        conn.execute(
+            "INSERT INTO custom_skills (id, org_slug, slug, name, origin_kind, created_at, created_by) "
+            "VALUES (?, 'test', ?, ?, 'human', 'now', 'founder')",
+            (skill_id, skill_slug, skill_slug.title()),
+        )
+        conn.execute(
+            "INSERT INTO custom_skill_versions "
+            "(skill_id, content_hash, content_artifact_key, validation_state, created_at, author_kind, author_identity) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (skill_id, content_hash, artifact_key, "valid", "now", "human", "founder"),
+        )
+        version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id))
+        conn.execute(
+            "INSERT INTO custom_skill_eligibility_rules "
+            "(skill_id, scope_type, scope_target, effect, created_at, created_by) "
+            "VALUES (?, 'org', NULL, 'allow', 'now', 'founder')",
+            (skill_id,),
+        )
+    conn.commit()
+
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-failure")
+    executor = MagicMock()
+    executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-failure",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=executor):
+        task_id = orchestrator.create_task("custom materialization resilience")
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert executor.run.called
+    outcomes = {
+        row["skill_id"]: (row["success"], row["error_message"])
+        for row in conn.execute(
+            "SELECT skill_id, success, error_message FROM custom_skill_materializations "
+            "WHERE session_id='sess-failure'"
+        ).fetchall()
+    }
+    assert outcomes["custom:good"] == (1, None)
+    assert outcomes["custom:broken"][0] == 0
+    assert outcomes["custom:broken"][1]
 
 
 def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
