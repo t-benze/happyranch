@@ -247,8 +247,10 @@ a workspace convention) → read the daemon-issued wrapper path from
 ``workspace_adapter_id`` in the manifest and both proves wrapper integrity
 and creates the connection record → the browser auto-calls
 ``POST /runtime/custom-cli/{operation_id}/commit`` the moment it lands →
-Connected, no PENDING wait, no founder click. See
-``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
+Connected, no PENDING wait, no founder click. Founders can check the same
+terminal outcome from the CLI with
+``happyranch custom-cli status <profile-name> [--wait]``.
+See ``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
 UI cutover" (and its `workspace_adapter_id` correction note) for the full
 contract. The PENDING/approve/reject/bind-profile routes below remain as
 operator-only one-time disposition tooling for legacy records — a new
