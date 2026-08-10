@@ -690,11 +690,15 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
                 f"Conformance probe timed out after "
                 f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
             )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         _kill_and_reap(proc)
+        stderr_tail = ""
+        if isinstance(exc.stderr, bytes):
+            stderr_tail = exc.stderr.decode("utf-8", errors="replace")[-2000:]
         raise ValueError(
             f"Conformance probe timed out after "
-            f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
+            f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}. "
+            f"stderr tail: {stderr_tail[:500]}"
         )
     except BoundedReadError as exc:
         _kill_and_reap(proc)
