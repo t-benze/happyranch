@@ -456,8 +456,9 @@ the additive, currently unwired B2 tables: `custom_skills`, immutable
 `custom_skill_versions`, `custom_skill_eligibility_rules`,
 `custom_skill_eligibility_events`, `custom_skill_materializations`, and
 `custom_skill_events`. They establish identity/version provenance,
-eligibility audit, and per-session evidence only; until the A2/A3 slices land,
-they do not affect routing, resolution, or workspace materialization.
+eligibility audit, and per-session evidence only. Slice A2 adds a unit-tested,
+pure visibility resolver with zero callers; Slice A3 will wire it into routing,
+writing, and workspace materialization.
 
 **Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
 custom skills are governed exclusively by the immutable lifecycle ledger
