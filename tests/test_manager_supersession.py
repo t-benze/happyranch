@@ -199,7 +199,7 @@ def test_manager_supersede_rejects_live_direct_and_descendant_jobs(
     assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
 
 
-def test_manager_supersede_rechecks_the_expected_pilot_team(tmp_path: Path) -> None:
+def test_manager_supersede_rechecks_the_expected_team(tmp_path: Path) -> None:
     db = _db(tmp_path)
     db.execute("UPDATE tasks SET team = 'other' WHERE id = 'TASK-001'")
     db._conn.commit()
