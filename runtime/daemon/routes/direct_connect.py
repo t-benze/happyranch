@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import stat
 import time
@@ -17,6 +18,7 @@ from runtime.daemon.direct_connect_store import canonical_wrapper_destination
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX, _RUNTIME_ORG
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -118,6 +120,16 @@ def _reject(detail: str, code: int = status.HTTP_401_UNAUTHORIZED) -> None:
     raise HTTPException(status_code=code, detail=detail)
 
 
+def _schema_error_detail(error: ValidationError) -> str:
+    """Render schema errors without Pydantic's potentially secret input values."""
+    issues = error.errors(include_input=False)
+    summary = "; ".join(
+        f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
+        for issue in issues
+    )
+    return summary[:1_000]
+
+
 @router.post("/runtime/custom-cli/connect", status_code=status.HTTP_201_CREATED)
 async def connect(request: Request) -> dict[str, str]:
     """Accept one canonical direct manifest and issue only a nonlaunchable receipt."""
@@ -182,7 +194,20 @@ async def connect(request: Request) -> dict[str, str]:
             token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts=wrapper_facts,
             children=children, workspace_adapter_id=body.manifest.workspace_adapter_id, now=now,
         )
-    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+    except json.JSONDecodeError as error:
+        detail = f"invalid direct manifest JSON: {error.msg} (line {error.lineno}, column {error.colno})"
+        logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
+        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        token_store.commit_runtime(token)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
+    except ValidationError as error:
+        detail = f"invalid direct manifest schema: {_schema_error_detail(error)}"
+        logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
+        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        token_store.commit_runtime(token)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
+    except (ValueError, TypeError) as error:
+        logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, error)
         authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
         token_store.commit_runtime(token)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid direct manifest") from None
