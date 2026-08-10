@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import stat
 import time
@@ -17,6 +18,7 @@ from runtime.daemon.direct_connect_store import canonical_wrapper_destination
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX, _RUNTIME_ORG
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -118,6 +120,68 @@ def _reject(detail: str, code: int = status.HTTP_401_UNAUTHORIZED) -> None:
     raise HTTPException(status_code=code, detail=detail)
 
 
+_SAFE_SCHEMA_FIELD_LABELS = {
+    ("metadata",): "metadata",
+    ("manifest",): "manifest",
+    ("manifest", "manifest_version"): "manifest version",
+    ("manifest", "wrapper_sha256"): "wrapper hash",
+    ("manifest", "upgradeable_children"): "upgradeable children",
+    ("manifest", "workspace_adapter_id"): "workspace adapter ID",
+}
+_SAFE_SCHEMA_ERROR_TYPES = frozenset({
+    "dict_type",
+    "extra_forbidden",
+    "greater_than_equal",
+    "int_type",
+    "less_than_equal",
+    "list_type",
+    "literal_error",
+    "missing",
+    "string_pattern_mismatch",
+    "string_too_short",
+    "string_type",
+    "too_short",
+    "value_error",
+})
+
+
+def _schema_field_label(location: tuple[object, ...]) -> str | None:
+    if label := _SAFE_SCHEMA_FIELD_LABELS.get(location):
+        return label
+    if (
+        len(location) == 4
+        and location[:2] == ("manifest", "upgradeable_children")
+        and isinstance(location[2], int)
+    ):
+        return {
+            "slot": "child slot",
+            "executable": "child executable",
+            "version_probe_argv": "child version probe",
+        }.get(location[3])
+    if (
+        len(location) == 5
+        and location[:2] == ("manifest", "upgradeable_children")
+        and isinstance(location[2], int)
+        and location[3] == "version_probe_argv"
+        and isinstance(location[4], int)
+    ):
+        return "child version probe"
+    return None
+
+
+def _schema_error_detail(error: ValidationError) -> str:
+    """Render only static labels and Pydantic codes from known manifest fields."""
+    summaries = []
+    for issue in error.errors(include_input=False)[:8]:
+        label = _schema_field_label(tuple(issue["loc"]))
+        error_type = issue["type"]
+        if label is None or error_type not in _SAFE_SCHEMA_ERROR_TYPES:
+            summaries.append("unexpected or invalid field in manifest")
+        else:
+            summaries.append(f"{label} ({error_type})")
+    return "; ".join(summaries)
+
+
 @router.post("/runtime/custom-cli/connect", status_code=status.HTTP_201_CREATED)
 async def connect(request: Request) -> dict[str, str]:
     """Accept one canonical direct manifest and issue only a nonlaunchable receipt."""
@@ -182,7 +246,20 @@ async def connect(request: Request) -> dict[str, str]:
             token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts=wrapper_facts,
             children=children, workspace_adapter_id=body.manifest.workspace_adapter_id, now=now,
         )
-    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+    except json.JSONDecodeError as error:
+        detail = f"invalid direct manifest JSON: {error.msg} (line {error.lineno}, column {error.colno})"
+        logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
+        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        token_store.commit_runtime(token)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
+    except ValidationError as error:
+        detail = f"invalid direct manifest schema: {_schema_error_detail(error)}"
+        logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
+        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        token_store.commit_runtime(token)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
+    except (ValueError, TypeError) as error:
+        logger.warning("Direct manifest rejected (%s): invalid artifact or manifest integrity", type(error).__name__)
         authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
         token_store.commit_runtime(token)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid direct manifest") from None
