@@ -70,12 +70,15 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
     )
     operation_id = authority_store.get_latest_operation_for_profile(intended_profile_name)
     profile_state = None
+    reason = None
     if operation_id is not None:
         projection = authority_store.get_projection(operation_id)
         if projection is not None:
             profile_state = projection.state
+            reason = projection.reason
     return {
         "wrapper_destination": str(wrapper_destination),
         "operation_id": operation_id,
         "profile_state": profile_state,
+        "reason": reason,
     }

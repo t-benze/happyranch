@@ -64,6 +64,7 @@ def test_status_before_mint_returns_wrapper_destination_and_no_operation(client)
     body = response.json()
     assert body["operation_id"] is None
     assert body["profile_state"] is None
+    assert body["reason"] is None
     assert body["wrapper_destination"].endswith("adapters/status-profile-adapter")
 
 
@@ -146,6 +147,44 @@ def test_status_after_commit_reports_committed(client, tmp_path, monkeypatch):
     body = response.json()
     assert body["operation_id"] == operation_id
     assert body["profile_state"] == "committed"
+    assert body["reason"] is None
+
+
+def test_status_after_failed_projection_reports_reason(client, tmp_path):
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    operation_id = connect.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    assert state.direct_connect_authority_store.mark_failed(operation_id, "conformance probe failed")
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "wrapper_destination": str(authority.wrapper_destination),
+        "operation_id": operation_id,
+        "profile_state": "failed",
+        "reason": "conformance probe failed",
+    }
 
 
 def test_status_requires_master_bearer(client):

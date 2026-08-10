@@ -16,6 +16,7 @@ export interface DirectConnectStatus {
   wrapper_destination: string;
   operation_id: string | null;
   profile_state: ProfileState;
+  reason: string | null;
 }
 
 export function getStatus(intendedProfileName: string): Promise<DirectConnectStatus> {

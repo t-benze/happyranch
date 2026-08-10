@@ -110,6 +110,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: null,
       profile_state: null,
+      reason: null,
     }));
 
     renderConnect();
@@ -144,6 +145,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: landed ? 'op-1' : null,
       profile_state: null,
+      reason: null,
     }));
     const commitSpy = vi.fn(() => ({
       operation_id: 'op-1', profile_state: 'committed' as const, profile_name: 'my-cli',
@@ -170,6 +172,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1',
       profile_state: null,
+      reason: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     vi.spyOn(api, 'commit').mockResolvedValueOnce({
@@ -193,6 +196,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1',
       profile_state: null,
+      reason: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit')

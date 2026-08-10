@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from cli._shared import _ok
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
+
+
+_WAIT_SECONDS = 35
+_POLL_INTERVAL_SECONDS = 2
+_TERMINAL_PROFILE_STATES = {"committed", "failed"}
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -151,6 +157,76 @@ def cmd_web(args: argparse.Namespace) -> None:
         webbrowser.open(url)
 
 
+def _get_custom_cli_status(
+    client: OpcClient, intended_profile_name: str, *, timeout: float | None = None,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "params": {"intended_profile_name": intended_profile_name},
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    response = client.get(
+        "/api/v1/runtime/custom-cli/status",
+        **kwargs,
+    )
+    if not _ok(response):
+        raise AssertionError("_ok exits for non-successful responses")
+    return response.json()
+
+
+def _print_custom_cli_status(body: dict[str, object], intended_profile_name: str) -> None:
+    profile_state = body.get("profile_state")
+    print(f"profile_state: {profile_state or 'none'}")
+    if profile_state == "committed":
+        print(f"profile_name: {intended_profile_name}")
+    if profile_state == "failed" and body.get("reason"):
+        print(f"reason: {body['reason']}")
+    print(f"wrapper_destination: {body['wrapper_destination']}")
+
+
+def cmd_custom_cli_status(args: argparse.Namespace) -> None:
+    """Show the direct custom-CLI connection outcome for a profile name."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    if not args.wait:
+        body = _get_custom_cli_status(client, args.intended_profile_name)
+        _print_custom_cli_status(body, args.intended_profile_name)
+        return
+
+    deadline = time.monotonic() + _WAIT_SECONDS
+    body = _get_custom_cli_status(
+        client,
+        args.intended_profile_name,
+        timeout=max(0.0, deadline - time.monotonic()),
+    )
+    while body.get("profile_state") not in _TERMINAL_PROFILE_STATES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        delay = min(_POLL_INTERVAL_SECONDS, remaining)
+        time.sleep(delay)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        body = _get_custom_cli_status(
+            client,
+            args.intended_profile_name,
+            timeout=remaining,
+        )
+
+    _print_custom_cli_status(body, args.intended_profile_name)
+    if body.get("profile_state") not in _TERMINAL_PROFILE_STATES:
+        print(
+            f"still pending: no terminal outcome after {_WAIT_SECONDS} seconds",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 
 def register(sub) -> None:
     p_init_runtime = sub.add_parser(
@@ -196,3 +272,15 @@ def register(sub) -> None:
     )
     p_web.set_defaults(func=cmd_web)
 
+    p_custom_cli = sub.add_parser("custom-cli", help="Direct custom-CLI connection commands")
+    custom_cli_sub = p_custom_cli.add_subparsers(dest="custom_cli_command", required=True)
+    p_custom_cli_status = custom_cli_sub.add_parser(
+        "status", help="Show a direct custom-CLI connection outcome",
+    )
+    p_custom_cli_status.add_argument("intended_profile_name", help="Profile name used to start the connection")
+    p_custom_cli_status.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll for up to 35 seconds for a committed or failed outcome",
+    )
+    p_custom_cli_status.set_defaults(func=cmd_custom_cli_status)

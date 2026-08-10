@@ -586,6 +586,7 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter',
       operation_id: null,
       profile_state: null,
+      reason: null,
     });
   });
 
@@ -663,6 +664,7 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter',
       operation_id: 'op-onb-1',
       profile_state: null,
+      reason: null,
     });
     vi.spyOn(directConnectApi, 'commit').mockResolvedValue({
       operation_id: 'op-onb-1',
@@ -693,6 +695,7 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-retry-cli-adapter',
       operation_id: 'op-onb-retry',
       profile_state: null,
+      reason: null,
     });
     const commitSpy = vi
       .spyOn(directConnectApi, 'commit')
@@ -841,4 +844,3 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
     vi.useRealTimers();
   });
 });
-
