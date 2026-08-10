@@ -337,7 +337,10 @@ required by its own agentic CLI. It MUST NOT rely on
 on daemon translation of policy or provider-specific allow-rule syntax. That
 existing v1 field remains a legacy nullable, provider-specific compatibility
 field; ``CustomAdapterExecutor`` supplies ``null`` for custom-adapter
-invocations. Wrappers must also preserve the daemon-provided callback
+invocations. For example, CodeBuddy's ``--permission-mode dontAsk`` denies
+every tool call in non-interactive mode rather than approving it, so it is not
+a valid substitute for that CLI's actual auto-approve/bypass-permissions mode.
+Wrappers must also preserve the daemon-provided callback
 environment, including ``PATH``, so the agent can make required ``happyranch``
 callbacks after ordinary workspace actions. This is verified through wrapper
 review and founder approval; it adds no new daemon-supplied or

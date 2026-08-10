@@ -1389,6 +1389,21 @@ sys.exit(0)
         script.chmod(0o755)
         return script
 
+    def _make_stderr_then_hang_script(
+        self, tmp_path: Path, name: str = "stderr-then-hang"
+    ) -> Path:
+        """Create an adapter that emits a diagnostic then keeps both pipes open."""
+        script = tmp_path / name
+        script.write_text(r"""#!/usr/bin/env python3
+import sys, time
+_ = sys.stdin.read()  # consume input
+sys.stderr.write("headless permission denial: use the auto-approve flag\\n")
+sys.stderr.flush()
+time.sleep(600)
+""")
+        script.chmod(0o755)
+        return script
+
     def _make_close_streams_then_sleep_script(
         self, tmp_path: Path, name: str = "close-streams-then-sleep"
     ) -> Path:
@@ -1487,6 +1502,23 @@ sys.exit(0)
         )
 
         # No store residue
+        assert load_adapters() == {}
+
+    def test_timeout_includes_captured_stderr_tail(self, tmp_path: Path, monkeypatch):
+        """A bounded-read timeout retains the child's partial stderr diagnostic."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.orchestrator import custom_adapter_registry as car
+
+        monkeypatch.setattr(car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", 1.5)
+        script = self._make_stderr_then_hang_script(tmp_path)
+
+        with pytest.raises(ValueError) as exc_info:
+            car.run_conformance_probe(str(script), "stderr-timeout-test")
+
+        assert "Conformance probe timed out" in str(exc_info.value)
+        assert "headless permission denial: use the auto-approve flag" in str(
+            exc_info.value
+        )
         assert load_adapters() == {}
 
     def test_close_streams_then_sleep_with_patched_timeout(
