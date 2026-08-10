@@ -18,7 +18,7 @@
  *
  * Unsaved-changes guard: prompts on nav-away via beforeunload.
  */
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { forwardRef, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -118,9 +118,15 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     [agentsList],
   );
   const [confirmDisable, setConfirmDisable] = useState(false);
+  const workHoursToggleRef = useRef<HTMLButtonElement>(null);
   const [editEligibility, setEditEligibility] = useState(false);
   const [whSavedMsg, setWhSavedMsg] = useState<string | null>(null);
   const [whError, setWhError] = useState<string | null>(null);
+
+  const closeConfirmDisable = useCallback(() => {
+    setConfirmDisable(false);
+    workHoursToggleRef.current?.focus();
+  }, []);
 
   async function setEnabled(next: boolean) {
     setWhError(null);
@@ -390,6 +396,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         <EditableRow label="Work Hours" labelId="work-hours-switch-label" badge="Applies live">
           <div className="flex items-center gap-2">
             <BooleanToggle
+              ref={workHoursToggleRef}
               aria-labelledby="work-hours-switch-label"
               value={wh?.enabled ?? false}
               onChange={(v) => {
@@ -452,8 +459,18 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       )}
 
       {/* Confirm-before-disable the global feature switch. */}
-      <Dialog open={confirmDisable} onOpenChange={setConfirmDisable}>
-        <DialogContent>
+      <Dialog
+        open={confirmDisable}
+        onOpenChange={(open) => {
+          if (!open) closeConfirmDisable();
+        }}
+      >
+        <DialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            workHoursToggleRef.current?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Disable work hours?</DialogTitle>
             <DialogDescription>
@@ -463,13 +480,13 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmDisable(false)}>
+            <Button variant="ghost" onClick={closeConfirmDisable}>
               Cancel
             </Button>
             <Button
               variant="destructive"
               onClick={() => {
-                setConfirmDisable(false);
+                closeConfirmDisable();
                 void setEnabled(false);
               }}
             >
@@ -528,17 +545,18 @@ function EditableRow({
   );
 }
 
-function BooleanToggle({
-  value,
-  onChange,
-  'aria-labelledby': ariaLabelledBy,
-}: {
+const BooleanToggle = forwardRef<HTMLButtonElement, {
   value: boolean;
   onChange: (v: boolean) => void;
   'aria-labelledby'?: string;
-}): JSX.Element {
+}>(function BooleanToggle({
+  value,
+  onChange,
+  'aria-labelledby': ariaLabelledBy,
+}, ref): JSX.Element {
   return (
     <button
+      ref={ref}
       type="button"
       role="switch"
       aria-checked={value}
@@ -571,4 +589,4 @@ function BooleanToggle({
       />
     </button>
   );
-}
+});

@@ -862,6 +862,38 @@ describe('SettingsPage — Organization section', () => {
     });
   });
 
+  test('Work Hours confirmation restores focus to its switch after Escape and Cancel', async () => {
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+    const user = userEvent.setup();
+    const whSwitch = within(content).getByRole('switch', { name: 'Work Hours' });
+
+    whSwitch.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'Disable work hours?' })).toBeInTheDocument(),
+    );
+    await user.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Disable work hours?' })).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(whSwitch);
+
+    await user.keyboard('{Space}');
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'Disable work hours?' })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Disable work hours?' })).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(whSwitch);
+  });
+
   test('eligibility editor opens, previews impact, confirms working_hours.agents-only patch, and recovers from 422', async () => {
     // Start in whitelist mode so the include picker is visible without touching
     // the Radix Select (jsdom lacks PointerEvent#hasPointerCapture).
