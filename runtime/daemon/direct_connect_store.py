@@ -463,6 +463,17 @@ class DirectConnectAuthorityStore:
             ).fetchone()
             return row["operation_id"] if row is not None else None
 
+    def list_operations_pending_projection(self) -> list[str]:
+        """received_nonlaunchable operation_ids with no projection row yet, oldest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT o.operation_id FROM direct_connect_operations o
+                   LEFT JOIN direct_connect_projections p ON p.operation_id = o.operation_id
+                   WHERE p.operation_id IS NULL
+                   ORDER BY o.created_at ASC"""
+            ).fetchall()
+            return [row["operation_id"] for row in rows]
+
     def get_receipt_artifacts(self, operation_id: str) -> DirectConnectReceiptArtifacts | None:
         """Read back the immutable wrapper + children artifacts for a receipt.
 

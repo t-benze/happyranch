@@ -8,6 +8,10 @@ inventing a second profile/registry write path — a direct-connect
 adapter and a legacy founder-approved adapter are indistinguishable to
 the launch fence (build_executor / resolve_adapter) once this
 coordinator durably commits them.
+
+Called only by two trusted paths: the master-bearer ``/commit`` route and the
+daemon-owned periodic projection sweep. It is never invoked by receipt-only
+``/connect``.
 """
 from __future__ import annotations
 
