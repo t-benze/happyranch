@@ -1346,6 +1346,36 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/custom-skills/{skill_id}/versions/{a}/diff/{b}": {
+      "GET": {
+        "params": [
+          [
+            "a",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "b",
+            "path"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/dashboard/summary": {
       "GET": {
         "params": [

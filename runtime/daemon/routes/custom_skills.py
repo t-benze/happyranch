@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from difflib import unified_diff
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Header, Query, Request, status
@@ -60,19 +61,19 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
     if context is None: _error("unknown_session", 403)
     verified_org, task_id, agent = context
     if verified_org != slug: _error("cross_org_session", 403)
-    if _AGENT_PILOT_SLUG_MAP.get(agent) != body.get("slug"): _error("slug_not_allowed_for_agent", 403)
     lease = org.sessions._get_binding_lease(task_id, agent)
     with lease:
         if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
         skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
         conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
+        if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
+        if _AGENT_PILOT_SLUG_MAP.get(agent) != skill_slug: _error("slug_not_allowed_for_agent", 403)
         key = _store_content(org, skill_slug, skill_md); brief = org.db.get_task(task_id).brief
         digest = hashlib.sha256(brief.encode()).hexdigest() if brief else None
         conn.execute("BEGIN IMMEDIATE")
         try:
             if existing:
-                if existing["origin_kind"] != "agent" or existing["origin_agent"] != agent: _error("not_origin_owner", 403)
                 parent = existing["current_version_id"]; version, digest_hash, validation = service.create_version(conn, skill_id=existing["id"], skill_md=skill_md, actor_kind="agent", actor=agent, artifact_key=key, task_id=task_id, session_id=session_id, brief_digest=digest, parent_id=parent)
                 conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version, existing["id"])); skill_id = existing["id"]; service.append_event(conn, skill_id, "version_saved", agent, version, task_id=task_id, session_id=session_id)
             else:
@@ -136,6 +137,29 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
 @router.get("/{skill_id}/versions")
 def versions(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     return {"versions": [dict(r) for r in getattr(org.db, "_conn", org.db).execute("SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id DESC", (skill_id,)).fetchall()]}
+
+@router.get("/{skill_id}/versions/{a}/diff/{b}")
+def version_diff(skill_id: str, a: int, b: int, org: OrgDep, _: None = Depends(_require_human)):
+    conn = getattr(org.db, "_conn", org.db)
+    versions_by_id = {
+        row["id"]: row
+        for row in conn.execute(
+            "SELECT * FROM custom_skill_versions WHERE skill_id=? AND id IN (?, ?)",
+            (skill_id, a, b),
+        ).fetchall()
+    }
+    if a not in versions_by_id or b not in versions_by_id:
+        _error("version_not_found", 404)
+    before, after = versions_by_id[a], versions_by_id[b]
+    return {
+        "a": {key: before[key] for key in ("id", "content_hash", "created_at", "author_kind", "author_identity")},
+        "b": {key: after[key] for key in ("id", "content_hash", "created_at", "author_kind", "author_identity")},
+        "diff": list(unified_diff(
+            before["skill_md_cache"].splitlines(),
+            after["skill_md_cache"].splitlines(),
+            fromfile=f"version-{a}", tofile=f"version-{b}", lineterm="",
+        )),
+    }
 
 @router.post("/{skill_id}/retire")
 def retire(skill_id: str, body: dict = Body(default={}), org: OrgDep = None, _: None = Depends(_require_human)):

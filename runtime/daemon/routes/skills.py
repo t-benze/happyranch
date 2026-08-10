@@ -11,6 +11,7 @@ Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-e
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 from runtime.skills.canonical_store import parse_strict_sha256_hash
 
 router = APIRouter(dependencies=[require_token()])
+_logger = logging.getLogger(__name__)
 
 # ── Separate agent-only router (no global bearer requirement) ───────────
 # Used for POST /skills/agent — the agent-session binding B1 create path.
@@ -523,7 +525,7 @@ def agent_skills_effective(
             })
     except Exception:
         # Custom-skill read failure must not compromise the mature managed catalog.
-        pass
+        _logger.exception("custom-skill effective-skills projection failed for agent=%s", agent_id)
 
     skills.sort(key=lambda x: (x["hidden"], x["name"].lower()))
     return {"skills": skills, "agent_id": agent_id}
