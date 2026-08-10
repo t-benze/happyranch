@@ -21,6 +21,7 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.orchestrator.workspace_adapters import (
     build_settings_json,
+    format_repo_refresh_note,
     refresh_workspace_repos,
 )
 
@@ -38,9 +39,14 @@ def _make_workspace_with_repos(root: Path, repo_names: list[str]) -> Path:
 class _RecordingRun:
     """Fake subprocess.run that records invocations; optionally raises."""
 
-    def __init__(self, raise_for_cwd: dict[str, Exception] | None = None):
+    def __init__(
+        self,
+        raise_for_cwd: dict[str, Exception] | None = None,
+        returncode_for_cwd: dict[str, int] | None = None,
+    ):
         self.calls: list[dict] = []
         self._raise_for_cwd = raise_for_cwd or {}
+        self._returncode_for_cwd = returncode_for_cwd or {}
 
     def __call__(self, cmd, **kwargs):
         cwd = str(kwargs.get("cwd", ""))
@@ -48,7 +54,11 @@ class _RecordingRun:
         for needle, exc in self._raise_for_cwd.items():
             if needle in cwd:
                 raise exc
-        return subprocess.CompletedProcess(cmd, returncode=0)
+        returncode = next(
+            (code for needle, code in self._returncode_for_cwd.items() if needle in cwd),
+            0,
+        )
+        return subprocess.CompletedProcess(cmd, returncode=returncode)
 
 
 # ── (a) iterates ALL detected repos, ff-only per repo ────────────────────
@@ -58,7 +68,7 @@ def test_refresh_workspace_repos_pulls_every_detected_repo(tmp_path, monkeypatch
     fake_run = _RecordingRun()
     monkeypatch.setattr(workspace_adapters.subprocess, "run", fake_run)
 
-    refresh_workspace_repos(workspace)
+    results = refresh_workspace_repos(workspace)
 
     assert len(fake_run.calls) == 3
     pulled_cwds = sorted(str(c["cwd"]) for c in fake_run.calls)
@@ -69,6 +79,32 @@ def test_refresh_workspace_repos_pulls_every_detected_repo(tmp_path, monkeypatch
         assert call["cmd"] == ["git", "pull", "--ff-only"]
         assert call["capture_output"] is True
         assert call["timeout"] == 30
+    assert results == {"happyranch": True, "my-opc": True, "web-app": True}
+
+
+def test_refresh_workspace_repos_returns_nonzero_pull_as_not_fresh(tmp_path, monkeypatch):
+    workspace = _make_workspace_with_repos(tmp_path, ["fresh", "stale"])
+    fake_run = _RecordingRun(returncode_for_cwd={"stale": 1})
+    monkeypatch.setattr(workspace_adapters.subprocess, "run", fake_run)
+
+    results = refresh_workspace_repos(workspace)
+
+    assert results == {"fresh": True, "stale": False}
+
+
+def test_repo_refresh_note_differs_when_pull_does_not_fast_forward(tmp_path, monkeypatch):
+    workspace = _make_workspace_with_repos(tmp_path, ["happyranch"])
+    fake_run = _RecordingRun()
+    monkeypatch.setattr(workspace_adapters.subprocess, "run", fake_run)
+    clean_note = format_repo_refresh_note(refresh_workspace_repos(workspace))
+
+    fake_run = _RecordingRun(returncode_for_cwd={"happyranch": 1})
+    monkeypatch.setattr(workspace_adapters.subprocess, "run", fake_run)
+    stale_note = format_repo_refresh_note(refresh_workspace_repos(workspace))
+
+    assert clean_note != stale_note
+    assert "all cloned repositories fast-forwarded cleanly" in clean_note
+    assert "happyranch did not fast-forward cleanly" in stale_note
 
 
 def test_refresh_workspace_repos_skips_non_git_dirs_and_missing_repos_dir(
@@ -112,12 +148,13 @@ def test_refresh_workspace_repos_swallows_failure_and_continues(
     fake_run = _RecordingRun(raise_for_cwd={"a-failing": exc})
     monkeypatch.setattr(workspace_adapters.subprocess, "run", fake_run)
 
-    refresh_workspace_repos(workspace)  # must not raise
+    results = refresh_workspace_repos(workspace)  # must not raise
 
     attempted = [str(c["cwd"]) for c in fake_run.calls]
     assert str(workspace / "repos" / "a-failing") in attempted
     assert str(workspace / "repos" / "b-ok") in attempted
     assert str(workspace / "repos" / "c-ok") in attempted
+    assert results == {"a-failing": False, "b-ok": True, "c-ok": True}
 
 
 # ── (c) _run_agent refreshes BEFORE executor.run, every provider ─────────
@@ -172,6 +209,7 @@ def test_run_agent_refreshes_repos_before_executor_run(
     def fake_refresh(workspace):
         events.append("refresh_workspace_repos")
         workspaces_seen.append(workspace)
+        return {"happyranch": True}
 
     monkeypatch.setattr(
         "runtime.orchestrator.orchestrator.refresh_workspace_repos", fake_refresh,
@@ -181,6 +219,7 @@ def test_run_agent_refreshes_repos_before_executor_run(
 
     def fake_executor_run(**kwargs):
         events.append("executor.run")
+        assert "all cloned repositories fast-forwarded cleanly" in kwargs["prompt"]
         return ExecutorResult(
             success=True, duration_seconds=1, session_id=kwargs["session_id"],
         )

@@ -63,7 +63,7 @@ class _SpawningExecutor:
         self._slug = slug
         self._schedule_id = schedule_id
 
-    def run(self, *, workspace, prompt, session_id, timeout_seconds):
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
         assert "Schedule Fire" in prompt
         assert self._schedule_id in prompt
         resp = self._client.post(
@@ -77,13 +77,13 @@ class _SpawningExecutor:
 class _NoCallbackExecutor:
     """A fake executor that exits successfully without calling the spawn
     callback — the runner should mark the schedule FAILED/no_callback."""
-    def run(self, *, workspace, prompt, session_id, timeout_seconds):
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
         return _FakeResult(success=True)
 
 
 class _FailingExecutor:
     """A fake executor that returns failure — the runner should mark FAULT."""
-    def run(self, *, workspace, prompt, session_id, timeout_seconds):
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
         return _FakeResult(success=False, error="executor crashed")
 
 
@@ -586,7 +586,7 @@ async def test_run_schedule_refreshes_repos_before_executor_run(tmp_path, monkey
     import runtime.daemon.schedule_runner as runner_mod
     monkeypatch.setattr(
         runner_mod, "refresh_workspace_repos",
-        lambda ws: events.append("refresh_workspace_repos"),
+        lambda ws: (events.append("refresh_workspace_repos"), {"happyranch": True})[1],
     )
 
     class _Executor:

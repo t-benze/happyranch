@@ -1561,7 +1561,10 @@ async def test_thread_invocation_refreshes_repos_before_executor_run(tmp_path, m
 
     import runtime.daemon.thread_runner as runner_mod
     events: list[str] = []
-    monkeypatch.setattr(runner_mod, "refresh_workspace_repos", lambda ws: events.append("refresh_workspace_repos"))
+    monkeypatch.setattr(
+        runner_mod, "refresh_workspace_repos",
+        lambda ws: (events.append("refresh_workspace_repos"), {"happyranch": True})[1],
+    )
 
     class _Executor:
         def run(self, **_kwargs):

@@ -205,7 +205,7 @@ async def test_run_wake_refreshes_repos_before_executor_run(org_state, monkeypat
     import runtime.daemon.wake_runner as runner_mod
     monkeypatch.setattr(
         runner_mod, "refresh_workspace_repos",
-        lambda ws: events.append("refresh_workspace_repos"),
+        lambda ws: (events.append("refresh_workspace_repos"), {"happyranch": True})[1],
     )
 
     class _Executor:

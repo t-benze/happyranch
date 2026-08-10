@@ -21,6 +21,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    format_repo_refresh_note,
     materialize_workspace_skills,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
@@ -199,9 +200,12 @@ async def run_dream(
     # fresh code regardless of executor (claude/codex/opencode/pi).
     # Must run BEFORE the executor subprocess starts. Failure is non-
     # blocking: offline / dirty / non-ff / timeout are swallowed.
-    refresh_workspace_repos(workspace)
+    repo_refresh_results = refresh_workspace_repos(workspace)
 
-    protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+    protocol_doc_manifest = "\n".join(filter(None, (
+        resolve_protocol_doc_manifest(settings=settings),
+        format_repo_refresh_note(repo_refresh_results),
+    )))
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():

@@ -743,26 +743,43 @@ async def test_run_dream_forwards_model_to_executor_run(org_state):
     )
 
 
-async def test_run_dream_refreshes_repos_before_executor_run(org_state, monkeypatch):
-    workspace = _insert_pending_dream(org_state)
+async def test_run_dream_surfaces_repo_refresh_status_before_executor_run(org_state, monkeypatch):
+    _insert_pending_dream(org_state)
+    _insert_pending_dream(org_state, id="DREAM-002", local_date="2026-06-10")
     events: list[str] = []
+    refresh_results = iter(({"happyranch": True}, {"happyranch": False}))
     import runtime.daemon.dream_runner as runner_mod
     monkeypatch.setattr(
         runner_mod, "refresh_workspace_repos",
-        lambda ws: events.append("refresh_workspace_repos"),
+        lambda ws: (events.append("refresh_workspace_repos"), next(refresh_results))[1],
     )
 
     class _Executor:
-        def run(self, **_kwargs):
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def run(self, **kwargs):
             events.append("executor.run")
+            self.prompts.append(kwargs["prompt"])
             return FakeResult()
 
+    executor = _Executor()
     await run_dream(
         org_state=org_state, dream_id="DREAM-001",
-        executor_factory=lambda *_args, **_kwargs: _Executor(),
+        executor_factory=lambda *_args, **_kwargs: executor,
+    )
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-002",
+        executor_factory=lambda *_args, **_kwargs: executor,
     )
 
-    assert events == ["refresh_workspace_repos", "executor.run"]
+    assert events == [
+        "refresh_workspace_repos", "executor.run",
+        "refresh_workspace_repos", "executor.run",
+    ]
+    assert "all cloned repositories fast-forwarded cleanly" in executor.prompts[0]
+    assert "happyranch did not fast-forward cleanly" in executor.prompts[1]
+    assert executor.prompts[0] != executor.prompts[1]
 
 
 async def test_run_dream_no_model_preserves_default_behavior(org_state):
