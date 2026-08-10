@@ -79,6 +79,16 @@ function mount(versionId: number | string = VERSION_ID) {
   });
 }
 
+async function evidenceRail(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const rail = screen
+      .getAllByLabelText('Evidence')
+      .find((element) => element.tagName === 'ASIDE');
+    if (!rail) throw new Error('Proposal evidence rail not rendered');
+    return rail;
+  });
+}
+
 function mockProposal(
   proposal: ProposalDetailResponse,
   status = 200,
@@ -141,7 +151,7 @@ describe('ProposalDetailPage — proposed proposal', () => {
     expect(await screen.findByText('Evidence')).toBeInTheDocument();
 
     // Scope evidence queries to the Evidence landmark
-    const evidenceLandmark = screen.getByLabelText('Evidence');
+    const evidenceLandmark = await evidenceRail();
 
     // Purpose
     expect(within(evidenceLandmark).getByText('Implement & review frontend changes')).toBeInTheDocument();
@@ -571,7 +581,7 @@ describe('ProposalDetailPage — validator facts', () => {
     mount();
 
     // Scope to Evidence to avoid matching header status chip + timeline
-    const evidence = await screen.findByLabelText('Evidence');
+    const evidence = await evidenceRail();
     // The text is "Passed · THR-055/1.0.0" — use regex to match prefix
     expect(within(evidence).getByText(/Passed/)).toBeInTheDocument();
     expect(within(evidence).getByText(/THR-055/)).toBeInTheDocument();
@@ -602,7 +612,7 @@ describe('ProposalDetailPage — validator facts', () => {
     mount();
 
     // Scope to Evidence to avoid matching header status chip + timeline
-    const evidenceSection = await screen.findByLabelText('Evidence');
+    const evidenceSection = await evidenceRail();
     expect(within(evidenceSection).getByText('Failed')).toBeInTheDocument();
   });
 });
@@ -690,7 +700,7 @@ describe('ProposalDetailPage — accessibility and layout', () => {
     mount();
 
     expect(await screen.findByLabelText('Package content')).toBeInTheDocument();
-    expect(screen.getByLabelText('Evidence')).toBeInTheDocument();
+    expect(await evidenceRail()).toBeInTheDocument();
     expect(screen.getByLabelText('Provenance')).toBeInTheDocument();
     expect(screen.getByLabelText('Timeline')).toBeInTheDocument();
     expect(
