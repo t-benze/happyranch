@@ -406,9 +406,9 @@ const MINT_ACTIVATION_TRIGGER: WorkspaceAdapterId = 'pi';
  *  MINT_ACTIVATION_TRIGGER) → immediately reads GET .../status for the
  *  deterministic wrapper destination → the candidate CLI POSTs /connect
  *  itself, declaring its OWN workspace_adapter_id in the manifest
- *  (server-side, invisible to this hook — it only polls) → the moment
- *  status reports a received operation_id, this hook calls POST
- *  .../commit → Connected. */
+ *  (server-side, invisible to this hook — it only polls) → the daemon
+ *  projects the received operation independently → this hook observes the
+ *  terminal committed or failed status and updates the UI. */
 export function useDirectConnect({
   onConnected,
 }: {
@@ -455,7 +455,9 @@ export function useDirectConnect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.stage, expiresAt]);
 
-  const pollName = state.stage === 'waiting' && !state.expired ? state.name : '';
+  const pollName = (state.stage === 'waiting' && !state.expired) || state.stage === 'committing'
+    ? state.name
+    : '';
   const { data: statusData } = useQuery({
     queryKey: ['direct-connect', 'status', pollName],
     queryFn: () => directConnect.getStatus(pollName),
@@ -467,40 +469,37 @@ export function useDirectConnect({
     mutationFn: (operationId: string) => directConnect.commit(operationId),
   });
 
-  // Transition: waiting -> committing the moment the candidate CLI's own
-  // /connect call has landed (operation_id appears, not yet projected).
+  // The candidate CLI's /connect receipt moves waiting -> committing. The
+  // daemon owns projection; this hook only observes its terminal status.
   useEffect(() => {
-    if (state.stage !== 'waiting' || state.expired) return;
-    if (!statusData?.operation_id || statusData.profile_state !== null) return;
-    const { name, wrapperDestination } = state;
-    setState({ stage: 'committing', name, wrapperDestination });
-    commitMutation.mutate(statusData.operation_id, {
-      onSuccess: (resp) => {
-        if (resp.profile_state === 'committed') {
-          setState({ stage: 'connected', name, wrapperDestination });
-          onConnected({ name, path: wrapperDestination, via: 'custom' });
-        } else {
-          setState({
-            stage: 'failed',
-            name,
-            wrapperDestination,
-            operationId: statusData.operation_id as string,
-            reason: resp.reason ?? 'The connection could not be completed.',
-          });
-        }
-      },
-      onError: () => {
-        setState({
-          stage: 'failed',
-          name,
-          wrapperDestination,
-          operationId: statusData.operation_id as string,
-          reason: 'Could not reach the daemon to finish connecting.',
-        });
-      },
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusData, state.stage]);
+    if (state.stage === 'waiting') {
+      if (state.expired || !statusData?.operation_id) return;
+      setState({
+        stage: 'committing',
+        name: state.name,
+        wrapperDestination: state.wrapperDestination,
+      });
+      return;
+    }
+    if (state.stage !== 'committing' || !statusData?.operation_id) return;
+
+    if (statusData.profile_state === 'committed') {
+      setState({
+        stage: 'connected',
+        name: state.name,
+        wrapperDestination: state.wrapperDestination,
+      });
+      onConnected({ name: state.name, path: state.wrapperDestination, via: 'custom' });
+    } else if (statusData.profile_state === 'failed') {
+      setState({
+        stage: 'failed',
+        name: state.name,
+        wrapperDestination: state.wrapperDestination,
+        operationId: statusData.operation_id,
+        reason: statusData.reason ?? 'The connection could not be completed.',
+      });
+    }
+  }, [onConnected, state, statusData]);
 
   const start = (name: string): void => {
     if (name && !mint.isPending) mint.mutate(name);

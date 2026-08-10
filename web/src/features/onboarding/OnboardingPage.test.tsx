@@ -659,26 +659,24 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     // The prompt tells the wrapper to declare its own workspace_adapter_id.
     expect(promptText).toContain('workspace_adapter_id');
 
-    // The candidate CLI's own POST /connect landed; commit finishes the connection.
+    // The candidate CLI's receipt landed; the daemon projects it and polling
+    // observes the terminal result without a browser commit.
     vi.mocked(directConnectApi.getStatus).mockResolvedValue({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-adapter-cli-adapter',
       operation_id: 'op-onb-1',
-      profile_state: null,
+      profile_state: 'committed',
       reason: null,
     });
-    vi.spyOn(directConnectApi, 'commit').mockResolvedValue({
-      operation_id: 'op-onb-1',
-      profile_state: 'committed',
-      profile_name: profileName,
-    });
+    const commitSpy = vi.spyOn(directConnectApi, 'commit');
 
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
     expect(
       screen.getByText(/you can manage your clis anytime from settings/i),
     ).toBeInTheDocument();
+    expect(commitSpy).not.toHaveBeenCalled();
   });
 
-  test('retryable error: a failed commit shows a retry action, which succeeds on retry', async () => {
+  test('retryable error from the daemon projection shows a retry action, which succeeds on retry', async () => {
     const user = userEvent.setup();
     const profileName = 'onb-retry-cli';
 
@@ -694,21 +692,21 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     vi.mocked(directConnectApi.getStatus).mockResolvedValue({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-retry-cli-adapter',
       operation_id: 'op-onb-retry',
-      profile_state: null,
-      reason: null,
+      profile_state: 'failed',
+      reason: 'conformance_probe_failed: timed out',
     });
     const commitSpy = vi
       .spyOn(directConnectApi, 'commit')
-      .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'failed', reason: 'conformance_probe_failed: timed out' });
+      .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
 
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
     expect(screen.getByText(/timed out/i)).toBeInTheDocument();
+    expect(commitSpy).not.toHaveBeenCalled();
 
-    commitSpy.mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(commitSpy).toHaveBeenCalledTimes(2);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 });
 

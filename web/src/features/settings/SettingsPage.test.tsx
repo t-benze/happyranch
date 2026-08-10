@@ -1138,7 +1138,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
         HttpResponse.json({
           wrapper_destination: executable,
           operation_id: connected ? operationId : null,
-          profile_state: null,
+          profile_state: connected ? 'committed' : null,
         }),
       ),
       http.post(`/api/v1/runtime/custom-cli/${operationId}/commit`, () => {
@@ -1169,7 +1169,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     connected = true;
 
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(commitCalls).toBeGreaterThan(0);
+    expect(commitCalls).toBe(0);
 
     // Done collapses back to the list → the newly connected CLI appears.
     await user.click(screen.getByRole('button', { name: /^done$/i }));
