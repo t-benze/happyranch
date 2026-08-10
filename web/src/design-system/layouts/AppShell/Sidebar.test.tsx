@@ -1,12 +1,13 @@
 /**
  * IA-1, IA-2, IA-10 tests for the Direction-A design overhaul Phase 1b.
  *
- * - IA-1: Sidebar renders with Primary and Operate groups, theme toggle,
+ * - IA-1: Sidebar renders with Operate, Organization, Govern, and Evidence groups, theme toggle,
  *   org switcher, and Settings; TopBar is retired.
  * - IA-2: Default landing route resolves to Home/Dashboard.
- * - IA-10: Nav grouping (Primary / Operate) rendered correctly.
+ * - THR-140 Slice 1: corrected Operate / Organization / Govern / Evidence grouping.
  */
 import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -77,7 +78,7 @@ function seedSidebarShell(
 }
 
 describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
-  test('renders Primary group nav items', async () => {
+  test('renders the corrected Slice 1 crosswalk in four named nav landmarks', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
@@ -85,31 +86,23 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // Scope to the sidebar — the AppBar now mirrors the page name (e.g.
       // "Home"), so unscoped getByText would match twice.
       const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      // Primary group label
-      expect(aside.getByText('Primary')).toBeInTheDocument();
-      // Primary nav items
-      expect(aside.getByText('Home')).toBeInTheDocument();
-      expect(aside.getByText('Threads')).toBeInTheDocument();
-      expect(aside.getByText('Tasks')).toBeInTheDocument();
-      expect(aside.getByText('Agents')).toBeInTheDocument();
-      expect(aside.getByText('Skills')).toBeInTheDocument();
-      expect(aside.getByText('Knowledge')).toBeInTheDocument();
-      expect(aside.getByText('Artifacts')).toBeInTheDocument();
-    });
-  });
-
-  test('renders Operate group nav items (IA-10)', async () => {
-    seedSidebarShell();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    await waitFor(() => {
-      // Operate group label
-      expect(screen.getByText('Operate')).toBeInTheDocument();
-      // Operate nav items
-      expect(screen.getByText('Usage')).toBeInTheDocument();
-      expect(screen.getByText('Dreams')).toBeInTheDocument();
-      expect(screen.getByText('Work Hours')).toBeInTheDocument();
-      expect(screen.getByText('Audit')).toBeInTheDocument();
+      expect(aside.getByText('Operate')).toBeInTheDocument();
+      expect(aside.getByText('Organization')).toBeInTheDocument();
+      expect(aside.getByText('Govern')).toBeInTheDocument();
+      expect(aside.getByText('Evidence')).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Home' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Threads' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Tasks' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Jobs' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Todos' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Agents' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Work Hours' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Settings' })).toBeInTheDocument();
+      expect(within(aside.getByRole('navigation', { name: 'Govern' })).getByRole('link', { name: 'Skills' })).toBeInTheDocument();
+      const evidence = within(aside.getByRole('navigation', { name: 'Evidence' }));
+      ['Knowledge', 'Artifacts', 'Audit', 'Dreams', 'Usage', 'Health'].forEach((name) => {
+        expect(evidence.getByRole('link', { name })).toBeInTheDocument();
+      });
     });
   });
 
@@ -148,12 +141,12 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('renders Settings as a labeled row linking to the settings route (BUG-02)', async () => {
+  test('renders Settings in Organization linking to the settings route', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const settings = screen.getByRole('link', { name: 'Settings' });
+      const settings = within(screen.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Settings' });
       expect(settings).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
     });
   });
@@ -187,6 +180,55 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       const nav = screen.getByRole('navigation', { name: /Primary navigation/i });
       expect(nav.tagName).toBe('ASIDE');
     });
+  });
+
+  test('exposes distinct landmarks and a non-color active cue', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: 'Organization switcher' })).toBeInTheDocument();
+      ['Operate', 'Organization', 'Govern', 'Evidence'].forEach((name) => {
+        expect(screen.getByRole('navigation', { name })).toBeInTheDocument();
+      });
+      const home = screen.getByRole('link', { name: 'Home' });
+      expect(home).toHaveAttribute('aria-current', 'page');
+      expect(home).toHaveClass('border-l-2', 'border-l-accent');
+      expect(screen.getByLabelText('Active org')).toHaveClass('border-l-2', 'border-l-accent');
+    });
+  });
+
+  test('keeps the regrouped nav and account context reachable by Tab and Shift+Tab', async () => {
+    seedSidebarShell();
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => expect(screen.getByLabelText('Active org')).toBeInTheDocument());
+    const focusOrder = [
+      screen.getByLabelText('Active org'),
+      screen.getByRole('link', { name: 'Home' }),
+      screen.getByRole('link', { name: 'Threads' }),
+      screen.getByRole('link', { name: 'Tasks' }),
+      screen.getByRole('link', { name: 'Jobs' }),
+      screen.getByRole('link', { name: 'Todos' }),
+      screen.getByRole('link', { name: 'Agents' }),
+      screen.getByRole('link', { name: 'Work Hours' }),
+      screen.getByRole('link', { name: 'Settings' }),
+      screen.getByRole('link', { name: 'Skills' }),
+      screen.getByRole('link', { name: 'Knowledge' }),
+      screen.getByRole('link', { name: 'Artifacts' }),
+      screen.getByRole('link', { name: 'Audit' }),
+      screen.getByRole('link', { name: 'Dreams' }),
+      screen.getByRole('link', { name: 'Usage' }),
+      screen.getByRole('link', { name: 'Health' }),
+      screen.getByLabelText('Account: You, Founder'),
+    ];
+    for (const target of focusOrder) {
+      await user.tab();
+      expect(target).toHaveFocus();
+    }
+    await user.tab({ shift: true });
+    expect(screen.getByRole('link', { name: 'Health' })).toHaveFocus();
   });
 });
 
@@ -246,22 +288,23 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       // Scope to the sidebar — the AppBar mirrors the page name (e.g. "Home"),
       // so unscoped getByText would match twice.
       const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      // Primary group
+      // Operate group
       expect(aside.getByText('Home').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dashboard`);
       expect(aside.getByText('Threads').closest('a')).toBeInTheDocument();
       expect(aside.getByText('Tasks').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
+      expect(aside.getByText('Jobs').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs`);
+      expect(aside.getByText('Todos').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/todos`);
+      // Organization, Govern, and Evidence
       expect(aside.getByText('Agents').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/agents`);
+      expect(aside.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
+      expect(aside.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
       expect(aside.getByText('Skills').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/skills`);
       expect(aside.getByText('Knowledge').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/kb`);
       expect(aside.getByText('Artifacts').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/artifacts`);
-      // Operate group
-      expect(aside.getByText('Usage').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
-      expect(aside.getByText('Dreams').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
-      expect(aside.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
       expect(aside.getByText('Audit').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/audit`);
-      expect(aside.getByText('Jobs').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs`);
-      // Footer
-      expect(aside.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
+      expect(aside.getByText('Dreams').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
+      expect(aside.getByText('Usage').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
+      expect(aside.getByText('Health').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/health`);
       expect(aside.getByText('You')).toBeInTheDocument();
     });
   });
@@ -328,34 +371,31 @@ describe('IA-2: Default landing = Home', () => {
   });
 });
 
-describe('IA-10: Nav grouping (Primary / Operate)', () => {
-  test('Primary group label appears before Operate group label', async () => {
+describe('THR-140 Slice 1: Nav grouping', () => {
+  test('group labels appear in the corrected crosswalk order', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const primaryEl = screen.getByText('Primary');
       const operateEl = screen.getByText('Operate');
-      expect(primaryEl).toBeInTheDocument();
-      expect(operateEl).toBeInTheDocument();
-      // Primary appears before Operate in DOM order
-      expect(
-        primaryEl.compareDocumentPosition(operateEl) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
+      const organizationEl = screen.getByText('Organization');
+      const governEl = screen.getByText('Govern');
+      const evidenceEl = screen.getByText('Evidence');
+      expect(operateEl.compareDocumentPosition(organizationEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(organizationEl.compareDocumentPosition(governEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(governEl.compareDocumentPosition(evidenceEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
-  test('Operate nav items link to placeholder pages', async () => {
+  test('crosswalk nav items link to their unchanged routes', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const usageLink = screen.getByText('Usage');
-      const dreamsLink = screen.getByText('Dreams');
-      const workHoursLink = screen.getByText('Work Hours');
-      expect(usageLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
-      expect(dreamsLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
-      expect(workHoursLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
+      expect(screen.getByText('Jobs').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs`);
+      expect(screen.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
+      expect(screen.getByText('Skills').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/skills`);
+      expect(screen.getByText('Usage').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
     });
   });
 });
@@ -425,7 +465,7 @@ describe('Operate surfaces', () => {
 });
 
 describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surface)', () => {
-  test('Skills nav item is present in Primary group', async () => {
+  test('Skills nav item is present in Govern', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {

@@ -46,11 +46,11 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  * THR-030 chrome alignment (BUG-01..08):
  *  - Top: context header (wordmark + org context line + caret) doubling as the
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
- *  - Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts — each
- *    with a leading icon (BUG-03).
- *  - Operate group: Usage, Dreams, Work Hours, Audit, Jobs, Health.
- *  - Footer: Settings as a labeled row above the account row (BUG-02), then an
- *    avatar + identity account row (BUG-07).
+ *  - Operate: Home, Threads, Tasks, Jobs, Todos.
+ *  - Organization: Agents, Work Hours, Settings.
+ *  - Govern: Skills.
+ *  - Evidence: Knowledge, Artifacts, Audit, Dreams, Usage, Health.
+ *  - Footer: the static avatar + identity account row (BUG-07).
  *
  * Global search and the theme toggle moved to the AppBar (BUG-04/05/06).
  *
@@ -135,63 +135,65 @@ export function Sidebar(): JSX.Element {
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
-      <SelectPrimitive.Root
-        value={activeSlug ?? undefined}
-        onValueChange={onOrgChange}
-        disabled={!switchEnabled}
-      >
-        <SelectPrimitive.Trigger asChild aria-label="Active org">
-          <button
-            type="button"
-            className="border-border hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed"
-          >
-            <Brandmark />
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
-                <span className="text-[#4ade80]">Happy</span>
-                <span className="text-fg">Ranch</span>
-              </span>
-              {/* Context line — "Day N · <team>" (BUG-08). Day-N is the real
-                  org_age_days from the dashboard summary; the team is the active
-                  org slug. On a brand-new org (org_age_days 0/undefined) the day
-                  token degrades away, leaving the bare slug — never "Day 0". */}
-              <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
-                {activeSlug ? (
-                  orgAgeDays && orgAgeDays > 0 ? (
-                    <>
-                      <span className="text-fg-muted">Day {orgAgeDays}</span> ·{' '}
+      <section aria-label="Organization switcher">
+        <SelectPrimitive.Root
+          value={activeSlug ?? undefined}
+          onValueChange={onOrgChange}
+          disabled={!switchEnabled}
+        >
+          <SelectPrimitive.Trigger asChild aria-label="Active org">
+            <button
+              type="button"
+              className="border-border border-l-accent hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b border-l-2 px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed"
+            >
+              <Brandmark />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
+                  <span className="text-[#4ade80]">Happy</span>
+                  <span className="text-fg">Ranch</span>
+                </span>
+                {/* Context line — "Day N · <team>" (BUG-08). Day-N is the real
+                    org_age_days from the dashboard summary; the team is the active
+                    org slug. On a brand-new org (org_age_days 0/undefined) the day
+                    token degrades away, leaving the bare slug — never "Day 0". */}
+                <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
+                  {activeSlug ? (
+                    orgAgeDays && orgAgeDays > 0 ? (
+                      <>
+                        <span className="text-fg-muted">Day {orgAgeDays}</span> ·{' '}
+                        <span>{activeSlug}</span>
+                      </>
+                    ) : (
                       <span>{activeSlug}</span>
-                    </>
+                    )
                   ) : (
-                    <span>{activeSlug}</span>
-                  )
-                ) : (
-                  'No org'
-                )}
+                    'No org'
+                  )}
+                </span>
               </span>
-            </span>
-            <ChevronDown size={14} aria-hidden="true" className="text-fg-muted shrink-0" />
-          </button>
-        </SelectPrimitive.Trigger>
-        <SelectContent>
-          {orgs.map((o) => (
-            <SelectItem key={o.slug} value={o.slug}>
-              {o.slug}
-            </SelectItem>
-          ))}
-          {!isPrototype && (
-            <>
-              <SelectSeparator />
-              <SelectItem value={ADD_ORG_VALUE}>+ Add org…</SelectItem>
-            </>
-          )}
-        </SelectContent>
-      </SelectPrimitive.Root>
+              <ChevronDown size={14} aria-hidden="true" className="text-fg-muted shrink-0" />
+            </button>
+          </SelectPrimitive.Trigger>
+          <SelectContent>
+            {orgs.map((o) => (
+              <SelectItem key={o.slug} value={o.slug}>
+                {o.slug}
+              </SelectItem>
+            ))}
+            {!isPrototype && (
+              <>
+                <SelectSeparator />
+                <SelectItem value={ADD_ORG_VALUE}>+ Add org…</SelectItem>
+              </>
+            )}
+          </SelectContent>
+        </SelectPrimitive.Root>
+      </section>
 
-      {/* Primary group */}
+      {/* Operate — the record and workflow entry points. */}
       <div className="mt-3 px-3">
-        <SidebarGroupLabel>Primary</SidebarGroupLabel>
-        <nav className="flex flex-col gap-0.5">
+        <SidebarGroupLabel>Operate</SidebarGroupLabel>
+        <nav aria-label="Operate" className="flex flex-col gap-0.5">
           <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
             Home
           </SidebarNavItem>
@@ -206,50 +208,58 @@ export function Sidebar(): JSX.Element {
             Tasks
           </SidebarNavItem>
           <SidebarNavItem
-            {...sidebarLink('agents', true)}
-            icon={Users}
+            {...sidebarLink('jobs', true)}
+            icon={Terminal}
           >
+            Jobs
+          </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
+            Todos
+          </SidebarNavItem>
+        </nav>
+      </div>
+
+      <div className="mt-3 px-3">
+        <SidebarGroupLabel>Organization</SidebarGroupLabel>
+        <nav aria-label="Organization" className="flex flex-col gap-0.5">
+          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
             Agents
           </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
+            Work Hours
+          </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
+            Settings
+          </SidebarNavItem>
+        </nav>
+      </div>
+
+      <div className="mt-3 px-3">
+        <SidebarGroupLabel>Govern</SidebarGroupLabel>
+        <nav aria-label="Govern" className="flex flex-col gap-0.5">
           <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
             Skills
           </SidebarNavItem>
+        </nav>
+      </div>
+
+      <div className="mt-3 px-3">
+        <SidebarGroupLabel>Evidence</SidebarGroupLabel>
+        <nav aria-label="Evidence" className="flex flex-col gap-0.5">
           <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
             Knowledge
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
             Artifacts
           </SidebarNavItem>
-        </nav>
-      </div>
-
-      {/* Operate group — IA-10 grouping */}
-      <div className="mt-3 px-3">
-        <SidebarGroupLabel>Operate</SidebarGroupLabel>
-        <nav className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
-            Usage
+          <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
+            Audit
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
             Dreams
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
-            Work Hours
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
-            Todos
-          </SidebarNavItem>
-          <SidebarNavItem
-            {...sidebarLink('audit', true)}
-            icon={ScrollText}
-          >
-            Audit
-          </SidebarNavItem>
-          <SidebarNavItem
-            {...sidebarLink('jobs', true)}
-            icon={Terminal}
-          >
-            Jobs
+          <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
+            Usage
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('health', true)} icon={Activity}>
             Health
@@ -257,25 +267,16 @@ export function Sidebar(): JSX.Element {
         </nav>
       </div>
 
-      {/* Footer — Settings labeled row (BUG-02) + account row (BUG-07) */}
+      {/* Footer — static account row (BUG-07). */}
       <div className="border-border mt-auto flex flex-col gap-1 border-t px-3 py-3">
-        <NavLink
-          to={activeSlug && !isPrototype ? `/orgs/${activeSlug}/settings` : '#'}
-          className={({ isActive }) =>
-            `flex items-center gap-2.5 rounded px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
-              isActive
-                ? 'bg-bg-raised text-fg font-medium'
-                : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
-            }`
-          }
-        >
-          <Settings size={16} aria-hidden="true" className="shrink-0" />
-          <span>Settings</span>
-        </NavLink>
-
         {/* Account row — avatar + identity. Identity is static chrome (no user
-            profile is loaded client-side). */}
-        <div className="flex items-center gap-2.5 px-2 py-1.5">
+            profile is loaded client-side). It remains keyboard reachable as
+            account context after the grouped navigation. */}
+        <div
+          tabIndex={0}
+          aria-label="Account: You, Founder"
+          className="focus-visible:ring-accent flex items-center gap-2.5 rounded px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
+        >
           <span
             aria-hidden="true"
             className="bg-accent text-accent-fg inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
@@ -369,9 +370,9 @@ function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 rounded px-2 py-1.5 text-sm ${
+        `flex items-center gap-2.5 rounded border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
           isActive
-            ? 'bg-bg-raised text-fg font-medium'
+            ? 'border-l-accent bg-bg-raised text-fg font-medium'
             : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
         }`
       }
