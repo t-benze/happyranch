@@ -16,6 +16,7 @@ from runtime.daemon.routes import (
     assistant_a_mode,
     audit,
     auth,
+    custom_skills,
     dashboard,
     direct_connect,
     direct_connect_commit,
@@ -361,6 +362,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(skills.router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
+    app.include_router(custom_skills.router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
+    app.include_router(custom_skills.agent_custom_skills_router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
     app.include_router(skill_lifecycle.dual_router, prefix="/api/v1/orgs/{slug}", tags=["skill-lifecycle"])
 
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])

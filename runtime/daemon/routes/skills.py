@@ -495,6 +495,36 @@ def agent_skills_effective(
                 "summary": sc.description,
             })
 
+    # THR-055 B2: custom skills are a separate visibility projection, never
+    # lifecycle assignments.  Do not infer materialization from an allow rule.
+    try:
+        from runtime.skills.custom import service as custom_service
+        from runtime.skills.eligibility import (
+            EligibilityRecipient, EligibilityRule, SkillEligibilityState,
+            resolve_custom_skill_eligibility,
+        )
+        conn = getattr(org.db, "_conn", org.db)
+        rows = conn.execute("""SELECT s.*, v.id AS version_id, v.content_hash,
+            v.validation_state FROM custom_skills s JOIN custom_skill_versions v
+            ON v.id=s.current_version_id WHERE s.org_slug=?""", (slug,)).fetchall()
+        recipient = EligibilityRecipient(agent_id, (team,))
+        for row in rows:
+            rules = [EligibilityRule(**dict(rule)) for rule in custom_service.current_rules(org.db, row["id"])]
+            result = resolve_custom_skill_eligibility(
+                SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]), rules, recipient)
+            skills.append({
+                "skill_id": row["id"], "name": row["name"], "type": "custom",
+                "source": "custom_skill", "status": "retired" if row["retired_at"] else "active",
+                "version": str(row["version_id"]), "summary": row["description"],
+                "visible": result.visible, "hidden": not result.visible,
+                "hidden_reason": result.reason, "current_version": row["version_id"],
+                "current_hash": row["content_hash"], "validation_state": row["validation_state"],
+                "winning_rule": (result.winning_rule.__dict__ if result.winning_rule else None),
+            })
+    except Exception:
+        # Custom-skill read failure must not compromise the mature managed catalog.
+        pass
+
     skills.sort(key=lambda x: (x["hidden"], x["name"].lower()))
     return {"skills": skills, "agent_id": agent_id}
 
