@@ -33,6 +33,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    format_repo_refresh_note,
     materialize_workspace_skills,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
@@ -660,13 +661,18 @@ async def run_invocation(
     # fresh code regardless of executor (claude/codex/opencode/pi).
     # Must run BEFORE the executor subprocess starts. Failure is non-
     # blocking: offline / dirty / non-ff / timeout are swallowed.
-    refresh_workspace_repos(workspace)
+    repo_refresh_results = refresh_workspace_repos(workspace)
 
+    repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
     # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
     try:
         protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
     except Exception:
         protocol_doc_manifest = ""
+    protocol_doc_manifest = "\n".join(filter(None, (
+        protocol_doc_manifest,
+        repo_refresh_note,
+    )))
 
     # THR-095 F2: resolve threads settings from DB (override) → dataclass defaults.
     threads_cfg = resolve_org_setting_threads(org_state.db, code_default=OrgConfig())

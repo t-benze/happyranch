@@ -2187,7 +2187,7 @@ class PersistentWorkspaceSetup:
         )
 
 
-def refresh_workspace_repos(workspace: Path) -> None:
+def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
     """Fast-forward-refresh every cloned repo under ``workspace/repos/``.
 
     Called by the orchestrator on EVERY session spawn, before the executor
@@ -2198,29 +2198,48 @@ def refresh_workspace_repos(workspace: Path) -> None:
     Failure semantics: NEVER raises and never blocks a spawn. Offline,
     dirty-tree, non-fast-forward, or conflicted pulls exit non-zero, which
     ``subprocess.run`` without ``check=True`` does not raise for — the
-    returncode is deliberately not inspected. Hung fetches are bounded by a
-    per-repo 30s timeout; one repo's failure does not stop its siblings.
+    returncode is recorded in the returned mapping. Hung fetches are bounded
+    by a per-repo 30s timeout; one repo's failure does not stop its siblings.
 
     Only already-cloned repos are refreshed (``detect_repo_names`` filters to
     dirs with a ``.git``); first-time cloning stays in the bootstrap path
-    (``context_builder.clone_repo``).
+    (``context_builder.clone_repo``). The returned mapping records whether
+    each detected repo fast-forwarded cleanly; scan failures return an empty
+    mapping.
     """
     try:
         repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
     except OSError as exc:
         logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
-        return
+        return {}
+    results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["git", "pull", "--ff-only"],
                 cwd=str(repo_dir),
                 capture_output=True,
                 timeout=30,
             )
+            results[name] = result.returncode == 0
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
             logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
+            results[name] = False
+    return results
+
+
+def format_repo_refresh_note(results: dict[str, bool]) -> str:
+    """Render the session-visible status for a fail-open repo refresh."""
+    if not results:
+        return "Repository freshness at session start: no cloned repositories were refreshed."
+    stale_repos = sorted(name for name, fresh in results.items() if not fresh)
+    if stale_repos:
+        return (
+            "Repository freshness at session start: "
+            f"{', '.join(stale_repos)} did not fast-forward cleanly; their code may be stale."
+        )
+    return "Repository freshness at session start: all cloned repositories fast-forwarded cleanly."
 
 
 class ClaudeWorkspaceAdapter:

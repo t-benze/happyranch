@@ -42,6 +42,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    format_repo_refresh_note,
     materialize_workspace_skills,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
@@ -836,10 +837,13 @@ class Orchestrator:
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
-        refresh_workspace_repos(workspace)
+        repo_refresh_results = refresh_workspace_repos(workspace)
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
-        protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)
+        protocol_doc_manifest = "\n".join(filter(None, (
+            resolve_protocol_doc_manifest(settings=self._settings),
+            format_repo_refresh_note(repo_refresh_results),
+        )))
 
         # THR-109: resolve inherited task attachments and materialize them
         # into the per-session attachment directory.
