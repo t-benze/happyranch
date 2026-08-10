@@ -190,6 +190,29 @@ def test_secret_metadata_terminalizes_without_operation(client, tmp_path, caplog
     assert token not in caplog.text
 
 
+def test_secret_named_extra_manifest_field_never_leaks(client, tmp_path, caplog):
+    tc, state = client
+    token = _mint(tc)
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    payload = _payload(wrapper_hash, child)
+    payload[token] = "unexpected"
+
+    with caplog.at_level(logging.WARNING, logger="runtime.daemon.routes.direct_connect"):
+        response = tc.post(
+            "/api/v1/runtime/custom-cli/connect",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid direct manifest schema: unexpected or invalid field in manifest"
+    assert token not in response.text
+    assert token not in caplog.text
+
+
 def test_noncanonical_persisted_authority_fails_closed(client, tmp_path):
     tc, state = client
     token = _mint(tc)
@@ -247,7 +270,31 @@ def test_wrapper_hash_mismatch_keeps_terse_detail_and_logs(client, tmp_path, cap
     assert response.status_code == 422
     assert response.json()["detail"] == "invalid direct manifest"
     assert "ValueError" in caplog.text
-    assert "wrapper hash does not match immutable manifest" in caplog.text
+    assert "invalid artifact or manifest integrity" in caplog.text
+
+
+def test_symlink_path_with_minted_token_never_leaks_to_log(client, tmp_path, caplog):
+    tc, state = client
+    token = _mint(tc)
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    real_children = tmp_path / "real-children"
+    real_children.mkdir()
+    secret_symlink = tmp_path / token
+    secret_symlink.symlink_to(real_children, target_is_directory=True)
+    child = secret_symlink / "child"
+
+    with caplog.at_level(logging.WARNING, logger="runtime.daemon.routes.direct_connect"):
+        response = tc.post(
+            "/api/v1/runtime/custom-cli/connect",
+            json=_payload(wrapper_hash, child),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid direct manifest"
+    assert "ValueError" in caplog.text
+    assert token not in caplog.text
 
 
 def test_token_commit_fault_compensates_nonlaunchable_receipt(client, tmp_path, monkeypatch):
