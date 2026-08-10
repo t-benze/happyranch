@@ -34,6 +34,7 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     materialize_workspace_skills,
+    refresh_workspace_repos,
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
     SystemContractMaterializationError,
@@ -654,6 +655,12 @@ async def run_invocation(
             decline_reason=decline_reason,
         )
         return
+
+    # THR-103: fast-forward-refresh every cloned repo so the agent has
+    # fresh code regardless of executor (claude/codex/opencode/pi).
+    # Must run BEFORE the executor subprocess starts. Failure is non-
+    # blocking: offline / dirty / non-ff / timeout are swallowed.
+    refresh_workspace_repos(workspace)
 
     # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
     try:
