@@ -187,6 +187,40 @@ async def test_run_wake_forwards_model_to_executor_run(org_state) -> None:
     )
 
 
+async def test_run_wake_refreshes_repos_before_executor_run(org_state, monkeypatch) -> None:
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n"
+        "## Routine Tasks\n\n- Triage open tickets.\n"
+    )
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-REFRESH", agent_name="dev_agent", local_date="2026-06-12",
+        slot="09:00", mode=WorkHourMode.WINDOWED,
+        scheduled_for=datetime(2026, 6, 12, 1, 0, tzinfo=timezone.utc),
+        status=WorkHourStatus.PENDING, routine_count=1,
+    ))
+    events: list[str] = []
+    import runtime.daemon.wake_runner as runner_mod
+    monkeypatch.setattr(
+        runner_mod, "refresh_workspace_repos",
+        lambda ws: events.append("refresh_workspace_repos"),
+    )
+
+    class _Executor:
+        def run(self, **_kwargs):
+            events.append("executor.run")
+            return _FakeResult()
+
+    await run_wake(
+        org_state=org_state, work_hour_id="WORKHOUR-REFRESH", settings=Settings(),
+        executor_factory=lambda *_args, **_kwargs: _Executor(),
+    )
+
+    assert events == ["refresh_workspace_repos", "executor.run"]
+
+
 async def test_run_wake_no_model_preserves_default_behavior(org_state) -> None:
     """When AgentDef.model is absent, wake runner passes model=None."""
     (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)

@@ -1538,6 +1538,48 @@ async def test_thread_invocation_forwards_agent_model_to_executor_run(
 
 
 @pytest.mark.asyncio
+async def test_thread_invocation_refreshes_repos_before_executor_run(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-REFRESH", subject="x"))
+    db.add_thread_participant("THR-REFRESH", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-REFRESH", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-REFRESH", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    workspace = tmp_path / "workspaces" / "alice"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("executor: claude\n")
+    agent_dir = tmp_path / "org" / "agents"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "alice.md").write_text(
+        "---\nname: alice\nteam: engineering\nrole: worker\nexecutor: claude\n---\n"
+    )
+
+    import runtime.daemon.thread_runner as runner_mod
+    events: list[str] = []
+    monkeypatch.setattr(runner_mod, "refresh_workspace_repos", lambda ws: events.append("refresh_workspace_repos"))
+
+    class _Executor:
+        def run(self, **_kwargs):
+            events.append("executor.run")
+            db.mark_invocation_declined(inv.invocation_token, decline_reason="done")
+            return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider", lambda *_args: _Executor())
+
+    await run_invocation(
+        org_state=FakeOrgState(db=db, root=tmp_path),
+        invocation_token=inv.invocation_token, settings=Settings(),
+    )
+
+    assert events == ["refresh_workspace_repos", "executor.run"]
+
+
+@pytest.mark.asyncio
 async def test_thread_invocation_no_model_preserves_default_behavior(
     tmp_path, monkeypatch,
 ):

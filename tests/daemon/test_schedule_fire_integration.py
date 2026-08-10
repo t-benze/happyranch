@@ -13,6 +13,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -547,7 +548,6 @@ async def test_run_schedule_forwards_model_to_executor_run(tmp_path):
     def factory(executor_name, settings, paths):
         return _CapturingExec()
 
-    from unittest.mock import MagicMock
     org_state = OrgState(
         db=db, root=tmp_path, slug="test",
         teams=MagicMock(), settings=Settings(), orchestrator=MagicMock(),
@@ -562,6 +562,48 @@ async def test_run_schedule_forwards_model_to_executor_run(tmp_path):
     assert captured_model.get("model") == "gpt-5.6-terra", (
         f"expected model='gpt-5.6-terra', got {captured_model.get('model')!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_schedule_refreshes_repos_before_executor_run(tmp_path, monkeypatch):
+    from runtime.daemon.org_state import OrgState
+
+    db = Database(tmp_path / "hr.db")
+    agents_dir = tmp_path / "org" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "dev_agent.md").write_text(_AGENT_FILE)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    db.schedules.insert(ScheduleRecord(
+        id="SCHEDULE-REFRESH", agent_name="dev_agent", kind=ScheduleKind.ONE_SHOT,
+        fire_at=datetime(2026, 6, 15, 1, 0, tzinfo=timezone.utc),
+        timezone="Asia/Shanghai", normalized_brief="Test scheduled task",
+        source_instruction="Test source instruction", status=ScheduleStatus.FIRING,
+        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    ))
+    events: list[str] = []
+    import runtime.daemon.schedule_runner as runner_mod
+    monkeypatch.setattr(
+        runner_mod, "refresh_workspace_repos",
+        lambda ws: events.append("refresh_workspace_repos"),
+    )
+
+    class _Executor:
+        def run(self, **_kwargs):
+            events.append("executor.run")
+            return _FakeResult()
+
+    org_state = OrgState(
+        db=db, root=tmp_path, slug="test", teams=MagicMock(),
+        settings=Settings(), orchestrator=MagicMock(),
+    )
+    await run_schedule(
+        org_state=org_state, schedule_id="SCHEDULE-REFRESH", settings=Settings(),
+        executor_factory=lambda *_args, **_kwargs: _Executor(),
+    )
+
+    assert events == ["refresh_workspace_repos", "executor.run"]
 
 
 @pytest.mark.asyncio

@@ -743,6 +743,28 @@ async def test_run_dream_forwards_model_to_executor_run(org_state):
     )
 
 
+async def test_run_dream_refreshes_repos_before_executor_run(org_state, monkeypatch):
+    workspace = _insert_pending_dream(org_state)
+    events: list[str] = []
+    import runtime.daemon.dream_runner as runner_mod
+    monkeypatch.setattr(
+        runner_mod, "refresh_workspace_repos",
+        lambda ws: events.append("refresh_workspace_repos"),
+    )
+
+    class _Executor:
+        def run(self, **_kwargs):
+            events.append("executor.run")
+            return FakeResult()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=lambda *_args, **_kwargs: _Executor(),
+    )
+
+    assert events == ["refresh_workspace_repos", "executor.run"]
+
+
 async def test_run_dream_no_model_preserves_default_behavior(org_state):
     """When AgentDef.model is absent, dream runner passes model=None."""
     workspace = _insert_pending_dream(org_state)
