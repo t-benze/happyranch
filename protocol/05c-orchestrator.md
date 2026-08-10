@@ -822,9 +822,9 @@ The runtime has additive, presently unwired B2 persistence tables:
 `custom_skills`, immutable `custom_skill_versions`,
 `custom_skill_eligibility_rules`, `custom_skill_eligibility_events`,
 `custom_skill_materializations`, and `custom_skill_events`. They store B2
-identity/version provenance, visibility-policy audit, and session evidence;
-they do not introduce a route, resolver, eligibility effect, or materializer
-behavior until slices A2/A3 land.
+identity/version provenance, visibility-policy audit, and session evidence.
+Slice A2 now provides a unit-tested pure visibility resolver with zero callers;
+Slice A3 alone will add route, writer, and materializer behavior.
 
 User-authored custom skills are governed by an immutable lifecycle ledger,
 replacing the legacy per-org filesystem store (`<org_root>/skills/`).
