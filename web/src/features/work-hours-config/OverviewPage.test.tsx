@@ -99,7 +99,7 @@ beforeEach(() => {
 });
 
 describe('Work-Hours Overview (S1)', () => {
-  test('renders the roster with effective cadence and the feature switch', async () => {
+  test('renders the roster with effective cadence and read-only status bar', async () => {
     seed();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/work-hours` });
 
@@ -108,19 +108,47 @@ describe('Work-Hours Overview (S1)', () => {
       expect(screen.getByText('support_bot')).toBeInTheDocument();
     });
 
-    // Effective cadence from the org default (mosaic of nothing — pure org).
+    // Effective cadence from the org default.
     expect(
       screen.getAllByText(/every 2h · 09:00–17:00/).length,
     ).toBeGreaterThanOrEqual(1);
 
-    // The single feature on/off switch.
+    // Read-only status — no role="switch" with aria-label for work-hours on/off.
     expect(
-      screen.getByRole('switch', { name: /work-hours feature on\/off/i }),
+      screen.queryByRole('switch', { name: /work-hours feature on\/off/i }),
+    ).not.toBeInTheDocument();
+
+    // Manage operating control link present.
+    expect(
+      screen.getByText('Manage operating control'),
     ).toBeInTheDocument();
 
-    // Entry points.
+    // Tier editing still present.
     expect(screen.getByRole('button', { name: 'Edit org default' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Edit eligibility' })).toBeInTheDocument();
+
+    // Eligibility editing button NOT present.
+    expect(
+      screen.queryByRole('button', { name: 'Edit eligibility' }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('no editable toggle exists on overview', async () => {
+    seed();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/work-hours` });
+
+    await waitFor(() => {
+      expect(screen.getByText('dev_agent')).toBeInTheDocument();
+    });
+
+    // There should be NO role="switch" elements at all on this page.
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+
+    // Deep link to settings is present.
+    const manageLink = screen.getByText('Manage operating control');
+    expect(manageLink.tagName).toBe('A');
+    expect(manageLink.getAttribute('href')).toBe(
+      `/orgs/${SLUG}/settings/organization`,
+    );
   });
 
   test('On status reflects feature.enabled AND eligibility (excluded → off)', async () => {

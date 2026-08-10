@@ -101,35 +101,6 @@ export function NoRoutineTasksFlag(): JSX.Element {
   );
 }
 
-/** Pending-tick success banner (spec §5.1). */
-export function SavedBanner({ message }: { message: string }): JSX.Element {
-  return (
-    <div
-      role="status"
-      className="border-tier-green bg-feedback-success/10 text-tier-green mb-4 rounded border p-3 text-sm"
-    >
-      {message}
-    </div>
-  );
-}
-
-/** Blocking error panel — surfaces server 422 errors (spec §5.1). */
-export function ErrorPanel({ errors }: { errors: string[] }): JSX.Element {
-  return (
-    <div
-      role="alert"
-      className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
-    >
-      <p className="font-medium">Save rejected — the config was not written.</p>
-      <ul className="mt-1 list-disc pl-5">
-        {errors.map((e, i) => (
-          <li key={i}>{e}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** Config-broken-on-disk recovery banner (spec §5.1). */
 export function RecoveryBanner({ reason }: { reason: string }): JSX.Element {
   return (

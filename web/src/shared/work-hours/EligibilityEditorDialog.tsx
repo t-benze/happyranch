@@ -4,6 +4,10 @@
  * mode all | whitelist; include/exclude multi-select pickers from the LIVE
  * roster (no free text). Live "resulting eligible set: N agents" preview.
  * Save is impact-heavy → confirm with the resulting eligible-set.
+ *
+ * Lives in `src/shared/work-hours/` because both Work Hours and
+ * Settings ▸ Organization operating controls mount it; it is the single
+ * owner of the existing `working_hours.agents` patch mutation.
  */
 import { useMemo, useState } from 'react';
 import {
@@ -24,9 +28,9 @@ import {
 } from '@/design-system/primitives/Select';
 import { useUpdateOrgSettings } from '@/hooks/settings';
 import type { WorkingHoursSettings } from '@/lib/api/types';
-import { ErrorPanel } from './components';
-import { extractServerErrors } from './errors';
-import { eligibleSet } from './merge';
+import { ErrorPanel } from './ErrorPanel';
+import { extractServerErrors } from './extractServerErrors';
+import { eligibleSet } from './eligibleSet';
 
 interface Props {
   open: boolean;

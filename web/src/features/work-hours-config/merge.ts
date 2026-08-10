@@ -203,18 +203,6 @@ export function isEligible(
   return true; // mode 'all'
 }
 
-/** The resulting eligible set for a hypothetical selector (live preview). */
-export function eligibleSet(
-  agentNames: string[],
-  selector: { mode: string; include: string[]; exclude: string[] },
-): string[] {
-  return agentNames.filter((name) => {
-    if (selector.exclude.includes(name)) return false;
-    if (selector.mode === 'whitelist') return selector.include.includes(name);
-    return true;
-  });
-}
-
 /**
  * Read-only `On` status for the roster: ON iff the feature switch is on AND the
  * agent is eligible. NOT a per-agent toggle — it merely reflects feature state
