@@ -1538,7 +1538,41 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
         assert cmd_verify(str(happyranch_worktree)) == 0
 
-    def test_setup_does_not_overwrite_preexisting_worktree_hooks_path(
+    def test_setup_self_heals_stale_injected_pre_push_hook(
+        self, happyranch_worktree, happyranch_repo, capsys
+    ):
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
+
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        stale_hooks = git_dir / "happyranch-hooks"
+        stale_hooks.mkdir()
+        (stale_hooks / "pre-push").write_text(
+            "#!/usr/bin/env bash\nexec scripts/local_ci.sh all\n"
+        )
+        _run(["git", "-C", str(happyranch_repo), "config", "extensions.worktreeConfig", "true"])
+        _run([
+            "git", "-C", str(happyranch_worktree), "config", "--worktree",
+            "core.hooksPath", str(stale_hooks),
+        ])
+
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
+
+        assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
+        assert stale_hooks.is_dir()
+        assert (stale_hooks / "pre-push").is_file()
+        assert (happyranch_worktree / SNAPSHOT_FILE).is_file()
+        assert "Cleared stale mandatory pre-push hook" in capsys.readouterr().out
+        assert cmd_verify(str(happyranch_worktree)) == 0
+
+    def test_setup_preserves_foreign_preexisting_worktree_hooks_path(
         self, happyranch_worktree, happyranch_repo
     ):
         sentinel_hooks = happyranch_worktree / "sentinel-hooks"
@@ -1559,3 +1593,56 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         assert _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath") == before
         git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
         assert not (git_dir / "happyranch-hooks").exists()
+
+    def test_setup_preserves_custom_named_hooks_path_inside_worktree_metadata(
+        self, happyranch_worktree, happyranch_repo
+    ):
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        custom_hooks = git_dir / "user-custom-hooks"
+        custom_hooks.mkdir()
+        pre_push = custom_hooks / "pre-push"
+        pre_push_contents = "#!/usr/bin/env bash\nexit 0\n"
+        pre_push.write_text(pre_push_contents)
+        _run(["git", "-C", str(happyranch_repo), "config", "extensions.worktreeConfig", "true"])
+        _run([
+            "git", "-C", str(happyranch_worktree), "config", "--worktree",
+            "core.hooksPath", str(custom_hooks),
+        ])
+        before = _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
+
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
+
+        assert _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath") == before
+        assert custom_hooks.is_dir()
+        assert pre_push.is_file()
+        assert pre_push.read_text() == pre_push_contents
+
+    def test_setup_unsets_stale_hook_with_unexpected_contents_without_deleting_it(
+        self, happyranch_worktree, happyranch_repo, capsys
+    ):
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        stale_hooks = git_dir / "happyranch-hooks"
+        stale_hooks.mkdir()
+        (stale_hooks / "pre-push").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (stale_hooks / "unexpected").write_text("preserve me\n")
+        _run(["git", "-C", str(happyranch_repo), "config", "extensions.worktreeConfig", "true"])
+        _run([
+            "git", "-C", str(happyranch_worktree), "config", "--worktree",
+            "core.hooksPath", str(stale_hooks),
+        ])
+
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
+
+        assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
+        assert (stale_hooks / "pre-push").is_file()
+        assert (stale_hooks / "unexpected").is_file()
+        output = capsys.readouterr().out
+        assert "Cleared stale mandatory pre-push hook" in output
