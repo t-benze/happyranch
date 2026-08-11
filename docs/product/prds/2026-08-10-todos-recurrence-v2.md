@@ -297,10 +297,10 @@ rule, stable anchor, bounded grammar, review renewal/expiry, explicit
 skip/failure outcomes, occurrence-key idempotency, persisted terminal reason,
 and no-backfill policy are required mitigations.
 
-### Re-review focus / remaining design divergence
+### Re-review focus
 
-This PRD follows the agreed dev-agent date-ended rule: exhaustion of `on_date`
-must become `FIRED/end_reason=date_ended`; `EXPIRED` is only review expiry.
-PR #635’s terminal-reason table states the same rule, but its §7.2 fire-path
-sentence still says a missing next occurrence becomes `EXPIRED`. That sentence
-must be corrected before the documents can be declared fully converged.
+This PRD preserves the reconciled terminal rule: exhaustion of `on_date` must
+become `FIRED/end_reason=date_ended`; `EXPIRED` is only review expiry. PR #635
+§7.2 now applies the same cause-aware branch ordering, so no terminal-state
+divergence remains between the documents. Final re-review should confirm this
+wording retains that already-reconciled contract.
