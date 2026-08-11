@@ -111,11 +111,12 @@ def test_list_filter_by_status(tmp_path):
 def test_list_skips_a_row_with_an_unknown_kind(tmp_path, caplog):
     db = Database(tmp_path / "db.sqlite")
     db.schedules.insert(_record(id="SCHEDULE-001"))
+    db.schedules.insert(_record(id="SCHEDULE-002", agent_name="qa_engineer"))
     db._conn.execute("UPDATE schedules SET kind = 'future_kind' WHERE id = ?", ("SCHEDULE-001",))
     db._conn.commit()
 
-    assert [record.id for record in db.schedules.list()] == []
-    assert db.schedules.list_due(_dt(day=29)) == []
+    assert [record.id for record in db.schedules.list()] == ["SCHEDULE-002"]
+    assert [record.id for record in db.schedules.list_due(_dt(day=29))] == ["SCHEDULE-002"]
     assert "unknown schedule kind" in caplog.text
 
 
