@@ -96,8 +96,11 @@ worktree are expected and never falsely accused.
 
 ## Repository Git process
 
-Guard setup and verification do not configure Git hooks. Follow each
-repository's documented Git-hook and publication-process requirements.
+Guard setup and verification do not configure Git hooks. `setup` also
+self-heals the known stale mandatory pre-push-hook configuration in worktrees
+created before the 2026-08-07 PR #607 change, printing a notice when it clears
+that worktree's own injected configuration. Follow each repository's documented
+Git-hook and publication-process requirements.
 `git push --no-verify` remains prohibited by engineering policy, and GitHub CI
 remains the authoritative clean-environment / matrix gate.
 

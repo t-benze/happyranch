@@ -81,8 +81,12 @@ included in the `all` default.
 
 ## Git hooks
 
-This project does not install or manage Git hooks for linked worktrees. Follow
-the repository's documented Git-hook and publication-process requirements.
+This project does not install or manage Git hooks for linked worktrees. During
+worktree-guard `setup`, a worktree created before the 2026-08-07 PR #607 change
+may print a notice that it cleared the formerly injected mandatory pre-push hook.
+The self-heal only removes the known stale configuration from that worktree's
+own Git metadata. Follow the repository's documented Git-hook and
+publication-process requirements.
 
 **Policy constraints:**
 - `git push --no-verify` remains **prohibited** by engineering policy.

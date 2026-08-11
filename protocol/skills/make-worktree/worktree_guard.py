@@ -61,6 +61,73 @@ def _git_common_dir(path: Path) -> Path:
     return p.resolve()
 
 
+def _worktree_metadata_dir(worktree: Path) -> Path | None:
+    """Return this linked worktree's metadata directory, if safely identified."""
+    common_dir = _git_common_dir(worktree)
+    git_dir_out = _git_out(worktree, "rev-parse", "--git-dir")
+    if not common_dir or not git_dir_out:
+        return None
+
+    git_dir = Path(git_dir_out)
+    if not git_dir.is_absolute():
+        git_dir = worktree / git_dir
+    git_dir = git_dir.resolve()
+    worktrees_dir = (common_dir / "worktrees").resolve()
+    try:
+        git_dir.relative_to(worktrees_dir)
+    except ValueError:
+        return None
+    return git_dir
+
+
+def _clear_stale_worktree_hook(worktree: Path) -> None:
+    """Remove the former HappyRanch hook only from this worktree's metadata."""
+    hooks_path_out = _git_out(worktree, "config", "--worktree", "core.hooksPath")
+    if not hooks_path_out:
+        return
+
+    hooks_dir = Path(hooks_path_out)
+    if not hooks_dir.is_absolute():
+        hooks_dir = worktree / hooks_dir
+    hooks_dir = hooks_dir.resolve()
+    metadata_dir = _worktree_metadata_dir(worktree)
+    if metadata_dir is None:
+        return
+    try:
+        hooks_dir.relative_to(metadata_dir)
+    except ValueError:
+        return
+
+    if _run_git(worktree, "config", "--worktree", "--unset-all", "core.hooksPath").returncode:
+        print("WARNING: Could not clear stale worktree core.hooksPath")
+        return
+
+    print("Cleared stale mandatory pre-push hook (core.hooksPath) from a pre-2026-08-07 worktree")
+    if not hooks_dir.is_dir():
+        return
+
+    try:
+        entries = list(hooks_dir.iterdir())
+    except OSError:
+        print("WARNING: Could not inspect stale hook directory; leaving it in place")
+        return
+    if entries and (
+        len(entries) != 1
+        or entries[0].name != "pre-push"
+        or not entries[0].is_file()
+        or entries[0].is_symlink()
+    ):
+        print("WARNING: Stale hook directory contains unexpected contents; leaving it in place")
+        return
+
+    try:
+        if entries:
+            entries[0].unlink()
+        hooks_dir.rmdir()
+    except OSError:
+        print("WARNING: Could not remove stale hook directory; leaving it in place")
+
+
 def _is_git_worktree(path: Path) -> bool:
     """Check if a path is the root of a git worktree (has .git FILE)."""
     dot_git = path / ".git"
@@ -259,6 +326,8 @@ def cmd_setup(
             print(f"  Worktree root:    {wt}", file=sys.stderr)
             sys.exit(1)
 
+    # ── Remove stale pre-PR #607 HappyRanch hook configuration ─────
+    _clear_stale_worktree_hook(wt)
 
     # ── Baseline primary checkout state ─────────────────────────────
     baseline = _baseline_primary(pr)
