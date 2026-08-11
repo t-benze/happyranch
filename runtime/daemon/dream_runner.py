@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -161,6 +162,7 @@ async def run_dream(
     # transaction under a process-local workspace lock.
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn (REVISE TASK-2829).
+    session_id = f"sess-{uuid.uuid4().hex}"
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         expected_specs = materialize_workspace_skills(
@@ -173,6 +175,7 @@ async def run_dream(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+            session_id=session_id,
         )
 
         # ── Pre-launch integrity validation ─────────────────────
@@ -244,7 +247,7 @@ async def run_dream(
     result = await loop.run_in_executor(None, lambda: executor.run(
         workspace=workspace,
         prompt=prompt,
-        session_id=None,
+        session_id=session_id,
         timeout_seconds=settings.session_timeout_seconds,
         pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,

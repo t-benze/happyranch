@@ -66,6 +66,11 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
         if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
         skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
+        validation_result = service.validate_package(
+            org, slug=skill_slug, name=body["name"], skill_md=skill_md,
+        )
+        if "slug_collision" in validation_result["reason_codes"]:
+            _error("protected_slug", 409)
         conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
         if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
         if _AGENT_PILOT_SLUG_MAP.get(agent) != skill_slug: _error("slug_not_allowed_for_agent", 403)
@@ -74,11 +79,11 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
         conn.execute("BEGIN IMMEDIATE")
         try:
             if existing:
-                parent = existing["current_version_id"]; version, digest_hash, validation = service.create_version(conn, skill_id=existing["id"], skill_md=skill_md, actor_kind="agent", actor=agent, artifact_key=key, task_id=task_id, session_id=session_id, brief_digest=digest, parent_id=parent)
+                parent = existing["current_version_id"]; version, digest_hash, validation = service.create_version(conn, skill_id=existing["id"], skill_md=skill_md, actor_kind="agent", actor=agent, artifact_key=key, validation=validation_result, task_id=task_id, session_id=session_id, brief_digest=digest, parent_id=parent)
                 conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version, existing["id"])); skill_id = existing["id"]; service.append_event(conn, skill_id, "version_saved", agent, version, task_id=task_id, session_id=session_id)
             else:
                 skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], body.get("description", ""), agent, service.now(), agent))
-                version, digest_hash, validation = service.create_version(conn, skill_id=skill_id, skill_md=skill_md, actor_kind="agent", actor=agent, artifact_key=key, task_id=task_id, session_id=session_id, brief_digest=digest)
+                version, digest_hash, validation = service.create_version(conn, skill_id=skill_id, skill_md=skill_md, actor_kind="agent", actor=agent, artifact_key=key, validation=validation_result, task_id=task_id, session_id=session_id, brief_digest=digest)
                 conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version, skill_id)); service.append_event(conn, skill_id, "created", agent, version, task_id=task_id, session_id=session_id)
             service.append_event(conn, skill_id, "validated", agent, version, task_id=task_id, session_id=session_id); conn.commit()
         except Exception: conn.rollback(); raise
@@ -93,12 +98,17 @@ def catalog(slug: str, org: OrgDep, filter: str | None = None):
 def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
     skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
     if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
+    validation_result = service.validate_package(
+        org, slug=skill_slug, name=body["name"], skill_md=skill_md,
+    )
+    if "slug_collision" in validation_result["reason_codes"]:
+        _error("protected_slug", 409)
     conn = getattr(org.db, "_conn", org.db)
     if conn.execute("SELECT 1 FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone(): _error("slug_exists", 409)
     key = _store_content(org, skill_slug, skill_md); skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],body.get("description", ""),service.now(),"founder"))
-        version, content_hash, validation = service.create_version(conn, skill_id=skill_id, skill_md=skill_md, actor_kind="human", actor="founder", artifact_key=key)
+        version, content_hash, validation = service.create_version(conn, skill_id=skill_id, skill_md=skill_md, actor_kind="human", actor="founder", artifact_key=key, validation=validation_result)
         conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version,skill_id)); service.append_event(conn,skill_id,"created","founder",version); service.append_event(conn,skill_id,"validated","founder",version); conn.commit()
     except Exception: conn.rollback(); raise
     return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy"}
@@ -127,9 +137,14 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
     if row is None: _error("not_found",404)
     skill_md=body.get("skill_md", "")
     if not skill_md: _error("invalid_request",422)
+    validation_result = service.validate_package(
+        org, slug=row["slug"], name=row["name"], skill_md=skill_md,
+    )
+    if "slug_collision" in validation_result["reason_codes"]:
+        _error("protected_slug", 409)
     key=_store_content(org,row["slug"],skill_md); conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try:
-        version,content_hash,validation=service.create_version(conn,skill_id=skill_id,skill_md=skill_md,actor_kind="human",actor="founder",artifact_key=key,parent_id=row["version_id"])
+        version,content_hash,validation=service.create_version(conn,skill_id=skill_id,skill_md=skill_md,actor_kind="human",actor="founder",artifact_key=key,validation=validation_result,parent_id=row["version_id"])
         conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?",(version,skill_id));service.append_event(conn,skill_id,"version_saved","founder",version);service.append_event(conn,skill_id,"validated","founder",version);conn.commit()
     except Exception: conn.rollback(); raise
     return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation}
@@ -193,16 +208,19 @@ def preview(skill_id: str, proposed: list[dict], org: OrgDep, _: None = Depends(
 
 @router.put("/{skill_id}/eligibility")
 def put_eligibility(skill_id: str, proposed: list[dict], org: OrgDep, if_match: str | None = Header(None), _: None = Depends(_require_human)):
-    row = service.current(org.db, skill_id)
-    if row is None: _error("not_found", 404)
-    if if_match != str(row["version_id"]): _error("stale_revision", 409)
-    if row["retired_at"] or row["validation_state"] != "valid": _error("version_not_eligible", 422)
-    known = {r.agent_name for r in _recipients(org)}; teams = {t for r in _recipients(org) for t in r.teams}
-    for rule in proposed:
-        target = rule.get("scope_target")
-        if rule.get("scope_type") == "agent" and target not in known or rule.get("scope_type") == "team" and target not in teams: _error("unknown_target", 422)
-    impact = _preview(org, row, proposed); conn = getattr(org.db, "_conn", org.db); conn.execute("BEGIN IMMEDIATE")
-    try: service.replace_rules(conn, skill_id=skill_id, actor="founder", revision=row["version_id"], rules=proposed, newly_visible=impact["newly_visible"], newly_hidden=impact["newly_hidden"]); conn.commit()
+    conn = getattr(org.db, "_conn", org.db); conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = service.current(conn, skill_id)
+        if row is None: _error("not_found", 404)
+        if if_match != str(row["version_id"]): _error("stale_revision", 409)
+        if row["retired_at"] or row["validation_state"] != "valid": _error("version_not_eligible", 422)
+        recipients = _recipients(org)
+        known = {r.agent_name for r in recipients}; teams = {t for r in recipients for t in r.teams}
+        for rule in proposed:
+            target = rule.get("scope_target")
+            if rule.get("scope_type") == "agent" and target not in known or rule.get("scope_type") == "team" and target not in teams: _error("unknown_target", 422)
+        impact = _preview(org, row, proposed)
+        service.replace_rules(conn, skill_id=skill_id, actor="founder", revision=row["version_id"], rules=proposed, newly_visible=impact["newly_visible"], newly_hidden=impact["newly_hidden"]); conn.commit()
     except Exception: conn.rollback(); raise
     return impact
 

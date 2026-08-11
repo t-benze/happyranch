@@ -23,8 +23,8 @@ def _db():
 
 def test_version_is_append_only_and_validation_is_hash_bound():
     conn = _db()
-    first = service.create_version(conn, skill_id="custom:one", skill_md="# One", actor_kind="human", actor="founder", artifact_key="one")
-    second = service.create_version(conn, skill_id="custom:one", skill_md="not markdown", actor_kind="human", actor="founder", artifact_key="two", parent_id=first[0])
+    first = service.create_version(conn, skill_id="custom:one", skill_md="# One", actor_kind="human", actor="founder", artifact_key="one", validation={"ok": True, "errors": []})
+    second = service.create_version(conn, skill_id="custom:one", skill_md="not markdown", actor_kind="human", actor="founder", artifact_key="two", validation={"ok": False, "errors": ["SKILL.md must start with a heading"]}, parent_id=first[0])
     assert first[2] == "valid"
     assert second[2] == "invalid"
     assert conn.execute("SELECT count(*) FROM custom_skill_versions").fetchone()[0] == 2

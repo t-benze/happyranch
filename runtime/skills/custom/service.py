@@ -18,13 +18,31 @@ def _conn(db):
     return getattr(db, "_conn", db)
 
 
+def validate_package(org, *, slug: str, name: str, skill_md: str) -> dict:
+    """Run the built-in package validator for a custom-skill version."""
+    # Keep custom skills on the same deterministic safety guard as the
+    # built-in authoring pipeline; do not duplicate protected-slug policy.
+    from runtime.daemon.routes.skills import _validate_skill_package
+
+    return _validate_skill_package(
+        org=org,
+        slug=slug,
+        skill_id=f"custom:{slug}",
+        name=name,
+        version="1",
+        policy_class="standard_operational",
+        skill_md=skill_md,
+    )
+
+
 def create_version(conn, *, skill_id: str, skill_md: str, actor_kind: str,
-                   actor: str, artifact_key: str, task_id: str | None = None,
-                   session_id: str | None = None, brief_digest: str | None = None,
+                   actor: str, artifact_key: str, validation: dict,
+                   task_id: str | None = None, session_id: str | None = None,
+                   brief_digest: str | None = None,
                    parent_id: int | None = None) -> tuple[int, str, str]:
     """Append and validate an immutable content version."""
     content_hash = hashlib.sha256(skill_md.encode()).hexdigest()
-    valid = skill_md.strip().startswith("#")
+    valid = bool(validation["ok"])
     result = conn.execute(
         """INSERT INTO custom_skill_versions
            (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
@@ -33,7 +51,7 @@ def create_version(conn, *, skill_id: str, skill_md: str, actor_kind: str,
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (skill_id, parent_id, content_hash, artifact_key, skill_md,
          "valid" if valid else "invalid", "THR-055/1.0.0",
-         json.dumps([] if valid else ["SKILL.md must start with a Markdown heading"]), now(),
+         json.dumps([] if valid else validation["errors"]), now(),
          actor_kind, actor, task_id, session_id, brief_digest),
     )
     return result.lastrowid, content_hash, "valid" if valid else "invalid"

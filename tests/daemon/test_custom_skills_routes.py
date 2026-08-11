@@ -31,6 +31,20 @@ def _create(client, slug: str = "test-skill", skill_md: str = "# Test\n\nOne") -
     return response.json()
 
 
+def _add_agent(org, agent: str = "dev_agent") -> None:
+    agents_dir = org.root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent}.md").write_text(
+        "---\n"
+        f"name: {agent}\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "---\n\n"
+        "You are a test agent.\n"
+    )
+
+
 @pytest.mark.parametrize("key", _FORBIDDEN_IDENTITY)
 def test_agent_create_rejects_every_identity_claim_without_custom_rows(client_with_runtime, key):
     client, org = client_with_runtime
@@ -97,13 +111,66 @@ def test_eligibility_rejections_are_atomic(client_with_runtime):
     created = _create(client)
     skill_id, revision = created["skill_id"], created["version_id"]
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
-    before = _custom_counts(org)
-    stale = client.put(f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": "stale"})
+    preview = client.post(f"{BASE}/{skill_id}/eligibility/preview", json=rules)
+    assert preview.status_code == 200 and preview.json()["revision"] == revision
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "# Test\n\nTwo"})
+    assert advanced.status_code == 201
+    conn = getattr(org.db, "_conn", org.db)
+    before = (
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_rules").fetchone()[0],
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_events").fetchone()[0],
+    )
+    stale = client.put(f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(revision)})
     assert stale.status_code == 409 and stale.json()["detail"]["code"] == "stale_revision"
-    assert _custom_counts(org) == before
-    unknown = client.put(f"{BASE}/{skill_id}/eligibility", json=[{"scope_type": "agent", "scope_target": "nobody", "effect": "allow"}], headers={"If-Match": str(revision)})
+    assert (
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_rules").fetchone()[0],
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_events").fetchone()[0],
+    ) == before
+    unknown = client.put(f"{BASE}/{skill_id}/eligibility", json=[{"scope_type": "agent", "scope_target": "nobody", "effect": "allow"}], headers={"If-Match": str(advanced.json()["version_id"])})
     assert unknown.status_code == 422 and unknown.json()["detail"]["code"] == "unknown_target"
-    assert _custom_counts(org) == before
+    assert (
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_rules").fetchone()[0],
+        conn.execute("SELECT count(*) FROM custom_skill_eligibility_events").fetchone()[0],
+    ) == before
+
+
+def test_custom_create_reuses_package_validator_for_protected_and_normal_slugs(client_with_runtime):
+    client, org = client_with_runtime
+    protected = client.post(BASE, json=_body("start-task"))
+    assert protected.status_code == 409
+    assert protected.json()["detail"]["code"] == "protected_slug"
+    assert _custom_counts(org) == {table: 0 for table in _custom_counts(org)}
+    assert _create(client, slug="normal-custom-skill")["validation_state"] == "valid"
+
+
+def test_effective_custom_skill_distinguishes_next_session_from_materialized(client_with_runtime):
+    client, org = client_with_runtime
+    _add_agent(org)
+    created = _create(client)
+    skill_id, version_id = created["skill_id"], created["version_id"]
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(version_id)}).status_code == 200
+
+    response = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
+    assert response.status_code == 200
+    projected = next(skill for skill in response.json()["skills"] if skill["skill_id"] == skill_id)
+    assert projected["materialized_at"] is None
+    assert projected["materialized_session_id"] is None
+    assert projected["materialization_state"] == "visible_next_session"
+
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute(
+        """INSERT INTO custom_skill_materializations
+           (skill_id,agent_name,task_id,session_context,session_id,version_id,content_hash,success,created_at)
+           VALUES (?,?,NULL,'dream',?,?,?,1,?)""",
+        (skill_id, "dev_agent", "sess-materialized", version_id, created["content_hash"], "2026-08-11T14:00:00+00:00"),
+    )
+    conn.commit()
+    response = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
+    projected = next(skill for skill in response.json()["skills"] if skill["skill_id"] == skill_id)
+    assert projected["materialized_at"] == "2026-08-11T14:00:00+00:00"
+    assert projected["materialized_session_id"] == "sess-materialized"
+    assert projected["materialization_state"] == "materialized"
 
 
 @pytest.mark.parametrize("state", ["retired", "invalid"])
