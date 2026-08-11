@@ -288,6 +288,8 @@ def materialize_workspace_skills(
     skills_root: Path,
     org_root: Path | None = None,
     db: "Database | None" = None,  # noqa: F821
+    task_id: str | None = None,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Serialize the complete pre-spawn skill materialization transaction.
 
@@ -352,6 +354,7 @@ def materialize_workspace_skills(
             slug=slug, context=context, provider=provider,
             agent_name=agent_name, team=team,
             skills_root=skills_root, org_root=org_root, db=db,
+            task_id=task_id, session_id=session_id,
         )
 
 
@@ -570,6 +573,12 @@ def _materialize_context_union(
             slug=slug,
         )
         expected_specs.extend(lifecycle_specs)
+        custom_specs = _build_custom_skill_canonical_specs(
+            store=store, org_root=org_root, db=db, slug=slug,
+            agent_name=agent_name, team=team, task_id=None,
+            session_id=None, session_context="bootstrap",
+        )
+        expected_specs.extend(custom_specs)
 
     # ── Reconcile ONCE with the full union ─────────────────────────
     for subdir in (".claude/skills", ".agents/skills"):
@@ -592,6 +601,8 @@ def _materialize_unified_canonical(
     skills_root: Path,
     org_root: Path | None = None,
     db=None,
+    task_id: str | None = None,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Derive one full expected set per provider root, reconcile once.
 
@@ -745,6 +756,12 @@ def _materialize_unified_canonical(
             slug=slug,
         )
         expected_specs.extend(lifecycle_specs)
+        custom_specs = _build_custom_skill_canonical_specs(
+            store=store, org_root=org_root, db=db, slug=slug,
+            agent_name=agent_name, team=team, task_id=task_id,
+            session_id=session_id, session_context=context,
+        )
+        expected_specs.extend(custom_specs)
 
     # ── Reconcile ONCE with unified expected set ────────────────────
     # Both provider roots get the same full set so system contracts
@@ -755,6 +772,117 @@ def _materialize_unified_canonical(
         )
 
     return expected_specs
+
+
+def _build_custom_skill_canonical_specs(
+    *,
+    store: CanonicalSkillStore,
+    org_root: Path,
+    db,
+    slug: str,
+    agent_name: str,
+    team: str,
+    task_id: str | None,
+    session_id: str | None,
+    session_context: str,
+) -> list[dict]:
+    """Build visible B2 custom skills through the canonical-store path.
+
+    Each visible skill is independent: an artifact/build fault is persisted as
+    a failed materialization for an identified task session and does not block
+    system, managed, lifecycle, or sibling custom skills.
+    """
+    import hashlib
+    import tempfile
+
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.custom import service
+    from runtime.skills.eligibility import (
+        EligibilityRecipient,
+        EligibilityRule,
+        SkillEligibilityState,
+        resolve_custom_skill_eligibility,
+    )
+
+    conn = getattr(db, "_conn", db)
+    rows = conn.execute(
+        """SELECT s.id, s.slug, s.retired_at, v.id AS version_id,
+                  v.content_hash, v.content_artifact_key, v.validation_state
+           FROM custom_skills s
+           JOIN custom_skill_versions v ON v.id = s.current_version_id
+           WHERE s.org_slug = ?""",
+        (slug,),
+    ).fetchall()
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+    recipient = EligibilityRecipient(agent_name, (team,))
+    specs: list[dict] = []
+    recordable = (
+        session_id is not None
+        and session_context in {"task", "thread", "wake", "dream"}
+        and (session_context != "task" or task_id is not None)
+    )
+
+    for row in rows:
+        rules = conn.execute(
+            """SELECT scope_type, scope_target, effect
+               FROM custom_skill_eligibility_rules
+               WHERE skill_id = ? AND superseded_at IS NULL""",
+            (row["id"],),
+        ).fetchall()
+        decision = resolve_custom_skill_eligibility(
+            SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]),
+            [EligibilityRule(**dict(rule)) for rule in rules],
+            recipient,
+        )
+        if not decision.visible:
+            continue
+
+        try:
+            artifact_key = row["content_artifact_key"]
+            if not artifact_key:
+                raise ValueError("No content_artifact_key")
+            content = artifact_store.read(artifact_key)
+            actual_hash = hashlib.sha256(content).hexdigest()
+            if actual_hash != row["content_hash"]:
+                raise ValueError(
+                    "Artifact hash mismatch: expected "
+                    f"{row['content_hash'][:16]}..., got {actual_hash[:16]}..."
+                )
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                source_dir = Path(temporary_dir)
+                (source_dir / "SKILL.md").write_bytes(content)
+                tree_hash = _compute_dir_hash(source_dir)
+                store.build_from_source(
+                    row["slug"], str(row["version_id"]), row["content_hash"],
+                    source_dir, verify_source_hash=tree_hash,
+                )
+            specs.append({
+                "slug": row["slug"],
+                "version": str(row["version_id"]),
+                "content_hash": row["content_hash"],
+                "tree_hash": tree_hash,
+            })
+            if recordable:
+                service.record_materialization(
+                    conn, skill_id=row["id"], agent_name=agent_name,
+                    task_id=task_id, session_context=session_context,
+                    session_id=session_id, version_id=row["version_id"],
+                    content_hash=row["content_hash"], success=True,
+                )
+                conn.commit()
+        except Exception as exc:
+            if recordable:
+                service.record_materialization(
+                    conn, skill_id=row["id"], agent_name=agent_name,
+                    task_id=task_id, session_context=session_context,
+                    session_id=session_id, version_id=row["version_id"],
+                    content_hash=row["content_hash"], success=False,
+                    error_message=str(exc),
+                )
+                conn.commit()
+
+    return specs
 
 
 def _build_lifecycle_canonical_specs(

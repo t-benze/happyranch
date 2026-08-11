@@ -14,6 +14,7 @@ that transitions the row.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -155,6 +156,7 @@ async def run_wake(
 
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
+    session_id = f"sess-{uuid.uuid4().hex}"
     try:
         org_config = load_org_config(paths)
     except Exception:
@@ -185,6 +187,7 @@ async def run_wake(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+            session_id=session_id,
         )
 
         # ── Pre-launch integrity validation ─────────────────────
@@ -264,7 +267,7 @@ async def run_wake(
     result = await loop.run_in_executor(None, lambda: executor.run(
         workspace=workspace,
         prompt=prompt,
-        session_id=None,
+        session_id=session_id,
         timeout_seconds=settings.session_timeout_seconds,
         pre_launch_validator=_pre_launch_validator,
         org_slug=org_state.slug,

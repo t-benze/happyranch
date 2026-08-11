@@ -11,6 +11,7 @@ Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-e
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 from runtime.skills.canonical_store import parse_strict_sha256_hash
 
 router = APIRouter(dependencies=[require_token()])
+_logger = logging.getLogger(__name__)
 
 # ── Separate agent-only router (no global bearer requirement) ───────────
 # Used for POST /skills/agent — the agent-session binding B1 create path.
@@ -494,6 +496,50 @@ def agent_skills_effective(
                 "hidden": False,
                 "summary": sc.description,
             })
+
+    # THR-055 B2: custom skills are a separate visibility projection, never
+    # lifecycle assignments.  Do not infer materialization from an allow rule.
+    try:
+        from runtime.skills.custom import service as custom_service
+        from runtime.skills.eligibility import (
+            EligibilityRecipient, EligibilityRule, SkillEligibilityState,
+            resolve_custom_skill_eligibility,
+        )
+        conn = getattr(org.db, "_conn", org.db)
+        rows = conn.execute("""SELECT s.*, v.id AS version_id, v.content_hash,
+            v.validation_state, m.created_at AS materialized_at,
+            m.session_id AS materialized_session_id
+            FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id
+            LEFT JOIN custom_skill_materializations m ON m.id = (
+                SELECT latest.id FROM custom_skill_materializations latest
+                WHERE latest.skill_id=s.id AND latest.agent_name=?
+                  AND latest.version_id=v.id AND latest.success=1
+                ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+            ) WHERE s.org_slug=?""", (agent_id, slug)).fetchall()
+        recipient = EligibilityRecipient(agent_id, (team,))
+        for row in rows:
+            rules = [EligibilityRule(**dict(rule)) for rule in custom_service.current_rules(org.db, row["id"])]
+            result = resolve_custom_skill_eligibility(
+                SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]), rules, recipient)
+            materialized = row["materialized_at"] is not None
+            skills.append({
+                "skill_id": row["id"], "name": row["name"], "type": "custom",
+                "source": "custom_skill", "status": "retired" if row["retired_at"] else "active",
+                "version": str(row["version_id"]), "summary": row["description"],
+                "visible": result.visible, "hidden": not result.visible,
+                "hidden_reason": result.reason, "current_version": row["version_id"],
+                "current_hash": row["content_hash"], "validation_state": row["validation_state"],
+                "winning_rule": (result.winning_rule.__dict__ if result.winning_rule else None),
+                "materialized_at": row["materialized_at"],
+                "materialized_session_id": row["materialized_session_id"],
+                "materialization_state": (
+                    "materialized" if materialized else
+                    "visible_next_session" if result.visible else "not_visible"
+                ),
+            })
+    except Exception:
+        # Custom-skill read failure must not compromise the mature managed catalog.
+        _logger.exception("custom-skill effective-skills projection failed for agent=%s", agent_id)
 
     skills.sort(key=lambda x: (x["hidden"], x["name"].lower()))
     return {"skills": skills, "agent_id": agent_id}

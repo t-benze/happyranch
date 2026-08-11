@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -106,6 +107,49 @@ async def test_run_dream_marks_running_and_waits_for_callback(org_state):
     assert dream.status == DreamStatus.FAILED
     assert "no_callback" in dream.error
     assert fake.calls[0]["workspace"] == Path(workspace)
+
+
+async def test_run_dream_records_custom_skill_materialization_with_pre_spawn_session(org_state):
+    """Dream spawns persist the same pre-spawn session ID passed to the executor."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+
+    _insert_pending_dream(org_state)
+    content = "# Dream custom skill\n"
+    artifact_key = ArtifactStore(OrgPaths(org_state.root).artifacts_dir).put(
+        "custom-skills/dream-test/SKILL.md", content.encode(),
+    ).name
+    conn = getattr(org_state.db, "_conn", org_state.db)
+    conn.execute(
+        "INSERT INTO custom_skills (id,org_slug,slug,name,origin_kind,created_at,created_by) "
+        "VALUES ('custom:dream-test', ?, 'dream-test', 'Dream test', 'human', 'now', 'founder')",
+        (org_state.slug,),
+    )
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,created_at,author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("custom:dream-test", hashlib.sha256(content.encode()).hexdigest(), artifact_key,
+         content, "valid", "now", "human", "founder"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id='custom:dream-test'", (version_id,))
+    conn.execute(
+        """INSERT INTO custom_skill_eligibility_rules
+           (skill_id,scope_type,scope_target,effect,created_at,created_by)
+           VALUES ('custom:dream-test','org',NULL,'allow','now','founder')"""
+    )
+    conn.commit()
+
+    fake = FakeExecutor()
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_args, **_kwargs: fake)
+
+    session_id = fake.calls[0]["session_id"]
+    row = conn.execute(
+        """SELECT session_context,session_id,version_id,success
+           FROM custom_skill_materializations WHERE skill_id='custom:dream-test'"""
+    ).fetchone()
+    assert tuple(row) == ("dream", session_id, version_id, 1)
+    assert session_id.startswith("sess-")
 
 
 async def test_run_dream_timeout_sets_timeout_status_and_audit(org_state):

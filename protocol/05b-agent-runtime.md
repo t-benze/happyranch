@@ -460,14 +460,18 @@ repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
 These are resolved via the `SkillRegistry` and unioned with system contracts;
 release and system-contract slugs win on collision.
 
-**THR-055 B2 additive custom-skill schema (dark).** The runtime also carries
-the additive, currently unwired B2 tables: `custom_skills`, immutable
+**THR-055 B2 additive custom-skill schema (Slice A3).** The runtime carries
+the additive B2 tables: `custom_skills`, immutable
 `custom_skill_versions`, `custom_skill_eligibility_rules`,
 `custom_skill_eligibility_events`, `custom_skill_materializations`, and
 `custom_skill_events`. They establish identity/version provenance,
-eligibility audit, and per-session evidence only. Slice A2 adds a unit-tested,
-pure visibility resolver with zero callers; Slice A3 will wire it into routing,
-writing, and workspace materialization.
+eligibility audit, and per-session evidence only. Slice A2's unit-tested pure
+visibility resolver is now wired through tested custom-skill CRUD, eligibility
+store/preview/write/resolve/explain routes, the Effective Skills read-projection
+extension, and next-task-session canonical-store materialization with per-session
+success/failure evidence. The `create-skill` CLI/skill-doc path still uses the B1
+`/skills/agent` route until Slice C repoints
+it in a later PR.
 
 **Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
 custom skills are governed exclusively by the immutable lifecycle ledger

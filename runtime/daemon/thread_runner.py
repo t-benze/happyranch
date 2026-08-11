@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -624,6 +625,7 @@ async def run_invocation(
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn — no half-populated skills dir may
     # pass as complete (REVISE TASK-2829).
+    session_id = f"sess-{uuid.uuid4().hex}"
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         expected_specs = materialize_workspace_skills(
@@ -636,6 +638,7 @@ async def run_invocation(
             skills_root=skills_root,
             org_root=org_state.root,
             db=org_state.db,
+            session_id=session_id,
         )
 
         # ── Pre-launch integrity validation ─────────────────────
@@ -728,7 +731,7 @@ async def run_invocation(
         if escalation_note:
             prompt += "\n" + escalation_note
 
-        org_state.db.stamp_invocation_started(invocation_token, session_id=None)
+        org_state.db.stamp_invocation_started(invocation_token, session_id=session_id)
         await _publish_invocation_event(
             org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
             seq=inv.triggering_seq, kind="invocation_started", status="working",
@@ -754,7 +757,7 @@ async def run_invocation(
                 )
             run_kwargs = dict(
                 workspace=Path(workspace), prompt=run_prompt,
-                session_id=None, timeout_seconds=timeout,
+                session_id=session_id, timeout_seconds=timeout,
                 on_throttle_event=_on_throttle_event,
                 pre_launch_validator=_pre_launch_validator,
                 org_slug=org_state.slug,
