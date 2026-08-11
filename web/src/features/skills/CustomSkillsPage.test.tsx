@@ -39,6 +39,8 @@ function installShellHandlers(): void {
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/tmp/alpha' }] })),
     http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({})),
+    http.get(`${API}/${encodeURIComponent(SKILL_ID)}/versions`, () => HttpResponse.json({ versions: [] })),
+    http.get(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, () => HttpResponse.json({ rules: [], revision: 1 })),
   );
 }
 
@@ -75,8 +77,19 @@ describe('Custom Skills routes', () => {
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
   });
 
-  test('create route exposes pending, mutation error, and forbidden states', async () => {
+  test('create route exposes mutation pending, error, and forbidden states', async () => {
     const user = userEvent.setup();
+    server.use(http.post(API, () => new Promise(() => {})));
+    mount(`/orgs/${SLUG}/skills/custom/new`);
+    await user.type(screen.getByLabelText('Name'), 'New guidance');
+    await user.type(screen.getByLabelText('Slug'), 'new-guidance');
+    await user.type(screen.getByLabelText('SKILL.md'), '# New guidance');
+    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
+    expect(await screen.findByRole('button', { name: 'Creating…' })).toBeDisabled();
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
     server.use(http.post(API, () => new HttpResponse('unavailable', { status: 500 })));
     mount(`/orgs/${SLUG}/skills/custom/new`);
     await user.type(screen.getByLabelText('Name'), 'New guidance');
