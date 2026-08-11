@@ -1,7 +1,27 @@
 /** TanStack Query seam for the founder Custom Skills surface. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
+import { ApiError } from '@/lib/api/client';
 import * as api from '@/lib/api/customSkills';
+
+export type { EligibilityRule } from '@/lib/api/customSkills';
+
+/** Keep API-shaped errors and identifiers behind the feature hook boundary. */
+export function isCustomSkillForbidden(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
+export function isCustomSkillStaleRevision(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409;
+}
+
+export function customSkillErrorText(error: unknown, fallback: string): string {
+  return error instanceof ApiError && error.code ? `${fallback} (${error.code})` : fallback;
+}
+
+export function getCustomSkillId(skill: Parameters<typeof api.customSkillId>[0]): string {
+  return api.customSkillId(skill);
+}
 
 const key = (slug: string, skillId?: string) => ['custom-skills', slug, skillId] as const;
 function useSlug(): string { return useParams<{ slug: string }>().slug ?? ''; }
