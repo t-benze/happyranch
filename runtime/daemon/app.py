@@ -268,6 +268,10 @@ async def _lifespan(app: FastAPI):
 
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
+    from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
+    direct_connect_projection_sweep_task = asyncio.create_task(
+        direct_connect_projection_sweep_loop(state)
+    )
 
     # ── Dashboard projection cold-start + periodic refresh ────────────
     # THR-129: per-org durable last-known-good cache, refreshed every 10s.
@@ -325,6 +329,7 @@ async def _lifespan(app: FastAPI):
         for t in schedule_worker_tasks:
             t.cancel()
         zombie_reaper_task.cancel()
+        direct_connect_projection_sweep_task.cancel()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.queue.stop()

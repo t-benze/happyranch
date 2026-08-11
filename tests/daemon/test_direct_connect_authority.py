@@ -295,6 +295,38 @@ def test_plan_projection_is_idempotent_per_operation(tmp_path) -> None:
     assert projection.state == "planned"
 
 
+def test_list_operations_pending_projection_excludes_projected_operations_in_fifo_order(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+
+    def receive(token: str, created_at: float) -> str:
+        store.mint_authority(
+            token_plaintext=token, name="custom-cli", intended_profile_name=token,
+            workspace_adapter_id="codex", issued_at=1, expires_at=100,
+        )
+        operation_id = store.reserve(token, now=created_at)
+        store.receive(
+            token, operation_id, wrapper_sha256="a" * 64, wrapper_facts={},
+            children=[], workspace_adapter_id="codex", now=created_at,
+        )
+        return operation_id
+
+    oldest = receive("hrreg_oldest", 2)
+    planned = receive("hrreg_planned", 3)
+    committed = receive("hrreg_committed", 4)
+    failed = receive("hrreg_failed", 5)
+    newest = receive("hrreg_newest", 6)
+
+    assert store.plan_projection(planned, now=7)
+    assert store.plan_projection(committed, now=7)
+    assert store.mark_committed(committed, adapter_id="committed-adapter", profile_name="committed", now=8)
+    assert store.plan_projection(failed, now=7)
+    assert store.mark_failed(failed, "probe failed", now=8)
+
+    assert store.list_operations_pending_projection() == [oldest, newest]
+
+
 def test_mark_committed_requires_planned_state(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 

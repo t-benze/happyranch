@@ -127,8 +127,11 @@ existing APPROVED + hash-reverified-at-every-Popen launch fence covers a
 direct-connect profile with zero origin-specific branching. No new gating
 code was needed for the launch fence; `tests/test_thr107_launch_fence.py`
 proves this across the ordinary-task and thread/wake/dream/schedule call
-shapes. The normal Settings/onboarding UI now drives Connect → Connected
-in one flow; the PENDING/approve/reject/bind-profile routes remain as
+shapes. A daemon-owned periodic projection sweep also invokes that coordinator
+for every receipt without a projection row, so browser closure cannot strand a
+connection; see `protocol/05b-agent-runtime.md` for the normative detail.
+The normal Settings/onboarding UI now drives Connect → Connected in one flow;
+the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.
 
 **Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**

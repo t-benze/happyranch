@@ -8,7 +8,11 @@
     runs a bounded conformance probe against the wrapper, which does spawn
     one. Master-bearer-authed (unlike ``/connect``, which is authed by the
     now-already-consumed registration token) — this is a founder/local-SPA
-    follow-up action, not something the candidate CLI calls.
+    follow-up action, not something the candidate CLI calls. The daemon-owned
+    periodic projection sweep also invokes the same coordinator directly,
+    bypassing HTTP and auth so a receipt completes even if no browser calls
+    this route. This route remains available and idempotent for browsers that
+    do call it.
 
     Idempotent: retries after a COMMITTED or FAILED outcome return the same
     result without redoing any work (see ``direct_connect_projection.project``).
@@ -22,8 +26,8 @@
     with no DB read) plus the latest operation's id and projection state,
     if any — the browser uses this to (a) show the candidate CLI where to
     write its wrapper in the connect prompt, and (b) detect when the
-    candidate CLI's ``/connect`` call has landed so it knows when to call
-    ``/commit``.
+    candidate CLI's ``/connect`` call has landed and then observe the
+    daemon-owned projection result by polling.
 """
 from __future__ import annotations
 

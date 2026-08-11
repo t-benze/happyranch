@@ -161,6 +161,11 @@ Slice A's `received_nonlaunchable` receipt:
   projection state, so the founder's browser can find the daemon-issued
   wrapper path to show in a connect prompt and detect when the candidate
   CLI's own `/connect` call has landed.
+  The daemon also runs a periodic projection sweep that finds each
+  `received_nonlaunchable` operation without a projection row and invokes the
+  same coordinator directly; therefore completing a connection does not
+  depend on a browser calling `/commit`, while `/connect` remains a strict
+  zero-subprocess receipt boundary.
 - **Slice 2 (launch fence — proof, not new gating).** `build_executor()` /
   `ExecutorRegistry._resolve_custom_adapter_eligibility()` /
   `CustomAdapterExecutor._launch()` already refuse to construct or launch
@@ -178,10 +183,15 @@ Slice A's `received_nonlaunchable` receipt:
   operation which never reached COMMITTED has no registered profile and
   fails closed with `"Unregistered executor"` at the same seam.
 - **Slice 3 (UI cutover).** The normal Settings ▸ Executors and onboarding
-  custom-CLI flow now drives `POST /connect` then `POST .../commit`
-  automatically (`useDirectConnect` in `web/src/shared/connect/
-  useRuntimeConnect.ts`) — Connect → Connected in one perceived action, no
-  founder-approval wait, no separate conformance-checkin round trips. The
+  custom-CLI flow drives `POST /connect`, then derives connection state by
+  polling `GET /runtime/custom-cli/status`. At this merge point, its existing
+  receipt-landing handler also auto-fires `/commit`; a planned companion
+  frontend change will make that handler observation-only. Independently and
+  redundantly, the daemon-owned projection sweep completes any receipt without
+  a projection row, including when no browser is present or the tab closes
+  before that browser call fires — Connect → Connected in one perceived
+  action, no founder-approval wait and no separate conformance-checkin round
+  trips. The
   normal-flow PENDING/approve/reject/legacy-bind-recovery UI
   (`PendingAdaptersSection`, `RecoveryBindCard`, the `useAdapterConnect`/
   `useAdapterRecovery` hooks) is deleted outright, not hidden behind an
