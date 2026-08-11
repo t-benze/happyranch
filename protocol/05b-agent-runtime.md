@@ -184,10 +184,14 @@ Slice A's `received_nonlaunchable` receipt:
   fails closed with `"Unregistered executor"` at the same seam.
 - **Slice 3 (UI cutover).** The normal Settings ▸ Executors and onboarding
   custom-CLI flow drives `POST /connect`, then derives connection state by
-  polling `GET /runtime/custom-cli/status`; it does not auto-fire `/commit`.
-  The daemon-owned projection sweep completes the receipt — Connect →
-  Connected in one perceived action, no founder-approval wait and no separate
-  conformance-checkin round trips. The
+  polling `GET /runtime/custom-cli/status`. At this merge point, its existing
+  receipt-landing handler also auto-fires `/commit`; a planned companion
+  frontend change will make that handler observation-only. Independently and
+  redundantly, the daemon-owned projection sweep completes any receipt without
+  a projection row, including when no browser is present or the tab closes
+  before that browser call fires — Connect → Connected in one perceived
+  action, no founder-approval wait and no separate conformance-checkin round
+  trips. The
   normal-flow PENDING/approve/reject/legacy-bind-recovery UI
   (`PendingAdaptersSection`, `RecoveryBindCard`, the `useAdapterConnect`/
   `useAdapterRecovery` hooks) is deleted outright, not hidden behind an
