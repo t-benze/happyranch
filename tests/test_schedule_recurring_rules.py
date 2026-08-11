@@ -73,6 +73,9 @@ def test_interval_must_be_a_positive_integer(interval):
 
 def test_anchor_date_is_required_and_create_context_reserves_it_for_the_service():
     assert _error_code(_rule(anchor_date="not-a-date")) == "anchor_date_not_settable"
+    stored_rule = _rule()
+    stored_rule.pop("anchor_date")
+    assert _error_code(stored_rule) == "anchor_date_not_settable"
     create_rule = _rule()
     create_rule.pop("anchor_date")
     assert validate_recurring_rule(create_rule, context="create") is None
@@ -82,6 +85,7 @@ def test_anchor_date_is_required_and_create_context_reserves_it_for_the_service(
 
 def test_end_conditions_validate_as_local_calendar_values():
     assert _error_code(_rule(until="2020-01-01")) == "invalid_until"
+    assert _error_code(_rule(until="not-a-date")) == "invalid_until"
     assert _error_code(_rule(count=0)) == "invalid_count"
     assert _error_code(_rule(until="2027-01-01", count=1)) == "end_condition_conflict"
 
