@@ -27,6 +27,20 @@ standalone `_localize_or_skip` unit surface (§4.3) are all pinned; (12)
 audit-event vocabulary and the product-name↔internal-token mapping now
 match product_lead's PRD verbatim (§3.3, §3.4). Sign-off gate (§10) is
 renumbered and expanded from 9 to 12 items accordingly.
+
+**Follow-up revision (2026-08-11, THR-105 seq254):** dev_agent's re-review of
+the above found one remaining load-bearing contradiction: §6.3's `date_ended`
+`end_reason` and §7.2's "`next_recurring_occurrence(...) -> None` → `EXPIRED`"
+guard disagreed on the terminal branch for an `until`-bounded series running
+out — an `until`-exhausted series becomes exhausted exactly when the next-
+occurrence lookup returns `None`, so the §7.2 text as originally revised would
+have routed every `date_ended` case to `EXPIRED` and discarded the
+`end_reason` fact §6.3 requires. §6.3, §7.2, and §7.3 below now pin one
+ordered, cause-disambiguated branch (count exhaustion → then until exhaustion
+→ then review/expiry lapse → then a separately named defensive case) so
+`next_occurrence == None` is never collapsed to a single status by omission.
+No new scope: this corrects internal consistency only, using fields and
+statuses this spec's item 6 (§10) already introduced.
 **Origin:** THR-105. v1 (one-shot + single-weekday-weekly) shipped and is live
 (`docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md`, hereafter
 **"the v1 spec"**); THR-105 seq217/PR #606 already removed the per-agent
@@ -566,7 +580,7 @@ sets `end_reason` to exactly one of:
 |---|---|---|
 | `one_shot_completed` | A `kind=ONE_SHOT` schedule's single occurrence dispatches successfully. | `ONE_SHOT` only — generalizes the *existing* one-shot terminal transition to also stamp a reason, so `FIRED` is never ambiguous for any `kind`. |
 | `count_exhausted` | A successful dispatch brings `fire_count >= count` (§5.4). | `WEEKLY`/`RECURRING` with `count` set. |
-| `date_ended` | The next computed occurrence's local date would exceed `until`, so the series has no more eligible occurrences (§5.4 "On date"). | `WEEKLY`/`RECURRING` with `until` set. |
+| `date_ended` | `next_recurring_occurrence(rule, after=...)` (or `next_weekly_occurrence`) returns `None` **because the rule has `until` set and the walk found no further on-or-before-`until` candidate** — i.e. the series' last local-calendar-date occurrence (§5.4 "On date") has already passed. | `WEEKLY`/`RECURRING` with `until` set. |
 
 `end_reason` is `NULL` for every non-`FIRED` status (`ARMED`, `PAUSED`,
 `FIRING`, `FAILED`, `TIMEOUT`, `EXPIRED`, `CANCELLED`) — it is specifically
@@ -580,6 +594,45 @@ is the concrete fix for qa_engineer's seq243 blocker ("I cannot write a
 test asserting terminal-state behavior until I know which status value
 fires when count is exhausted"): the status is always `FIRED`, the
 **reason** is what a test (and the founder) reads.
+
+**`next_occurrence == None` is disambiguated by CAUSE, not collapsed to one
+status (THR-105 seq254 correction — was the one remaining contradiction
+between this section and §7.2/§7.3).** The next-occurrence lookup can return
+`None` for three distinct reasons, and each routes to a different terminal
+outcome — never inferred from the bare fact of `None` alone:
+
+1. **`until` is exhausted** (the rule has `until` set and the walk found no
+   more valid on-or-before-`until` candidate) → terminal `FIRED`,
+   `end_reason=date_ended` (row above). This is the *expected*,
+   designed-for terminal path for a bounded series and must never surface
+   as `EXPIRED` — `EXPIRED` would discard the `date_ended` fact entirely
+   (a plain "Expired" label reads as a lapsed review checkpoint, not a
+   series that completed on schedule).
+2. **The review/expiry checkpoint has lapsed** (`expires_at` reached and
+   `indefinite` is not set, §6.4) — this is a *separate* check, made only
+   when a next candidate **was** found but falls past `expires_at`; it is
+   the sole remaining trigger for `EXPIRED` (§6.4, §7.6). `EXPIRED` is
+   reserved strictly for this checkpoint and must not be used for normal
+   end-condition exhaustion (case 1) or the defensive case (3) below.
+3. **Defensive / invalid case — `None` for any other reason** (e.g. a
+   malformed rule that yields no future occurrence even though `until` is
+   unset or not yet reached). This should never happen for a rule that
+   passed `validate_recurring_rule`/`validate_weekly_rule` (§3.2), so it is
+   treated as a computation defect, not a product outcome: it transitions to
+   the existing terminal `FAILED` status (§5.6) with a new, distinct
+   `error="recurrence_no_candidate"` value in the schedule's existing
+   `error` column (`schedule_store.py` — the same field `recover_firing`
+   already sets to `"daemon_restart"`, so this reuses existing schema, adds
+   no column) and the existing `schedule_failed` audit event (§3.4). Naming
+   it `recurrence_no_candidate` keeps it queryable and founder-visible as
+   its own distinct fact, never silently absorbed into `EXPIRED` (case 2)
+   or `FIRED`/`date_ended` (case 1).
+
+§7.2 (on-time fire path) and §7.3 (stale/missed-fire path) both apply this
+same three-way disambiguation, in the same order (count check first, since
+it only applies after a successful dispatch and only §7.2 has one; then
+cause-of-`None` disambiguation second) — see those sections for the exact
+per-path ordering.
 
 ### 6.4 Caps, floor, envelope — unchanged, reused as-is
 
@@ -650,18 +703,43 @@ mandatory-field checks (`schedule_service.py:76-84`), and the audit row
 
 `spawn_schedule` (`routes/schedules.py:371-...`, the weekly re-arm logic at
 lines 457-505) gains a `RECURRING` sibling to its `else:` (today
-weekly-only) branch: compute `next_recurring_occurrence(rule, after=now)`
-(anchored at `anchor_date`, §3.1/§4.2); if `None` → `EXPIRED` (mirrors the
-existing "could not compute next occurrence" guard, lines 473-496); if past
-`expires_at` and not `indefinite` → `EXPIRED` (mirrors lines 497-...); else
-**increment `fire_count` and check `fire_count >= count`** (§5.4 — only
-after the spawn itself has succeeded, never before) → `FIRED` with the
-appropriate `end_reason` (§6.3) if exhausted, else re-arm `ARMED` with the
-new `fire_at`. `spawned_task_ids`/`last_fired_at`/audit rows
-(`schedule_spawned`, `schedule_completed`/`schedule_expired`) are unchanged
-plumbing — same fields, same audit actions, richer decision tree. A new
-`schedule_claimed` audit call (§3.4) is added at the pre-existing
-`ARMED→FIRING` claim (`schedule_scheduler.py:120`), for all `kind` values.
+weekly-only) branch. **Ordered terminal-branch logic (revised — THR-105
+seq254, corrects the original revision's collapsed `None` → `EXPIRED`
+guard; mirrors §6.3's disambiguation exactly):**
+
+1. **After the spawn itself has succeeded, increment `fire_count`.** If
+   `count` is set and `fire_count >= count` → terminal `FIRED`,
+   `end_reason=count_exhausted` (§5.4, §6.3). This check runs first and
+   only after a successful dispatch, never before it and never on a failed
+   one (§5.6).
+2. **Else compute the next candidate occurrence:**
+   `next_recurring_occurrence(rule, after=now)` (anchored at `anchor_date`,
+   §3.1/§4.2). **If it returns `None` *because* `until` is exhausted** (the
+   rule has `until` set and the walk found no further on-or-before-`until`
+   candidate) → terminal `FIRED`, `end_reason=date_ended` (§6.3). This is
+   the corrected branch: the original revision's guard ("if `None` →
+   `EXPIRED`") silently discarded this fact for every `until`-bounded series
+   that ran out — that guard is removed and replaced by this one.
+3. **Else, if a next candidate *was* found but it falls past `expires_at`
+   and `indefinite` is not set** → `EXPIRED` (mirrors the existing weekly
+   guard, lines 497-...; unchanged from today, §6.4, §7.6). `EXPIRED` is
+   reserved strictly for this review/expiry-checkpoint case — it is never
+   reached by step 2's `until`-exhaustion path.
+4. **Else, if `next_recurring_occurrence` returned `None` for any other
+   reason** (a candidate was neither found nor explained by `until`
+   exhaustion — should not occur for a rule that passed `validate_
+   recurring_rule`, §3.2) → terminal `FAILED` with `error=
+   "recurrence_no_candidate"` (§6.3's named defensive case), audited via
+   the existing `schedule_failed` event (§3.4). Never silently `EXPIRED` or
+   `FIRED`.
+5. **Otherwise** (a next candidate was found within `expires_at`) → re-arm
+   `ARMED` with the new `fire_at`.
+
+`spawned_task_ids`/`last_fired_at`/audit rows (`schedule_spawned`,
+`schedule_completed`/`schedule_expired`) are unchanged plumbing — same
+fields, same audit actions, richer decision tree. A new `schedule_claimed`
+audit call (§3.4) is added at the pre-existing `ARMED→FIRING` claim
+(`schedule_scheduler.py:120`), for all `kind` values.
 
 **Occurrence key / idempotent dispatch (item 7 — qa_engineer seq243/246).**
 v1 already guarantees at-most-once dispatch per fire through the existing
@@ -698,6 +776,25 @@ at all because the daemon was down across it. Both land on the same
 "advance to next eligible occurrence, stay `ARMED`" outcome, but via
 different trigger paths and different audit events (`occurrence_missed` vs.
 `schedule_failed`/`schedule_timeout`).
+
+**Terminal-branch ordering here mirrors §7.2 minus the `fire_count` step
+(revised — THR-105 seq254; a stale/missed instant never dispatched, so it
+never increments `fire_count`, §5.4 item 1):**
+
+1. Compute the next candidate occurrence (`next_weekly_occurrence`/
+   `next_recurring_occurrence(rule, after=now)`). **If it returns `None`
+   *because* `until` is exhausted** → terminal `FIRED`,
+   `end_reason=date_ended` (§6.3) — the same corrected branch as §7.2 step
+   2, not `EXPIRED`.
+2. **Else, if a next candidate was found but it falls past `expires_at`**
+   and `indefinite` is not set → `EXPIRED` (unchanged from today's guard,
+   §6.4).
+3. **Else, if `None` for any other reason** (not explained by `until`
+   exhaustion) → terminal `FAILED` with `error="recurrence_no_candidate"`
+   (§6.3's named defensive case) — never silently `EXPIRED` or `FIRED`,
+   same as §7.2 step 4.
+4. **Otherwise** → advance and re-arm `ARMED` with the new `fire_at`,
+   emitting `occurrence_missed` as already specified above.
 
 ### 7.4 Pause / cancel — unchanged
 
@@ -1004,6 +1101,10 @@ correctly.
    exact correction (seq242–248) before they would sign off, and the EM
    agreed in-thread at seq237. Declining this would leave qa_engineer
    unable to write a terminal-state test, per their seq243 finding.
+   **(seq254 follow-up: §6.3/§7.2/§7.3 now also pin that `until`-exhaustion
+   routes to this `date_ended` `FIRED` reason, never to `EXPIRED`, which is
+   reserved strictly for the §6.4 review/expiry checkpoint — see §6.3's
+   "disambiguated by CAUSE" note for the full three-way branch.)**
 7. **`Ends: On date` semantics as a local-calendar-date cutoff (in the
    rule's own `tz`), inclusive of the exact date, with the DST-boundary
    test case now specified (§5.4)?** EM recommendation: yes — matches
