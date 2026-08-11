@@ -498,6 +498,8 @@ export function useDirectConnect({
         operationId: statusData.operation_id,
         reason: statusData.reason ?? 'The connection could not be completed.',
       });
+    } else if (statusData.profile_state === 'planned' || statusData.profile_state == null) {
+      // Daemon projection remains non-terminal; keep polling while committing.
     }
   }, [onConnected, state, statusData]);
 
