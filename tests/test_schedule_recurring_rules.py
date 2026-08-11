@@ -116,6 +116,24 @@ def test_count_is_never_passed_to_rrule(monkeypatch):
     assert "count" not in seen_kwargs
 
 
+def test_weekly_rrule_uses_iso_monday_week_start(monkeypatch):
+    from runtime.orchestrator import schedule_rules
+
+    seen_kwargs = {}
+    real_rrule = schedule_rules.rrule
+
+    def recording_rrule(*args, **kwargs):
+        seen_kwargs.update(kwargs)
+        return real_rrule(*args, **kwargs)
+
+    monkeypatch.setattr(schedule_rules, "rrule", recording_rrule)
+    next_recurring_occurrence(
+        _rule(freq="WEEKLY", byday=["MO"], interval=2),
+        datetime(2025, 12, 31, tzinfo=timezone.utc),
+    )
+    assert seen_kwargs["wkst"] == schedule_rules.MO
+
+
 def test_rrule_skips_nonexistent_monthly_and_yearly_dates():
     monthly = _rule(freq="MONTHLY", anchor_date="2026-01-31", bymonthday=31)
     yearly = _rule(freq="YEARLY", anchor_date="2024-02-29")

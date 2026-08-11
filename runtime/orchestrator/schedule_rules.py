@@ -337,6 +337,8 @@ def next_recurring_occurrence(rule: dict, after: datetime) -> datetime | None:
         "dtstart": dtstart,
         "interval": rule["interval"],
     }
+    if rule["freq"] == "WEEKLY":
+        kwargs["wkst"] = MO
     byday = rule.get("byday")
     if byday is not None:
         kwargs["byweekday"] = tuple(_RRULE_WEEKDAYS[day] for day in byday)
