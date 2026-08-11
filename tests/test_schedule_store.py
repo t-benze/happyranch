@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.schedule_store import UnknownScheduleKindError
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 
 
@@ -77,6 +78,12 @@ def test_get_missing_returns_none(tmp_path):
     assert db.schedules.get("SCHEDULE-999") is None
 
 
+def test_database_adds_nullable_schedule_end_reason_column(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    columns = {column["name"] for column in db._conn.execute("PRAGMA table_info(schedules)")}
+    assert "end_reason" in columns
+
+
 def test_list_all_newest_first(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     db.schedules.insert(_record(id="SCHEDULE-001", agent_name="dev_agent"))
@@ -99,6 +106,27 @@ def test_list_filter_by_status(tmp_path):
                                 agent_name="qa_engineer"))
     armed = [r.id for r in db.schedules.list(status=ScheduleStatus.ARMED)]
     assert armed == ["SCHEDULE-001"]
+
+
+def test_list_skips_a_row_with_an_unknown_kind(tmp_path, caplog):
+    db = Database(tmp_path / "db.sqlite")
+    db.schedules.insert(_record(id="SCHEDULE-001"))
+    db._conn.execute("UPDATE schedules SET kind = 'future_kind' WHERE id = ?", ("SCHEDULE-001",))
+    db._conn.commit()
+
+    assert [record.id for record in db.schedules.list()] == []
+    assert db.schedules.list_due(_dt(day=29)) == []
+    assert "unknown schedule kind" in caplog.text
+
+
+def test_get_raises_a_named_error_for_an_unknown_kind(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.schedules.insert(_record())
+    db._conn.execute("UPDATE schedules SET kind = 'future_kind' WHERE id = ?", ("SCHEDULE-001",))
+    db._conn.commit()
+
+    with pytest.raises(UnknownScheduleKindError, match="unknown schedule kind"):
+        db.schedules.get("SCHEDULE-001")
 
 
 # ---------------------------------------------------------------- list_due
