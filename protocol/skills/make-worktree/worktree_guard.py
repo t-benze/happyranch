@@ -81,7 +81,7 @@ def _worktree_metadata_dir(worktree: Path) -> Path | None:
 
 
 def _clear_stale_worktree_hook(worktree: Path) -> None:
-    """Remove the former HappyRanch hook only from this worktree's metadata."""
+    """Clear the former HappyRanch hook configuration in this worktree's metadata."""
     hooks_path_out = _git_out(worktree, "config", "--worktree", "core.hooksPath")
     if not hooks_path_out:
         return
@@ -97,35 +97,14 @@ def _clear_stale_worktree_hook(worktree: Path) -> None:
         hooks_dir.relative_to(metadata_dir)
     except ValueError:
         return
+    if hooks_dir.name != "happyranch-hooks":
+        return
 
     if _run_git(worktree, "config", "--worktree", "--unset-all", "core.hooksPath").returncode:
         print("WARNING: Could not clear stale worktree core.hooksPath")
         return
 
     print("Cleared stale mandatory pre-push hook (core.hooksPath) from a pre-2026-08-07 worktree")
-    if not hooks_dir.is_dir():
-        return
-
-    try:
-        entries = list(hooks_dir.iterdir())
-    except OSError:
-        print("WARNING: Could not inspect stale hook directory; leaving it in place")
-        return
-    if entries and (
-        len(entries) != 1
-        or entries[0].name != "pre-push"
-        or not entries[0].is_file()
-        or entries[0].is_symlink()
-    ):
-        print("WARNING: Stale hook directory contains unexpected contents; leaving it in place")
-        return
-
-    try:
-        if entries:
-            entries[0].unlink()
-        hooks_dir.rmdir()
-    except OSError:
-        print("WARNING: Could not remove stale hook directory; leaving it in place")
 
 
 def _is_git_worktree(path: Path) -> bool:

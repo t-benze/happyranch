@@ -1566,7 +1566,8 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         )
 
         assert not _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
-        assert not stale_hooks.exists()
+        assert stale_hooks.is_dir()
+        assert (stale_hooks / "pre-push").is_file()
         assert (happyranch_worktree / SNAPSHOT_FILE).is_file()
         assert "Cleared stale mandatory pre-push hook" in capsys.readouterr().out
         assert cmd_verify(str(happyranch_worktree)) == 0
@@ -1593,6 +1594,33 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
         assert not (git_dir / "happyranch-hooks").exists()
 
+    def test_setup_preserves_custom_named_hooks_path_inside_worktree_metadata(
+        self, happyranch_worktree, happyranch_repo
+    ):
+        git_dir = _canonical(_git_out(happyranch_worktree, "rev-parse", "--git-dir"))
+        custom_hooks = git_dir / "user-custom-hooks"
+        custom_hooks.mkdir()
+        pre_push = custom_hooks / "pre-push"
+        pre_push_contents = "#!/usr/bin/env bash\nexit 0\n"
+        pre_push.write_text(pre_push_contents)
+        _run(["git", "-C", str(happyranch_repo), "config", "extensions.worktreeConfig", "true"])
+        _run([
+            "git", "-C", str(happyranch_worktree), "config", "--worktree",
+            "core.hooksPath", str(custom_hooks),
+        ])
+        before = _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath")
+
+        cmd_setup(
+            worktree_root=str(happyranch_worktree),
+            primary_root=str(happyranch_repo),
+            task_id="TASK-3881-TEST",
+        )
+
+        assert _git_out(happyranch_worktree, "config", "--worktree", "core.hooksPath") == before
+        assert custom_hooks.is_dir()
+        assert pre_push.is_file()
+        assert pre_push.read_text() == pre_push_contents
+
     def test_setup_unsets_stale_hook_with_unexpected_contents_without_deleting_it(
         self, happyranch_worktree, happyranch_repo, capsys
     ):
@@ -1618,4 +1646,3 @@ class TestHappyRanchWorktreeHasNoAutomaticHooks:
         assert (stale_hooks / "unexpected").is_file()
         output = capsys.readouterr().out
         assert "Cleared stale mandatory pre-push hook" in output
-        assert "WARNING: Stale hook directory contains unexpected contents" in output
