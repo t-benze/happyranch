@@ -82,6 +82,20 @@ def test_agent_create_rejects_another_agents_originated_skill_without_mutation(c
     assert _custom_counts(org) == before
 
 
+def test_agent_create_keeps_non_pilot_agents_out(client_with_runtime):
+    client, org = client_with_runtime
+    org.sessions.set_active("TASK-NON-PILOT", "dev_agent", "sess-non-pilot", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    before = _custom_counts(org)
+    response = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-non-pilot"},
+        json=_body("frontend-development"),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] in {"agent_not_in_pilot", "slug_not_allowed_for_agent"}
+    assert _custom_counts(org) == before
+
+
 @pytest.mark.parametrize("method,path,payload", [
     ("post", "", _body()),
     ("patch", "/{skill_id}", {"name": "Renamed"}),

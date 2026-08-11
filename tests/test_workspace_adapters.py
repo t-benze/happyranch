@@ -522,7 +522,10 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
                 f"must not claim {forbidden!r}"
             )
 
-        # Recommends lifecycle proposal workflow
+        assert "happyranch skills create --from-file <path>" in text
+        assert "pilot roster" in text
+        assert "manager/thread" in text
+        assert "happyranch skills propose --from-file <path>" in text
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
