@@ -9,9 +9,8 @@
  *  2. Waiting state shows the daemon-issued wrapper path from GET status,
  *     and the generated prompt guides the wrapper author to declare
  *     workspace_adapter_id themselves.
- *  3. The moment status reports a landed operation_id, the hook calls
- *     commit and transitions to Connected on success.
- *  4. A failed commit shows a retryable error, never a false-Connected.
+ *  3. A polled terminal status transitions to Connected or a retryable error;
+ *     the browser never automatically calls commit.
  *  5. No pending-approval / recovery-bind UI exists anywhere in the flow
  *     (that surface was deleted in this slice).
  */
@@ -61,13 +60,6 @@ async function mockStatus(
 ): Promise<void> {
   const { directConnect: api } = await import('@/lib/api');
   vi.spyOn(api, 'getStatus').mockImplementation(async (name: string) => impl(name));
-}
-
-async function mockCommit(
-  impl: () => import('@/lib/api/directConnect').CommitResponse,
-): Promise<void> {
-  const { directConnect: api } = await import('@/lib/api');
-  vi.spyOn(api, 'commit').mockImplementation(async () => impl());
 }
 
 /* ------------------------------------------------------------------ */
@@ -137,20 +129,18 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(promptText).toContain('YOUR CLI\'s expectations');
   });
 
-  test('the moment status reports a landed operation, commit is called and Connected renders on success', async () => {
+  test('a polled committed status renders Connected without a browser commit', async () => {
     const user = userEvent.setup();
     await mockMint();
     let landed = false;
     await mockStatus(() => ({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: landed ? 'op-1' : null,
-      profile_state: null,
+      profile_state: landed ? 'committed' : null,
       reason: null,
     }));
-    const commitSpy = vi.fn(() => ({
-      operation_id: 'op-1', profile_state: 'committed' as const, profile_name: 'my-cli',
-    }));
-    await mockCommit(commitSpy);
+    const { directConnect: api } = await import('@/lib/api');
+    const commitSpy = vi.spyOn(api, 'commit');
 
     renderConnect();
     await goCustomAdapter(user);
@@ -162,22 +152,20 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
 
     await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
     expect(screen.getByText('Your CLI is connected.')).toBeInTheDocument();
-    expect(commitSpy).toHaveBeenCalled();
+    expect(commitSpy).not.toHaveBeenCalled();
   }, 15000);
 
-  test('a failed commit shows a retryable error, never a false Connected card', async () => {
+  test('a polled failed status shows a retryable error, never a false Connected card', async () => {
     const user = userEvent.setup();
     await mockMint();
     await mockStatus(() => ({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1',
-      profile_state: null,
-      reason: null,
+      profile_state: 'failed',
+      reason: 'conformance_probe_failed: boom',
     }));
     const { directConnect: api } = await import('@/lib/api');
-    vi.spyOn(api, 'commit').mockResolvedValueOnce({
-      operation_id: 'op-1', profile_state: 'failed', reason: 'conformance_probe_failed: boom',
-    });
+    const commitSpy = vi.spyOn(api, 'commit');
 
     renderConnect();
     await goCustomAdapter(user);
@@ -187,6 +175,36 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
     expect(screen.getByText(/boom/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
+    expect(commitSpy).not.toHaveBeenCalled();
+  }, 15000);
+
+  test('a planned status keeps finishing the connection until a later committed poll', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    let landed = false;
+    let committed = false;
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: landed ? 'op-1' : null,
+      profile_state: landed ? (committed ? 'committed' : 'planned') : null,
+      reason: null,
+    }));
+    const { directConnect: api } = await import('@/lib/api');
+    const commitSpy = vi.spyOn(api, 'commit');
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByLabelText(/waiting for adapter submission/i);
+
+    landed = true;
+    await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
+    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
+
+    committed = true;
+    await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
+    expect(commitSpy).not.toHaveBeenCalled();
   }, 15000);
 
   test('retry after a failed commit can reach Connected', async () => {
@@ -195,8 +213,8 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await mockStatus(() => ({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1',
-      profile_state: null,
-      reason: null,
+      profile_state: 'failed',
+      reason: 'initial projection failure',
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit')
@@ -207,8 +225,12 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    expect(commitSpy).not.toHaveBeenCalled();
 
     commitSpy.mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'committed', profile_name: 'my-cli' });
+    await user.click(screen.getByRole('button', { name: /^retry$/i }));
+
+    await screen.findByText(/transient error/i, {}, { timeout: 10000 });
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
     await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
