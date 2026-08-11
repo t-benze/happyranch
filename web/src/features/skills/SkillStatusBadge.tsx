@@ -8,7 +8,6 @@
  * validation, never an approval/admission gate.
  */
 import { BadgeCheck, CircleDashed, TriangleAlert } from 'lucide-react';
-import type { CatalogSkillItem } from '@/hooks/skills';
 import { validationLabel, type ValidationTone } from './skills-catalog';
 
 const TONE_STYLE: Record<ValidationTone, string> = {
@@ -26,9 +25,18 @@ const TONE_ICON: Record<ValidationTone, typeof BadgeCheck> = {
 export function SkillStatusBadge({
   state,
 }: {
-  state: CatalogSkillItem['validation_state'];
+  state: string;
 }): JSX.Element {
-  const { text, tone } = validationLabel(state);
+  if (state === 'no_eligibility_policy') {
+    return (
+      <span className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE.attention}`}>
+        <TriangleAlert size={11} aria-hidden="true" className="shrink-0" />
+        Hidden — eligibility not configured
+      </span>
+    );
+  }
+  const knownState = state === 'valid' ? 'validated' : state === 'invalid' ? 'failed_validation' : state;
+  const { text, tone } = validationLabel(knownState as 'in_catalog' | 'validated' | 'failed_validation' | 'proposed');
   const Icon = TONE_ICON[tone];
   return (
     <span

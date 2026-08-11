@@ -13,6 +13,8 @@ export interface RequestOptions {
   body?: unknown;
   params?: Record<string, string | number | boolean | undefined | null>;
   signal?: AbortSignal;
+  /** Additional request headers for endpoint-specific concurrency controls. */
+  headers?: HeadersInit;
   /**
    * When set, overrides the default master daemon bearer with a scoped token.
    * Used by loopback-only, scoped-token-gated routes (e.g. register-binary).
@@ -91,6 +93,7 @@ export async function request<T = unknown>(
   const init: RequestInit = {
     method: opts.method ?? 'GET',
     signal: opts.signal,
+    headers: opts.headers,
   };
   if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
