@@ -46,11 +46,11 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  * THR-030 chrome alignment (BUG-01..08):
  *  - Top: context header (wordmark + org context line + caret) doubling as the
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
- *  - Operate: Home, Threads, Tasks, Jobs, Todos.
- *  - Organization: Agents, Work Hours, Settings.
- *  - Govern: Skills.
- *  - Evidence: Knowledge, Artifacts, Audit, Dreams, Usage, Health.
- *  - Footer: the static avatar + identity account row (BUG-07).
+ *  - Primary navigation: one flat, usage-ordered list of Home, Threads, Tasks,
+ *    Jobs, Todos, Agents, Work Hours, Skills, Knowledge, Artifacts, Audit,
+ *    Dreams, Usage, and Health.
+ *  - Footer: Settings is permanently pinned above the static avatar + identity
+ *    account row (BUG-07), separated from the primary list by the footer divider.
  *
  * Global search and the theme toggle moved to the AppBar (BUG-04/05/06).
  *
@@ -190,88 +190,63 @@ export function Sidebar(): JSX.Element {
         </SelectPrimitive.Root>
       </section>
 
-      {/* Operate — the record and workflow entry points. */}
-      <div className="mt-3 px-3">
-        <SidebarGroupLabel>Operate</SidebarGroupLabel>
-        <nav aria-label="Operate" className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
-            Home
-          </SidebarNavItem>
-          <SidebarNavItem
-            to={routes.inboxForOrg(activeSlug ?? '')}
-            enabled={!!activeSlug && !isPrototype}
-            icon={MessageSquare}
-          >
-            Threads
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
-            Tasks
-          </SidebarNavItem>
-          <SidebarNavItem
-            {...sidebarLink('jobs', true)}
-            icon={Terminal}
-          >
-            Jobs
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
-            Todos
-          </SidebarNavItem>
-        </nav>
-      </div>
-
-      <div className="mt-3 px-3">
-        <SidebarGroupLabel>Organization</SidebarGroupLabel>
-        <nav aria-label="Organization" className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
-            Agents
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
-            Work Hours
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
-            Settings
-          </SidebarNavItem>
-        </nav>
-      </div>
-
-      <div className="mt-3 px-3">
-        <SidebarGroupLabel>Govern</SidebarGroupLabel>
-        <nav aria-label="Govern" className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
-            Skills
-          </SidebarNavItem>
-        </nav>
-      </div>
-
-      <div className="mt-3 px-3">
-        <SidebarGroupLabel>Evidence</SidebarGroupLabel>
-        <nav aria-label="Evidence" className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
-            Knowledge
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
-            Artifacts
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
-            Audit
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
-            Dreams
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
-            Usage
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('health', true)} icon={Activity}>
-            Health
-          </SidebarNavItem>
-        </nav>
-      </div>
+      <nav aria-label="Primary navigation items" className="mt-3 flex flex-col gap-0.5 px-3">
+        <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
+          Home
+        </SidebarNavItem>
+        <SidebarNavItem
+          to={routes.inboxForOrg(activeSlug ?? '')}
+          enabled={!!activeSlug && !isPrototype}
+          icon={MessageSquare}
+        >
+          Threads
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
+          Tasks
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('jobs', true)} icon={Terminal}>
+          Jobs
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
+          Todos
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
+          Agents
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
+          Work Hours
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
+          Skills
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
+          Knowledge
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
+          Artifacts
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
+          Audit
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
+          Dreams
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
+          Usage
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('health', true)} icon={Activity}>
+          Health
+        </SidebarNavItem>
+      </nav>
 
       {/* Footer — static account row (BUG-07). */}
       <div className="border-border mt-auto flex flex-col gap-1 border-t px-3 py-3">
+        <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
+          Settings
+        </SidebarNavItem>
         {/* Account row — avatar + identity. Identity is static chrome (no user
             profile is loaded client-side). It remains keyboard reachable as
-            account context after the grouped navigation. */}
+            account context after the footer-pinned Settings item. */}
         <div
           tabIndex={0}
           aria-label="Account: You, Founder"
@@ -324,14 +299,6 @@ function Brandmark(): JSX.Element {
         strokeLinejoin="round"
       />
     </svg>
-  );
-}
-
-function SidebarGroupLabel({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div className="text-fg-subtle mb-1 px-2 text-[0.65rem] font-semibold tracking-wider uppercase">
-      {children}
-    </div>
   );
 }
 

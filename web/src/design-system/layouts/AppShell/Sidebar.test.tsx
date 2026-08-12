@@ -1,10 +1,10 @@
 /**
  * IA-1, IA-2, IA-10 tests for the Direction-A design overhaul Phase 1b.
  *
- * - IA-1: Sidebar renders with Operate, Organization, Govern, and Evidence groups, theme toggle,
- *   org switcher, and Settings; TopBar is retired.
+ * - IA-1: Sidebar renders its flat primary list, footer-pinned Settings, theme
+ *   toggle, and org switcher; TopBar is retired.
  * - IA-2: Default landing route resolves to Home/Dashboard.
- * - THR-140 Slice 1: corrected Operate / Organization / Govern / Evidence grouping.
+ * - THR-140 seq 208: flattened primary navigation preserves short-window height.
  */
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -78,30 +78,25 @@ function seedSidebarShell(
 }
 
 describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
-  test('renders the corrected Slice 1 crosswalk in four named nav landmarks', async () => {
+  test('renders the usage-ordered items in one named primary navigation landmark', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
       // Scope to the sidebar — the AppBar now mirrors the page name (e.g.
       // "Home"), so unscoped getByText would match twice.
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      expect(aside.getByText('Operate')).toBeInTheDocument();
-      expect(aside.getByText('Organization')).toBeInTheDocument();
-      expect(aside.getByText('Govern')).toBeInTheDocument();
-      expect(aside.getByText('Evidence')).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Home' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Threads' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Tasks' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Jobs' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Operate' })).getByRole('link', { name: 'Todos' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Agents' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Work Hours' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Settings' })).toBeInTheDocument();
-      expect(within(aside.getByRole('navigation', { name: 'Govern' })).getByRole('link', { name: 'Skills' })).toBeInTheDocument();
-      const evidence = within(aside.getByRole('navigation', { name: 'Evidence' }));
-      ['Knowledge', 'Artifacts', 'Audit', 'Dreams', 'Usage', 'Health'].forEach((name) => {
-        expect(evidence.getByRole('link', { name })).toBeInTheDocument();
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
+      const primaryItems = within(aside.getByRole('navigation', { name: 'Primary navigation items' }));
+      const orderedNames = [
+        'Home', 'Threads', 'Tasks', 'Jobs', 'Todos', 'Agents', 'Work Hours',
+        'Skills', 'Knowledge', 'Artifacts', 'Audit', 'Dreams', 'Usage', 'Health',
+      ];
+      orderedNames.forEach((name) => {
+        expect(primaryItems.getByRole('link', { name })).toBeInTheDocument();
+      });
+      expect(primaryItems.queryByRole('link', { name: 'Settings' })).toBeNull();
+      ['Operate', 'Organization', 'Govern', 'Evidence'].forEach((name) => {
+        expect(aside.queryByRole('navigation', { name })).toBeNull();
       });
     });
   });
@@ -115,7 +110,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // and is no longer a native footer combobox.
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
       // Context line shows the team (active org slug) under the wordmark.
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
       expect(aside.getByText(SLUG)).toBeInTheDocument();
     });
   });
@@ -141,13 +136,17 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('renders Settings in Organization linking to the settings route', async () => {
+  test('renders Settings in the footer linking to the settings route', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const settings = within(screen.getByRole('navigation', { name: 'Organization' })).getByRole('link', { name: 'Settings' });
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
+      const primaryItems = aside.getByRole('navigation', { name: 'Primary navigation items' });
+      const settings = aside.getByRole('link', { name: 'Settings' });
       expect(settings).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
+      expect(primaryItems).not.toContainElement(settings);
+      expect(settings.compareDocumentPosition(aside.getByLabelText('Account: You, Founder')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
@@ -177,20 +176,18 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const nav = screen.getByRole('navigation', { name: /Primary navigation/i });
+      const nav = screen.getByRole('navigation', { name: 'Primary navigation' });
       expect(nav.tagName).toBe('ASIDE');
     });
   });
 
-  test('exposes distinct landmarks and a non-color active cue', async () => {
+  test('exposes the primary-items landmark and a non-color active cue', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
       expect(screen.getByRole('region', { name: 'Organization switcher' })).toBeInTheDocument();
-      ['Operate', 'Organization', 'Govern', 'Evidence'].forEach((name) => {
-        expect(screen.getByRole('navigation', { name })).toBeInTheDocument();
-      });
+      expect(screen.getByRole('navigation', { name: 'Primary navigation items' })).toBeInTheDocument();
       const home = screen.getByRole('link', { name: 'Home' });
       expect(home).toHaveAttribute('aria-current', 'page');
       expect(home).toHaveClass('border-l-2', 'border-l-accent');
@@ -198,7 +195,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('keeps the regrouped nav and account context reachable by Tab and Shift+Tab', async () => {
+  test('keeps the flat nav, footer Settings, and account context reachable by Tab and Shift+Tab', async () => {
     seedSidebarShell();
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
@@ -213,7 +210,6 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       screen.getByRole('link', { name: 'Todos' }),
       screen.getByRole('link', { name: 'Agents' }),
       screen.getByRole('link', { name: 'Work Hours' }),
-      screen.getByRole('link', { name: 'Settings' }),
       screen.getByRole('link', { name: 'Skills' }),
       screen.getByRole('link', { name: 'Knowledge' }),
       screen.getByRole('link', { name: 'Artifacts' }),
@@ -221,6 +217,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       screen.getByRole('link', { name: 'Dreams' }),
       screen.getByRole('link', { name: 'Usage' }),
       screen.getByRole('link', { name: 'Health' }),
+      screen.getByRole('link', { name: 'Settings' }),
       screen.getByLabelText('Account: You, Founder'),
     ];
     for (const target of focusOrder) {
@@ -228,13 +225,13 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       expect(target).toHaveFocus();
     }
     await user.tab({ shift: true });
-    expect(screen.getByRole('link', { name: 'Health' })).toHaveFocus();
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveFocus();
   });
 });
 
 describe('BUG-08: real Day-N context line (wired to org_age_days)', () => {
   function aside() {
-    return within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+    return within(screen.getByRole('navigation', { name: 'Primary navigation' }));
   }
 
   test('renders "Day N · <team>" from org_age_days when positive', async () => {
@@ -274,7 +271,7 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       expect(screen.getByText('Jobs').closest('a')).not.toBeNull();
     });
     // No nav-count-badge rendered anywhere in the entire sidebar
-    const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+    const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
     expect(aside.queryByTestId('nav-count-badge')).toBeNull();
   });
 
@@ -287,14 +284,14 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
     await waitFor(() => {
       // Scope to the sidebar — the AppBar mirrors the page name (e.g. "Home"),
       // so unscoped getByText would match twice.
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
-      // Operate group
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
+      // Flat primary navigation
       expect(aside.getByText('Home').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dashboard`);
       expect(aside.getByText('Threads').closest('a')).toBeInTheDocument();
       expect(aside.getByText('Tasks').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
       expect(aside.getByText('Jobs').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs`);
       expect(aside.getByText('Todos').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/todos`);
-      // Organization, Govern, and Evidence
+      // Remaining primary items plus footer-pinned Settings
       expect(aside.getByText('Agents').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/agents`);
       expect(aside.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
       expect(aside.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
@@ -371,23 +368,8 @@ describe('IA-2: Default landing = Home', () => {
   });
 });
 
-describe('THR-140 Slice 1: Nav grouping', () => {
-  test('group labels appear in the corrected crosswalk order', async () => {
-    seedSidebarShell();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    await waitFor(() => {
-      const operateEl = screen.getByText('Operate');
-      const organizationEl = screen.getByText('Organization');
-      const governEl = screen.getByText('Govern');
-      const evidenceEl = screen.getByText('Evidence');
-      expect(operateEl.compareDocumentPosition(organizationEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(organizationEl.compareDocumentPosition(governEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(governEl.compareDocumentPosition(evidenceEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-  });
-
-  test('crosswalk nav items link to their unchanged routes', async () => {
+describe('THR-140 seq 208: flat navigation', () => {
+  test('flat navigation items link to their unchanged routes', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
@@ -400,7 +382,7 @@ describe('THR-140 Slice 1: Nav grouping', () => {
   });
 });
 
-describe('Operate surfaces', () => {
+describe('Sidebar-routed surfaces', () => {
   test('renders Usage surface', async () => {
     seedSidebarShell();
     // Seed token endpoints so UsagePage doesn't error
@@ -465,11 +447,11 @@ describe('Operate surfaces', () => {
 });
 
 describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surface)', () => {
-  test('Skills nav item is present in Govern', async () => {
+  test('Skills nav item is present in the flat primary navigation', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
       expect(aside.getByText('Skills')).toBeInTheDocument();
     });
   });
@@ -478,10 +460,10 @@ describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surf
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
       expect(aside.getByText('Skills')).toBeInTheDocument();
     });
-    const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+    const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
     expect(aside.queryByText('Proposal review')).toBeNull();
   });
 
@@ -489,10 +471,10 @@ describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surf
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {
-      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      const aside = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
       expect(aside.getByText('Skills')).toBeInTheDocument();
     });
-    const nav = screen.getByRole('navigation', { name: /Primary navigation/i });
+    const nav = screen.getByRole('navigation', { name: 'Primary navigation' });
     const links = nav.querySelectorAll('a[href*="skills/proposals"]');
     expect(links.length).toBe(0);
   });
