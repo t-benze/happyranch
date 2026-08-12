@@ -358,10 +358,13 @@ def next_recurring_occurrence(rule: dict, after: datetime) -> datetime | None:
     calendar = rrule(_RRULE_FREQUENCIES[rule["freq"]], **kwargs)
     if after.tzinfo is None:
         after = after.replace(tzinfo=timezone.utc)
+    after_utc = after.astimezone(timezone.utc)
     search_after = after.astimezone(local_tz).replace(tzinfo=None)
     while candidate := calendar.after(search_after, inc=False):
         localized = _localize_or_skip(candidate, tz_name)
         if localized is not None:
-            return localized.astimezone(timezone.utc)
+            candidate_utc = localized.astimezone(timezone.utc)
+            if candidate_utc > after_utc:
+                return candidate_utc
         search_after = candidate
     return None

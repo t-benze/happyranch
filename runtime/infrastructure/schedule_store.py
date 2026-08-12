@@ -79,7 +79,7 @@ class ScheduleStore:
     def _row_to_model(self, row) -> ScheduleRecord:
         try:
             kind = ScheduleKind(row["kind"])
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise UnknownScheduleKindError(
                 f"unknown schedule kind {row['kind']!r} for {row['id']}"
             ) from exc

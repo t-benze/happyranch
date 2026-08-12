@@ -161,3 +161,12 @@ def test_until_is_inclusive_by_local_date_across_fall_back():
     occurrence = next_recurring_occurrence(rule, datetime(2026, 10, 31, tzinfo=timezone.utc))
     assert occurrence == datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
     assert next_recurring_occurrence(rule, occurrence) is None
+
+
+def test_fall_back_candidate_is_strictly_after_second_local_instance():
+    rule = _rule(anchor_date="2026-11-01", time="01:30", tz="America/New_York")
+    after_second_instance = datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc)
+
+    assert next_recurring_occurrence(rule, after_second_instance) == datetime(
+        2026, 11, 2, 6, 30, tzinfo=timezone.utc
+    )
