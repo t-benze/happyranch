@@ -361,8 +361,8 @@ class Orchestrator:
                 f"You are {agent_name}. Use the start-task skill to handle this task.\n"
             )
         # role_guidance is the per-task overlay (managers get the capabilities
-        # block; workers get nothing extra beyond the brief). Empty prompt =>
-        # omit the line entirely so workers don't see a dangling block scalar.
+        # block; workers only get a blocked-jobs resume header when applicable).
+        # Empty prompt => omit the line so workers don't see a dangling block scalar.
         role_guidance_block = (
             f"  role_guidance: |\n{_indent(prompt, '    ')}\n"
             if prompt and prompt.strip()

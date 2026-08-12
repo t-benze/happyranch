@@ -327,6 +327,8 @@ The runtime primitive for waiting on external conditions is the existing jobs pl
 4. The task remains `in_progress(blocked_on_job)` until the job is terminal. The normal blocked-on-job resume path reinvokes the task owner with the job result.
 5. On resume, the task owner inspects the job output. It reports `done` only if the job proves the external condition resolved successfully. Failure, timeout, or a missing/disputed result must produce a revise/fail/escalate decision — never a false completion.
 
+The same self-block and resume path applies to a delegated subtask; it receives the job result before continuing its brief.
+
 Do not infer external success from an intermediate signal. The poller job — not the task owner's session — reaches the terminal verdict; the task owner gates completion on that verdict alone.
 
 Example: a task that must land a pull request waits on that PR's external CI through this path; the engineering-domain specifics (SHA-pinning, settle window, guarded-merge gates) live in the jobs skill and agent guides.

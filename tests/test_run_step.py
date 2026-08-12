@@ -968,6 +968,35 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
     assert "Do NOT improvise" in prompt
 
 
+def test_build_agent_prompt_subtask_includes_blocked_jobs_resume_header(
+    runtime, db,
+):
+    """A resumed delegated subtask receives its job-outcome pointer."""
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+
+    db.insert_task(TaskRecord(
+        id="T-SUB", brief="wait for JOB-1", team="engineering",
+        assigned_agent="dev_agent", task_type="subtask", parent_task_id="T-PAR",
+    ))
+    AuditLogger(db).log_task_resumed_from_jobs(
+        task_id="T-SUB",
+        blocking_job_ids=["JOB-1"],
+        trigger="job_terminal",
+        triggering_job_id="JOB-1",
+        job_outcomes={"JOB-1": "completed"},
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    task = db.get_task("T-SUB")
+    prompt = _build_agent_prompt(orch, task, "dev_agent")
+
+    assert "BLOCKED-JOBS-RESULTS" in prompt
+    assert "JOB-1" in prompt
+
+
 def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator

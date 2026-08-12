@@ -1023,7 +1023,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     """
     from runtime.orchestrator.capabilities import build_capabilities_prompt
     if task.task_type != "task":
-        return ""   # leaf sub-task: per-task instruction is the brief
+        # Leaf subtask instruction is the brief, except a resumed job-block
+        # needs its outcome pointer to avoid resubmitting the same job (THR-161).
+        return _blocked_jobs_resume_header_if_applicable(orch, task.id) or ""
     from runtime.orchestrator import prompt_loader
     is_mgr = orch.teams.is_team_manager(agent)
     agents_for_prompt: list[dict] = []
