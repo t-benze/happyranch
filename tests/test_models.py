@@ -442,6 +442,17 @@ def test_fanout_child_basic():
     assert fc.prompt == "Implement feature X"
     assert fc.then == []
     assert fc.expect_verdict is None
+    assert fc.revisit_of_task_id is None
+
+
+def test_fanout_child_accepts_revisit_of_task_id():
+    from runtime.models import FanoutChild
+    fc = FanoutChild(
+        agent="dev_agent",
+        prompt="Retry feature X",
+        revisit_of_task_id="TASK-123",
+    )
+    assert fc.revisit_of_task_id == "TASK-123"
 
 
 def test_fanout_child_rejects_then_phase1():

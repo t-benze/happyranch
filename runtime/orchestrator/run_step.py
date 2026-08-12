@@ -565,11 +565,30 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 orch._queue.put_nowait(orch._slug, task_id)
             return
 
+        for i, child in enumerate(decision.children):
+            retry_link_err = _check_retry_link_required(
+                orch,
+                task_id,
+                target_agent=child.agent,
+                revisit_of_task_id=child.revisit_of_task_id,
+            )
+            if retry_link_err is not None:
+                _reject_retry_link_decision(
+                    orch,
+                    task_id,
+                    agent,
+                    next_count,
+                    f"fanout child {i + 1}: {retry_link_err}",
+                )
+                return
+
         # Spawn children immediately — no review gate (founder ruling THR-012 msg 129/131).
         width = len(decision.children)
         children_payload = []
         for c in decision.children:
             cd = {"agent": c.agent, "prompt": c.prompt}
+            if c.revisit_of_task_id is not None:
+                cd["revisit_of_task_id"] = c.revisit_of_task_id
             if c.expect_verdict is not None:
                 cd["expect_verdict"] = c.expect_verdict
             if c.then:
@@ -643,30 +662,16 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         # of a failed slice is DISALLOWED without the field.  Omission is
         # hard-rejected (feedback + re-enqueue), never silently treated as
         # an unlinked fresh dispatch that resets the ceiling.
-        retry_link_err = _check_retry_link_required(orch, task_id, decision)
+        retry_link_err = _check_retry_link_required(
+            orch,
+            task_id,
+            target_agent=decision.agent,
+            revisit_of_task_id=decision.revisit_of_task_id,
+        )
         if retry_link_err is not None:
-            feedback = (
-                f"Missing revisit_of_task_id: {retry_link_err}. "
-                f"When re-delegating to an agent with a FAILED child under "
-                f"this parent, you MUST set revisit_of_task_id to the "
-                f"failed predecessor's task id."
+            _reject_retry_link_decision(
+                orch, task_id, agent, next_count, retry_link_err,
             )
-            db.insert_task_result(
-                task_id=task_id,
-                agent=agent,
-                session_id="",
-                status="completed",
-                confidence_score=0,
-                output_summary=feedback,
-                risks_flagged=[],
-            )
-            orch._audit.log_orchestration_step(
-                task_id, next_count,
-                {"action": "feedback", "reason": feedback},
-            )
-            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-            if orch._queue is not None:
-                orch._queue.put_nowait(orch._slug, task_id)
             return
 
         from runtime.models import TaskRecord
@@ -946,34 +951,79 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
 
 
 def _check_retry_link_required(
-    orch: "Orchestrator", task_id: str, decision,
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    target_agent: str | None,
+    revisit_of_task_id: str | None,
 ) -> str | None:
-    """Return an error message if the delegate decision omits
-    ``revisit_of_task_id`` when it's mandatory.
+    """Validate a retry link for a delegate or one fan-out child.
 
     THR-078 seq15: when this parent has FAILED children and the delegate
     re-targets the agent of any FAILED child, ``revisit_of_task_id`` is
-    MANDATORY — even the first retry is disallowed without the field.
-    Returns None if the link is set OR no FAILED sibling matches the
-    target agent."""
-    if decision.revisit_of_task_id is not None:
-        return None  # owner set the link; good.
-    target_agent = decision.agent
+    MANDATORY — even the first retry is disallowed without the field. A
+    supplied link must resolve to a FAILED child of this parent assigned to
+    the re-targeted agent. Returns None only for a valid retry or a fresh
+    dispatch without a link."""
     if target_agent is None:
         return None  # shouldn't happen after _validate_delegate, but safe.
     db = orch._db
     children = db.get_children(task_id)
+    failed_sibling_ids: set[str] = set()
     for cid in children:
         child = db.get_task(cid)
         if child is None:
             continue
         if child.status == TaskStatus.FAILED and child.assigned_agent == target_agent:
+            failed_sibling_ids.add(child.id)
+
+    if revisit_of_task_id is None:
+        if failed_sibling_ids:
+            failed_ids = ", ".join(sorted(failed_sibling_ids))
             return (
                 f"cannot re-delegate to {target_agent!r} without "
-                f"revisit_of_task_id — this agent has a FAILED child "
-                f"({child.id}) under the same parent"
+                f"revisit_of_task_id — this agent has FAILED child(ren) "
+                f"({failed_ids}) under the same parent"
             )
+        return None
+
+    if revisit_of_task_id not in failed_sibling_ids:
+        return (
+            f"revisit_of_task_id {revisit_of_task_id!r} must reference a "
+            f"FAILED child of this parent assigned to {target_agent!r}"
+        )
     return None
+
+
+def _reject_retry_link_decision(
+    orch: "Orchestrator",
+    task_id: str,
+    agent: str,
+    next_count: int,
+    retry_link_err: str,
+) -> None:
+    """Fail closed with feedback when a delegate or fan-out retry is invalid."""
+    feedback = (
+        f"Invalid revisit_of_task_id: {retry_link_err}. "
+        f"When re-delegating to an agent with a FAILED child under this parent, "
+        f"you MUST set revisit_of_task_id to that failed predecessor's task id."
+    )
+    db = orch._db
+    db.insert_task_result(
+        task_id=task_id,
+        agent=agent,
+        session_id="",
+        status="completed",
+        confidence_score=0,
+        output_summary=feedback,
+        risks_flagged=[],
+    )
+    orch._audit.log_orchestration_step(
+        task_id, next_count, {"action": "feedback", "reason": feedback},
+    )
+    db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
+    if orch._queue is not None:
+        orch._queue.put_nowait(orch._slug, task_id)
 
 
 def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
@@ -2525,6 +2575,7 @@ def _spawn_fanout_children(
             block_kind=BlockKind.DELEGATED if has_pipeline else None,
             session_timeout_seconds=parent.session_timeout_seconds,
             task_type=child_task_type,
+            revisit_of_task_id=child_info.get("revisit_of_task_id"),
         ))
 
     # THR-109: validate attachment refs per-child (count limit, per-child

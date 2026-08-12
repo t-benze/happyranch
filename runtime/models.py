@@ -169,6 +169,9 @@ class FanoutChild(BaseModel):
     # declared refs; its spawned first leg receives them only through
     # normal ancestor inheritance, never a duplicate link/claim.
     attachments: list[TaskAttachmentRef] | None = None
+    # THR-078: mandatory lineage link when this fan-out child retries a
+    # FAILED sibling assigned to the same agent.
+    revisit_of_task_id: str | None = None
 
 
 class ManagerSupersessionAttestation(BaseModel):
