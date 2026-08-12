@@ -477,9 +477,9 @@ eligibility audit, and per-session evidence only. Slice A2's unit-tested pure
 visibility resolver is now wired through tested custom-skill CRUD, eligibility
 store/preview/write/resolve/explain routes, the Effective Skills read-projection
 extension, and next-task-session canonical-store materialization with per-session
-success/failure evidence. The `create-skill` CLI/skill-doc path still uses the B1
-`/skills/agent` route until Slice C repoints
-it in a later PR.
+success/failure evidence. The `create-skill` CLI posts to
+`/custom-skills/agent-create`, which returns a B2 default-hidden record
+(`skill_id`, `version_id`, `content_hash`, `validation_state`, `hidden_reason`).
 
 **Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
 custom skills are governed exclusively by the immutable lifecycle ledger
@@ -552,21 +552,17 @@ plus a human-only legacy route:
   materialization, or ArtifactStore residue is produced. This is the
   proposal authoring workflow.
 
-- **B1 create-skill path (agent CLI).** The agent commands
+- **B2 create-skill path (agent CLI).** The agent commands
   ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``.
-  This is an ADDITIONAL verified-agent authoring path (THR-055 B1) that
-  sends a bearer-free HTTP POST to ``POST /api/v1/orgs/{slug}/skills/agent``.
+  This is an ADDITIONAL verified-agent authoring path (THR-055 B2) that
+  sends a bearer-free HTTP POST to
+  ``POST /api/v1/orgs/{slug}/custom-skills/agent-create``.
   Identity derivation, body-key rejection, cross-org enforcement, and
   per-binding lease/re-verification follow the same SessionTracker pattern
-  as the proposal path. The skill enters the lifecycle ledger as ``proposed``
-  and is hidden by default — no materialization occurs until eligibility
-  is configured by a founder. This replaces the proposal-review ceremony
-  for ordinary ``standard_operational`` custom skills. The created skill
-  records B1-specific provenance: nonempty task-brief digest, canonical
-  content hash, validator version, and structured findings — all committed
-  atomically in the SAME durable transaction as the package.
-  **The B2 follow-on (eligibility, human web editor, migration/cutover,
-  and proposal-review resurrection) is explicitly deferred.**
+  as the proposal path. The skill is created as a B2 default-hidden record;
+  its response contains ``skill_id``, ``version_id``, ``content_hash``,
+  ``validation_state``, and ``hidden_reason``. It remains hidden until a
+  founder configures eligibility.
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
   is restricted to bearer-authenticated human/founder callers. Non-bearer

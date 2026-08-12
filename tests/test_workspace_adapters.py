@@ -476,7 +476,7 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
 
     # Verify with both roots — but EVERY output must name BOTH roots
     for skills_dir in (".claude/skills", ".agents/skills"):
-        lines = _skills_directory_readonly_section(skills_dir)
+        lines = _skills_directory_readonly_section(skills_dir, "frontend_engineer")
         text = "".join(lines)
 
         # Section heading exists
@@ -522,7 +522,24 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
                 f"must not claim {forbidden!r}"
             )
 
-        # Recommends lifecycle proposal workflow
+        assert "happyranch skills create --from-file <path>" in text
+        assert "pilot roster" in text
+        assert "happyranch skills propose --from-file <path>" in text
+
+
+def test_skills_directory_rendered_guidance_avoids_pilot_only_commands_for_non_pilot(
+    test_settings, tmp_dir, runtime,
+) -> None:
+    """A non-pilot's rendered prompt must route skill needs to its manager/thread."""
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    adapter = CodexWorkspaceAdapter(test_settings, runtime, slug="test")
+
+    adapter.write_agents_md(workspace, "dev_agent", "You are the Dev Agent.")
+
+    text = (workspace / "AGENTS.md").read_text()
+    assert "manager/thread" in text
+    assert "happyranch skills propose" not in text
+    assert "happyranch skills create" not in text
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:

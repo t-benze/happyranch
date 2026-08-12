@@ -3715,14 +3715,14 @@ class TestB1CreateSkillAgent:
 
     # ── P2: CLI literal transport, bearer, rejections ────────────────
 
-    def test_b1_cli_literal_transport_no_bearer(self, app, org_state):
-        """P2: registered parser → args.func → real route, bearer-free."""
+    def test_create_cli_uses_b2_route_and_prints_default_hidden_result(self, app, org_state, capsys):
+        """Registered CLI uses the B2 route and its default-hidden response."""
         import json, tempfile
         from unittest.mock import patch
 
         self._setup_session(org_state, "TASK-B1-CLI", "sess-b1-cli")
         package = {
-            "slug": "b1-cli-skill", "name": "CLI Skill",
+            "slug": "frontend-development", "name": "CLI Skill",
             "description": "CLI test", "skill_md": "# B1 CLI\n\nTest.\n",
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
@@ -3757,7 +3757,8 @@ class TestB1CreateSkillAgent:
                         url, json=kw.get("json", {}), params=kw.get("params", {}),
                         headers=self._h,
                     )
-                    return _FR(r.status_code, r.json())
+                    captured["response_json"] = r.json()
+                    return _FR(r.status_code, captured["response_json"])
                 def close(self): pass
                 def __enter__(self): return self
                 def __exit__(self, *a): pass
@@ -3775,16 +3776,27 @@ class TestB1CreateSkillAgent:
             assert args.func.__name__ == "cmd_skills_create"
             assert captured["base_url"] == "http://127.0.0.1:8888"
             assert captured["method"] == "POST"
-            assert captured["path"] == "/api/v1/orgs/alpha/skills/agent"
+            assert captured["path"] == "/api/v1/orgs/alpha/custom-skills/agent-create"
             assert captured["params"] == {"session_id": "sess-b1-cli"}
             assert captured["json_body"] == package
             assert captured["headers"] == {"X-HappyRanch-Surface": "cli"}
             assert "Authorization" not in captured["headers"]
             assert "authorization" not in captured["headers"]
+            assert set(captured["response_json"]) == {
+                "skill_id", "version_id", "content_hash", "validation_state", "hidden_reason",
+            }
 
-            from runtime.skills.lifecycle import stores as lifecycle_stores
-            pkg = lifecycle_stores.get_latest_package_version(org_state.db, "hr:b1-cli-skill")
-            assert pkg is not None
+            output = capsys.readouterr().out
+            assert "validation_state: valid" in output
+            assert "hidden_reason: no_eligibility_policy" in output
+            assert "status:" not in output
+            assert "PROPOSED" not in output
+            conn = getattr(org_state.db, "_conn", org_state.db)
+            row = conn.execute(
+                "SELECT id FROM custom_skills WHERE org_slug=? AND slug=?",
+                ("alpha", "frontend-development"),
+            ).fetchone()
+            assert row is not None
         finally:
             from pathlib import Path
             Path(pkg_path).unlink(missing_ok=True)

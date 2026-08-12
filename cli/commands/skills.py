@@ -692,7 +692,7 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_skills_create(args: argparse.Namespace) -> None:
-    """Create a custom skill via the agent-only session-bound B1 route.
+    """Create a custom skill via the agent-only session-bound B2 route.
 
     Agent callers must supply only their opaque active session ID — the
     server derives org, task_id, and agent_name from the SessionTracker
@@ -706,9 +706,10 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     no Authorization header. The server derives identity from the session
     binding.
 
-    This is an ADDITIONAL verified-agent authoring path (§B1). The created
-    skill enters PROPOSED status and is hidden by default. B2 eligibility,
-    human editor, effective visibility, and migration/cutover are deferred.
+    The created skill is stored immediately as a default-hidden custom-skill
+    record. It becomes visible to the assignee only after a founder configures
+    eligibility through the B2 web UI or API; no separate proposal, review,
+    or publish step exists.
     """
     if not args.from_file:
         print("error: --from-file <path> is required", file=sys.stderr)
@@ -768,7 +769,7 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
 
     resp = token_free_client.post(
-        f"/api/v1/orgs/{org}/skills/agent",
+        f"/api/v1/orgs/{org}/custom-skills/agent-create",
         json=body,
         params={"session_id": args.session_id},
     )
@@ -778,14 +779,12 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
         print(f"Skill created successfully.")
         print(f"  skill_id:  {result['skill_id']}")
         print(f"  version_id: {result['version_id']}")
-        print(f"  version:   {result['version']}")
-        print(f"  status:    {result['status']}")
         print(f"  content_hash: {result['content_hash']}")
-        if result.get("content_artifact_key"):
-            print(f"  artifact:  {result['content_artifact_key']}")
+        print(f"  validation_state: {result['validation_state']}")
+        print(f"  hidden_reason: {result['hidden_reason']}")
         print()
-        print("This skill is now in PROPOSED status and hidden by default.")
-        print("It will not be visible to any agent until a founder configures eligibility (B2).")
+        print("This skill is created immediately and hidden by default.")
+        print("It becomes visible to the assignee only after a founder configures eligibility via the B2 web UI or API.")
     else:
         detail = resp.json().get("detail", resp.text)
         print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
@@ -981,7 +980,7 @@ def register(sub) -> None:
     # --- skills create --from-file <path> --session-id <session-id> ---
     p_create = skills_sub.add_parser(
         "create",
-        help="Create a custom skill (agent-only, session-bound, B1)",
+        help="Create a custom skill (agent-only, session-bound, B2)",
     )
     p_create.add_argument(
         "--from-file", dest="from_file", required=True,

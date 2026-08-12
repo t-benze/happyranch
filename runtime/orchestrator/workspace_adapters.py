@@ -2000,13 +2000,13 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     ]
 
 
-def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
+def _skills_directory_readonly_section(skills_dir: str, agent_name: str) -> list[str]:
     """System-injected operational guidance: do not edit managed skill links.
 
     Skill entries under BOTH ``.claude/skills`` and ``.agents/skills`` are
     daemon-materialized from the canonical skill store. This section
     directs agents NOT to edit these managed links and to use the
-    lifecycle/proposal workflow instead.
+    lifecycle workflow instead.
 
     **IMPORTANT:** This is operational guidance, NOT enforcement. The
     executor and daemon share the same OS identity — there is NO OS-level
@@ -2020,7 +2020,7 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     claim write/chmod/ACL denial, OS-enforced isolation, or automatic
     same-UID repair.
     """
-    return [
+    lines = [
         "## Skills Directory (do not edit)\n",
         "`.claude/skills/` and `.agents/skills/` are materialized by the ",
         "daemon from the canonical skill store under BOTH managed roots. ",
@@ -2039,12 +2039,26 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "sources are not automatically repaired or trusted. Do not "
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",
-        "If a skill's content is wrong or a new skill is needed, propose the",
-        "change through the skill lifecycle instead of editing files directly:",
-        "```",
-        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
-        "```\n",
     ]
+    if agent_name in {"frontend_engineer", "product_lead"}:
+        lines.extend([
+            "If a skill's content is wrong, propose the change through the skill ",
+            "lifecycle instead of editing files directly:\n",
+            "```",
+            "happyranch skills propose --from-file <path> --session-id <your-session-id>",
+            "```\n",
+            "If a new skill is needed, pilot roster agents should see the `create-skill` ",
+            "guidance and use:\n",
+            "```",
+            "happyranch skills create --from-file <path> --session-id <your-session-id>",
+            "```\n",
+        ])
+    else:
+        lines.extend([
+            "If a skill's content is wrong or a new skill is needed, raise it through ",
+            "your manager/thread instead of running a skill-lifecycle command.\n",
+        ])
+    return lines
 
 
 def _non_stop_command_warning_section() -> list[str]:
@@ -2485,7 +2499,7 @@ class ClaudeWorkspaceAdapter:
             callback_note + "\n",
             *_shared_artifacts_section(),
             *_thread_talk_dispatch_doctrine_section(),
-            *_skills_directory_readonly_section(skills_dir),
+            *_skills_directory_readonly_section(skills_dir, agent_name),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
             "## Task Recall\n",

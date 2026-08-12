@@ -819,15 +819,15 @@ exposure directly from disk (no daemon round-trip):
 
 ### 4.5 THR-055 Lifecycle-Ledger Custom Skills (Internal Pilot)
 
-#### THR-055 B2 additive custom-skill schema (dark)
+#### THR-055 B2 additive custom-skill schema
 
-The runtime has additive, presently unwired B2 persistence tables:
+The runtime has additive B2 persistence tables:
 `custom_skills`, immutable `custom_skill_versions`,
 `custom_skill_eligibility_rules`, `custom_skill_eligibility_events`,
 `custom_skill_materializations`, and `custom_skill_events`. They store B2
 identity/version provenance, visibility-policy audit, and session evidence.
-Slice A2 now provides a unit-tested pure visibility resolver with zero callers;
-Slice A3 alone will add route, writer, and materializer behavior.
+The unit-tested visibility resolver is wired through custom-skill CRUD,
+eligibility, effective-skills projection, and session materialization routes.
 
 User-authored custom skills are governed by an immutable lifecycle ledger,
 replacing the legacy per-org filesystem store (`<org_root>/skills/`).
@@ -839,14 +839,14 @@ states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 **Agent authority.** Agents may submit proposals and create skills through
 two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
 
-1. **B1 create-skill session CLI (THR-055 B1).** The agent invokes
+1. **B2 create-skill session CLI (THR-055 B2).** The agent invokes
    ``happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]``.
    This is an **additional verified-agent authoring route** at
-   ``POST /api/v1/orgs/{slug}/skills/agent``. It is bearer-free and derives
-   identity only from the verified SessionTracker context. A created skill is
-   ``proposed`` and hidden by default; it is neither published nor effective.
-   B2 eligibility, human web editing, publishing/effective visibility,
-   migration/cutover, and proposal review remain deferred.
+   ``POST /api/v1/orgs/{slug}/custom-skills/agent-create``. It is bearer-free
+   and derives identity only from the verified SessionTracker context. A
+   created skill is a B2 default-hidden record; the response contains
+   ``skill_id``, ``version_id``, ``content_hash``, ``validation_state``, and
+   ``hidden_reason``.
 
 2. **Separate legacy agent-proposal route.** The agent commands
    ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
@@ -910,14 +910,12 @@ The shipping CLI forms are::
     happyranch skills create --from-file <path> \
       --session-id <session-id> [--org <slug>]
 
-The B1 ``skills create`` path (THR-055 B1) is an ADDITIONAL verified-agent
-authoring route at ``POST /api/v1/orgs/{slug}/skills/agent`` that shares
+The B2 ``skills create`` path (THR-055 B2) is an ADDITIONAL verified-agent
+authoring route at ``POST /api/v1/orgs/{slug}/custom-skills/agent-create`` that shares
 the same SessionTracker identity derivation, body-key rejection, and
-binding-lease pattern as the proposal route. The created skill enters
-``proposed`` status, is hidden by default, and carries B1-specific
-provenance (task-brief digest, validator version, findings) committed
-atomically. **B2 eligibility, human editor, effective visibility,
-migration/cutover, and proposal-review resurrection are explicitly deferred.**
+binding-lease pattern as the proposal route. The created skill is a B2
+default-hidden record and returns ``skill_id``, ``version_id``,
+``content_hash``, ``validation_state``, and ``hidden_reason``.
 
 There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
 or mechanisms. Identity is derived server-side exclusively from the verified
