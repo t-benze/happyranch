@@ -370,6 +370,95 @@ def test_mark_failed_from_planned_and_reopen_durability(tmp_path) -> None:
     assert projection.reason == "conformance_probe_failed"
 
 
+def _seed_projected_operation(store, *, token: str, state: str) -> str:
+    """Use the public mint/receive/projection seam, never raw SQL fixtures."""
+    store.mint_authority(
+        token_plaintext=token, name="custom-cli", intended_profile_name="forget-profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    operation_id = store.reserve(token, now=2)
+    assert operation_id is not None
+    store.receive(
+        token, operation_id, wrapper_sha256="f" * 64, wrapper_facts={}, children=[],
+        workspace_adapter_id="codex", now=2,
+    )
+    assert store.plan_projection(operation_id, now=3)
+    if state == "failed":
+        assert store.mark_failed(operation_id, "probe failed", now=4)
+    elif state == "committed":
+        assert store.mark_committed(
+            operation_id, adapter_id="forget-adapter", profile_name="forget-profile", now=4,
+        )
+    return operation_id
+
+
+def test_forget_failed_operation_removes_its_authority_records_and_appends_audit_event(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_projected_operation(store, token="hrreg_forget_failed", state="failed")
+    event_count = store._conn.execute("SELECT COUNT(*) FROM direct_connect_events").fetchone()[0]
+
+    assert store.forget_operation(operation_id) == "forget-profile"
+
+    for table in (
+        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    events = store._conn.execute(
+        "SELECT event_type, detail FROM direct_connect_events ORDER BY created_at, rowid"
+    ).fetchall()
+    assert len(events) == event_count + 1
+    assert tuple(events[-1]) == ("forgotten", "terminal failed operation removed")
+
+
+@pytest.mark.parametrize("state", ["planned", "committed"])
+def test_forget_refuses_nonfailed_projection_without_mutating_rows(tmp_path, state) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_projected_operation(store, token=f"hrreg_forget_{state}", state=state)
+    before = {
+        table: store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
+            "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+            "direct_connect_events",
+        )
+    }
+
+    assert store.forget_operation(operation_id) is None
+
+    after = {
+        table: store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in before
+    }
+    assert after == before
+
+
+def test_forget_refuses_unknown_operation_without_mutation(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    _seed_projected_operation(store, token="hrreg_forget_known", state="planned")
+    before = {
+        table: store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
+            "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+            "direct_connect_events",
+        )
+    }
+
+    assert store.forget_operation("missing-operation") is None
+    after = {
+        table: store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in before
+    }
+    assert after == before
+
+
 def test_get_receipt_artifacts_returns_wrapper_and_children(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 

@@ -159,3 +159,49 @@ def test_commit_probe_failure_returns_failed_profile_state(client, tmp_path, mon
     body = response.json()
     assert body["profile_state"] == "failed"
     assert "reason" in body
+
+
+def test_forget_unknown_operation_returns_404(client):
+    tc, _state = client
+
+    response = tc.post("/api/v1/runtime/custom-cli/does-not-exist/forget")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("projection_state", ["planned", "committed"])
+def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state):
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    if projection_state == "committed":
+        assert state.direct_connect_authority_store.mark_committed(
+            operation_id, adapter_id="custom-profile-adapter", profile_name="custom-profile",
+        )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 409
+    assert f"projection state is '{projection_state}'" in response.json()["detail"]
+    assert state.direct_connect_authority_store.get_projection(operation_id).state == projection_state
+
+
+def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "conformance probe failed")
+    wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
+    assert wrapper.exists()
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 200
+    assert response.json() == {"operation_id": operation_id, "status": "forgotten"}
+    assert not wrapper.exists()
+    for table in (
+        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

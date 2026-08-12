@@ -560,6 +560,50 @@ class DirectConnectAuthorityStore:
         with self._lock:
             return self._read_projection(self._conn.cursor(), operation_id)
 
+    def forget_operation(self, operation_id: str) -> str | None:
+        """Delete a terminal-failed operation and return its profile name.
+
+        The caller owns deletion of the derived wrapper path.  No state other
+        than a durable failed projection is eligible for removal.
+        """
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            projection = cursor.execute(
+                "SELECT state FROM direct_connect_projections WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if projection is None or projection["state"] != "failed":
+                return None
+            operation = cursor.execute(
+                """SELECT token_fingerprint, intended_profile_name
+                   FROM direct_connect_operations WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                return None
+            token_fingerprint = operation["token_fingerprint"]
+            intended_profile_name = operation["intended_profile_name"]
+            cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
+            cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
+            cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))
+            cursor.execute("DELETE FROM direct_connect_projections WHERE operation_id = ?", (operation_id,))
+            cursor.execute(
+                """DELETE FROM direct_connect_reservations
+                   WHERE token_fingerprint = ? AND operation_id = ?""",
+                (token_fingerprint, operation_id),
+            )
+            cursor.execute(
+                "DELETE FROM direct_connect_authorities WHERE token_fingerprint = ?",
+                (token_fingerprint,),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, ?, ?, 'forgotten', 'terminal failed operation removed', ?)""",
+                (str(uuid.uuid4()), operation_id, token_fingerprint, time.time()),
+            )
+            return intended_profile_name
+
     def mark_committed(
         self, operation_id: str, *, adapter_id: str, profile_name: str, now: float | None = None
     ) -> bool:
