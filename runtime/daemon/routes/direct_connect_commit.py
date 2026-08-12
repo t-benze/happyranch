@@ -28,6 +28,12 @@
     write its wrapper in the connect prompt, and (b) detect when the
     candidate CLI's ``/connect`` call has landed and then observe the
     daemon-owned projection result by polling.
+
+``POST /runtime/custom-cli/{operation_id}/forget``
+    Master-bearer-authed cleanup route for a terminal FAILED custom-CLI
+    operation. It is the ONLY route that deletes rows from the direct-connect
+    authority store. It refuses a missing, planned, or committed projection,
+    then removes its failed authority records and the derived wrapper file.
 """
 from __future__ import annotations
 
@@ -86,3 +92,32 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         "profile_state": profile_state,
         "reason": reason,
     }
+
+
+@router.post("/runtime/custom-cli/{operation_id}/forget", dependencies=[require_token()])
+async def forget(operation_id: str, request: Request) -> dict[str, str]:
+    daemon = request.app.state.daemon
+    authority_store = daemon.direct_connect_authority_store
+    if authority_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct authority unavailable"
+        )
+    projection = authority_store.get_projection(operation_id)
+    if projection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
+    if projection.state != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"refused: projection state is '{projection.state}', not 'failed' "
+                "— this operation is still in flight or is a live connection"
+            ),
+        )
+    intended_profile_name = authority_store.forget_operation(operation_id)
+    if intended_profile_name is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
+    wrapper_destination = canonical_wrapper_destination(
+        getattr(authority_store, "_runtime_root", None), intended_profile_name
+    )
+    wrapper_destination.unlink(missing_ok=True)
+    return {"operation_id": operation_id, "status": "forgotten"}

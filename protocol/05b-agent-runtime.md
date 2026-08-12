@@ -166,6 +166,14 @@ Slice A's `received_nonlaunchable` receipt:
   same coordinator directly; therefore completing a connection does not
   depend on a browser calling `/commit`, while `/connect` remains a strict
   zero-subprocess receipt boundary.
+  `POST /api/v1/runtime/custom-cli/{operation_id}/forget` is the separate
+  master-bearer-authenticated operator cleanup for a terminal `failed`
+  projection. It is the only direct-connect route that deletes authority-store
+  rows: it refuses missing, `planned`, and `committed` operations, deletes the
+  failed operation's durable authority/receipt/projection records, and removes
+  its canonical wrapper file if it still exists. `happyranch custom-cli forget
+  <profile>` first reads the status route and refuses to call this cleanup
+  route unless the profile state is `failed`.
 - **Slice 2 (launch fence — proof, not new gating).** `build_executor()` /
   `ExecutorRegistry._resolve_custom_adapter_eligibility()` /
   `CustomAdapterExecutor._launch()` already refuse to construct or launch

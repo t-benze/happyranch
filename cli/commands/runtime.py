@@ -227,6 +227,33 @@ def cmd_custom_cli_status(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
+    """Forget a failed direct custom-CLI connection for a profile name."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    body = _get_custom_cli_status(client, args.profile_name)
+    profile_state = body.get("profile_state")
+    if profile_state != "failed":
+        print(
+            f"refused: profile_state is '{profile_state or 'none'}', not 'failed' — nothing to forget",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    operation_id = body.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        print("refused: failed profile has no operation id — nothing to forget", file=sys.stderr)
+        sys.exit(1)
+    response = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+    if not _ok(response):
+        return
+    print(f"forgot failed custom-CLI connection for {args.profile_name}")
+    print("wrapper file removed or already absent")
+
+
 
 def register(sub) -> None:
     p_init_runtime = sub.add_parser(
@@ -284,3 +311,9 @@ def register(sub) -> None:
         help="Poll for up to 35 seconds for a committed or failed outcome",
     )
     p_custom_cli_status.set_defaults(func=cmd_custom_cli_status)
+
+    p_custom_cli_forget = custom_cli_sub.add_parser(
+        "forget", help="Remove a failed direct custom-CLI connection",
+    )
+    p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
+    p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)

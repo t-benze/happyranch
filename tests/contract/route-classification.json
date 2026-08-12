@@ -142,6 +142,7 @@
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
+    "POST /api/v1/runtime/custom-cli/{operation_id}/forget": "terminal-failed direct custom-CLI cleanup; founder/operator CLI route, never browser-consumed",
     "POST /api/v1/runtime/adapters/{adapter_id}/approve": "THR-107 slice 3: pending-approval UI removed from the normal Settings/onboarding flow (superseded by direct-connect Connect->Connected); preserved as operator-only disposition tooling, no browser consumer",
     "POST /api/v1/runtime/adapters/{adapter_id}/reject": "THR-107 slice 3: pending-approval UI removed from the normal Settings/onboarding flow; preserved as operator-only disposition tooling, no browser consumer",
     "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile": "THR-107 slice 3: manual bind/recovery UI removed from the normal Settings/onboarding flow (superseded by direct-connect); preserved as operator-only disposition tooling, no browser consumer",
