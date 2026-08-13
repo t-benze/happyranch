@@ -150,6 +150,54 @@ def test_status_after_commit_reports_committed(client, tmp_path, monkeypatch):
     assert body["reason"] is None
 
 
+def test_status_hides_committed_projection_after_live_profile_is_removed(client, tmp_path, monkeypatch):
+    """A historical committed projection is not proof of a live profile."""
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination, b"#!/bin/sh\ncat\n")
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    operation_id = connect.json()["operation_id"]
+
+    def fake_probe(executable, adapter_id):
+        return AdapterOutput.model_validate({
+            "success": True, "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+            "adapter_metadata": {"adapter": adapter_id, "adapter_version": "1.0.0", "contract_version": 1},
+        })
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+    assert tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit").status_code == 200
+    assert tc.delete("/api/v1/executors/runtime/profiles/status-profile").status_code == 200
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["operation_id"] == operation_id
+    assert response.json()["profile_state"] is None
+    assert response.json()["reason"] is None
+
+
 def test_status_after_failed_projection_reports_reason(client, tmp_path):
     tc, state = client
     mint = tc.post("/api/v1/auth/registration-token/runtime", json={

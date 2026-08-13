@@ -42,6 +42,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
 from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.orchestrator.executor_registry import get_registry
+from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
 router = APIRouter()
 
@@ -86,6 +88,17 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         if projection is not None:
             profile_state = projection.state
             reason = projection.reason
+            if profile_state == "committed":
+                # A projection is historical evidence of how a profile was
+                # created, not proof that its profile still exists. The
+                # durable runtime store is authoritative; the registry check
+                # also ensures an immediately removed profile is not reported
+                # as connected before a daemon restart.
+                stored_profiles = load_runtime_profiles()
+                live_profile = get_registry().get_profile(intended_profile_name)
+                if intended_profile_name not in stored_profiles or live_profile is None:
+                    profile_state = None
+                    reason = None
     return {
         "wrapper_destination": str(wrapper_destination),
         "operation_id": operation_id,
