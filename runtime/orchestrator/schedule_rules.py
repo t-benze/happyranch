@@ -368,3 +368,34 @@ def next_recurring_occurrence(rule: dict, after: datetime) -> datetime | None:
                 return candidate_utc
         search_after = candidate
     return None
+
+
+def next_schedule_occurrence(
+    kind: str,
+    recurrence: dict | None,
+    *,
+    after: datetime,
+) -> datetime | None:
+    """Return the next occurrence for either repeating schedule kind.
+
+    This is the shared lifecycle seam for stale skips and failed attempts;
+    one-shot schedules deliberately have no next occurrence.
+    """
+    if recurrence is None:
+        return None
+    if kind == "weekly":
+        return next_weekly_occurrence(
+            recurrence["day"], recurrence["time"], recurrence["tz"], after=after,
+        )
+    if kind == "recurring":
+        return next_recurring_occurrence(recurrence, after=after)
+    return None
+
+
+def recurrence_until_exhausted(recurrence: dict | None) -> bool:
+    """Whether a missing next candidate represents an explicit date end.
+
+    Stored recurring rules are validated before use, so an ``until`` rule that
+    yields no further candidate has reached its inclusive local-date bound.
+    """
+    return recurrence is not None and recurrence.get("until") is not None

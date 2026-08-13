@@ -66,6 +66,7 @@ def test_due_schedule_is_claimed_and_enqueued(tmp_path):
     assert record.status == ScheduleStatus.FIRING
     # Enqueued
     assert org.schedule_queue.size == 1
+    assert any(log["action"] == "schedule_claimed" for log in db.get_audit_logs("SCHEDULE-001"))
 
 
 def test_due_schedule_not_double_fired(tmp_path):
@@ -227,6 +228,24 @@ def test_weekly_missed_slot_not_replayed_on_restart(tmp_path):
     assert record.status == ScheduleStatus.ARMED
     assert record.fire_at > now
     assert record.fire_count == 0
+
+
+def test_recurring_stale_until_ends_date_not_expired(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db, kind=ScheduleKind.RECURRING, fire_at=now - timedelta(hours=5),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": "2026-07-21", "count": None,
+        }, expires_at=now - timedelta(days=1),
+    )
+    org = _FakeOrg(db)
+    assert schedule_due_schedules(org=org, now=now) == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.FIRED
+    assert record.end_reason == "date_ended"
+    assert any(log["action"] == "schedule_fired" for log in db.get_audit_logs(record.id))
 
 
 # ── startup recovery ────────────────────────────────────────────────────

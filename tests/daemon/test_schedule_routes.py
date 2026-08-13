@@ -104,6 +104,29 @@ def test_rejects_already_fired_schedule(tmp_home, app, org_state, auth_headers):
     assert status == 409
 
 
+def test_recurring_count_exhaustion_is_terminal_only_after_successful_spawn(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state, status=ScheduleStatus.FIRING, kind=ScheduleKind.RECURRING,
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": 1,
+        },
+    )
+    status, body = _spawn(client, sid, auth_headers)
+    assert status == 200
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FIRED
+    assert record.fire_count == 1
+    assert record.end_reason == "count_exhausted"
+    # The occurrence key cannot be claimed/dispatched twice after its FIRING
+    # claim has resolved to a terminal row.
+    status, detail = _spawn(client, sid, auth_headers)
+    assert status == 409
+    assert detail["code"] == "schedule_not_firing"
+
+
 # ── successful spawn: one-shot ──────────────────────────────────────────
 
 def test_one_shot_spawn_creates_task_and_transitions_to_fired(tmp_home, app, org_state, auth_headers):

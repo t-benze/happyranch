@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import (
     default_expires_at,
+    next_recurring_occurrence,
     next_weekly_occurrence,
     validate_caps,
     validate_one_shot_horizon,
+    validate_recurring_rule,
     validate_weekly_recurrence,
 )
 
@@ -122,10 +125,33 @@ class ScheduleService:
                     f"{recurrence['tz']!r} for weekly schedules"
                 )
             timezone = recurrence["tz"]
+        elif kind == ScheduleKind.RECURRING:
+            err = validate_recurring_rule(recurrence, context="create", now=_now())
+            if err:
+                raise ScheduleServiceError(err.code)
+            now = _now()
+            candidate_rule = dict(recurrence)
+            candidate_rule["anchor_date"] = now.astimezone(ZoneInfo(recurrence["tz"])).date().isoformat()
+            expected = next_recurring_occurrence(candidate_rule, after=now)
+            if expected is None:
+                raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            recurrence = dict(recurrence)
+            recurrence["anchor_date"] = expected.astimezone(ZoneInfo(recurrence["tz"])).date().isoformat()
+            if fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next recurring occurrence; "
+                    f"expected {expected.isoformat()}, got {fire_at.isoformat()}"
+                )
+            if timezone and timezone != recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {timezone!r} must match recurrence tz "
+                    f"{recurrence['tz']!r} for recurring schedules"
+                )
+            timezone = recurrence["tz"]
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {kind.value}. "
-                "v1 supports one_shot and weekly only."
+                "supports one_shot, weekly, and recurring schedules."
             )
 
         # --- caps ---
@@ -322,13 +348,11 @@ class ScheduleService:
                     f"timezone {merged_timezone!r} must match recurrence tz "
                     f"{merged_recurrence['tz']!r} for weekly schedules"
                 )
-
             # fire_at must be the next occurrence of the merged recurrence.
             now = _now()
             expected = next_weekly_occurrence(
                 merged_recurrence["day"], merged_recurrence["time"],
-                merged_recurrence["tz"],
-                after=now,
+                merged_recurrence["tz"], after=now,
             )
             if expected is None:
                 raise ScheduleServiceError(
@@ -341,10 +365,48 @@ class ScheduleService:
                     f"{merged_recurrence['tz']}); "
                     f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
                 )
+        elif record.kind == ScheduleKind.RECURRING:
+            merged_recurrence = dict(record.recurrence or {})
+            if "recurrence" in fields:
+                merged_recurrence.update(fields["recurrence"])
+            merged_timezone = fields.get("timezone", record.timezone)
+            merged_fire_at = fields.get("fire_at", record.fire_at)
+            shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}
+            old_recurrence = record.recurrence or {}
+            shape_changed = any(
+                merged_recurrence.get(field) != old_recurrence.get(field)
+                for field in shape_fields
+            )
+            if shape_changed:
+                # First compute against the existing cadence anchor, then make
+                # the newly selected next local date the new immutable anchor.
+                provisional = next_recurring_occurrence(merged_recurrence, after=_now())
+                if provisional is not None:
+                    merged_recurrence["anchor_date"] = provisional.astimezone(
+                        ZoneInfo(merged_recurrence["tz"])
+                    ).date().isoformat()
+            err = validate_recurring_rule(merged_recurrence, now=_now())
+            if err:
+                raise ScheduleServiceError(err.code)
+            if merged_timezone != merged_recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {merged_timezone!r} must match recurrence tz "
+                    f"{merged_recurrence['tz']!r} for recurring schedules"
+                )
+            expected = next_recurring_occurrence(merged_recurrence, after=_now())
+            if expected is None:
+                raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            if merged_fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next recurring occurrence; "
+                    f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
+                )
+            fields["recurrence"] = merged_recurrence
+
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {record.kind.value}. "
-                "v1 supports one_shot and weekly only."
+                "supports one_shot, weekly, and recurring schedules."
             )
 
         self._db.schedules.update(schedule_id, **fields)
@@ -352,6 +414,10 @@ class ScheduleService:
             task_id=schedule_id,
             agent=agent_name,
             action="schedule_edited",
-            payload={"fields": sorted(fields.keys())},
+            payload={
+                "fields": sorted(fields.keys()),
+                **({"before": {"recurrence": record.recurrence}, "after": {"recurrence": fields["recurrence"]}}
+                   if record.kind == ScheduleKind.RECURRING else {}),
+            },
         )
         return self._db.schedules.get(schedule_id)
