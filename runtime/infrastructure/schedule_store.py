@@ -227,6 +227,29 @@ class ScheduleStore:
             ).fetchone()
         return row["n"]
 
+    def claim_firing(self, schedule_id: str, *, now: datetime | None = None) -> bool:
+        """Atomically claim an armed schedule for firing.
+
+        Returns whether this caller changed the row from ``ARMED`` to
+        ``FIRING``. A concurrent caller that loses the compare-and-set gets
+        ``False`` without changing the row.
+        """
+        updated_at = self._utc(now if now is not None else _now()).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE schedules SET status = ?, updated_at = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    ScheduleStatus.FIRING.value,
+                    updated_at,
+                    schedule_id,
+                    ScheduleStatus.ARMED.value,
+                ),
+            )
+            claimed = cursor.rowcount == 1
+            self._conn.commit()
+        return claimed
+
     # ------------------------------------------------------------------- update
 
     def update(self, schedule_id: str, **fields: object) -> None:

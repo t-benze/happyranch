@@ -123,11 +123,11 @@ def schedule_due_schedules(
                 )
             continue
 
-        # Claim the row: armed → firing. If the update fails (row already
-        # claimed by a concurrent tick), skip it. The list_due query only
-        # returns armed rows, so a race would mean it's no longer armed.
+        # Claim the row: armed → firing. A concurrent winner changes the
+        # status first, so this caller skips the row without side effects.
         try:
-            store.update(record.id, status=ScheduleStatus.FIRING)
+            if not store.claim_firing(record.id):
+                continue
         except Exception:
             logger.exception(
                 "schedule_due_schedules: failed to claim %s", record.id,

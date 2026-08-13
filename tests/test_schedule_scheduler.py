@@ -4,6 +4,7 @@ comparisons, duplicate-fire protection, startup recovery, no weekly replay.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import threading
 
 import pytest
 
@@ -80,6 +81,51 @@ def test_due_schedule_not_double_fired(tmp_path):
     # Second pass: already FIRING, not ARMED, so not listed as due
     assert schedule_due_schedules(org=org, now=_now()) == 0
     assert org.schedule_queue.size == 1  # only one enqueued job
+
+
+def test_concurrent_scheduler_claims_enqueue_one_job_and_audit(tmp_path, monkeypatch):
+    """Two passes that both select ARMED may enqueue only the winning claim.
+
+    The claim barrier opens the real TOCTOU window: both scheduler threads have
+    completed ``list_due`` before either writes. A blind ``UPDATE ... WHERE
+    id = ?`` would let both passes enqueue and audit this occurrence.
+    """
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db)
+    org = _FakeOrg(db)
+    claim_barrier = threading.Barrier(2, timeout=5)
+    original_claim = db.schedules.claim_firing
+    counts: list[int] = []
+    errors: list[BaseException] = []
+
+    def synchronized_claim(schedule_id: str) -> bool:
+        claim_barrier.wait()
+        return original_claim(schedule_id)
+
+    monkeypatch.setattr(db.schedules, "claim_firing", synchronized_claim)
+
+    def run_scheduler() -> None:
+        try:
+            counts.append(schedule_due_schedules(org=org, now=_now()))
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=run_scheduler) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert not errors
+    assert not any(worker.is_alive() for worker in workers)
+    assert sorted(counts) == [0, 1]
+    assert org.schedule_queue.size == 1
+    claimed = [
+        log for log in db.get_audit_logs("SCHEDULE-001")
+        if log["action"] == "schedule_claimed"
+        and log["payload"]["fire_at"] == _dt(day=22, hour=11).isoformat()
+    ]
+    assert len(claimed) == 1
 
 
 def test_multiple_due_schedules_fire_independently(tmp_path):

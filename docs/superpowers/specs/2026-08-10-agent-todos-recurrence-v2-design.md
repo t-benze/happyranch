@@ -742,22 +742,17 @@ audit call (§3.4) is added at the pre-existing `ARMED→FIRING` claim
 (`schedule_scheduler.py:120`), for all `kind` values.
 
 **Occurrence key / idempotent dispatch (item 7 — qa_engineer seq243/246).**
-v1 already guarantees at-most-once dispatch per fire through the existing
-`ARMED→FIRING` status transition (`schedule_scheduler.py:48-50,120`,
-`schedule_store.py:235-254` `recover_firing` for the crash-mid-fire case):
-the scheduler claims a due row by flipping its status before enqueuing, so
-a concurrent tick or a restart catch-up sees `FIRING`, not `ARMED`, and
-never re-claims it. v2 does not need a new persisted key or table — it
-**names** the existing mechanism's key explicitly so it is testable: the
-occurrence key is `(schedule_id, fire_at)` at the instant of claim, and
-idempotency is enforced by the fact that a claimed row's `fire_at` changes
-on every re-arm (§7.2 above), so a stale duplicate claim attempt against the
-same `(schedule_id, fire_at)` pair always finds the row already in `FIRING`
-or already re-armed with a *different* `fire_at`. This is the same
-mechanism for `ONE_SHOT`, `WEEKLY`, and `RECURRING` — v2 introduces no new
-idempotency surface, only documents the existing one so qa_engineer can
-write a red/green test that claims the same key twice and asserts exactly
-one root task.
+At-most-once dispatch per fire requires an atomic `ARMED→FIRING`
+compare-and-set (`schedule_scheduler.py:48-50,120`; `ScheduleStore.claim_firing`):
+the claim updates only a row that is still `ARMED`, and the scheduler enqueues
+only when that update affects one row. A concurrent tick or restart catch-up
+that loses the claim sees no affected row and does not enqueue. v2 does not
+need a new persisted key or table — the occurrence key is `(schedule_id,
+fire_at)` at the instant of claim, and a claimed row's `fire_at` changes on
+every re-arm (§7.2 above), so a stale duplicate claim attempt against the same
+pair finds the row already in `FIRING` or re-armed with a *different*
+`fire_at`. This is the same mechanism for `ONE_SHOT`, `WEEKLY`, and
+`RECURRING`.
 
 ### 7.3 Missed-fire / stale path
 
