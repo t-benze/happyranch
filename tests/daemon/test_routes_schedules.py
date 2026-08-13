@@ -150,6 +150,7 @@ def test_list_limit(client, org_state, frozen_clock) -> None:
 
 def test_show_found(client, org_state, frozen_clock) -> None:
     sid = _seed_one_shot(org_state, agent="dev_agent")
+    org_state.db.schedules.update(sid, error="timed_out")
 
     r = client.get(f"/api/v1/orgs/{org_state.slug}/schedules/{sid}")
     assert r.status_code == 200
@@ -158,6 +159,7 @@ def test_show_found(client, org_state, frozen_clock) -> None:
     assert body["agent_name"] == "dev_agent"
     assert body["kind"] == "one_shot"
     assert body["status"] == "armed"
+    assert body["error"] == "timed_out"
     assert body["normalized_brief"] == "Test one-shot todo"
 
 
@@ -252,6 +254,48 @@ def test_cancel_not_found(client, org_state) -> None:
     r = client.post(f"/api/v1/orgs/{org_state.slug}/schedules/SCHEDULE-999/cancel")
     assert r.status_code == 409
     assert "not found" in r.json()["detail"]["message"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# renew
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_renew_armed_resets_review_window(client, org_state, frozen_clock) -> None:
+    sid = _seed_one_shot(org_state, agent="dev_agent")
+    org_state.db.schedules.update(sid, expires_at=_FROZEN_NOW + timedelta(days=1))
+
+    r = client.post(f"/api/v1/orgs/{org_state.slug}/schedules/{sid}/renew")
+
+    assert r.status_code == 200
+    assert r.json()["expires_at"] == (_FROZEN_NOW + timedelta(days=90)).isoformat()
+    audit = org_state.db.get_audit_logs_by_action("schedule_renewed")
+    assert audit[-1]["agent"] == f"operator@{org_state.slug}"
+    assert audit[-1]["payload"]["indefinite"] is False
+
+
+def test_renew_paused_indefinite(client, org_state, frozen_clock) -> None:
+    sid = _seed_one_shot(org_state, agent="dev_agent")
+    ScheduleService(org_state.db).pause(sid, "operator@test")
+
+    r = client.post(
+        f"/api/v1/orgs/{org_state.slug}/schedules/{sid}/renew",
+        json={"indefinite": True},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "paused"
+    assert r.json()["indefinite"] == 1
+
+
+@pytest.mark.parametrize("status", [ScheduleStatus.FIRING, ScheduleStatus.EXPIRED])
+def test_renew_rejects_firing_and_expired(client, org_state, frozen_clock, status) -> None:
+    sid = _seed_one_shot(org_state, agent="dev_agent")
+    org_state.db.schedules.update(sid, status=status, active=0)
+
+    r = client.post(f"/api/v1/orgs/{org_state.slug}/schedules/{sid}/renew")
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "state_conflict"
 
 
 # ═══════════════════════════════════════════════════════════════════════

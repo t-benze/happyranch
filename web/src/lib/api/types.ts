@@ -782,7 +782,14 @@ export interface WorkHourStatusResponse {
 // Schedules (Agent Todos) — THR-105 Phase 3
 // ---------------------------------------------------------------------------
 
-export type ScheduleKind = 'one_shot' | 'weekly';
+export type ScheduleKind = 'one_shot' | 'weekly' | 'recurring';
+
+export interface ScheduleRecurrence {
+  day?: string;
+  time?: string;
+  tz?: string;
+  [key: string]: string | number | string[] | null | undefined;
+}
 
 export type ScheduleStatus =
   | 'armed'
@@ -800,7 +807,7 @@ export interface ScheduleRecord {
   team: string;
   kind: ScheduleKind;
   fire_at: string;
-  recurrence: Record<string, string> | null;
+  recurrence: ScheduleRecurrence | null;
   timezone: string;
   normalized_brief: string;
   source_instruction: string;
@@ -811,6 +818,7 @@ export interface ScheduleRecord {
   spawned_task_ids: string[];
   last_fired_at: string | null;
   fire_count: number;
+  error?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -821,6 +829,10 @@ export interface ScheduleListResponse {
 
 export interface ScheduleEditFields {
   fire_at?: string;
-  recurrence?: Record<string, string>;
+  recurrence?: ScheduleRecurrence;
   timezone?: string;
+}
+
+export interface ScheduleRenewBody {
+  indefinite?: boolean;
 }

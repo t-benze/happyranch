@@ -10,6 +10,7 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+from runtime.orchestrator.schedule_service import ScheduleService
 from runtime.daemon.schedule_scheduler import schedule_due_schedules
 
 
@@ -314,6 +315,37 @@ def test_recurring_stale_next_candidate_past_expiry_expires(tmp_path):
     assert record.status == ScheduleStatus.EXPIRED
     assert record.end_reason is None
     assert org.schedule_queue.size == 0
+
+
+def test_ordinary_renew_revokes_indefinite_and_restores_expiry_guard(tmp_path, monkeypatch):
+    """A normal renewal must restore the scheduler's finite review guard."""
+    db = Database(tmp_path / "db.sqlite")
+    renewal_now = _now()
+    monkeypatch.setattr(
+        "runtime.orchestrator.schedule_service._now",
+        lambda: renewal_now,
+    )
+    _schedule(
+        db,
+        kind=ScheduleKind.RECURRING,
+        fire_at=renewal_now - timedelta(hours=5),
+        expires_at=renewal_now + timedelta(days=1),
+        indefinite=1,
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+
+    renewed = ScheduleService(db).renew("SCHEDULE-001", "operator@test")
+
+    assert renewed.indefinite == 0
+    assert renewed.expires_at == renewal_now + timedelta(days=90)
+
+    scheduler_now = renewed.expires_at + timedelta(days=1)
+    org = _FakeOrg(db)
+    assert schedule_due_schedules(org=org, now=scheduler_now) == 0
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.EXPIRED
 
 
 def test_recurring_stale_defensive_no_candidate_fails(tmp_path, monkeypatch):

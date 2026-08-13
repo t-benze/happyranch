@@ -3,9 +3,10 @@ import type {
   ScheduleRecord,
   ScheduleListResponse,
   ScheduleEditFields,
+  ScheduleRenewBody,
 } from './types'
 
-export type { ScheduleRecord, ScheduleListResponse, ScheduleEditFields }
+export type { ScheduleRecord, ScheduleListResponse, ScheduleEditFields, ScheduleRenewBody }
 
 export async function listSchedules(
   org: string,
@@ -44,6 +45,17 @@ export async function cancelSchedule(
     `/orgs/${org}/schedules/${scheduleId}/cancel`,
     { method: 'POST' },
   )
+}
+
+export async function renewSchedule(
+  org: string,
+  scheduleId: string,
+  body: ScheduleRenewBody = {},
+): Promise<ScheduleRecord> {
+  return request<ScheduleRecord>(`/orgs/${org}/schedules/${scheduleId}/renew`, {
+    method: 'POST',
+    body,
+  })
 }
 
 export async function editSchedule(

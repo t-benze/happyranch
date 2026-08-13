@@ -7,13 +7,14 @@ This is the non-route foundation.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import (
+    _RECURRING_EXPIRY_DAYS,
     default_expires_at,
     next_recurring_occurrence,
     next_weekly_occurrence,
@@ -277,6 +278,49 @@ class ScheduleService:
             action="schedule_cancelled",
         )
         return self._db.schedules.get(schedule_id)
+
+    # ── renew ─────────────────────────────────────────────────────────
+
+    def renew(
+        self,
+        schedule_id: str,
+        agent_name: str,
+        *,
+        indefinite: bool = False,
+    ) -> ScheduleRecord:
+        """Renew review authority for an active or paused schedule."""
+        record = self._db.schedules.get(schedule_id)
+        if record is None:
+            raise ScheduleServiceError(f"schedule {schedule_id} not found")
+        if record.status not in (ScheduleStatus.ARMED, ScheduleStatus.PAUSED):
+            raise ScheduleServiceError(
+                f"cannot renew {schedule_id}: status {record.status.value} "
+                "is not armed or paused"
+            )
+
+        before_expires_at = record.expires_at
+        fields: dict[str, object] = {"indefinite": 1} if indefinite else {
+            "expires_at": _now() + timedelta(days=_RECURRING_EXPIRY_DAYS),
+            "indefinite": 0,
+        }
+        self._db.schedules.update(schedule_id, **fields)
+        renewed = self._db.schedules.get(schedule_id)
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_renewed",
+            payload={
+                "before": {
+                    "expires_at": before_expires_at.isoformat() if before_expires_at else None,
+                },
+                "after": {
+                    "expires_at": renewed.expires_at.isoformat() if renewed.expires_at else None,
+                },
+                "indefinite": indefinite,
+                "acting_agent": agent_name,
+            },
+        )
+        return renewed
 
     # ── edit ──────────────────────────────────────────────────────────
 
