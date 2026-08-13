@@ -1,3 +1,5 @@
+import json
+from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2532,6 +2534,36 @@ def test_schedules_create_parses_to_cmd_schedules_create():
     assert args.org == "test-org"
     assert args.from_file == "/tmp/create.json"
     assert args.func is cmd_schedules_create
+
+
+def test_schedules_create_forwards_recurring_from_file_payload_unchanged(tmp_path):
+    """The agent callback passes the documented recurring rule to its route seam."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    recurrence = {
+        "freq": "WEEKLY", "interval": 2, "byday": ["TU", "TH"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+    }
+    payload = {
+        "task_id": "TASK-4317", "session_id": "sess-abc123", "agent": "dev_agent",
+        "source_instruction": "Send the report every other Tuesday and Thursday.",
+        "normalized_brief": "Send the project report to the founder.",
+        "kind": "recurring", "fire_at": "2026-08-18T01:00:00+00:00",
+        "recurrence": recurrence, "timezone": "Asia/Shanghai",
+    }
+    payload_path = tmp_path / "recurring.json"
+    payload_path.write_text(json.dumps(payload))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {
+        "schedule_id": "SCHEDULE-001", "kind": "recurring", "status": "armed",
+        "agent_name": "dev_agent",
+    }
+
+    with patch("cli.commands.schedules.OpcClient.from_env", return_value=client):
+        cmd_schedules_create(Namespace(org="alpha", from_file=str(payload_path)))
+
+    client.post.assert_called_once_with("/api/v1/orgs/alpha/schedules", json=payload)
 
 
 def test_schedules_create_not_under_todos():

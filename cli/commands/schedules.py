@@ -306,7 +306,7 @@ def register(sub) -> None:
 
     # ── agent create callback: schedules create ──────────────────
     p_create = sched_sub.add_parser(
-        "create", help="Create a new schedule (Todo) — agent autonomous arming",
+        "create", help="Create a documented one-shot, weekly, or recurring Todo from JSON",
     )
     p_create.add_argument("--org", required=True)
     p_create.add_argument("--from-file", required=True)

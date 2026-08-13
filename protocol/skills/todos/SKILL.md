@@ -3,9 +3,9 @@ name: todos
 description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
-# Todos — Agent-owned scheduled commitments (THR-105 v1)
+# Todos — Agent-owned scheduled commitments (THR-105 v2)
 
-Agents may create `one_shot` and `weekly` self-scheduled Todos via the
+Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the
 `schedules create` callback. This is a **self-only, explicit-instruction,
 session-bound** operation available to every valid in-org agent. You cannot
 schedule another agent, you cannot infer or proactively create future work, and
@@ -53,7 +53,7 @@ permission matchers.
   "agent":        "your_agent_name",
   "source_instruction": "verbatim founder/operator instruction",
   "normalized_brief":   "self-contained, reviewable task brief",
-  "kind":         "one_shot | weekly",
+  "kind":         "one_shot | weekly | recurring",
   "fire_at":      "2026-08-07T18:00:00+08:00",
   "recurrence":   null,
   "timezone":     "UTC"
@@ -67,10 +67,10 @@ permission matchers.
 | `agent` | ✓ | Your agent name (validated against the active session) |
 | `source_instruction` | ✓ | Verbatim instruction — kept for audit, never edited afterward |
 | `normalized_brief` | ✓ | Self-contained, founder-reviewable brief — immutable after creation |
-| `kind` | ✓ | `"one_shot"` or `"weekly"` |
+| `kind` | ✓ | `"one_shot"`, `"weekly"`, or `"recurring"` |
 | `fire_at` | ✓ | ISO-8601 with an **explicit timezone offset** (`+00:00`, `+08:00`, or `Z`) |
-| `recurrence` | one_shot: omit/null; weekly: required | See recurrence section |
-| `timezone` | default `"UTC"` | Must equal `recurrence.tz` for weekly schedules |
+| `recurrence` | one_shot: omit/null; weekly/recurring: required | See recurrence section |
+| `timezone` | default `"UTC"` | Must equal `recurrence.tz` for weekly and recurring schedules |
 
 **Extra fields are forbidden.**  The server responds 422 for unrecognized keys.
 
@@ -94,6 +94,39 @@ permission matchers.
   (server-validated; the server rejects mismatches with a diagnostic
   showing the expected ISO-8601 value).
 
+### Recurring (`kind: "recurring"`)
+
+Use this exact bounded recurrence object. The server computes and stores
+`anchor_date`; do **not** send it in an agent-authored create payload.
+
+| `freq` | Required fields | Forbidden fields |
+| --- | --- | --- |
+| `DAILY` | `interval`, `time`, `tz` | `byday`, `bymonthday`, `ordinal` |
+| `WEEKLY` | `interval`, non-empty distinct `byday` (`MO`–`SU`), `time`, `tz` | `bymonthday`, `ordinal` |
+| `MONTHLY` | `interval`, `time`, `tz`, and exactly one selector below | See below |
+| `YEARLY` | `interval`, `time`, `tz` | `byday`, `bymonthday`, `ordinal` |
+
+For `MONTHLY`, choose exactly one selector:
+
+- `bymonthday`: one integer from `1` through `31`; or
+- `byday`: exactly one `MO`–`SU` token **and** `ordinal`: one of `first`,
+  `second`, `third`, `fourth`, `fifth`, or `last`.
+
+`interval` is a positive integer. `time` is `HH:MM`; `tz` is an IANA timezone.
+The only end conditions are: omit both `until` and `count` for never; set
+`until` to one inclusive local `YYYY-MM-DD` date; or set `count` to a positive
+integer for that many **successful dispatches**. Never set both. `count` is
+not a calendar-candidate count and must never be expressed as RRULE `COUNT`.
+
+The agent-authored grammar has no lists of monthly dates, negative wire values,
+cron/sub-daily fields, yearly selectors, or alternate field names. If the
+instruction cannot be expressed exactly (for example, "every weekday except
+the second Tuesday"), do not approximate it: ask for clarification before
+arming.
+
+`timezone` must equal `recurrence.tz`; `fire_at` must be the next server-
+computed occurrence. Normalize those values before calling the callback.
+
 - **Default expiry:** 90 days from creation.  The server does not
   accept `"indefinite": true` from the agent callback — indefinite
   expiry is founder-set only.
@@ -114,9 +147,9 @@ existing Todo to make room.
 | --- | --- | --- |
 | Session mismatch / unknown | 409 | Re-read your `task_id`/`session_id`/`agent` triples; retry once |
 | Agent team unresolved | 409 `agent_team_unresolved` | Do not arm; report the in-org identity/configuration problem |
-| Invalid `kind` | 422 `invalid_kind` | Only `one_shot` and `weekly` are valid |
+| Invalid `kind` | 422 `invalid_kind` | Only `one_shot`, `weekly`, and `recurring` are valid |
 | Invalid `fire_at` (no offset, past, >90 days) | 422 `invalid_fire_at` | Correct the timestamp; always include an offset |
-| Invalid recurrence shape | 422 / 409 from service | Reread the weekly rules above |
+| Invalid recurring grammar | 422 with one of `invalid_freq_fields`, `invalid_byday`, `monthly_selector_missing`, `monthly_selector_conflict`, `invalid_interval`, `anchor_date_not_settable`, `invalid_until`, `invalid_count`, `end_condition_conflict`, `invalid_time`, or `invalid_timezone` | Do not guess or retry a different grammar; correct only from the explicit instruction, or ask for clarification |
 | Cap exceeded | 409 `create_failed` | Report which cap; ask the founder which Todo to pause/cancel |
 | Ambiguous instruction | (your guard — don't call) | **Ask for clarification** — do NOT guess the date, timezone, cadence, or instruction. Escalate rather than arm nonsense. |
 
@@ -203,12 +236,43 @@ Write `/tmp/schedule-weekly-market.json`:
 happyranch schedules create --org happyranch --from-file /tmp/schedule-weekly-market.json
 ```
 
-## v1 boundaries — what is NOT included
+### Example 3 — fortnightly Tuesday/Thursday report, ending after six successful dispatches (recurring)
+
+This is a template only. Use it only when the founder/operator explicitly gave
+this exact commitment; verify that `fire_at` is the next computed occurrence
+at the time you arm it.
+
+```json
+{
+  "task_id": "TASK-4317",
+  "session_id": "sess-abc123",
+  "agent": "dev_agent",
+  "source_instruction": "Every other Tuesday and Thursday at 09:00 Shanghai time, send the project report; stop after six successful reports.",
+  "normalized_brief": "Send the project report to the founder's thread, covering progress, blockers, and the next planned steps.",
+  "kind": "recurring",
+  "fire_at": "2026-08-18T01:00:00+00:00",
+  "recurrence": {
+    "freq": "WEEKLY",
+    "interval": 2,
+    "byday": ["TU", "TH"],
+    "time": "09:00",
+    "tz": "Asia/Shanghai",
+    "count": 6
+  },
+  "timezone": "Asia/Shanghai"
+}
+```
+
+```bash
+happyranch schedules create --org happyranch --from-file /tmp/schedule-fortnightly-report.json
+```
+
+## v2 boundaries — what is NOT included
 
 | Out of scope | Details |
 | --- | --- |
 | Cross-agent scheduling | Self-only; agents must never target another agent |
-| Cron or complex recurrence | Only simple weekly (one weekday, one time) |
+| Cron or unsupported recurrence | No sub-daily/cron, monthly lists or negative values, yearly selectors, or hidden alternate grammar |
 | Hidden / silent schedules | All Todos are founder-visible |
 | General unscheduled backlog | No "Todo inbox" — every Todo has a `fire_at` |
 | Resume / re-arm from agent side | Re-arming after pause is founder-controlled |

@@ -1112,6 +1112,17 @@ optionally ``recurrence`` and ``timezone``.  The server enforces:
   one-shot horizon, weekly shape validation (single weekday + HH:MM + IANA
   timezone only), and 90-day recurring expiry are enforced at create time
   by the ``ScheduleService``.
+- **Recurring callback grammar:** a native ``kind="recurring"`` request uses
+  the documented `recurrence` object: ``freq`` is ``DAILY``, ``WEEKLY``,
+  ``MONTHLY``, or ``YEARLY``; ``interval`` is positive; ``time`` and ``tz``
+  are required; weekly requires distinct ``byday`` tokens; monthly has exactly
+  one positive ``bymonthday`` or one ``byday`` plus named ``ordinal``; and
+  daily/yearly permit no selector. Its end condition is exactly never (omit
+  ``until`` and ``count``), inclusive local-date ``until``, or successful-
+  dispatch ``count`` (never both). The agent must not set server-owned
+  ``anchor_date``. Invalid recurring grammar returns its named stable 422 code;
+  the agent must correct it only from the explicit instruction or ask, never
+  approximate a different recurrence.
 
 Arming is fully autonomous — no pre-arming founder approval step — but the
 schedule is immediately visible in the founder/operator ``list`` and ``show``

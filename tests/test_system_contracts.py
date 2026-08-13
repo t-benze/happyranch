@@ -135,6 +135,17 @@ class TestSystemContractsTuple:
         sc = _get("todos")
         assert sc.source_path == "protocol/skills/todos/SKILL.md"
 
+    def test_todos_skill_source_teaches_recurring_callback_grammar(self):
+        """The universal materialized Todos contract has the v2 agent grammar."""
+        sc = _get("todos")
+        source = (Path(__file__).resolve().parents[1] / sc.source_path).read_text()
+
+        assert '"kind":         "one_shot | weekly | recurring"' in source
+        assert '### Recurring (`kind: "recurring"`)' in source
+        assert "anchor_date`; do **not** send it" in source
+        assert "successful dispatches" in source
+        assert "happyranch schedules create --org happyranch --from-file" in source
+
     def test_start_task_contexts(self):
         sc = _get("start-task")
         assert set(sc.contexts) == {SessionContext.TASK, SessionContext.WAKE, SessionContext.SCHEDULE}

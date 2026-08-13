@@ -643,11 +643,11 @@ scheduled tasks described in ``05b-agent-runtime.md`` Mode 2). Every Schedule
 row represents one agent-owned recurring or one-shot work item.
 
 **Schedule lifecycle.** Schedules are created via the schedule service
-(``runtime/services/schedule_service.py``, Phase 1-2), which validates the
-v1 envelope (one-shot 90-day horizon, single-weekday weekly recurrence,
-agent/org caps). A new Schedule enters in ARMED status with a computed
-``fire_at``. The service does NOT enqueue or execute anything — it is a
-pure lifecycle-management surface.
+(``runtime/orchestrator/schedule_service.py``), which validates the one-shot,
+legacy weekly, and bounded recurring envelopes (including the one-shot 90-day
+horizon, recurring grammar, and agent/org caps). A new Schedule enters in
+ARMED status with a computed ``fire_at``. The service does NOT enqueue or
+execute anything — it is a pure lifecycle-management surface.
 
 **Arming (creating) schedules.** Agents create schedules autonomously via
 the ``POST /schedules`` callback route (``runtime/daemon/routes/schedules.py``).
@@ -668,7 +668,11 @@ and optionally ``recurrence`` and ``timezone``.  Server-side enforcement:
 - **Mandatory normalization:** both ``source_instruction`` and
   ``normalized_brief`` must be non-blank; NL-only arming is refused.
 - **Envelope validation** (one-shot horizon, weekly shape, caps, expiry
-  default) is enforced by ``ScheduleService.create()``.
+  default, and the recurring RRULE-subset grammar) is enforced by
+  ``ScheduleService.create()``. A recurring callback uses only the documented
+  ``freq``/``interval``/selector/``time``/``tz``/end-condition shape; its
+  ``anchor_date`` is server-owned, and unsupported instructions must be
+  clarified rather than approximated.
 
 Arming emits a ``schedule_created`` audit row with
 ``task_id=<SCHEDULE-NNN>``.
