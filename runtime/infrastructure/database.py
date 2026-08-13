@@ -1299,6 +1299,13 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # THR-105 recurrence v2: nullable terminal cause for naturally ended
+        # schedules. Existing rows intentionally remain NULL.
+        try:
+            self._conn.execute("ALTER TABLE schedules ADD COLUMN end_reason TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         # --- Task-status redesign migration (idempotent) ---
         # Add new columns; swallow duplicate errors on subsequent startups.
         for ddl in (

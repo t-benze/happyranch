@@ -640,9 +640,10 @@ class JobRecord(BaseModel):
 
 
 class ScheduleKind(StrEnum):
-    """THR-105: v1 supports exactly one_shot and weekly recurrence."""
+    """THR-105 schedule cadence kinds."""
     ONE_SHOT = "one_shot"
     WEEKLY = "weekly"
+    RECURRING = "recurring"
 
 
 class ScheduleStatus(StrEnum):
@@ -682,6 +683,7 @@ class ScheduleRecord(BaseModel):
     spawned_task_ids: list[str] = Field(default_factory=list)
     last_fired_at: datetime | None = None
     fire_count: int = 0
+    end_reason: str | None = None
     # Fields needed by the later runner (Phase 2+), consistent with WorkHourRecord
     session_id: str | None = None
     error: str | None = None

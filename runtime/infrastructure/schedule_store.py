@@ -9,11 +9,19 @@ THR-105 Phase 1 — inert additive store; no scheduler/runner/wiring yet.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
 
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+
+
+logger = logging.getLogger(__name__)
+
+
+class UnknownScheduleKindError(ValueError):
+    """A persisted schedule kind unknown to this binary."""
 
 
 def _now() -> datetime:
@@ -42,6 +50,7 @@ _UPDATABLE = {
     "spawned_task_ids",
     "last_fired_at",
     "fire_count",
+    "end_reason",
     "session_id",
     "error",
     "transcript_path",
@@ -68,11 +77,17 @@ class ScheduleStore:
     # ------------------------------------------------------------------- helpers
 
     def _row_to_model(self, row) -> ScheduleRecord:
+        try:
+            kind = ScheduleKind(row["kind"])
+        except (TypeError, ValueError) as exc:
+            raise UnknownScheduleKindError(
+                f"unknown schedule kind {row['kind']!r} for {row['id']}"
+            ) from exc
         return ScheduleRecord(
             id=row["id"],
             agent_name=row["agent_name"],
             team=row["team"],
-            kind=ScheduleKind(row["kind"]),
+            kind=kind,
             fire_at=_parse_dt(row["fire_at"]),
             recurrence=json.loads(row["recurrence"]) if row["recurrence"] else None,
             timezone=row["timezone"],
@@ -85,6 +100,7 @@ class ScheduleStore:
             spawned_task_ids=json.loads(row["spawned_task_ids"]) if row["spawned_task_ids"] else [],
             last_fired_at=_parse_dt(row["last_fired_at"]) if row["last_fired_at"] else None,
             fire_count=row["fire_count"],
+            end_reason=row["end_reason"],
             session_id=row["session_id"],
             error=row["error"],
             transcript_path=row["transcript_path"],
@@ -108,9 +124,9 @@ class ScheduleStore:
                     id, agent_name, team, kind, fire_at, recurrence, timezone,
                     normalized_brief, source_instruction, status, active,
                     expires_at, indefinite, spawned_task_ids, last_fired_at,
-                    fire_count, session_id, error, transcript_path,
+                    fire_count, end_reason, session_id, error, transcript_path,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     record.id,
                     record.agent_name,
@@ -128,6 +144,7 @@ class ScheduleStore:
                     json.dumps(record.spawned_task_ids),
                     record.last_fired_at.isoformat() if record.last_fired_at else None,
                     record.fire_count,
+                    record.end_reason,
                     record.session_id,
                     record.error,
                     record.transcript_path,
@@ -166,7 +183,7 @@ class ScheduleStore:
                 f"SELECT * FROM schedules {where} ORDER BY created_at DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
-        return [self._row_to_model(row) for row in rows]
+        return self._models_skipping_unknown_kinds(rows)
 
     # ----------------------------------------------------- due / active helpers
 
@@ -183,7 +200,16 @@ class ScheduleStore:
                 "ORDER BY fire_at ASC",
                 (ScheduleStatus.ARMED.value, self._utc(now).isoformat()),
             ).fetchall()
-        return [self._row_to_model(row) for row in rows]
+        return self._models_skipping_unknown_kinds(rows)
+
+    def _models_skipping_unknown_kinds(self, rows) -> list[ScheduleRecord]:
+        records: list[ScheduleRecord] = []
+        for row in rows:
+            try:
+                records.append(self._row_to_model(row))
+            except UnknownScheduleKindError:
+                logger.warning("Skipping schedule row with unknown schedule kind", exc_info=True)
+        return records
 
     def active_count_for_agent(self, agent_name: str) -> int:
         with self._lock:
