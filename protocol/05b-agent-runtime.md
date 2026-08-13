@@ -1012,7 +1012,7 @@ Schedule carries a ``normalized_brief`` (what fires) and a ``source_instruction`
 (the natural-language instruction the manager originally provided, preserved
 for audit/reconciliation).
 
-**Kinds.** Two kinds are supported:
+**Kinds.** Three kinds are supported:
 
 - **One-shot** — fires exactly once at a specified UTC ``fire_at`` (max 90 days
   out), then transitions to ``fired`` (terminal).
@@ -1021,15 +1021,21 @@ for audit/reconciliation).
   until either the founder cancels/pauses it or it reaches its ``expires_at``
   (default 90 days from creation). Indefinite weekly schedules (``indefinite=1``,
   founder-set only) have no expiry.
+- **Recurring** — uses the bounded daily/weekly/monthly/yearly rule grammar.
+  The server computes the first occurrence and immutable local ``anchor_date``;
+  timing-only edits preserve that anchor, while cadence-shape edits reset it to
+  the newly computed next occurrence's local date.
 
 **Fire mechanism.** The schedule fire is a two-stage pipeline:
 
 1. **Scheduler (daemon loop).** A 60-second tick scans all orgs for ARMED
    Schedule rows whose ``fire_at <= now`` (one-shot) or ``fire_at`` is within a
-   120-second tolerance window (weekly). For weekly rows whose ``fire_at`` is
-   stale (missed during daemon downtime), the scheduler advances ``fire_at`` to
-   the next weekly occurrence or expires the schedule — **no replay/backfill**
-   of missed occurrences. A claimed row transitions from ARMED → FIRING.
+   120-second tolerance window (weekly/recurring). For stale repeating rows the
+   scheduler advances without replay/backfill and emits ``occurrence_missed``.
+   An exhausted ``until`` becomes FIRED/``date_ended``; a real next candidate
+   past review expiry becomes EXPIRED; another missing candidate is FAILED with
+   ``recurrence_no_candidate``. A claimed row transitions ARMED → FIRING and
+   emits ``schedule_claimed``.
 
 2. **Runner + spawn callback.** The schedule worker loop drains the
    ``ScheduleQueue`` and invokes the owning agent's executor with a dedicated
@@ -1040,9 +1046,12 @@ for audit/reconciliation).
    - Creates one root task from the stored ``normalized_brief``, targeted to the
      owning agent on its own team.
    - Records ``spawned_task_ids`` and increments ``fire_count``.
-   - Resolves the terminal state: one-shot → FIRED (terminal); weekly → re-armed
-     with the next ``fire_at``, or EXPIRED if the next occurrence exceeds
-     ``expires_at`` and ``indefinite=0``.
+   - Resolves one-shot → FIRED/``one_shot_completed``. A recurring successful
+     dispatch first increments ``fire_count``; count exhaustion is FIRED/
+     ``count_exhausted``, then an exhausted ``until`` is FIRED/``date_ended``,
+     then a next candidate beyond review expiry is EXPIRED, then a defensive
+     missing candidate is FAILED/``recurrence_no_candidate``; otherwise it
+     re-arms with the next ``fire_at``.
    - Writes ``schedule_spawned`` and ``schedule_completed`` audit log rows.
    - Enqueues the spawned task.
 
@@ -1061,6 +1070,9 @@ separate from task-scoped token usage.
 - Weekly schedules never replay/backfill missed occurrences. A daemon restart
   after a missed slot advances the schedule to the next occurrence without
   enqueuing a fire job for the stale slot.
+- A claimed weekly or recurring occurrence that fails or times out is audited
+  but advances to the next occurrence and remains ARMED; one-shot failures and
+  timeouts remain terminal.
 - The spawn callback is the only fire path — no alternate trigger mechanisms
   exist.
 

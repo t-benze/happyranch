@@ -7,6 +7,7 @@ JSON spawned_task_ids round-trip, and recover_firing.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import threading
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -82,6 +83,39 @@ def test_database_adds_nullable_schedule_end_reason_column(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     columns = {column["name"] for column in db._conn.execute("PRAGMA table_info(schedules)")}
     assert "end_reason" in columns
+
+
+def test_claim_firing_concurrently_allows_one_claimer(tmp_path):
+    """A compare-and-set claim admits only one concurrent ARMED reader.
+
+    The barrier makes both workers attempt the same occurrence claim before
+    either can commit. The pre-fix blind ``UPDATE ... WHERE id = ?`` would
+    report success for both workers.
+    """
+    db = Database(tmp_path / "db.sqlite")
+    db.schedules.insert(_record())
+    barrier = threading.Barrier(2, timeout=5)
+    results: list[bool] = []
+    errors: list[BaseException] = []
+
+    def claim() -> None:
+        try:
+            barrier.wait()
+            results.append(db.schedules.claim_firing("SCHEDULE-001"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=claim) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert not errors
+    assert not any(worker.is_alive() for worker in workers)
+    assert results.count(True) == 1
+    assert results.count(False) == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
 
 
 def test_list_all_newest_first(tmp_path):

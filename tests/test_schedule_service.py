@@ -12,7 +12,10 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import (
+    next_recurring_occurrence,
+    next_weekly_occurrence,
+)
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
 
@@ -124,6 +127,121 @@ def test_create_weekly_success(tmp_path, frozen_clock):
     audit_rows = db.get_audit_logs_by_action("schedule_created")
     assert len(audit_rows) == 1
     assert audit_rows[0]["payload"]["kind"] == "weekly"
+
+
+def test_create_recurring_computes_anchor_and_requires_normalized_fire_at(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC", "until": None, "count": None}
+    expected = next_recurring_occurrence({**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW)
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=expected, recurrence=rule, timezone="UTC", normalized_brief="x", source_instruction="x",
+    )
+    assert record.fire_at == expected
+    assert record.recurrence["anchor_date"] == expected.date().isoformat()
+
+
+def test_edit_recurring_timing_preserves_anchor_and_firing_is_rejected(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC", "until": None, "count": None}
+    fire_at = next_recurring_occurrence({**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW)
+    record = svc.create(agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+                        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x", source_instruction="x")
+    changed_rule = {"time": "10:00"}
+    expected = next_recurring_occurrence({**record.recurrence, **changed_rule}, _FROZEN_NOW)
+    edited = svc.edit(record.id, "dev_agent", recurrence=changed_rule, fire_at=expected)
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+    db.schedules.update(record.id, status=ScheduleStatus.FIRING)
+    with pytest.raises(ScheduleServiceError, match="cannot edit"):
+        svc.edit(record.id, "dev_agent", fire_at=expected)
+
+
+def test_edit_recurring_shape_resets_anchor_and_audits_before_after(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+    changed_rule = {"byday": ["TH"]}
+    provisional = next_recurring_occurrence(
+        {**record.recurrence, **changed_rule}, _FROZEN_NOW,
+    )
+    expected = next_recurring_occurrence(
+        {**record.recurrence, **changed_rule, "anchor_date": provisional.date().isoformat()},
+        _FROZEN_NOW,
+    )
+
+    edited = svc.edit(record.id, "dev_agent", recurrence=changed_rule, fire_at=expected)
+
+    assert edited.recurrence["anchor_date"] == provisional.date().isoformat()
+    assert edited.recurrence["anchor_date"] != record.recurrence["anchor_date"]
+    audit = db.get_audit_logs_by_action("schedule_edited")[-1]["payload"]
+    assert audit["before"]["recurrence"] == record.recurrence
+    assert audit["after"]["recurrence"] == edited.recurrence
+
+
+def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    with pytest.raises(ScheduleServiceError, match="invalid_freq"):
+        svc.edit(record.id, "dev_agent", recurrence={"freq": "INVALID"})
+
+    assert db.schedules.get(record.id).recurrence == record.recurrence
+
+
+def test_edit_recurring_rejects_caller_supplied_anchor_reset(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+    reset_anchor = "2026-07-23"
+    reset_fire_at = next_recurring_occurrence(
+        {**record.recurrence, "anchor_date": reset_anchor}, _FROZEN_NOW,
+    )
+
+    with pytest.raises(ScheduleServiceError, match="anchor_date"):
+        svc.edit(
+            record.id,
+            "dev_agent",
+            recurrence={"anchor_date": reset_anchor},
+            fire_at=reset_fire_at,
+        )
+
+    assert db.schedules.get(record.id).recurrence == record.recurrence
 
 
 # ── capability API removed ───────────────────────────────────────────────

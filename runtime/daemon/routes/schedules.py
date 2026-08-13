@@ -23,7 +23,11 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import (
+    next_recurring_occurrence,
+    next_weekly_occurrence,
+    recurrence_until_exhausted,
+)
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
 router = APIRouter(dependencies=[require_token()])
@@ -447,6 +451,7 @@ async def spawn_schedule(
                 schedule_id,
                 status=ScheduleStatus.FIRED,
                 active=0,
+                end_reason="one_shot_completed",
                 spawned_task_ids=spawned_task_ids,
                 last_fired_at=now,
                 fire_count=fire_count,
@@ -454,15 +459,112 @@ async def spawn_schedule(
                 transcript_path=str(transcript_path),
                 updated_at=now,
             )
+            org.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=agent,
+                action="schedule_fired",
+                payload={"end_reason": "one_shot_completed"},
+            )
+        elif schedule.kind == ScheduleKind.RECURRING:
+            # RECURRING has explicit ordered terminal causes.  Keep these
+            # branches separate: a date end is not a review expiry, and a
+            # defensive no-candidate fault is not either.
+            recurrence = schedule.recurrence
+            if recurrence is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={"code": "recurring_no_recurrence", "schedule_id": schedule_id},
+                )
+
+            # (a) Successful dispatch count is evaluated only after task
+            # creation and incrementing the persisted successful-fire count.
+            if recurrence.get("count") is not None and fire_count >= recurrence["count"]:
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                )
+                org.db.schedules.update(
+                    schedule_id, status=ScheduleStatus.FIRED, active=0,
+                    end_reason="count_exhausted", spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now, fire_count=fire_count, session_id=None,
+                    transcript_path=str(transcript_path), updated_at=now,
+                )
+                org.db.insert_audit_log(
+                    task_id=schedule_id, agent=agent, action="schedule_fired",
+                    payload={"end_reason": "count_exhausted"},
+                )
+            else:
+                next_fire = next_recurring_occurrence(recurrence, after=now)
+                # (b) A rule with an explicit inclusive until date ended.
+                if next_fire is None and recurrence_until_exhausted(recurrence):
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.FIRED, active=0,
+                        end_reason="date_ended", spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count, session_id=None,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_fired",
+                        payload={"end_reason": "date_ended"},
+                    )
+                # (c) Review expiry only applies when an actual next candidate exists.
+                elif (
+                    next_fire is not None and schedule.expires_at is not None
+                    and schedule.indefinite != 1 and next_fire > schedule.expires_at
+                ):
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                        status="expired",
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.EXPIRED, active=0,
+                        spawned_task_ids=spawned_task_ids, last_fired_at=now,
+                        fire_count=fire_count, transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_expired",
+                        payload={"reason": "past_expires_at"},
+                    )
+                    return_status = "expired"
+                # (d) A valid stored rule should never reach this defensive path.
+                elif next_fire is None:
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                        status="failed",
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.FAILED, active=0,
+                        error="recurrence_no_candidate", spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_failed",
+                        payload={"reason": "recurrence_no_candidate"},
+                    )
+                    return_status = "failed"
+                # (e) Continue the series.
+                else:
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.ARMED, active=1,
+                        fire_at=next_fire, spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count, session_id=None,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+
         else:
-            # Weekly: compute next occurrence, re-arm or expire.
+            # Existing WEEKLY behavior remains structurally unchanged.
             recurrence = schedule.recurrence
             if recurrence is None:
                 raise HTTPException(
                     status_code=500,
                     detail={"code": "weekly_no_recurrence", "schedule_id": schedule_id},
                 )
-
             next_fire = next_weekly_occurrence(
                 recurrence["day"],
                 recurrence["time"],

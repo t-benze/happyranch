@@ -40,7 +40,41 @@ from runtime.orchestrator.workspace_adapters import (
 )
 from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import (
+    next_schedule_occurrence,
+    recurrence_until_exhausted,
+)
+
+
+def _failure_transition(store, record, now: datetime, error: str) -> None:
+    """Advance repeating schedules after an attempted occurrence failed.
+
+    This intentionally does not retry the claimed instant or increment
+    ``fire_count``. One-shots retain their established terminal failure state.
+    """
+    if record.kind not in (ScheduleKind.WEEKLY, ScheduleKind.RECURRING):
+        store.update(record.id, status=ScheduleStatus.FAILED, error=error, updated_at=now)
+        return
+    next_fire = next_schedule_occurrence(record.kind.value, record.recurrence, after=now)
+    if next_fire is None and recurrence_until_exhausted(record.recurrence):
+        store.update(record.id, status=ScheduleStatus.FIRED, active=0, end_reason="date_ended", error=error, updated_at=now)
+    elif (
+        next_fire is not None and record.expires_at is not None
+        and record.indefinite != 1 and next_fire > record.expires_at
+    ):
+        store.update(record.id, status=ScheduleStatus.EXPIRED, active=0, error=error, updated_at=now)
+    elif next_fire is None:
+        store.update(record.id, status=ScheduleStatus.FAILED, active=0, error="recurrence_no_candidate", updated_at=now)
+    else:
+        store.update(record.id, status=ScheduleStatus.ARMED, active=1, fire_at=next_fire, error=error, updated_at=now)
+
+
+def _timeout_transition(store, record, now: datetime, error: str) -> None:
+    """Keep one-shot timeout semantics while repeating schedules continue."""
+    if record.kind == ScheduleKind.ONE_SHOT:
+        store.update(record.id, status=ScheduleStatus.TIMEOUT, error=error, updated_at=now)
+        return
+    _failure_transition(store, record, now, error)
 
 
 def build_schedule_prompt(
@@ -141,12 +175,7 @@ async def run_schedule(
     # not editing CRITICAL AuditLogger).
 
     if agent_def is None:
-        store.update(
-            schedule_id,
-            status=ScheduleStatus.FAILED,
-            error="agent_not_found",
-            updated_at=now,
-        )
+        _failure_transition(store, record, now, "agent_not_found")
         org_state.db.insert_audit_log(
             task_id=schedule_id,
             agent=record.agent_name,
@@ -196,12 +225,7 @@ async def run_schedule(
             task_id=schedule_id,
         )
     except Exception as e:
-        store.update(
-            schedule_id,
-            status=ScheduleStatus.FAILED,
-            error=f"materialization_failed: {e}",
-            updated_at=now,
-        )
+        _failure_transition(store, record, now, f"materialization_failed: {e}")
         org_state.db.insert_audit_log(
             task_id=schedule_id,
             agent=record.agent_name,
@@ -296,12 +320,7 @@ async def run_schedule(
         return
     if result.success:
         # The session exited 0 but never called `schedules spawn`.
-        store.update(
-            schedule_id,
-            status=ScheduleStatus.FAILED,
-            error="no_callback",
-            updated_at=datetime.now(timezone.utc),
-        )
+        _failure_transition(store, record, datetime.now(timezone.utc), "no_callback")
         org_state.db.insert_audit_log(
             task_id=schedule_id,
             agent=record.agent_name,
@@ -311,12 +330,7 @@ async def run_schedule(
         return
     error = str(getattr(result, "error", "") or "executor_failed")
     if _is_timeout(result):
-        store.update(
-            schedule_id,
-            status=ScheduleStatus.TIMEOUT,
-            error=error,
-            updated_at=datetime.now(timezone.utc),
-        )
+        _timeout_transition(store, record, datetime.now(timezone.utc), error)
         org_state.db.insert_audit_log(
             task_id=schedule_id,
             agent=record.agent_name,
@@ -324,12 +338,7 @@ async def run_schedule(
             payload={"reason": error},
         )
         return
-    store.update(
-        schedule_id,
-        status=ScheduleStatus.FAILED,
-        error=error,
-        updated_at=datetime.now(timezone.utc),
-    )
+    _failure_transition(store, record, datetime.now(timezone.utc), error)
     org_state.db.insert_audit_log(
         task_id=schedule_id,
         agent=record.agent_name,
