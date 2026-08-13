@@ -178,6 +178,26 @@ def test_custom_cli_forget_refuses_nonfailed_status_without_post(capsys, profile
     client.post.assert_not_called()
 
 
+def test_custom_cli_forget_refuses_a_live_committed_profile_without_post(capsys) -> None:
+    """The PR #646 guard keeps a connected profile out of cleanup."""
+    from cli.commands.runtime import cmd_custom_cli_forget
+
+    client = MagicMock()
+    client.get.return_value = _response({
+        "wrapper_destination": "/runtime/adapters/my-cli-adapter",
+        "operation_id": "op-live-committed",
+        "profile_state": "committed",
+        "reason": None,
+    })
+
+    with patch("cli.commands.runtime.OpcClient.from_env", return_value=client), \
+         pytest.raises(SystemExit, match="1"):
+        cmd_custom_cli_forget(argparse.Namespace(profile_name="my-cli"))
+
+    assert "profile_state is 'committed', not 'failed'" in capsys.readouterr().err
+    client.post.assert_not_called()
+
+
 def test_custom_cli_forget_posts_failed_operation_and_confirms_cleanup(capsys) -> None:
     from cli.commands.runtime import cmd_custom_cli_forget
 
