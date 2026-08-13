@@ -683,11 +683,14 @@ scans every org for due ARMED rows. One-shots are due at ``fire_at <= now``;
 weekly and bounded recurring rows are claimed only when their due instant is
 within the 120-second recurrence tolerance. For a stale weekly or recurring
 occurrence (missed during daemon downtime), the scheduler does not replay or
-backfill it: it records ``occurrence_missed`` and advances to the next future
-occurrence using that row's rule. A recurring rule exhausted by its inclusive
-``until`` date becomes FIRED with ``end_reason=date_ended``; a next occurrence
-beyond the review expiry becomes EXPIRED; and an otherwise unexplained missing
-candidate is FAILED. Eligible rows are claimed: ARMED → FIRING, then enqueued
+backfill it. It records ``occurrence_missed`` and re-arms the row only when a
+future next occurrence exists within any finite review expiry. The terminal
+alternatives do not emit ``occurrence_missed``: a recurring rule exhausted by
+its inclusive ``until`` date becomes FIRED with ``end_reason=date_ended`` and
+``schedule_fired``; a future candidate beyond the review expiry becomes
+EXPIRED with ``schedule_expired``; and an otherwise unexplained missing
+candidate becomes FAILED with ``error=recurrence_no_candidate`` and
+``schedule_failed``. Eligible rows are claimed: ARMED → FIRING, then enqueued
 as a ``ScheduleJob`` into the org's ``ScheduleQueue``.
 
 **Runner + worker loop.** A dedicated ``schedule_worker_loop`` drains the
