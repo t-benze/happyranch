@@ -1026,6 +1026,17 @@ for audit/reconciliation).
   timing-only edits preserve that anchor, while cadence-shape edits reset it to
   the newly computed next occurrence's local date.
 
+**Founder controls and validation.** Founder/operator routes may pause, cancel,
+edit, or ``POST /schedules/{schedule_id}/renew`` an ARMED or PAUSED Todo.
+Normal renewal resets its 90-day review window; ``{"indefinite": true}`` grants
+indefinite review authority. Renewal never changes cadence, anchor, next fire,
+or dispatch count, and rejects FIRING, terminal, and EXPIRED rows with
+``state_conflict``. Recurring-create validation returns stable 422 codes:
+``invalid_freq_fields``, ``invalid_byday``, ``monthly_selector_missing``,
+``monthly_selector_conflict``, ``invalid_interval``,
+``anchor_date_not_settable``, ``invalid_until``, ``invalid_count``,
+``end_condition_conflict``, ``invalid_time``, and ``invalid_timezone``.
+
 **Fire mechanism.** The schedule fire is a two-stage pipeline:
 
 1. **Scheduler (daemon loop).** A 60-second tick scans all orgs for ARMED

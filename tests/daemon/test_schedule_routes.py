@@ -330,6 +330,7 @@ def test_weekly_spawn_rearms_with_next_occurrence(tmp_home, app, org_state, auth
         fire_at=now - timedelta(hours=1),
         expires_at=None,
         indefinite=1,
+        error="timed_out",
     )
     status, body = _spawn(client, sid, auth_headers)
     assert status == 200
@@ -339,6 +340,7 @@ def test_weekly_spawn_rearms_with_next_occurrence(tmp_home, app, org_state, auth
     assert record.active == 1
     assert record.fire_count == 1
     assert record.last_fired_at is not None
+    assert record.error is None
 
 
 def test_weekly_spawn_expires_when_past_expires_at(tmp_home, app, org_state, auth_headers, monkeypatch):
@@ -752,6 +754,24 @@ def test_create_rejects_weekly_multi_day(tmp_home, app, org_state, auth_headers)
     )
     status, detail = _post_create(client, payload, auth_headers)
     assert status == 409
+
+
+# ── recurring named validation errors ──────────────────────────────────
+
+def test_create_recurring_returns_named_validation_code(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    _register_session(org_state)
+    client = TestClient(app)
+    payload = _create_payload(
+        kind="recurring",
+        recurrence={"freq": "DAILY", "interval": 0, "time": "09:00", "tz": "UTC"},
+        fire_at="2026-07-23T09:00:00+00:00",
+    )
+
+    status, detail = _post_create(client, payload, auth_headers)
+
+    assert status == 422
+    assert detail["code"] == "invalid_interval"
 
 
 # ── successful create ──────────────────────────────────────────────────

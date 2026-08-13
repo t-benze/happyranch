@@ -600,6 +600,66 @@ def test_cancel_rejects_missing(tmp_path):
         svc.cancel("SCHEDULE-999", "dev_agent")
 
 
+# ── renew ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("initial_status", [ScheduleStatus.ARMED, ScheduleStatus.PAUSED])
+def test_renew_resets_review_window_and_audits_actor(tmp_path, frozen_clock, initial_status):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    record = _record(
+        id="SCHEDULE-001",
+        status=initial_status,
+        active=1 if initial_status == ScheduleStatus.ARMED else 0,
+        expires_at=_FROZEN_NOW + timedelta(days=1),
+    )
+    db.schedules.insert(record)
+
+    renewed = svc.renew(record.id, "operator@alpha")
+
+    assert renewed.status == initial_status
+    assert renewed.active == record.active
+    assert renewed.expires_at == _FROZEN_NOW + timedelta(days=90)
+    assert renewed.indefinite == 0
+    assert renewed.fire_at == record.fire_at
+    assert renewed.recurrence == record.recurrence
+    assert renewed.fire_count == record.fire_count
+    audit = db.get_audit_logs_by_action("schedule_renewed")
+    assert len(audit) == 1
+    assert audit[0]["task_id"] == record.id
+    assert audit[0]["agent"] == "operator@alpha"
+    assert audit[0]["payload"] == {
+        "before": {"expires_at": record.expires_at.isoformat()},
+        "after": {"expires_at": renewed.expires_at.isoformat()},
+        "indefinite": False,
+        "acting_agent": "operator@alpha",
+    }
+
+
+def test_renew_indefinite_preserves_schedule_timing(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    record = _record(id="SCHEDULE-001", expires_at=_FROZEN_NOW + timedelta(days=1))
+    db.schedules.insert(record)
+
+    renewed = svc.renew(record.id, "operator@alpha", indefinite=True)
+
+    assert renewed.indefinite == 1
+    assert renewed.expires_at == record.expires_at
+    assert renewed.fire_at == record.fire_at
+    assert renewed.fire_count == record.fire_count
+    assert db.get_audit_logs_by_action("schedule_renewed")[0]["payload"]["indefinite"] is True
+
+
+@pytest.mark.parametrize("status", [ScheduleStatus.FIRING, ScheduleStatus.EXPIRED])
+def test_renew_rejects_firing_and_expired(tmp_path, frozen_clock, status):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    db.schedules.insert(_record(id="SCHEDULE-001", status=status, active=0))
+
+    with pytest.raises(ScheduleServiceError, match="cannot renew"):
+        svc.renew("SCHEDULE-001", "operator@alpha")
+
+
 # ── edit ─────────────────────────────────────────────────────────────────
 
 def test_edit_success_revalidates(tmp_path, frozen_clock):

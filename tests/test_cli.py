@@ -2430,6 +2430,49 @@ def test_todos_cancel_parses_to_cmd_schedules_cancel():
     assert args.func is cmd_schedules_cancel
 
 
+def test_todos_renew_parses_to_cmd_schedules_renew():
+    from cli.commands.schedules import cmd_schedules_renew
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "renew", "SCHEDULE-001", "--indefinite"])
+    assert args.command == "todos"
+    assert args.todos_command == "renew"
+    assert args.schedule_id == "SCHEDULE-001"
+    assert args.indefinite is True
+    assert args.func is cmd_schedules_renew
+
+
+def test_recurring_display_and_needs_attention():
+    from cli.commands.schedules import _recurring_display, _needs_attention
+
+    assert _recurring_display({
+        "freq": "WEEKLY", "interval": 2, "byday": ["MO", "WE"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 10,
+    }) == "every 2 weeks on Mon, Wed · 09:00 Asia/Shanghai · ends after 10"
+    assert _needs_attention({"kind": "recurring", "status": "armed", "error": "timed_out"})
+    assert not _needs_attention({"kind": "recurring", "status": "armed", "error": None})
+
+
+def test_cmd_schedules_renew_posts_indefinite_body(capsys):
+    from cli.commands.schedules import cmd_schedules_renew
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"schedule_id": "SCHEDULE-001", "indefinite": 1, "status": "paused"}
+    client = MagicMock()
+    client.post.return_value = response
+    args = MagicMock(indefinite=True, schedule_id="SCHEDULE-001")
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        cmd_schedules_renew(args)
+
+    client.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001/renew",
+        json={"indefinite": True},
+    )
+    assert "indefinite" in capsys.readouterr().out
+
+
 def test_todos_edit_parses_to_cmd_schedules_edit():
     """happyranch todos edit still parses."""
     from cli.commands.schedules import cmd_schedules_edit

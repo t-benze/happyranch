@@ -68,6 +68,7 @@
     "GET /api/v1/orgs/{slug}/schedules/{schedule_id}",
     "POST /api/v1/orgs/{slug}/schedules/{schedule_id}/pause",
     "POST /api/v1/orgs/{slug}/schedules/{schedule_id}/cancel",
+    "POST /api/v1/orgs/{slug}/schedules/{schedule_id}/renew",
     "PATCH /api/v1/orgs/{slug}/schedules/{schedule_id}",
     "GET /api/v1/orgs/{slug}/dashboard/summary",
     "GET /api/v1/orgs/{slug}/agents",

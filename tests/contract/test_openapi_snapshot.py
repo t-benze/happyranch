@@ -198,6 +198,27 @@ def test_bind_profile_contract_describes_both_paths() -> None:
 
 _NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone"]
 
+_RECURRING_VALIDATION_CODES = {
+    "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
+    "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
+    "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
+    "invalid_timezone",
+}
+
+
+def test_schedule_create_contract_documents_recurring_kind_and_validation_codes() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    full = app.openapi()
+    schemas = full.get("components", {}).get("schemas", {})
+
+    create_schema = schemas["ScheduleCreateBody"]
+    assert "recurring" in create_schema["properties"]["kind"]["description"]
+
+    error_schema = schemas["RecurringValidationErrorResponse"]
+    code_schema = error_schema["properties"]["detail"]["$ref"]
+    detail_name = code_schema.rsplit("/", 1)[-1]
+    assert set(schemas[detail_name]["properties"]["code"]["enum"]) == _RECURRING_VALIDATION_CODES
+
 
 def test_schedule_edit_body_schema_no_null_type() -> None:
     """ScheduleEditBody must not advertise ``type: null`` for mutable fields.

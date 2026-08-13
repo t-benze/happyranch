@@ -12,6 +12,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -53,6 +54,7 @@ def _schedule_to_dict(record) -> dict:
         "spawned_task_ids": record.spawned_task_ids,
         "last_fired_at": record.last_fired_at.isoformat() if record.last_fired_at else None,
         "fire_count": record.fire_count,
+        "error": record.error,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
     }
@@ -75,13 +77,40 @@ class ScheduleCreateBody(BaseModel):
     agent: str = Field(min_length=1)
     source_instruction: str = Field(min_length=1)
     normalized_brief: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
+    kind: str = Field(
+        min_length=1,
+        description='Schedule kind: "one_shot", "weekly", or "recurring".',
+    )
     fire_at: str = Field(min_length=1)
     recurrence: dict | SkipJsonSchema[None] = Field(None)
     timezone: str = Field(default="UTC")
 
 
-@router.post("/schedules")
+class RecurringValidationErrorDetail(BaseModel):
+    code: Literal[
+        "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
+        "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
+        "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
+        "invalid_timezone",
+    ]
+
+
+class RecurringValidationErrorResponse(BaseModel):
+    detail: RecurringValidationErrorDetail
+
+
+_RECURRING_VALIDATION_CODES = frozenset({
+    "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
+    "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
+    "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
+    "invalid_timezone",
+})
+
+
+@router.post(
+    "/schedules",
+    responses={422: {"model": RecurringValidationErrorResponse, "description": "Named recurring-rule validation failure."}},
+)
 def create_schedule(
     slug: str,
     body: ScheduleCreateBody,
@@ -177,6 +206,8 @@ def create_schedule(
             source_instruction=body.source_instruction,
         )
     except ScheduleServiceError as exc:
+        if kind == ScheduleKind.RECURRING and str(exc) in _RECURRING_VALIDATION_CODES:
+            raise HTTPException(status_code=422, detail={"code": str(exc)})
         raise HTTPException(
             status_code=409,
             detail={"code": "create_failed", "message": str(exc)},
@@ -257,6 +288,32 @@ def cancel_schedule(
     acting_agent = f"operator@{slug}"
     try:
         record = svc.cancel(schedule_id, agent_name=acting_agent)
+    except ScheduleServiceError as exc:
+        raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
+    return _schedule_to_dict(record)
+
+
+# ── renew ───────────────────────────────────────────────────────────────
+
+class ScheduleRenewBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    indefinite: bool = False
+
+
+@router.post("/schedules/{schedule_id}/renew")
+def renew_schedule(
+    slug: str,
+    schedule_id: str,
+    org: OrgDep,
+    request: Request,
+    body: ScheduleRenewBody = ScheduleRenewBody(),
+) -> dict:
+    """Renew a Todo review window without changing its cadence."""
+    svc = ScheduleService(org.db)
+    acting_agent = f"operator@{slug}"
+    try:
+        record = svc.renew(schedule_id, agent_name=acting_agent, indefinite=body.indefinite)
     except ScheduleServiceError as exc:
         raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
     return _schedule_to_dict(record)
@@ -456,6 +513,7 @@ async def spawn_schedule(
                 last_fired_at=now,
                 fire_count=fire_count,
                 session_id=None,
+                error=None,
                 transcript_path=str(transcript_path),
                 updated_at=now,
             )
@@ -486,6 +544,7 @@ async def spawn_schedule(
                     schedule_id, status=ScheduleStatus.FIRED, active=0,
                     end_reason="count_exhausted", spawned_task_ids=spawned_task_ids,
                     last_fired_at=now, fire_count=fire_count, session_id=None,
+                    error=None,
                     transcript_path=str(transcript_path), updated_at=now,
                 )
                 org.db.insert_audit_log(
@@ -503,6 +562,7 @@ async def spawn_schedule(
                         schedule_id, status=ScheduleStatus.FIRED, active=0,
                         end_reason="date_ended", spawned_task_ids=spawned_task_ids,
                         last_fired_at=now, fire_count=fire_count, session_id=None,
+                        error=None,
                         transcript_path=str(transcript_path), updated_at=now,
                     )
                     org.db.insert_audit_log(
@@ -554,6 +614,7 @@ async def spawn_schedule(
                         schedule_id, status=ScheduleStatus.ARMED, active=1,
                         fire_at=next_fire, spawned_task_ids=spawned_task_ids,
                         last_fired_at=now, fire_count=fire_count, session_id=None,
+                        error=None,
                         transcript_path=str(transcript_path), updated_at=now,
                     )
 
@@ -637,6 +698,7 @@ async def spawn_schedule(
                     last_fired_at=now,
                     fire_count=fire_count,
                     session_id=None,
+                    error=None,
                     transcript_path=str(transcript_path),
                     updated_at=now,
                 )
