@@ -110,6 +110,41 @@ def test_commit_after_connect_projects_to_committed(client, tmp_path, monkeypatc
     assert get_registry().get_profile("custom-profile") is not None
 
 
+def test_commit_replaces_orphaned_adapter_with_fresh_probe_hash(client, tmp_path, monkeypatch):
+    """A reconnect must not bind against an old deterministic adapter id."""
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    adapter_id = custom_adapter_registry.generate_adapter_id("custom-profile-adapter")
+    save_adapter(AdapterEntry(
+        id=adapter_id,
+        name="custom-profile",
+        executable="/tmp/obsolete-wrapper",
+        executable_hash="stale-hash",
+        version="0.0.1",
+        workspace_adapter="codex",
+        status="approved",
+        registered_at="2026-08-12T00:00:00Z",
+        registered_by="direct-connect",
+        approved_at="2026-08-12T00:00:00Z",
+        approved_by="direct-connect",
+        intended_profile_name="custom-profile",
+    ))
+    _fake_probe(monkeypatch)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+
+    assert response.status_code == 200, response.json()
+    entry = get_adapter(adapter_id)
+    assert entry is not None
+    assert entry.executable_hash == state.direct_connect_authority_store.get_receipt_artifacts(
+        operation_id
+    ).wrapper_sha256
+    assert entry.executable_hash != "stale-hash"
+
+
 def test_commit_requires_master_bearer_not_registration_token(client, tmp_path, monkeypatch):
     tc, state = client
     operation_id = _mint_and_connect(tc, state, tmp_path)

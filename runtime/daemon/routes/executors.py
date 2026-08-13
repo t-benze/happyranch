@@ -1523,7 +1523,29 @@ def remove_runtime_executor_profile(name: str) -> RemoveRuntimeProfileResponse:
         #    needed). No-op when the profile was never loaded in-process.
         registry.unregister_custom_profile(name)
 
-        # 3. Audit the removal (mirrors _audit_runtime_registration).
+        # 3. A direct-connect adapter is owned by its profile. Once the
+        # profile is gone from both stores, remove an unbound one as well.
+        # Founder-approved submission adapters deliberately remain reusable.
+        command_adapter_id = entry.get("command_adapter_id")
+        if isinstance(command_adapter_id, str) and command_adapter_id.startswith("custom-adapter:"):
+            adapter_id = command_adapter_id.removeprefix("custom-adapter:")
+            from runtime.daemon.routes.adapters import _audit_adapter_remove, _bound_profile_names
+            from runtime.orchestrator.adapter_store import get_adapter, remove_adapter
+
+            adapter_entry = get_adapter(adapter_id)
+            if (
+                adapter_entry is not None
+                and adapter_entry.registered_by == "direct-connect"
+                and not _bound_profile_names(adapter_id)
+                and remove_adapter(adapter_id)
+            ):
+                _audit_adapter_remove(
+                    adapter_id=adapter_id,
+                    adapter_name=adapter_entry.name,
+                    removed_snapshot=adapter_entry.to_dict(),
+                )
+
+        # 4. Audit the removal (mirrors _audit_runtime_registration).
         argv = entry.get("argv_template")
         _audit_runtime_removal(
             profile_name=name,

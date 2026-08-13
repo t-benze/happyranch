@@ -507,9 +507,8 @@ def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
     return None
 
 
-def _check_no_profile_bound(adapter_id: str) -> None:
-    """Reject with 422 if ANY durable OR live custom profile references
-    command_adapter_id: custom-adapter:<adapter_id>.
+def _bound_profile_names(adapter_id: str) -> list[str]:
+    """Return durable or live custom profiles bound to an adapter.
 
     Consults BOTH the durable runtime profile store AND the active
     in-memory ExecutorRegistry so that a profile loaded-only-into-memory
@@ -535,8 +534,19 @@ def _check_no_profile_bound(adapter_id: str) -> None:
         if getattr(registry.get_profile(name), "command_adapter_id", None) == command_adapter_ref
     )
 
-    # Deduplicate across the two sources.
-    all_bound = sorted(set(durable_bound + live_bound))
+    return sorted(set(durable_bound + live_bound))
+
+
+def _check_no_profile_bound(adapter_id: str) -> None:
+    """Reject with 422 if ANY durable OR live custom profile references
+    command_adapter_id: custom-adapter:<adapter_id>.
+
+    Consults BOTH the durable runtime profile store AND the active
+    in-memory ExecutorRegistry so that a profile loaded-only-into-memory
+    (e.g. registered by a prior request that hasn't yet been written to
+    disk, or a live-only test registration) blocks removal.
+    """
+    all_bound = _bound_profile_names(adapter_id)
 
     if all_bound:
         raise HTTPException(

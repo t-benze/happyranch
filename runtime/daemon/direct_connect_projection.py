@@ -130,11 +130,16 @@ def project(
     )
 
     acquire_store_lock()
-    adapter_persisted = False
+    adapter_created = False
+    replaced_adapter: AdapterEntry | None = None
     try:
-        if get_adapter(adapter_id) is None:
+        existing_adapter = get_adapter(adapter_id)
+        if existing_adapter is None:
             save_adapter(entry)
-            adapter_persisted = True
+            adapter_created = True
+        elif existing_adapter.executable_hash != entry.executable_hash:
+            save_adapter(entry)
+            replaced_adapter = existing_adapter
     finally:
         release_store_lock()
 
@@ -145,10 +150,14 @@ def project(
             workspace_adapter=artifacts.workspace_adapter_id,
         )
     except Exception as exc:
-        if adapter_persisted:
+        if adapter_created:
             from runtime.orchestrator.adapter_store import remove_adapter
 
             remove_adapter(adapter_id)
+        elif replaced_adapter is not None:
+            from runtime.orchestrator.adapter_store import save_adapter
+
+            save_adapter(replaced_adapter)
         store.mark_failed(operation_id, f"profile_binding_failed: {exc}", now=now)
         return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
 
