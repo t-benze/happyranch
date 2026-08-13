@@ -1041,12 +1041,17 @@ or dispatch count, and rejects FIRING, terminal, and EXPIRED rows with
 
 1. **Scheduler (daemon loop).** A 60-second tick scans all orgs for ARMED
    Schedule rows whose ``fire_at <= now`` (one-shot) or ``fire_at`` is within a
-   120-second tolerance window (weekly/recurring). For stale repeating rows the
-   scheduler advances without replay/backfill and emits ``occurrence_missed``.
-   An exhausted ``until`` becomes FIRED/``date_ended``; a real next candidate
-   past review expiry becomes EXPIRED; another missing candidate is FAILED with
-   ``recurrence_no_candidate``. A claimed row transitions ARMED → FIRING and
-   emits ``schedule_claimed``.
+   120-second tolerance window (weekly/recurring). For a stale repeating
+   occurrence (missed during daemon downtime), the scheduler does not replay or
+   backfill it. It records ``occurrence_missed`` and re-arms the row only when a
+   future next occurrence exists within any finite review expiry. The terminal
+   alternatives do not emit ``occurrence_missed``: a recurring rule exhausted by
+   its inclusive ``until`` date becomes FIRED with ``end_reason=date_ended`` and
+   ``schedule_fired``; a future candidate beyond the review expiry becomes
+   EXPIRED with ``schedule_expired``; and an otherwise unexplained missing
+   candidate becomes FAILED with ``error=recurrence_no_candidate`` and
+   ``schedule_failed``. A claimed row transitions ARMED → FIRING and emits
+   ``schedule_claimed``.
 
 2. **Runner + spawn callback.** The schedule worker loop drains the
    ``ScheduleQueue`` and invokes the owning agent's executor with a dedicated
