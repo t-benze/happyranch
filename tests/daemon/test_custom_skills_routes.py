@@ -157,6 +157,25 @@ def test_custom_create_reuses_package_validator_for_protected_and_normal_slugs(c
     assert _create(client, slug="normal-custom-skill")["validation_state"] == "valid"
 
 
+def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_runtime):
+    client, _org = client_with_runtime
+    created = _create(client)
+    skill_id, revision = created["skill_id"], created["version_id"]
+
+    catalog = client.get(f"{BASE}/catalog")
+    assert catalog.status_code == 200
+    listed = next(skill for skill in catalog.json()["skills"] if skill["id"] == skill_id)
+    assert listed["hidden_reason"] == "no_eligibility_policy"
+    assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] == "no_eligibility_policy"
+
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(revision)}).status_code == 200
+    catalog = client.get(f"{BASE}/catalog")
+    listed = next(skill for skill in catalog.json()["skills"] if skill["id"] == skill_id)
+    assert listed["hidden_reason"] is None
+    assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
+
+
 def test_effective_custom_skill_distinguishes_next_session_from_materialized(client_with_runtime):
     client, org = client_with_runtime
     _add_agent(org)

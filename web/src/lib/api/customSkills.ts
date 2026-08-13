@@ -1,7 +1,7 @@
 /** Mirror of runtime/daemon/routes/custom_skills.py — founder Custom Skills UI. */
 import { request } from './client';
 
-export type EligibilityRule = { scope_type: 'agent' | 'team'; scope_target: string };
+export type EligibilityRule = { scope_type: 'agent' | 'team' | 'org'; scope_target?: string | null; effect: 'allow' | 'deny' };
 
 export interface CustomSkill {
   id?: string;
