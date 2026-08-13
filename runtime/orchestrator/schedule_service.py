@@ -384,6 +384,12 @@ class ScheduleService:
                 merged_recurrence.get(field) != old_recurrence.get(field)
                 for field in shape_fields
             )
+            # Validate the complete merged rule before candidate computation.
+            # This keeps invalid shape edits atomic and avoids evaluating an
+            # invalid RRULE while determining a replacement anchor.
+            err = validate_recurring_rule(merged_recurrence, now=_now())
+            if err:
+                raise ScheduleServiceError(err.code)
             if shape_changed:
                 # First compute against the existing cadence anchor, then make
                 # the newly selected next local date the new immutable anchor.
@@ -392,9 +398,6 @@ class ScheduleService:
                     merged_recurrence["anchor_date"] = provisional.astimezone(
                         ZoneInfo(merged_recurrence["tz"])
                     ).date().isoformat()
-            err = validate_recurring_rule(merged_recurrence, now=_now())
-            if err:
-                raise ScheduleServiceError(err.code)
             if merged_timezone != merged_recurrence["tz"]:
                 raise ScheduleServiceError(
                     f"timezone {merged_timezone!r} must match recurrence tz "
