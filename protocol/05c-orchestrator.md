@@ -679,13 +679,16 @@ Arming emits a ``schedule_created`` audit row with
 
 **Scheduler loop (Phase 3).** A 60-second daemon loop
 (``schedule_scheduler_loop`` in ``runtime/daemon/schedule_scheduler.py``)
-scans every org for ARMED rows whose ``fire_at <= now`` (one-shot) or
-``fire_at`` is within a 120-second tolerance window of ``now`` (weekly). For
-weekly schedules whose ``fire_at`` is stale (missed during daemon downtime),
-the scheduler advances ``fire_at`` to the next weekly occurrence via
-``next_weekly_occurrence`` or expires the schedule — **no replay/backfill**.
-Eligible rows are claimed: ARMED → FIRING, then enqueued as a ``ScheduleJob``
-into the org's ``ScheduleQueue``.
+scans every org for due ARMED rows. One-shots are due at ``fire_at <= now``;
+weekly and bounded recurring rows are claimed only when their due instant is
+within the 120-second recurrence tolerance. For a stale weekly or recurring
+occurrence (missed during daemon downtime), the scheduler does not replay or
+backfill it: it records ``occurrence_missed`` and advances to the next future
+occurrence using that row's rule. A recurring rule exhausted by its inclusive
+``until`` date becomes FIRED with ``end_reason=date_ended``; a next occurrence
+beyond the review expiry becomes EXPIRED; and an otherwise unexplained missing
+candidate is FAILED. Eligible rows are claimed: ARMED → FIRING, then enqueued
+as a ``ScheduleJob`` into the org's ``ScheduleQueue``.
 
 **Runner + worker loop.** A dedicated ``schedule_worker_loop`` drains the
 ``ScheduleQueue`` and invokes ``run_schedule`` (``schedule_runner.py``) for
@@ -711,6 +714,11 @@ fire endpoint:
   - **Weekly** → re-armed (ARMED, ``active=1``) with the next ``fire_at``
     computed via ``next_weekly_occurrence``, OR expired (EXPIRED, ``active=0``)
     when the next occurrence exceeds ``expires_at`` and ``indefinite=0``.
+  - **Recurring** → after a successful dispatch, reaches FIRED with
+    ``end_reason=count_exhausted`` when its successful-dispatch ``count`` is
+    reached; otherwise it reaches FIRED with ``end_reason=date_ended`` when
+    its inclusive ``until`` is exhausted, EXPIRED when a real next occurrence
+    is beyond review expiry, or re-arms with the next recurring ``fire_at``.
 - Writes ``schedule_spawned``, ``schedule_completed``, and (when applicable)
   ``schedule_expired`` audit log rows.
 - Enqueues the spawned task via ``enqueue_task``.
@@ -721,12 +729,14 @@ in ``session_token_usage`` with ``scope_type="schedule"`` and
 ``scope_id=<schedule_id>``.
 
 **Runner resolution.** After the executor returns, ``run_schedule`` checks the
-row's updated status. If the spawn callback drove it to FIRED (one-shot),
-ARMED (weekly re-arm), or EXPIRED (weekly past-expiry, terminal), the runner
-exits — the callback already handled terminal resolution. If the session
-returned successfully without calling spawn, the runner marks the row FAILED
-with error ``no_callback``. On executor failure or timeout, the row is marked
-FAILED or TIMEOUT respectively.
+row's updated status. If the spawn callback drove it to FIRED (natural completion),
+ARMED (weekly or recurring re-arm), or EXPIRED (review-expiry terminal), the
+runner exits — the callback already handled resolution. If a weekly or
+recurring session returns without spawning, fails, or times out, the runner
+records the failure/timeout and advances to the next eligible occurrence
+without retrying the claimed instant or incrementing ``fire_count``; it
+re-arms unless the same ``until``/review-expiry/no-candidate terminal rules
+apply. One-shots retain terminal FAILED/TIMEOUT behavior for those cases.
 
 **No hidden schedules.** Every Schedule is visible to the CLI ``list`` command
 and to the owning agent in the schedule-fire prompt. There is no mechanism for

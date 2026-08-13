@@ -148,7 +148,8 @@ existing Todo to make room.
 | Session mismatch / unknown | 409 | Re-read your `task_id`/`session_id`/`agent` triples; retry once |
 | Agent team unresolved | 409 `agent_team_unresolved` | Do not arm; report the in-org identity/configuration problem |
 | Invalid `kind` | 422 `invalid_kind` | Only `one_shot`, `weekly`, and `recurring` are valid |
-| Invalid `fire_at` (no offset, past, >90 days) | 422 `invalid_fire_at` | Correct the timestamp; always include an offset |
+| Malformed `fire_at` or missing timezone offset | 422 `invalid_fire_at` | Correct the ISO-8601 timestamp; always include an offset |
+| One-shot `fire_at` is past or more than 90 days ahead | 409 `create_failed` with the service diagnostic | Correct the timestamp only when the explicit instruction supports it; otherwise report the diagnostic and ask for clarification |
 | Invalid recurring grammar | 422 with one of `invalid_freq_fields`, `invalid_byday`, `monthly_selector_missing`, `monthly_selector_conflict`, `invalid_interval`, `anchor_date_not_settable`, `invalid_until`, `invalid_count`, `end_condition_conflict`, `invalid_time`, or `invalid_timezone` | Do not guess or retry a different grammar; correct only from the explicit instruction, or ask for clarification |
 | Cap exceeded | 409 `create_failed` | Report which cap; ask the founder which Todo to pause/cancel |
 | Ambiguous instruction | (your guard — don't call) | **Ask for clarification** — do NOT guess the date, timezone, cadence, or instruction. Escalate rather than arm nonsense. |

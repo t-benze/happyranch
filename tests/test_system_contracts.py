@@ -145,6 +145,10 @@ class TestSystemContractsTuple:
         assert "anchor_date`; do **not** send it" in source
         assert "successful dispatches" in source
         assert "happyranch schedules create --org happyranch --from-file" in source
+        assert "Malformed `fire_at` or missing timezone offset" in source
+        assert "422 `invalid_fire_at`" in source
+        assert "One-shot `fire_at` is past or more than 90 days ahead" in source
+        assert "409 `create_failed` with the service diagnostic" in source
 
     def test_start_task_contexts(self):
         sc = _get("start-task")
