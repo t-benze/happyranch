@@ -220,6 +220,15 @@ def test_schedule_create_contract_documents_recurring_kind_and_validation_codes(
     assert set(schemas[detail_name]["properties"]["code"]["enum"]) == _RECURRING_VALIDATION_CODES
 
 
+def test_schedule_renew_contract_documents_state_conflict() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    responses = app.openapi()["paths"]["/api/v1/orgs/{slug}/schedules/{schedule_id}/renew"]["post"][
+        "responses"
+    ]
+
+    assert set(responses) == {"200", "409", "422"}
+
+
 def test_schedule_edit_body_schema_no_null_type() -> None:
     """ScheduleEditBody must not advertise ``type: null`` for mutable fields.
 

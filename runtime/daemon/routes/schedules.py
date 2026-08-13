@@ -301,7 +301,10 @@ class ScheduleRenewBody(BaseModel):
     indefinite: bool = False
 
 
-@router.post("/schedules/{schedule_id}/renew")
+@router.post(
+    "/schedules/{schedule_id}/renew",
+    responses={409: {"description": "Schedule cannot be renewed from its current state."}},
+)
 def renew_schedule(
     slug: str,
     schedule_id: str,
