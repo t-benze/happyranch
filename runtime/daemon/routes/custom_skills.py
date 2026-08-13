@@ -91,8 +91,14 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
 
 @router.get("/catalog")
 def catalog(slug: str, org: OrgDep, filter: str | None = None):
-    rows = getattr(org.db, "_conn", org.db).execute("SELECT s.*,v.content_hash,v.validation_state FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.org_slug=? ORDER BY s.name", (slug,)).fetchall()
-    return {"skills": [dict(row) for row in rows]}
+    conn = getattr(org.db, "_conn", org.db)
+    rows = conn.execute("SELECT s.*,v.content_hash,v.validation_state FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.org_slug=? ORDER BY s.name", (slug,)).fetchall()
+    skills = []
+    for row in rows:
+        skill = dict(row)
+        skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(conn, row["id"]) else None
+        skills.append(skill)
+    return {"skills": skills}
 
 @router.post("", status_code=201)
 def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
@@ -117,7 +123,9 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
 def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
-    return dict(row)
+    skill = dict(row)
+    skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(org.db, skill_id) else None
+    return skill
 
 @router.patch("/{skill_id}")
 def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):

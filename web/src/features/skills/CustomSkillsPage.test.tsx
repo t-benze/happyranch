@@ -10,7 +10,16 @@ const SLUG = 'alpha';
 const API = `/api/v1/orgs/${SLUG}/custom-skills`;
 const SKILL_ID = 'custom:playbook';
 
-const skill = {
+const skill: {
+  skill_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  current_version_id: number;
+  retired_at: null;
+  validation_state: string;
+  hidden_reason?: string | null;
+} = {
   skill_id: SKILL_ID,
   slug: 'playbook',
   name: 'Partner playbook',
@@ -25,12 +34,13 @@ function mount(route: string): void {
   renderWithProviders(<AppRoutes />, { route });
 }
 
-function mountDetail(options: { eligibility?: () => Response; save?: () => Response } = {}): void {
+function mountDetail(options: { skill?: typeof skill; eligibility?: () => Response; preview?: (request: Request) => Response | Promise<Response>; save?: (request: Request) => Response | Promise<Response> } = {}): void {
   server.use(
-    http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => HttpResponse.json(skill)),
+    http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => HttpResponse.json(options.skill ?? skill)),
     http.get(`${API}/${encodeURIComponent(SKILL_ID)}/versions`, () => HttpResponse.json({ versions: [{ id: 1, content_hash: 'abc', created_at: '2026-08-01T00:00:00Z', validation_state: 'valid' }] })),
-    http.get(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, () => options.eligibility?.() ?? HttpResponse.json({ rules: [{ scope_type: 'agent', scope_target: 'ada' }], revision: 1 })),
-    http.put(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, () => options.save?.() ?? HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 })),
+    http.get(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, () => options.eligibility?.() ?? HttpResponse.json({ rules: [{ scope_type: 'agent', scope_target: 'ada', effect: 'allow' }], revision: 1 })),
+    http.post(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility/preview`, ({ request }) => options.preview?.(request) ?? HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 })),
+    http.put(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, ({ request }) => options.save?.(request) ?? HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 })),
   );
   mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
 }
@@ -131,6 +141,36 @@ describe('Custom Skills routes', () => {
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
   });
 
+  test('detail uses the hidden eligibility badge only when the server reports it', async () => {
+    mountDetail({ skill: { ...skill, hidden_reason: 'no_eligibility_policy' } });
+    expect(await screen.findByText('Hidden — eligibility not configured')).toBeInTheDocument();
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    mountDetail();
+    expect(await screen.findByText('Validated')).toBeInTheDocument();
+  });
+
+  test('editor sends org rules with an explicit effect to preview and save', async () => {
+    const user = userEvent.setup();
+    const payloads: unknown[] = [];
+    mountDetail({
+      eligibility: () => HttpResponse.json({ rules: [], revision: 1 }),
+      preview: async (request) => { payloads.push(await request.json()); return HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 }); },
+      save: async (request) => { payloads.push(await request.json()); return HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 }); },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Add rule' }));
+    await user.selectOptions(screen.getByLabelText('Rule 1 scope'), 'org');
+    await user.selectOptions(screen.getByLabelText('Rule 1 effect'), 'deny');
+    await user.click(screen.getByRole('button', { name: 'Preview impact' }));
+    await user.click(screen.getByRole('button', { name: 'Save eligibility' }));
+    await waitFor(() => expect(payloads).toEqual([
+      [{ scope_type: 'org', scope_target: '', effect: 'deny' }],
+      [{ scope_type: 'org', scope_target: '', effect: 'deny' }],
+    ]));
+  });
+
   test('detail mutation error is visible and does not silently clear the edited rule', async () => {
     const user = userEvent.setup();
     mountDetail({ save: () => new HttpResponse('unavailable', { status: 500 }) });
@@ -152,8 +192,8 @@ describe('Custom Skills routes', () => {
       http.get(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, () => {
         eligibilityReads += 1;
         return HttpResponse.json(eligibilityReads === 1
-          ? { rules: [{ scope_type: 'agent', scope_target: 'server-original' }], revision: 1 }
-          : { rules: [{ scope_type: 'team', scope_target: 'server-new' }], revision: 2 });
+          ? { rules: [{ scope_type: 'agent', scope_target: 'server-original', effect: 'allow' }], revision: 1 }
+          : { rules: [{ scope_type: 'team', scope_target: 'server-new', effect: 'allow' }], revision: 2 });
       }),
       http.put(`${API}/${encodeURIComponent(SKILL_ID)}/eligibility`, async ({ request }) => {
         saveRevisions.push(request.headers.get('If-Match') ?? '');
