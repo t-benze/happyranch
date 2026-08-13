@@ -1041,12 +1041,17 @@ or dispatch count, and rejects FIRING, terminal, and EXPIRED rows with
 
 1. **Scheduler (daemon loop).** A 60-second tick scans all orgs for ARMED
    Schedule rows whose ``fire_at <= now`` (one-shot) or ``fire_at`` is within a
-   120-second tolerance window (weekly/recurring). For stale repeating rows the
-   scheduler advances without replay/backfill and emits ``occurrence_missed``.
-   An exhausted ``until`` becomes FIRED/``date_ended``; a real next candidate
-   past review expiry becomes EXPIRED; another missing candidate is FAILED with
-   ``recurrence_no_candidate``. A claimed row transitions ARMED → FIRING and
-   emits ``schedule_claimed``.
+   120-second tolerance window (weekly/recurring). For a stale repeating
+   occurrence (missed during daemon downtime), the scheduler does not replay or
+   backfill it. It records ``occurrence_missed`` and re-arms the row only when a
+   future next occurrence exists within any finite review expiry. The terminal
+   alternatives do not emit ``occurrence_missed``: a recurring rule exhausted by
+   its inclusive ``until`` date becomes FIRED with ``end_reason=date_ended`` and
+   ``schedule_fired``; a future candidate beyond the review expiry becomes
+   EXPIRED with ``schedule_expired``; and an otherwise unexplained missing
+   candidate becomes FAILED with ``error=recurrence_no_candidate`` and
+   ``schedule_failed``. A claimed row transitions ARMED → FIRING and emits
+   ``schedule_claimed``.
 
 2. **Runner + spawn callback.** The schedule worker loop drains the
    ``ScheduleQueue`` and invokes the owning agent's executor with a dedicated
@@ -1112,6 +1117,17 @@ optionally ``recurrence`` and ``timezone``.  The server enforces:
   one-shot horizon, weekly shape validation (single weekday + HH:MM + IANA
   timezone only), and 90-day recurring expiry are enforced at create time
   by the ``ScheduleService``.
+- **Recurring callback grammar:** a native ``kind="recurring"`` request uses
+  the documented `recurrence` object: ``freq`` is ``DAILY``, ``WEEKLY``,
+  ``MONTHLY``, or ``YEARLY``; ``interval`` is positive; ``time`` and ``tz``
+  are required; weekly requires distinct ``byday`` tokens; monthly has exactly
+  one positive ``bymonthday`` or one ``byday`` plus named ``ordinal``; and
+  daily/yearly permit no selector. Its end condition is exactly never (omit
+  ``until`` and ``count``), inclusive local-date ``until``, or successful-
+  dispatch ``count`` (never both). The agent must not set server-owned
+  ``anchor_date``. Invalid recurring grammar returns its named stable 422 code;
+  the agent must correct it only from the explicit instruction or ask, never
+  approximate a different recurrence.
 
 Arming is fully autonomous — no pre-arming founder approval step — but the
 schedule is immediately visible in the founder/operator ``list`` and ``show``

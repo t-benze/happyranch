@@ -174,9 +174,9 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
         id="todos",
         name="Todos",
         description=(
-            "Agent-owned scheduled commitments (THR-105): create one-shot and "
-            "weekly self-schedules from explicit founder/operator instruction. "
-            "Capability-gated, self-only, immutable brief."
+            "Agent-owned scheduled commitments (THR-105): create one-shot, weekly, "
+            "or bounded recurring self-schedules from explicit founder/operator "
+            "instruction. Self-only, immutable brief."
         ),
         when_to_use=(
             "Use when the founder or operator has explicitly instructed you to "

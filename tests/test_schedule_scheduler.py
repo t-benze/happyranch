@@ -292,7 +292,9 @@ def test_recurring_stale_until_ends_date_not_expired(tmp_path):
     record = db.schedules.get("SCHEDULE-001")
     assert record.status == ScheduleStatus.FIRED
     assert record.end_reason == "date_ended"
-    assert any(log["action"] == "schedule_fired" for log in db.get_audit_logs(record.id))
+    actions = [log["action"] for log in db.get_audit_logs(record.id)]
+    assert "schedule_fired" in actions
+    assert "occurrence_missed" not in actions
 
 
 def test_recurring_stale_next_candidate_past_expiry_expires(tmp_path):

@@ -11,7 +11,7 @@ import pytest
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import next_recurring_occurrence, next_weekly_occurrence
 
 
 _FROZEN_NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
@@ -772,6 +772,41 @@ def test_create_recurring_returns_named_validation_code(tmp_home, app, org_state
 
     assert status == 422
     assert detail["code"] == "invalid_interval"
+
+
+def test_create_recurring_preserves_agent_rule_at_the_service_create_seam(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A documented recurring callback reaches the shipped create seam intact."""
+    from fastapi.testclient import TestClient
+
+    _register_session(org_state)
+    client = TestClient(app)
+    recurrence = {
+        "freq": "WEEKLY", "interval": 2, "byday": ["TU", "TH"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+    }
+    local_tz = timezone(timedelta(hours=8))
+    expected = next_recurring_occurrence(
+        {**recurrence, "anchor_date": _FROZEN_NOW.astimezone(local_tz).date().isoformat()},
+        _FROZEN_NOW,
+    )
+    assert expected is not None
+    payload = _create_payload(
+        kind="recurring", recurrence=recurrence, timezone="Asia/Shanghai",
+        fire_at=expected.isoformat(),
+    )
+
+    status, body = _post_create(client, payload, auth_headers)
+
+    assert status == 200
+    record = org_state.db.schedules.get(body["schedule_id"])
+    assert record is not None
+    assert record.kind == ScheduleKind.RECURRING
+    assert record.recurrence == {
+        **recurrence,
+        "anchor_date": expected.astimezone(local_tz).date().isoformat(),
+    }
 
 
 # ── successful create ──────────────────────────────────────────────────

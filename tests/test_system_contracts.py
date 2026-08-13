@@ -135,6 +135,33 @@ class TestSystemContractsTuple:
         sc = _get("todos")
         assert sc.source_path == "protocol/skills/todos/SKILL.md"
 
+    def test_todos_skill_source_teaches_recurring_callback_grammar(self):
+        """The universal materialized Todos contract has the v2 agent grammar."""
+        sc = _get("todos")
+        source = (Path(__file__).resolve().parents[1] / sc.source_path).read_text()
+
+        assert '"kind":         "one_shot | weekly | recurring"' in source
+        assert '### Recurring (`kind: "recurring"`)' in source
+        assert "anchor_date`; do **not** send it" in source
+        assert "successful dispatches" in source
+        assert "happyranch schedules create --org happyranch --from-file" in source
+        assert "Malformed `fire_at` or missing timezone offset" in source
+        assert "422 `invalid_fire_at`" in source
+        assert "One-shot `fire_at` is past or more than 90 days ahead" in source
+        assert "409 `create_failed` with the service diagnostic" in source
+
+    def test_agent_runtime_stale_recurrence_contract_distinguishes_terminal_audits(self):
+        """The governing agent-runtime contract matches the scheduler stale path."""
+        repo_root = Path(__file__).resolve().parents[1]
+        source = (repo_root / "protocol/05b-agent-runtime.md").read_text()
+
+        assert "does not replay or\n   backfill it" in source
+        assert "occurrence_missed`` and re-arms the row only when a\n   future next occurrence exists within any finite review expiry" in source
+        assert "FIRED with ``end_reason=date_ended`` and\n   ``schedule_fired``" in source
+        assert "EXPIRED with ``schedule_expired``" in source
+        assert "FAILED with ``error=recurrence_no_candidate`` and\n   ``schedule_failed``" in source
+        assert "scheduler advances without replay/backfill and emits ``occurrence_missed``" not in source
+
     def test_start_task_contexts(self):
         sc = _get("start-task")
         assert set(sc.contexts) == {SessionContext.TASK, SessionContext.WAKE, SessionContext.SCHEDULE}
