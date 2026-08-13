@@ -41,6 +41,14 @@ def test_custom_cli_forget_parses_profile_name() -> None:
     assert args.profile_name == "my-cli"
 
 
+def test_adapters_remove_parses_adapter_id() -> None:
+    args = build_parser().parse_args(["adapters", "remove", "my-adapter"])
+
+    assert args.command == "adapters"
+    assert args.adapters_command == "remove"
+    assert args.adapter_id == "my-adapter"
+
+
 def test_custom_cli_status_prints_committed_profile(capsys) -> None:
     from cli.commands.runtime import cmd_custom_cli_status
 
@@ -217,3 +225,54 @@ def test_custom_cli_forget_posts_failed_operation_and_confirms_cleanup(capsys) -
     output = capsys.readouterr().out
     assert "forgot failed custom-CLI connection for my-cli" in output
     assert "wrapper file removed or already absent" in output
+
+
+def test_adapters_remove_fetches_fresh_snapshot_then_deletes(capsys) -> None:
+    from cli.commands.runtime import cmd_adapters_remove
+
+    client = MagicMock()
+    current = {
+        "id": "my-adapter",
+        "name": "My adapter",
+        "executable": "/tmp/my-adapter",
+        "executable_hash": "fresh-hash",
+        "version": "1.2.3",
+        "capabilities": ["workspace"],
+        "contract_version": 1,
+        "workspace_adapter": "codex",
+        "status": "approved",
+        "registered_at": "2026-08-13T00:00:00Z",
+        "registered_by": "direct-connect",
+        "approved_at": "2026-08-13T00:00:00Z",
+        "approved_by": "direct-connect",
+        "intended_profile_name": "my-profile",
+        "dependency_manifest_version": 1,
+        "dependencies": [{"executable": "/tmp/child", "sha256": "child-hash"}],
+        "eligibility": "ready_to_bind",
+    }
+    client.get.return_value = _response(current)
+    client.request.return_value = _response({"id": "my-adapter", "removed": True, "name": "My adapter"})
+
+    with patch("cli.commands.runtime.OpcClient.from_env", return_value=client):
+        cmd_adapters_remove(argparse.Namespace(adapter_id="my-adapter"))
+
+    client.get.assert_called_once_with("/api/v1/runtime/adapters/my-adapter")
+    client.request.assert_called_once_with(
+        "DELETE",
+        "/api/v1/runtime/adapters/my-adapter",
+        json={
+            "name": "My adapter",
+            "executable": "/tmp/my-adapter",
+            "executable_hash": "fresh-hash",
+            "version": "1.2.3",
+            "capabilities": ["workspace"],
+            "contract_version": 1,
+            "workspace_adapter": "codex",
+            "intended_profile_name": "my-profile",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": "/tmp/child", "sha256": "child-hash"}],
+        },
+    )
+    output = capsys.readouterr().out
+    assert "removing adapter my-adapter (My adapter)" in output
+    assert "removed adapter my-adapter (My adapter)" in output

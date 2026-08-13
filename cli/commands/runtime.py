@@ -254,6 +254,43 @@ def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
     print("wrapper file removed or already absent")
 
 
+def cmd_adapters_remove(args: argparse.Namespace) -> None:
+    """Remove an adapter using a freshly fetched exact snapshot."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    response = client.get(f"/api/v1/runtime/adapters/{args.adapter_id}")
+    if not _ok(response):
+        return
+    entry = response.json()
+    snapshot = {
+        field: entry.get(field)
+        for field in (
+            "name",
+            "executable",
+            "executable_hash",
+            "version",
+            "capabilities",
+            "contract_version",
+            "workspace_adapter",
+            "intended_profile_name",
+            "dependency_manifest_version",
+            "dependencies",
+        )
+    }
+    print(f"removing adapter {args.adapter_id} ({entry.get('name', '')})")
+    response = client.request(
+        "DELETE", f"/api/v1/runtime/adapters/{args.adapter_id}", json=snapshot,
+    )
+    if not _ok(response):
+        return
+    result = response.json()
+    print(f"removed adapter {result['id']} ({result['name']})")
+
+
 
 def register(sub) -> None:
     p_init_runtime = sub.add_parser(
@@ -317,3 +354,11 @@ def register(sub) -> None:
     )
     p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
     p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)
+
+    p_adapters = sub.add_parser("adapters", help="Manage custom adapter entries")
+    adapters_sub = p_adapters.add_subparsers(dest="adapters_command", required=True)
+    p_adapters_remove = adapters_sub.add_parser(
+        "remove", help="Remove a custom adapter using its current server snapshot",
+    )
+    p_adapters_remove.add_argument("adapter_id", help="Custom adapter identifier to remove")
+    p_adapters_remove.set_defaults(func=cmd_adapters_remove)

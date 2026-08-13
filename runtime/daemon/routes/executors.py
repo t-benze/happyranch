@@ -15,6 +15,7 @@ POST /api/v1/orgs/{slug}/executors/register
 """
 from __future__ import annotations
 
+import logging
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -43,6 +44,7 @@ from runtime.orchestrator.runtime_executor_store import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Per-profile-name locks — serialize write+register for the same profile
@@ -1523,7 +1525,30 @@ def remove_runtime_executor_profile(name: str) -> RemoveRuntimeProfileResponse:
         #    needed). No-op when the profile was never loaded in-process.
         registry.unregister_custom_profile(name)
 
-        # 3. Audit the removal (mirrors _audit_runtime_registration).
+        # 3. A direct-connect adapter is owned by its profile. Once the
+        # profile is gone from both stores, remove an unbound one as well.
+        # Founder-approved submission adapters deliberately remain reusable.
+        command_adapter_id = entry.get("command_adapter_id")
+        if isinstance(command_adapter_id, str) and command_adapter_id.startswith("custom-adapter:"):
+            adapter_id = command_adapter_id.removeprefix("custom-adapter:")
+            from runtime.daemon.routes.adapters import (
+                AdapterRemovalAuditError,
+                remove_unbound_direct_connect_adapter,
+            )
+
+            try:
+                remove_unbound_direct_connect_adapter(adapter_id)
+            except AdapterRemovalAuditError:
+                # Steps 1-2 have already durably removed the profile.  The
+                # helper restores the adapter, so reporting a failed profile
+                # removal here would be a false negative.
+                logger.warning(
+                    "Restored direct-connect adapter after nested cleanup audit failure",
+                    extra={"adapter_id": adapter_id, "profile_name": name},
+                    exc_info=True,
+                )
+
+        # 4. Audit the removal (mirrors _audit_runtime_registration).
         argv = entry.get("argv_template")
         _audit_runtime_removal(
             profile_name=name,
