@@ -1715,6 +1715,59 @@ def _audit_adapter_remove(
         db.close()
 
 
+class AdapterRemovalAuditError(RuntimeError):
+    """Raised when a removed adapter has been restored after audit failure."""
+
+
+def _remove_adapter_locked_with_audit(adapter_id: str, entry) -> None:
+    """Remove ``entry`` and audit it, restoring its exact snapshot on failure.
+
+    The caller must hold the reentrant adapter-store lock.  Keeping the
+    durable removal, audit, and compensation in one primitive prevents a
+    successful-looking deletion with no audit trail.
+    """
+    from runtime.orchestrator.adapter_store import (
+        AdapterEntry,
+        _save_adapter_locked,
+        remove_adapter,
+    )
+
+    removed_snapshot = entry.to_dict()
+    if not remove_adapter(adapter_id):
+        return
+    try:
+        _audit_adapter_remove(
+            adapter_id=adapter_id,
+            adapter_name=entry.name,
+            removed_snapshot=removed_snapshot,
+        )
+    except Exception as exc:
+        _save_adapter_locked(AdapterEntry.from_dict(removed_snapshot))
+        raise AdapterRemovalAuditError(
+            f"Adapter {adapter_id!r} was restored after audit logging failed"
+        ) from exc
+
+
+def remove_unbound_direct_connect_adapter(adapter_id: str):
+    """Remove an unbound direct-connect adapter under the store lock.
+
+    A concurrent direct-connect projection uses this same lock while it
+    creates and binds its adapter/profile pair.  Re-read every predicate at
+    the lock boundary so a fresh bind cannot be mistaken for an orphan.
+    """
+    acquire_store_lock()
+    try:
+        entry = get_adapter(adapter_id)
+        if entry is None or entry.registered_by != "direct-connect":
+            return None
+        if _bound_profile_names(adapter_id):
+            return None
+        _remove_adapter_locked_with_audit(adapter_id, entry)
+        return entry
+    finally:
+        release_store_lock()
+
+
 @router.delete(
     "/runtime/adapters/{adapter_id}",
     dependencies=[require_token()],
@@ -1777,7 +1830,7 @@ def remove_adapter_entry(
     #    command_adapter_id: custom-adapter:<adapter_id>
     _check_no_profile_bound(adapter_id)
 
-    # Snapshot the entry for audit and potential rollback.
+    # Snapshot the entry for the successful response.
     removed_snapshot = entry.to_dict()
 
     # Durable removal under the reentrant adapter-store lock.
@@ -1813,24 +1866,9 @@ def remove_adapter_entry(
         # Re-check profile binding under the lock (both durable + live).
         _check_no_profile_bound(adapter_id)
 
-        # Durable removal via the atomic store helper.
-        from runtime.orchestrator.adapter_store import remove_adapter as _store_remove
-        _store_remove(adapter_id)
-
-        # Audit the successful removal.
-        # If auditing fails, restore the exact adapter entry and return failure.
         try:
-            _audit_adapter_remove(
-                adapter_id=adapter_id,
-                adapter_name=re_read_entry.name,
-                removed_snapshot=removed_snapshot,
-            )
-        except Exception:
-            # Restore the adapter under the lock.
-            from runtime.orchestrator.adapter_store import _save_adapter_locked
-            from runtime.orchestrator.adapter_store import AdapterEntry as AdapterEntryModel
-            restored = AdapterEntryModel.from_dict(removed_snapshot)
-            _save_adapter_locked(restored)
+            _remove_adapter_locked_with_audit(adapter_id, re_read_entry)
+        except AdapterRemovalAuditError:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=(

@@ -15,6 +15,7 @@ POST /api/v1/orgs/{slug}/executors/register
 """
 from __future__ import annotations
 
+import logging
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -43,6 +44,7 @@ from runtime.orchestrator.runtime_executor_store import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Per-profile-name locks — serialize write+register for the same profile
@@ -1529,20 +1531,21 @@ def remove_runtime_executor_profile(name: str) -> RemoveRuntimeProfileResponse:
         command_adapter_id = entry.get("command_adapter_id")
         if isinstance(command_adapter_id, str) and command_adapter_id.startswith("custom-adapter:"):
             adapter_id = command_adapter_id.removeprefix("custom-adapter:")
-            from runtime.daemon.routes.adapters import _audit_adapter_remove, _bound_profile_names
-            from runtime.orchestrator.adapter_store import get_adapter, remove_adapter
+            from runtime.daemon.routes.adapters import (
+                AdapterRemovalAuditError,
+                remove_unbound_direct_connect_adapter,
+            )
 
-            adapter_entry = get_adapter(adapter_id)
-            if (
-                adapter_entry is not None
-                and adapter_entry.registered_by == "direct-connect"
-                and not _bound_profile_names(adapter_id)
-                and remove_adapter(adapter_id)
-            ):
-                _audit_adapter_remove(
-                    adapter_id=adapter_id,
-                    adapter_name=adapter_entry.name,
-                    removed_snapshot=adapter_entry.to_dict(),
+            try:
+                remove_unbound_direct_connect_adapter(adapter_id)
+            except AdapterRemovalAuditError:
+                # Steps 1-2 have already durably removed the profile.  The
+                # helper restores the adapter, so reporting a failed profile
+                # removal here would be a false negative.
+                logger.warning(
+                    "Restored direct-connect adapter after nested cleanup audit failure",
+                    extra={"adapter_id": adapter_id, "profile_name": name},
+                    exc_info=True,
                 )
 
         # 4. Audit the removal (mirrors _audit_runtime_registration).

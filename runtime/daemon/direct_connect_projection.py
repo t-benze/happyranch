@@ -67,6 +67,7 @@ def project(
         AdapterEntry,
         acquire_store_lock,
         get_adapter,
+        remove_adapter,
         release_store_lock,
         save_adapter,
     )
@@ -129,9 +130,9 @@ def project(
         dependencies=[{"executable": c["executable"], "sha256": c["sha256"]} for c in artifacts.children],
     )
 
-    acquire_store_lock()
     adapter_created = False
     replaced_adapter: AdapterEntry | None = None
+    acquire_store_lock()
     try:
         existing_adapter = get_adapter(adapter_id)
         if existing_adapter is None:
@@ -140,26 +141,21 @@ def project(
         elif existing_adapter.executable_hash != entry.executable_hash:
             save_adapter(entry)
             replaced_adapter = existing_adapter
+        try:
+            bind_result = custom_adapter_registry._perform_adapter_profile_binding(
+                adapter_id=adapter_id,
+                profile_name=artifacts.intended_profile_name,
+                workspace_adapter=artifacts.workspace_adapter_id,
+            )
+        except Exception as exc:
+            if adapter_created:
+                remove_adapter(adapter_id)
+            elif replaced_adapter is not None:
+                save_adapter(replaced_adapter)
+            store.mark_failed(operation_id, f"profile_binding_failed: {exc}", now=now)
+            return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
     finally:
         release_store_lock()
-
-    try:
-        bind_result = custom_adapter_registry._perform_adapter_profile_binding(
-            adapter_id=adapter_id,
-            profile_name=artifacts.intended_profile_name,
-            workspace_adapter=artifacts.workspace_adapter_id,
-        )
-    except Exception as exc:
-        if adapter_created:
-            from runtime.orchestrator.adapter_store import remove_adapter
-
-            remove_adapter(adapter_id)
-        elif replaced_adapter is not None:
-            from runtime.orchestrator.adapter_store import save_adapter
-
-            save_adapter(replaced_adapter)
-        store.mark_failed(operation_id, f"profile_binding_failed: {exc}", now=now)
-        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
 
     store.mark_committed(
         operation_id, adapter_id=adapter_id, profile_name=bind_result["profile_name"], now=now,

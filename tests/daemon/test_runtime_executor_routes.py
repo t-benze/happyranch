@@ -1711,6 +1711,48 @@ class TestRuntimeProfileDeleteRoute:
         finally:
             audit_db.close()
 
+    def test_delete_restores_direct_connect_adapter_when_nested_audit_fails(
+        self, client, monkeypatch,
+    ):
+        """Nested cleanup keeps a restorable adapter if its audit write fails."""
+        from runtime.daemon.routes import adapters as adapters_routes
+        from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+        adapter = AdapterEntry(
+            id="audit-failure-direct-adapter",
+            name="audit-failure-direct",
+            executable="/tmp/audit-failure-direct-adapter",
+            executable_hash="audit-failure-hash",
+            version="1.0.0",
+            workspace_adapter="codex",
+            status="approved",
+            registered_at="2026-08-13T00:00:00Z",
+            registered_by="direct-connect",
+            approved_at="2026-08-13T00:00:00Z",
+            approved_by="direct-connect",
+            intended_profile_name="audit-failure-direct",
+        )
+        original_snapshot = adapter.to_dict()
+        save_adapter(adapter)
+        profile = _entry()
+        profile["command_adapter_id"] = f"custom-adapter:{adapter.id}"
+        save_runtime_profile("audit-failure-direct", profile)
+
+        monkeypatch.setattr(
+            adapters_routes,
+            "_audit_adapter_remove",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("injected audit failure")),
+        )
+
+        response = client.delete("/api/v1/executors/runtime/profiles/audit-failure-direct")
+
+        # Profile removal is durable before this best-effort nested cleanup,
+        # so a 500 would falsely claim the profile still exists.
+        assert response.status_code == 200, response.json()
+        restored = get_adapter(adapter.id)
+        assert restored is not None
+        assert restored.to_dict() == original_snapshot
+
     def test_delete_keeps_manual_submission_adapter(self, client):
         """Manual-submission adapters may be intentionally rebound later."""
         from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter

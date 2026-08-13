@@ -9,6 +9,7 @@ immediately after a successful /connect to reach Connected.
 from __future__ import annotations
 
 import hashlib
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -143,6 +144,91 @@ def test_commit_replaces_orphaned_adapter_with_fresh_probe_hash(client, tmp_path
         operation_id
     ).wrapper_sha256
     assert entry.executable_hash != "stale-hash"
+
+
+def test_profile_removal_preserves_adapter_when_direct_connect_bind_wins_race(
+    client, tmp_path, monkeypatch,
+):
+    """A direct-connect bind that wins the store lock cannot lose its adapter."""
+    from runtime.daemon import direct_connect_projection
+    from runtime.daemon.routes import adapters as adapters_routes
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+    from runtime.orchestrator.runtime_executor_store import save_runtime_profile
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    artifacts = state.direct_connect_authority_store.get_receipt_artifacts(operation_id)
+    assert artifacts is not None
+    adapter_id = custom_adapter_registry.generate_adapter_id("custom-profile-adapter")
+    original_adapter = AdapterEntry(
+        id=adapter_id,
+        name="custom-profile",
+        executable=str(artifacts.wrapper_path),
+        executable_hash=artifacts.wrapper_sha256,
+        version="1.0.0",
+        workspace_adapter="codex",
+        status="approved",
+        registered_at="2026-08-13T00:00:00Z",
+        registered_by="direct-connect",
+        approved_at="2026-08-13T00:00:00Z",
+        approved_by="direct-connect",
+        intended_profile_name="custom-profile",
+    )
+    save_adapter(original_adapter)
+    save_runtime_profile("custom-profile", {
+        "command": "echo",
+        "argv_template": ["echo", "{prompt}"],
+        "adapter": "codex",
+        "command_adapter_id": f"custom-adapter:{adapter_id}",
+    })
+    _fake_probe(monkeypatch)
+
+    rendezvous = threading.Barrier(2)
+    projection_binding_started = threading.Event()
+    original_bind = custom_adapter_registry._perform_adapter_profile_binding
+    original_cleanup = adapters_routes.remove_unbound_direct_connect_adapter
+
+    def _bind_profile(**kwargs):
+        projection_binding_started.set()
+        return original_bind(**kwargs)
+
+    def _cleanup_after_projection_starts(adapter_id: str):
+        rendezvous.wait(timeout=5)
+        assert projection_binding_started.wait(timeout=5)
+        return original_cleanup(adapter_id)
+
+    monkeypatch.setattr(custom_adapter_registry, "_perform_adapter_profile_binding", _bind_profile)
+    monkeypatch.setattr(
+        adapters_routes, "remove_unbound_direct_connect_adapter", _cleanup_after_projection_starts,
+    )
+
+    delete_response: list = []
+    projection_outcome: list = []
+
+    def _remove_profile():
+        delete_response.append(tc.delete("/api/v1/executors/runtime/profiles/custom-profile"))
+
+    def _commit_projection():
+        rendezvous.wait(timeout=5)
+        projection_outcome.append(
+            direct_connect_projection.project(state.direct_connect_authority_store, operation_id)
+        )
+
+    delete_thread = threading.Thread(target=_remove_profile)
+    projection_thread = threading.Thread(target=_commit_projection)
+    delete_thread.start()
+    projection_thread.start()
+    delete_thread.join(timeout=10)
+    projection_thread.join(timeout=10)
+
+    assert not delete_thread.is_alive()
+    assert not projection_thread.is_alive()
+    assert delete_response[0].status_code == 200, delete_response[0].json()
+    assert projection_outcome[0].state == "committed"
+    surviving_adapter = get_adapter(adapter_id)
+    assert surviving_adapter is not None
+    assert surviving_adapter.to_dict() == original_adapter.to_dict()
 
 
 def test_commit_requires_master_bearer_not_registration_token(client, tmp_path, monkeypatch):
