@@ -301,6 +301,7 @@ class ScheduleService:
         before_expires_at = record.expires_at
         fields: dict[str, object] = {"indefinite": 1} if indefinite else {
             "expires_at": _now() + timedelta(days=_RECURRING_EXPIRY_DAYS),
+            "indefinite": 0,
         }
         self._db.schedules.update(schedule_id, **fields)
         renewed = self._db.schedules.get(schedule_id)
