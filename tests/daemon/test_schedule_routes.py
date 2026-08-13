@@ -127,6 +127,90 @@ def test_recurring_count_exhaustion_is_terminal_only_after_successful_spawn(tmp_
     assert detail["code"] == "schedule_not_firing"
 
 
+def test_recurring_spawn_until_exhaustion_is_date_ended_not_expired(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        expires_at=_FROZEN_NOW - timedelta(days=1),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": "2026-07-22", "count": None,
+        },
+    )
+
+    status, _ = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FIRED
+    assert record.end_reason == "date_ended"
+    assert record.fire_count == 1
+
+
+def test_recurring_spawn_expires_only_when_a_next_candidate_exists(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        expires_at=_FROZEN_NOW + timedelta(hours=1),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+
+    status, body = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    assert body["status"] == "expired"
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.EXPIRED
+    assert record.end_reason is None
+    assert record.fire_count == 1
+
+
+def test_recurring_spawn_defensive_no_candidate_fails(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "runtime.daemon.routes.schedules.next_recurring_occurrence", lambda *_args, **_kwargs: None,
+    )
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+
+    status, body = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    assert body["status"] == "failed"
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FAILED
+    assert record.error == "recurrence_no_candidate"
+    assert record.fire_count == 1
+    failed = org_state.db.get_audit_logs_by_action("schedule_failed")
+    assert any(row["task_id"] == sid for row in failed)
+
+
 # ── successful spawn: one-shot ──────────────────────────────────────────
 
 def test_one_shot_spawn_creates_task_and_transitions_to_fired(tmp_home, app, org_state, auth_headers):

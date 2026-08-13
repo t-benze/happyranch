@@ -248,6 +248,98 @@ def test_recurring_stale_until_ends_date_not_expired(tmp_path):
     assert any(log["action"] == "schedule_fired" for log in db.get_audit_logs(record.id))
 
 
+def test_recurring_stale_next_candidate_past_expiry_expires(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db,
+        kind=ScheduleKind.RECURRING,
+        fire_at=now - timedelta(hours=5),
+        expires_at=now + timedelta(hours=1),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+    org = _FakeOrg(db)
+
+    assert schedule_due_schedules(org=org, now=now) == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.EXPIRED
+    assert record.end_reason is None
+    assert org.schedule_queue.size == 0
+
+
+def test_recurring_stale_defensive_no_candidate_fails(tmp_path, monkeypatch):
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    monkeypatch.setattr(
+        "runtime.daemon.schedule_scheduler.next_schedule_occurrence",
+        lambda *_args, **_kwargs: None,
+    )
+    _schedule(
+        db,
+        kind=ScheduleKind.RECURRING,
+        fire_at=now - timedelta(hours=5),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+    org = _FakeOrg(db)
+
+    assert schedule_due_schedules(org=org, now=now) == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.FAILED
+    assert record.error == "recurrence_no_candidate"
+    assert org.schedule_queue.size == 0
+
+
+def test_recurring_stale_rearms_and_audits_missed_occurrence(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db,
+        kind=ScheduleKind.RECURRING,
+        fire_at=now - timedelta(hours=5),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+    org = _FakeOrg(db)
+
+    assert schedule_due_schedules(org=org, now=now) == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.ARMED
+    assert record.fire_at > now
+    assert record.fire_count == 0
+    assert any(
+        row["action"] == "occurrence_missed"
+        for row in db.get_audit_logs(record.id)
+    )
+
+
+def test_recurring_occurrence_key_is_claimed_only_once(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db,
+        kind=ScheduleKind.RECURRING,
+        fire_at=now - timedelta(seconds=30),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "12:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+    org = _FakeOrg(db)
+
+    assert schedule_due_schedules(org=org, now=now) == 1
+    assert schedule_due_schedules(org=org, now=now) == 0
+    assert org.schedule_queue.size == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
+
+
 # ── startup recovery ────────────────────────────────────────────────────
 
 def test_startup_recovery_clears_stale_firing(tmp_path):

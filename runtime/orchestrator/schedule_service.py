@@ -366,6 +366,13 @@ class ScheduleService:
                     f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
                 )
         elif record.kind == ScheduleKind.RECURRING:
+            supplied_recurrence = fields.get("recurrence")
+            if (
+                isinstance(supplied_recurrence, dict)
+                and "anchor_date" in supplied_recurrence
+                and supplied_recurrence["anchor_date"] != (record.recurrence or {}).get("anchor_date")
+            ):
+                raise ScheduleServiceError("anchor_date is server-managed for recurring schedules")
             merged_recurrence = dict(record.recurrence or {})
             if "recurrence" in fields:
                 merged_recurrence.update(fields["recurrence"])
