@@ -229,6 +229,31 @@ def test_edit_recurring_timing_without_fire_at_derives_and_preserves_anchor(tmp_
     assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
 
 
+def test_edit_recurring_timezone_without_fire_at_derives_candidate_and_preserves_anchor(tmp_path, frozen_clock):
+    """Timezone-only native PATCHes use the daemon rule and retain their anchor."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    edited = svc.edit(record.id, "dev_agent", timezone="Asia/Shanghai")
+
+    assert edited.timezone == "Asia/Shanghai"
+    assert edited.recurrence["tz"] == "Asia/Shanghai"
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+
+
 def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -251,7 +276,8 @@ def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen
     assert db.schedules.get(record.id).recurrence == record.recurrence
 
 
-def test_edit_recurring_rejects_caller_supplied_anchor_reset(tmp_path, frozen_clock):
+@pytest.mark.parametrize("supplied_anchor", ["2026-07-22", "2026-07-23"])
+def test_edit_recurring_rejects_caller_supplied_anchor_key(tmp_path, frozen_clock, supplied_anchor):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
     rule = {
@@ -266,16 +292,15 @@ def test_edit_recurring_rejects_caller_supplied_anchor_reset(tmp_path, frozen_cl
         fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
         source_instruction="x",
     )
-    reset_anchor = "2026-07-23"
     reset_fire_at = next_recurring_occurrence(
-        {**record.recurrence, "anchor_date": reset_anchor}, _FROZEN_NOW,
+        {**record.recurrence, "anchor_date": supplied_anchor}, _FROZEN_NOW,
     )
 
     with pytest.raises(ScheduleServiceError, match="anchor_date"):
         svc.edit(
             record.id,
             "dev_agent",
-            recurrence={"anchor_date": reset_anchor},
+            recurrence={"anchor_date": supplied_anchor},
             fire_at=reset_fire_at,
         )
 

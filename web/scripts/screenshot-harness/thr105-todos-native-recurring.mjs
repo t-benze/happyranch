@@ -25,5 +25,11 @@ await mkdir(OUT, { recursive: true })
 const common = { api, orgs: [{ slug: ORG, root: '/tmp/acme' }], viewport: [1440, 900], outDir: OUT }
 await modeAProdApi({ ...common, route: `/orgs/${ORG}/todos`, name: 'todos-native-recurring-list' })
 await modeAProdApi({ ...common, route: `/orgs/${ORG}/todos/${recurring.schedule_id}`, name: 'todos-native-recurring-detail' })
-await writeFile(join(OUT, 'state-map.json'), JSON.stringify({ viewport: [1440, 900], states: ['native recurring list', 'native recurring detail'] }, null, 2))
+await modeAProdApi({
+  ...common,
+  route: `/orgs/${ORG}/todos/${recurring.schedule_id}`,
+  name: 'todos-native-recurring-edit',
+  prep: [["click", "getByRole('button', { name: 'Edit', exact: true })"]],
+})
+await writeFile(join(OUT, 'state-map.json'), JSON.stringify({ viewport: [1440, 900], states: ['native recurring list', 'native recurring detail', 'native recurring edit'] }, null, 2))
 console.log(`Captured native recurring evidence in ${OUT}`)

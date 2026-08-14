@@ -326,7 +326,7 @@ export async function capture({
  * Mode A — prod build + node /api mock. Full built app + realistic REST data.
  * Captures `route` in both light and dark.
  */
-export async function modeAProdApi({ route, outDir, name, api = [], orgs, viewport }) {
+export async function modeAProdApi({ route, outDir, name, api = [], orgs, viewport, prep = [] }) {
   const srv = await createServer({
     root: findDist(),
     api: [...defaultApiRoutes({ orgs }), ...api],
@@ -340,6 +340,7 @@ export async function modeAProdApi({ route, outDir, name, api = [], orgs, viewpo
           out: join(outDir, `${name}-${theme}.png`),
           theme,
           viewport,
+          prep,
         }),
       );
     }

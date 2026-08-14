@@ -411,16 +411,30 @@ class ScheduleService:
                 )
         elif record.kind == ScheduleKind.RECURRING:
             supplied_recurrence = fields.get("recurrence")
-            if (
-                isinstance(supplied_recurrence, dict)
-                and "anchor_date" in supplied_recurrence
-                and supplied_recurrence["anchor_date"] != (record.recurrence or {}).get("anchor_date")
-            ):
+            if isinstance(supplied_recurrence, dict) and "anchor_date" in supplied_recurrence:
                 raise ScheduleServiceError("anchor_date is server-managed for recurring schedules")
             merged_recurrence = dict(record.recurrence or {})
             if "recurrence" in fields:
                 merged_recurrence.update(fields["recurrence"])
-            merged_timezone = fields.get("timezone", record.timezone)
+            # A native recurring PATCH has one persisted timezone.  A
+            # timezone-only patch updates the fully merged rule before rule
+            # validation and server-owned candidate derivation.  A recurrence
+            # patch may instead provide its own rule timezone, which likewise
+            # becomes the matching top-level value.
+            if "timezone" in fields:
+                if (
+                    isinstance(supplied_recurrence, dict)
+                    and "tz" in supplied_recurrence
+                    and supplied_recurrence["tz"] != fields["timezone"]
+                ):
+                    raise ScheduleServiceError(
+                        f"timezone {fields['timezone']!r} must match recurrence tz "
+                        f"{supplied_recurrence['tz']!r} for recurring schedules"
+                    )
+                merged_timezone = fields["timezone"]
+                merged_recurrence["tz"] = merged_timezone
+            else:
+                merged_timezone = merged_recurrence.get("tz", record.timezone)
             supplied_fire_at = "fire_at" in fields
             merged_fire_at = fields.get("fire_at", record.fire_at)
             shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}
