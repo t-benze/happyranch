@@ -105,11 +105,14 @@ def project(
 
     try:
         probe_output = custom_adapter_registry.run_conformance_probe(
-            str(artifacts.wrapper_path), adapter_id
+            str(artifacts.wrapper_path), adapter_id, require_prompt_delivery=True,
         )
-    except Exception as exc:
-        store.mark_failed(operation_id, f"conformance_probe_failed: {exc}", now=now)
-        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
+    except Exception:
+        # The direct gate deliberately persists a category rather than any
+        # candidate-controlled output, diagnostics, or per-probe canary.
+        reason = "direct conformance probe failed"
+        store.mark_failed(operation_id, f"conformance_probe_failed: {reason}", now=now)
+        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=reason)
 
     entry = AdapterEntry(
         id=adapter_id,

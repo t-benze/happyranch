@@ -245,7 +245,8 @@ a workspace convention) → read the daemon-issued wrapper path from
 ``GET /runtime/custom-cli/status`` → the candidate CLI's single
 ``POST /runtime/custom-cli/connect`` declares its OWN
 ``workspace_adapter_id`` in the manifest and both proves wrapper integrity
-and creates the connection record → the browser auto-calls
+and creates the receipt-only connection record (it starts zero subprocesses)
+→ the browser auto-calls
 ``POST /runtime/custom-cli/{operation_id}/commit`` the moment it lands →
 Connected, no PENDING wait, no founder click. Founders can check the same
 terminal outcome from the CLI with
@@ -256,6 +257,20 @@ contract. The PENDING/approve/reject/bind-profile routes below remain as
 operator-only one-time disposition tooling for legacy records — a new
 custom CLI should always use the ordinary Connect
 flow instead.
+
+Before submitting the receipt, wrapper authors must locally send a fresh,
+opaque canary through the ordinary one-shot provider path in the entire
+``AdapterInput.prompt`` and verify that the genuine terminal provider response
+returns that exact canary in ``AdapterOutput.result.text``. Trusted daemon
+commit/projection repeats this bounded behavioral proof before it writes an
+adapter or profile; success also requires the matching invocation ID, canonical
+adapter ID, consistent terminal return code, and a nonblank provider
+``agent_session_id``. A wrapper must faithfully propagate terminal provider
+errors/session identity and must never invent success without a terminal
+provider response. Direct conformance does not require optional token usage:
+only candidates that declare ``token_metering`` must supply trustworthy
+canonical ``token_usage``. Failure diagnostics are category-only and never
+persist provider stdout, stderr, errors, or the canary.
 
 **Adapter lifecycle (legacy scoped-submission mechanism — operator-only, not the normal UI path):**
 
@@ -339,10 +354,7 @@ required by its own agentic CLI. It MUST NOT rely on
 on daemon translation of policy or provider-specific allow-rule syntax. That
 existing v1 field remains a legacy nullable, provider-specific compatibility
 field; ``CustomAdapterExecutor`` supplies ``null`` for custom-adapter
-invocations. For example, CodeBuddy's ``--permission-mode dontAsk`` denies
-every tool call in non-interactive mode rather than approving it, so it is not
-a valid substitute for that CLI's actual auto-approve/bypass-permissions mode.
-Wrappers must also preserve the daemon-provided callback
+invocations. Wrappers must also preserve the daemon-provided callback
 environment, including ``PATH``, so the agent can make required ``happyranch``
 callbacks after ordinary workspace actions. This is verified through wrapper
 review and founder approval; it adds no new daemon-supplied or

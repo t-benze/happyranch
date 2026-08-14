@@ -1497,6 +1497,12 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // Exact I/O contract carried over from the legacy prompt.
     expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
     expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
+    expect(promptText).toContain('Forward the ENTIRE AdapterInput.prompt');
+    expect(promptText).toContain('fresh opaque canary');
+    expect(promptText).toContain('never emit success without a real provider');
+    expect(promptText).toContain('receipt-only call');
+    expect(promptText).toContain('starts no subprocess');
+    expect(promptText).not.toContain('CodeBuddy');
     // Dependency declaration + never-PATH wording carried over.
     expect(promptText).toContain('never selects an agentic CLI via');
     // Explicitly says there is no approval wait, and never mentions PENDING.

@@ -42,7 +42,7 @@ def _commit_direct_connect_profile(tmp_path, monkeypatch, *, profile_name="fence
         workspace_adapter_id="codex", now=2,
     )
 
-    def fake_probe(executable, adapter_id):
+    def fake_probe(executable, adapter_id, **_kwargs):
         return AdapterOutput.model_validate({
             "success": True, "duration_seconds": 0,
             "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",

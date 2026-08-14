@@ -23,8 +23,10 @@ import logging
 import os
 import re
 import select
+import secrets
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -562,7 +564,12 @@ def _read_bounded(
     return bytes(stdout_buf), bytes(stderr_buf)
 
 
-def build_probe_input(adapter_name: str) -> AdapterInput:
+def build_probe_input(
+    adapter_name: str,
+    *,
+    prompt_canary: str | None = None,
+    invocation_id: str | None = None,
+) -> AdapterInput:
     """Build a minimal, deterministic ``AdapterInput`` for the conformance probe.
 
     The probe input is a lightweight sample invocation that lets the adapter
@@ -582,13 +589,18 @@ def build_probe_input(adapter_name: str) -> AdapterInput:
     return AdapterInput(
         contract_version=1,
         invocation=InvocationInfo(
-            invocation_id="probe-sess-00000000-0000-0000-0000-000000000000",
+            invocation_id=invocation_id or "probe-sess-00000000-0000-0000-0000-000000000000",
             task_id=None,
             agent="dev_agent",
             org="happyranch",
             invocation_kind="task",
         ),
-        prompt="conformance-probe: respond with a valid AdapterOutput.",
+        prompt=(
+            "conformance-probe: respond with a valid AdapterOutput. "
+            f"{prompt_canary}"
+            if prompt_canary is not None
+            else "conformance-probe: respond with a valid AdapterOutput."
+        ),
         workspace="/tmp/happyranch-probe-workspace",
         timeout=TimeoutInfo(
             deadline_seconds=30,
@@ -603,7 +615,12 @@ def build_probe_input(adapter_name: str) -> AdapterInput:
     )
 
 
-def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
+def run_conformance_probe(
+    executable: str,
+    adapter_name: str,
+    *,
+    require_prompt_delivery: bool = False,
+) -> AdapterOutput:
     """Run a bounded stdin/stdout conformance probe against an adapter executable.
 
     1. Builds a minimal ``AdapterInput`` as JSON.
@@ -627,8 +644,23 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
 
     ZERO durable residue is left on failure — this is a pure validation step.
     """
-    probe_input = build_probe_input(adapter_name)
+    prompt_canary = None
+    invocation_id = None
+    if require_prompt_delivery:
+        # This opaque, per-invocation proof prevents a static wrapper response
+        # from satisfying direct-connect's behavioral gate.
+        prompt_canary = f"direct-connect-canary:{secrets.token_urlsafe(24)}"
+        invocation_id = f"probe-sess-{uuid.uuid4()}"
+    probe_input = build_probe_input(
+        adapter_name,
+        prompt_canary=prompt_canary,
+        invocation_id=invocation_id,
+    )
     input_json = probe_input.model_dump_json()
+
+    def direct_failure(reason: str) -> ValueError:
+        """Keep direct-projection diagnostics category-only and secret-safe."""
+        return ValueError(f"Direct conformance probe {reason}")
 
     # Prepare the probe workspace — the server creates this directory
     # so the adapter does not need to create it.
@@ -678,6 +710,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         )
         if remaining <= 0:
             _kill_and_reap(proc)
+            if require_prompt_delivery:
+                raise direct_failure("timed out")
             raise ValueError(
                 f"Conformance probe timed out after "
                 f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
@@ -686,12 +720,16 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             _kill_and_reap(proc)
+            if require_prompt_delivery:
+                raise direct_failure("timed out")
             raise ValueError(
                 f"Conformance probe timed out after "
                 f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
             )
     except subprocess.TimeoutExpired as exc:
         _kill_and_reap(proc)
+        if require_prompt_delivery:
+            raise direct_failure("timed out") from exc
         stderr_tail = ""
         if isinstance(exc.stderr, bytes):
             stderr_tail = exc.stderr.decode("utf-8", errors="replace")[-2000:]
@@ -705,6 +743,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         raise ValueError(str(exc)) from exc
 
     if proc.returncode != 0:
+        if require_prompt_delivery:
+            raise direct_failure("provider process exited nonzero")
         stderr_tail = ""
         if stderr_bytes:
             stderr_tail = stderr_bytes.decode("utf-8", errors="replace")[-2000:]
@@ -714,6 +754,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         )
 
     if not stdout_bytes:
+        if require_prompt_delivery:
+            raise direct_failure("has absent terminal output")
         raise ValueError(
             f"Conformance probe produced no stdout for {executable!r}"
         )
@@ -723,6 +765,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     try:
         stdout_text = stdout_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
+        if require_prompt_delivery:
+            raise direct_failure("has malformed output") from exc
         raise ValueError(
             f"Conformance probe stdout is not valid UTF-8 for {executable!r}: {exc}"
         ) from exc
@@ -737,11 +781,15 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     try:
         output_dict = json.loads(stdout_text)
     except json.JSONDecodeError as exc:
+        if require_prompt_delivery:
+            raise direct_failure("has malformed output") from exc
         raise ValueError(
             f"Conformance probe stdout is not valid JSON for {executable!r}: {exc}"
         ) from exc
 
     if not isinstance(output_dict, dict):
+        if require_prompt_delivery:
+            raise direct_failure("has malformed output")
         raise ValueError(
             f"Conformance probe stdout is not a JSON object for {executable!r}; "
             f"got {type(output_dict).__name__}"
@@ -754,17 +802,23 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     if isinstance(raw_meta, dict):
         raw_cv = raw_meta.get("contract_version")
         if raw_cv is None:
+            if require_prompt_delivery:
+                raise direct_failure("has malformed output")
             raise ValueError(
                 f"Conformance probe output has missing contract_version "
                 f"for {executable!r}; must be the integer 1"
             )
         if not isinstance(raw_cv, int) or isinstance(raw_cv, bool):
+            if require_prompt_delivery:
+                raise direct_failure("has malformed output")
             raise ValueError(
                 f"Conformance probe output has non-integer contract_version "
                 f"{raw_cv!r} (type {type(raw_cv).__name__}) for {executable!r}; "
                 f"must be the integer 1"
             )
         if raw_cv != 1:
+            if require_prompt_delivery:
+                raise direct_failure("has malformed output")
             raise ValueError(
                 f"Conformance probe output has unsupported contract_version "
                 f"{raw_cv} for {executable!r}; only version 1 is supported in D3"
@@ -774,6 +828,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     try:
         output = AdapterOutput.model_validate(output_dict)
     except Exception as exc:
+        if require_prompt_delivery:
+            raise direct_failure("has malformed output") from exc
         raise ValueError(
             f"Conformance probe output does not match AdapterOutput contract "
             f"for {executable!r}: {exc}"
@@ -781,6 +837,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
 
     # Basic sanity: success must be true
     if not output.success:
+        if require_prompt_delivery:
+            raise direct_failure("provider reported failure")
         error_msg = output.error or "(no error message)"
         # Safe cap: never leak unbounded output
         capped_error = error_msg[:500]
@@ -796,6 +854,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     # exactly equal the stable server-derived canonical adapter ID (adapter_name),
     # never a display name, provider string, or arbitrary identity.
     if output.adapter_metadata.adapter != adapter_name:
+        if require_prompt_delivery:
+            raise direct_failure("adapter identity mismatch")
         raise ValueError(
             f"Conformance probe adapter identity mismatch: expected "
             f"{adapter_name!r} (the canonical server-derived adapter ID), "
@@ -803,6 +863,16 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"adapter_metadata.adapter MUST exactly equal the stable submitted/"
             f"approved adapter ID — never a display name or provider string."
         )
+
+    if require_prompt_delivery:
+        if output.returncode != 0:
+            raise direct_failure("return code is inconsistent")
+        if output.session_id != probe_input.invocation.invocation_id:
+            raise direct_failure("invocation id is missing or does not match")
+        if not output.agent_session_id or not output.agent_session_id.strip():
+            raise direct_failure("agent session id is missing")
+        if output.result is None or output.result.text is None or prompt_canary not in output.result.text:
+            raise direct_failure("terminal result did not prove prompt delivery")
 
     return output
 

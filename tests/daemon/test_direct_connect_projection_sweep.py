@@ -76,7 +76,7 @@ def test_sweep_commits_received_operation_without_browser_commit(store, tmp_path
     )
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda _executable, adapter_id: _fake_probe_output(adapter_id),
+        lambda _executable, adapter_id, **_kwargs: _fake_probe_output(adapter_id),
     )
 
     _sweep_once(store)
@@ -97,7 +97,7 @@ def test_sweep_leaves_terminal_operations_alone(store, tmp_path, monkeypatch):
     )
     probe_calls = 0
 
-    def fake_probe(_executable, adapter_id):
+    def fake_probe(_executable, adapter_id, **_kwargs):
         nonlocal probe_calls
         probe_calls += 1
         return _fake_probe_output(adapter_id)
@@ -136,7 +136,7 @@ def test_sweep_and_browser_projection_race_to_one_committer(store, tmp_path, mon
         snapshot_barrier.wait()
         return operation_ids
 
-    def fake_probe(_executable, adapter_id):
+    def fake_probe(_executable, adapter_id, **_kwargs):
         nonlocal probe_calls
         probe_calls += 1
         return _fake_probe_output(adapter_id)
@@ -160,7 +160,7 @@ def test_sweep_and_browser_projection_race_to_one_committer(store, tmp_path, mon
     assert browser_outcomes[0].adapter_id == projection.adapter_id
 
 
-def test_sweep_preserves_bounded_conformance_probe_diagnostic(store, tmp_path, monkeypatch):
+def test_sweep_redacts_candidate_controlled_conformance_diagnostic(store, tmp_path, monkeypatch):
     from runtime.daemon.direct_connect_projection_sweep import _sweep_once
     from runtime.orchestrator import custom_adapter_registry
 
@@ -170,14 +170,15 @@ def test_sweep_preserves_bounded_conformance_probe_diagnostic(store, tmp_path, m
     detail = "Conformance probe exited with code 7 for '/tmp/wrapper'. stderr tail: bounded stderr detail"
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda _executable, _adapter_id: (_ for _ in ()).throw(ValueError(detail)),
+        lambda _executable, _adapter_id, **_kwargs: (_ for _ in ()).throw(ValueError(detail)),
     )
 
     _sweep_once(store)
 
     projection = store.get_projection(operation_id)
     assert projection is not None and projection.state == "failed"
-    assert projection.reason == f"conformance_probe_failed: {detail}"
+    assert projection.reason == "conformance_probe_failed: direct conformance probe failed"
+    assert detail not in projection.reason
 
 
 def test_one_failing_operation_does_not_block_later_pending_operation(store, tmp_path, monkeypatch):
@@ -205,7 +206,7 @@ def test_one_failing_operation_does_not_block_later_pending_operation(store, tmp
     )
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda _executable, adapter_id: _fake_probe_output(adapter_id),
+        lambda _executable, adapter_id, **_kwargs: _fake_probe_output(adapter_id),
     )
 
     _sweep_once(store)
