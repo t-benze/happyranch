@@ -304,9 +304,9 @@ export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
 
 /** Build the direct-connect prompt (THR-107 slice 3). Unlike the legacy
  *  adapter-submit prompt, there is no separate conformance-checkin dance
- *  and no PENDING/approval wait — one POST to /connect both proves the
- *  wrapper's integrity (server-side hash/structural checks) and, once the
- *  browser calls /commit, connects it. `wrapperDestination` is the
+ *  and no PENDING/approval wait. `/connect` is receipt-only; trusted daemon
+ *  projection later performs the bounded behavioral probe before connecting.
+ *  `wrapperDestination` is the
  *  LITERAL server-returned path from GET /runtime/custom-cli/status —
  *  do NOT derive, fallback, or guess this path client-side.
  *
@@ -340,14 +340,18 @@ export function buildDirectConnectPrompt(
     `#    This is the LITERAL daemon-issued path — no other location,`,
     `#    symlink, or alternate filename is accepted. Exact I/O contract:`,
     `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
-    `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
+    `#    - Forward the ENTIRE AdapterInput.prompt through your provider's`,
+    `#      ordinary one-shot launch path, with truthful workspace and timeout`,
     `#      context from the input (the server prepares the workspace dir)`,
     `#    - Write exactly one v1 AdapterOutput JSON object to stdout,`,
     `#      nothing else on stdout — diagnostics go to stderr`,
+    `#    - Propagate the provider's terminal error, return code, and agent`,
+    `#      session id faithfully; never emit success without a real provider`,
+    `#      terminal response`,
     `#    - Exit after writing the output (single-invocation wrapper)`,
-    `#    - A CLI's "don't ask"/"don't block" flag is not necessarily auto-approve;`,
-    `#      CodeBuddy --permission-mode dontAsk denies tool calls. Use your CLI's`,
-    `#      actual bypass-permissions/auto-approve equivalent for headless runs`,
+    `#    - Before /connect, locally send your wrapper a fresh opaque canary in`,
+    `#      AdapterInput.prompt and prove the real terminal provider response`,
+    `#      returns that exact canary in AdapterOutput.result.text`,
     `chmod +x "$WRAPPER"`,
     ``,
     `# 2. Declare EVERY child executable your wrapper invokes as an`,
@@ -368,8 +372,8 @@ export function buildDirectConnectPrompt(
     `#    If your CLI has no opinion, "pi" is a safe default (AGENTS.md).`,
     `WORKSPACE_ADAPTER_ID=pi`,
     ``,
-    `# 4. POST the manifest — this single call proves the wrapper's`,
-    `#    integrity and creates the connection record.`,
+    `# 4. POST the manifest — this receipt-only call validates wrapper`,
+    `#    integrity and creates the connection record; it starts no subprocess.`,
     `curl --fail-with-body -sS -X POST "$BASE/runtime/custom-cli/connect" \\`,
     `  -H "Authorization: Bearer $TOKEN" \\`,
     `  -H "Content-Type: application/json" \\`,
@@ -377,8 +381,8 @@ export function buildDirectConnectPrompt(
     `echo ""`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live —`,
-    `# once the POST above succeeds, HappyRanch finishes connecting`,
-    `# automatically. No founder-approval step.`,
+    `# trusted daemon commit/projection then runs one bounded behavioral probe`,
+    `# and finishes connecting automatically. No founder-approval step.`,
   ].join('\n');
 }
 

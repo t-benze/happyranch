@@ -83,7 +83,7 @@ def _fake_probe(monkeypatch):
     from runtime.orchestrator import custom_adapter_registry
     from runtime.orchestrator.adapter_contract import AdapterOutput
 
-    def fake(executable, adapter_id):
+    def fake(executable, adapter_id, **_kwargs):
         return AdapterOutput.model_validate({
             "success": True, "duration_seconds": 0,
             "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
@@ -271,7 +271,7 @@ def test_commit_probe_failure_returns_failed_profile_state(client, tmp_path, mon
     operation_id = _mint_and_connect(tc, state, tmp_path)
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: (_ for _ in ()).throw(ValueError("probe failed")),
+        lambda executable, name, **_kwargs: (_ for _ in ()).throw(ValueError("probe failed")),
     )
 
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")

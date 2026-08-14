@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import textwrap
 
 import pytest
 
 
-def _mint_and_receive(store, tmp_path, *, token="hrreg_proj", profile_name="custom-profile", adapter="codex"):
+def _mint_and_receive(
+    store, tmp_path, *, token="hrreg_proj", profile_name="custom-profile", adapter="codex",
+    wrapper_body: bytes = b"#!/bin/sh\ncat\n",
+):
     store.mint_authority(
         token_plaintext=token, name="custom-cli", intended_profile_name=profile_name,
         workspace_adapter_id=adapter, issued_at=1, expires_at=1000,
@@ -15,7 +19,7 @@ def _mint_and_receive(store, tmp_path, *, token="hrreg_proj", profile_name="cust
     authority = store.get_for_token(token)
     wrapper = authority.wrapper_destination
     wrapper.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.write_bytes(b"#!/bin/sh\ncat\n")
+    wrapper.write_bytes(wrapper_body)
     wrapper.chmod(0o700)
     wrapper_hash = hashlib.sha256(wrapper.read_bytes()).hexdigest()
     child = tmp_path / "bin" / "child"
@@ -30,6 +34,39 @@ def _mint_and_receive(store, tmp_path, *, token="hrreg_proj", profile_name="cust
         workspace_adapter_id=adapter, now=2,
     )
     return operation_id, wrapper
+
+
+def _behavioral_wrapper(mode: str = "success") -> bytes:
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        request = json.load(sys.stdin)
+        if {mode!r} == "empty":
+            sys.exit(0)
+        if {mode!r} == "malformed":
+            sys.stdout.write("not json")
+            sys.exit(0)
+        canary = next(word for word in request["prompt"].split() if word.startswith("direct-connect-canary:"))
+        payload = {{
+            "success": {mode!r} != "provider_error",
+            "duration_seconds": 0,
+            "session_id": request["invocation"]["invocation_id"],
+            "returncode": 0,
+            "stdout_tail": "provider stdout secret",
+            "stderr_tail": "provider stderr secret",
+            "result": {{"text": canary if {mode!r} == "success" else "prompt swallowed"}},
+            "error": "provider error secret" if {mode!r} == "provider_error" else None,
+            "agent_session_id": None if {mode!r} == "blank_agent_session" else "provider-session",
+            "adapter_metadata": {{
+                "adapter": request["executor_context"]["provider"],
+                "adapter_version": "1.2.3",
+                "contract_version": 1,
+            }},
+        }}
+        sys.stdout.write(json.dumps(payload))
+    """).encode()
 
 
 def _fake_probe_output(adapter_id: str):
@@ -71,7 +108,7 @@ def test_successful_projection_commits_adapter_and_profile(store, tmp_path, monk
     adapter_id = custom_adapter_registry.generate_adapter_id("custom-profile-adapter")
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: _fake_probe_output(name),
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
     )
 
     outcome = project(store, operation_id)
@@ -92,6 +129,46 @@ def test_successful_projection_commits_adapter_and_profile(store, tmp_path, monk
     assert projection.state == "committed"
 
 
+def test_projection_runs_real_wrapper_and_requires_terminal_canary_delivery(store, tmp_path):
+    from runtime.daemon.direct_connect_projection import project
+
+    operation_id, _ = _mint_and_receive(
+        store, tmp_path, wrapper_body=_behavioral_wrapper(),
+    )
+
+    outcome = project(store, operation_id)
+
+    assert outcome.state == "committed"
+    assert outcome.profile_name == "custom-profile"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["swallowed_prompt", "provider_error", "blank_agent_session", "malformed", "empty"],
+)
+def test_projection_behavioral_conformance_failure_leaves_no_durable_adapter_or_profile(
+    store, tmp_path, mode,
+):
+    from runtime.daemon.direct_connect_projection import project
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    operation_id, _ = _mint_and_receive(
+        store, tmp_path, wrapper_body=_behavioral_wrapper(mode),
+    )
+
+    outcome = project(store, operation_id)
+
+    assert outcome.state == "failed"
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+    projection = store.get_projection(operation_id)
+    assert projection is not None and projection.state == "failed"
+    assert "provider error secret" not in projection.reason
+    assert "provider stdout secret" not in projection.reason
+    assert "provider stderr secret" not in projection.reason
+
+
 def test_projection_is_idempotent_on_retry(store, tmp_path, monkeypatch):
     from runtime.daemon.direct_connect_projection import project
     from runtime.orchestrator import custom_adapter_registry
@@ -99,7 +176,7 @@ def test_projection_is_idempotent_on_retry(store, tmp_path, monkeypatch):
     operation_id, wrapper = _mint_and_receive(store, tmp_path)
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: _fake_probe_output(name),
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
     )
 
     first = project(store, operation_id)
@@ -118,7 +195,7 @@ def test_conformance_probe_failure_compensates_with_no_partial_state(store, tmp_
     operation_id, wrapper = _mint_and_receive(store, tmp_path)
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: (_ for _ in ()).throw(ValueError("probe failed")),
+        lambda executable, name, **_kwargs: (_ for _ in ()).throw(ValueError("probe failed")),
     )
 
     outcome = project(store, operation_id)
@@ -139,7 +216,7 @@ def test_profile_binding_failure_removes_adapter_entry(store, tmp_path, monkeypa
     operation_id, wrapper = _mint_and_receive(store, tmp_path)
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: _fake_probe_output(name),
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
     )
     monkeypatch.setattr(
         custom_adapter_registry, "_perform_adapter_profile_binding",
@@ -168,7 +245,7 @@ def test_concurrent_projection_has_one_committer(store, tmp_path, monkeypatch):
     operation_id, wrapper = _mint_and_receive(store, tmp_path)
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: _fake_probe_output(name),
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
     )
     barrier = threading.Barrier(2)
     outcomes = []
@@ -198,7 +275,7 @@ def test_projection_state_survives_store_reopen(tmp_path, monkeypatch):
     operation_id, wrapper = _mint_and_receive(store, tmp_path, token="hrreg_reopen")
     monkeypatch.setattr(
         custom_adapter_registry, "run_conformance_probe",
-        lambda executable, name: _fake_probe_output(name),
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
     )
     committed = project(store, operation_id)
     store.close()

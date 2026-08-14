@@ -27,6 +27,7 @@ import json
 import os
 import stat
 import subprocess
+import textwrap
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -119,6 +120,52 @@ sys.exit({exit_code})
 
     script_path = tmp_path / name
     script_path.write_text(script_body)
+    script_path.chmod(0o755)
+    return script_path
+
+
+def _make_behavioral_adapter_script(tmp_path: Path, name: str, mode: str = "success") -> Path:
+    """Create an executable that proves (or deliberately drops) probe input."""
+    script_path = tmp_path / name
+    script_path.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import sys
+        import time
+
+        request = json.load(sys.stdin)
+        if {mode!r} == "timeout":
+            time.sleep(60)
+        if {mode!r} == "empty":
+            sys.exit(0)
+        if {mode!r} == "malformed":
+            sys.stdout.write("not json")
+            sys.exit(0)
+
+        prompt = request["prompt"]
+        canary = next(
+            word for word in prompt.split()
+            if word.startswith("direct-connect-canary:")
+        )
+        result_text = canary if {mode!r} == "success" else "provider did not receive the prompt"
+        payload = {{
+            "success": {mode!r} != "provider_error",
+            "duration_seconds": 0,
+            "session_id": "wrong-invocation" if {mode!r} == "wrong_invocation" else request["invocation"]["invocation_id"],
+            "returncode": 17 if {mode!r} == "inconsistent_returncode" else 0,
+            "stdout_tail": "untrusted stdout secret",
+            "stderr_tail": "untrusted stderr secret",
+            "result": {{"text": result_text}},
+            "error": "provider secret" if {mode!r} == "provider_error" else None,
+            "agent_session_id": None if {mode!r} == "blank_agent_session" else "provider-session-123",
+            "adapter_metadata": {{
+                "adapter": request["executor_context"]["provider"],
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            }},
+        }}
+        sys.stdout.write(json.dumps(payload))
+    """))
     script_path.chmod(0o755)
     return script_path
 
@@ -373,6 +420,61 @@ class TestConformanceProbe:
         assert result.success is True
         assert result.adapter_metadata.contract_version == 1
         assert result.adapter_metadata.adapter == "conformant-adapter"
+
+    def test_direct_behavioral_probe_forwards_unique_canary_to_terminal_result(self, tmp_path: Path):
+        script = _make_behavioral_adapter_script(tmp_path, "behavioral-adapter")
+
+        result = run_conformance_probe(
+            str(script), "behavioral-adapter", require_prompt_delivery=True,
+        )
+
+        assert result.success is True
+        assert result.agent_session_id == "provider-session-123"
+
+        second = run_conformance_probe(
+            str(script), "behavioral-adapter", require_prompt_delivery=True,
+        )
+        assert result.result is not None and second.result is not None
+        assert result.result.text != second.result.text
+
+    @pytest.mark.parametrize(
+        ("mode", "reason"),
+        [
+            ("swallowed_prompt", "terminal result did not prove prompt delivery"),
+            ("provider_error", "provider reported failure"),
+            ("blank_agent_session", "agent session id is missing"),
+            ("wrong_invocation", "invocation id is missing or does not match"),
+            ("inconsistent_returncode", "return code is inconsistent"),
+            ("malformed", "malformed output"),
+            ("empty", "absent terminal output"),
+        ],
+    )
+    def test_direct_behavioral_probe_rejects_non_terminal_or_unproven_output(
+        self, tmp_path: Path, mode: str, reason: str,
+    ):
+        script = _make_behavioral_adapter_script(tmp_path, f"behavioral-{mode}", mode)
+
+        with pytest.raises(ValueError, match=reason) as exc_info:
+            run_conformance_probe(
+                str(script), f"behavioral-{mode}", require_prompt_delivery=True,
+            )
+
+        assert "provider secret" not in str(exc_info.value)
+        assert "untrusted stdout" not in str(exc_info.value)
+        assert "untrusted stderr" not in str(exc_info.value)
+
+    def test_direct_behavioral_probe_timeout_is_bounded_and_safe(self, tmp_path: Path, monkeypatch):
+        script = _make_behavioral_adapter_script(tmp_path, "behavioral-timeout", "timeout")
+        monkeypatch.setattr(
+            "runtime.orchestrator.custom_adapter_registry.CONFORMANCE_PROBE_TIMEOUT_SECONDS", 0.05,
+        )
+
+        with pytest.raises(ValueError, match="timed out") as exc_info:
+            run_conformance_probe(
+                str(script), "behavioral-timeout", require_prompt_delivery=True,
+            )
+
+        assert "stderr tail" not in str(exc_info.value)
 
     def test_adapter_exit_nonzero_fails(self, tmp_path: Path):
         script = _make_fake_adapter_script(

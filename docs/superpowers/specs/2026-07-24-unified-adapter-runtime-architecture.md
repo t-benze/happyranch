@@ -481,6 +481,22 @@ adapter/profile, change PENDING submission, choose a launcher, run a process,
 or claim Connected. Direct projection, COMMITTED eligibility, Popen fencing,
 and final UI simplification remain later serial slices.
 
+**THR-160 direct-connect behavioral conformance.** Trusted commit/projection
+(never receipt-only ``/runtime/custom-cli/connect``) invokes the candidate's
+ordinary v1 stdin/stdout wrapper path once with a unique bounded opaque canary
+inside ``AdapterInput.prompt`` before any adapter/profile persistence. The
+terminal ``AdapterOutput`` must be schema-valid, successful and
+returncode-consistent, echo that invocation ID, identify the canonical adapter,
+contain a nonblank provider ``agent_session_id``, and include the exact canary
+in canonical ``result.text``. Malformed/empty/absent output, timeout,
+provider-declared error, or missing/wrong canary fails closed with no durable
+adapter/profile/registry residue. Failure records retain only a bounded
+category, never candidate stdout/stderr/errors or the canary. This is a
+direct-flow gate only; legacy/operator registration retains its existing
+shape-validation semantics. ``token_usage`` remains optional unless the
+candidate declares the established ``token_metering`` capability and provides
+trustworthy canonical usage.
+
 ### 4.4 Registration, Conformance, Provenance
 
 | Step | Description | Gate |

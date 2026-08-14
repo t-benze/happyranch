@@ -127,7 +127,7 @@ def test_status_after_commit_reports_committed(client, tmp_path, monkeypatch):
     )
     operation_id = connect.json()["operation_id"]
 
-    def fake_probe(executable, adapter_id):
+    def fake_probe(executable, adapter_id, **_kwargs):
         return AdapterOutput.model_validate({
             "success": True, "duration_seconds": 0,
             "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
@@ -176,7 +176,7 @@ def test_status_hides_committed_projection_after_live_profile_is_removed(client,
     )
     operation_id = connect.json()["operation_id"]
 
-    def fake_probe(executable, adapter_id):
+    def fake_probe(executable, adapter_id, **_kwargs):
         return AdapterOutput.model_validate({
             "success": True, "duration_seconds": 0,
             "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",

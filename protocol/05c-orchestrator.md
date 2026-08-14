@@ -130,6 +130,20 @@ proves this across the ordinary-task and thread/wake/dream/schedule call
 shapes. A daemon-owned periodic projection sweep also invokes that coordinator
 for every receipt without a projection row, so browser closure cannot strand a
 connection; see `protocol/05b-agent-runtime.md` for the normative detail.
+Each direct projection runs one bounded behavioral conformance probe before
+any adapter/profile persistence: it sends a fresh opaque canary in the normal
+v1 ``AdapterInput.prompt`` and accepts only a successful, returncode-consistent
+terminal ``AdapterOutput`` with the matching invocation ID, canonical adapter
+ID, nonblank provider ``agent_session_id``, and that exact canary in
+``result.text``. Candidate-controlled stdout/stderr/error text and the canary
+are never persisted or returned on failure; the projection records only a
+bounded category. ``/connect`` remains receipt-only and starts zero
+subprocesses. This direct-only behavioral gate does not require a registered
+adapter or bound executor profile and does not make legacy/operator
+registration stricter. Token usage remains optional here: it is required only
+when a candidate declares the established ``token_metering`` capability and
+supplies trustworthy canonical ``token_usage``; direct candidates are not
+rejected merely for omitting optional usage fields.
 The normal Settings/onboarding UI now drives Connect → Connected in one flow;
 the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.
