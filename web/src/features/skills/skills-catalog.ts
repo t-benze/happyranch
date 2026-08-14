@@ -62,8 +62,6 @@ export function validationLabel(
       return { text: 'Validated', tone: 'positive' };
     case 'failed_validation':
       return { text: 'Needs attention', tone: 'attention' };
-    case 'proposed':
-      return { text: 'Proposed', tone: 'neutral' };
     case 'in_catalog':
     default:
       return { text: 'In catalog', tone: 'neutral' };

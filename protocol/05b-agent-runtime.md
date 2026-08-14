@@ -402,7 +402,8 @@ allowed; valid existing packages may be reused.
 <agent> --executor <current-executor>`` (re-materializes links only, NEVER
 recovers corrupted bytes). (b) For corrupted canonical bytes:
 ``happyranch skills recover <slug> <version> <content_hash>`` — the sole
-operator-invoked recovery path. Validates ledger provenance and every
+operator-invoked recovery path. Accepts only the eligible current B2 version,
+validates its ledger provenance and every
 declared member SHA-256 hash against the ArtifactStore before deletion;
 refuses already-valid targets. The next materialization will rebuild the
 package from the ArtifactStore. No automatic repair from same-UID local

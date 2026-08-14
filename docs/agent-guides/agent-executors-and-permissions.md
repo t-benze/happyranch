@@ -20,7 +20,8 @@
 > same-UID process may mutate, race validation, and affect active/overlapping
 > sessions. Manual recovery only: (a) ``set-executor`` for broken links,
 > (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
-> corrupted canonical bytes. No automatic repair from same-UID local source.
+> corrupted canonical bytes of the eligible current B2 version. No automatic
+> repair from same-UID local source.
 > Recovery requires that an authoritative re-sync/redeploy of release or
 > custom artifacts has occurred outside the compromised same-owner local
 > source before recovery can safely materialize again. Policy withdrawal

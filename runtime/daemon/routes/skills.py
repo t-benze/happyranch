@@ -1161,7 +1161,8 @@ def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
         raise HTTPException(status_code=400, detail="version must be the B2 version ID")
     conn = getattr(org.db, "_conn", org.db)
     record = conn.execute(
-        """SELECT s.id AS skill_id, v.content_hash, v.content_artifact_key
+        """SELECT s.id AS skill_id, s.current_version_id, s.retired_at,
+                  v.content_hash, v.content_artifact_key, v.validation_state
              FROM custom_skills s JOIN custom_skill_versions v ON v.skill_id = s.id
             WHERE s.org_slug = ? AND s.slug = ? AND v.id = ?""",
         (org.slug, body.slug, int(body.version)),
@@ -1170,6 +1171,14 @@ def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
         _recover_audit_event_mandatory(org.db, slug=body.slug, agent="operator", ok=False,
             detail=f"No B2 custom-skill version found for {body.slug}@{body.version}", reason_codes=["b2_provenance_not_found"])
         raise HTTPException(status_code=404, detail="B2 custom-skill version not found")
+    if record["current_version_id"] != int(body.version):
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Recovery refused because the requested B2 version is not current", reason_codes=["stale_current_version"])
+        raise HTTPException(status_code=409, detail="Recovery requires the current B2 custom-skill version")
+    if record["retired_at"] is not None or record["validation_state"] != "valid":
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Recovery refused because the current B2 custom-skill version is ineligible", reason_codes=["ineligible_current_version"])
+        raise HTTPException(status_code=409, detail="Current B2 custom-skill version is not eligible for recovery")
     if record["content_hash"] != body.content_hash:
         _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
             detail="B2 version content hash does not match recovery request", reason_codes=["hash_mismatch"])

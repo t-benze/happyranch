@@ -110,7 +110,7 @@ describe('validationLabel — product language, not permission wording', () => {
   });
 
   test('no label uses forbidden "active"/"pending"/permission words', () => {
-    const words = ['validated', 'failed_validation', 'in_catalog', 'proposed'] as const;
+    const words = ['validated', 'failed_validation', 'in_catalog'] as const;
     for (const s of words) {
       const t = validationLabel(s).text.toLowerCase();
       expect(t).not.toContain('active');
@@ -120,13 +120,6 @@ describe('validationLabel — product language, not permission wording', () => {
     }
   });
 
-  test('proposed → Proposed (neutral) — NOT validated', () => {
-    const label = validationLabel('proposed');
-    expect(label).toEqual({ text: 'Proposed', tone: 'neutral' });
-    // Regression: proposed must NOT be labeled as validated.
-    expect(label.text).not.toMatch(/validated/i);
-    expect(label.tone).not.toBe('positive');
-  });
 });
 
 describe('needsAttentionCount — failed validations only', () => {
