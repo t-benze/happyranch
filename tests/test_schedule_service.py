@@ -191,6 +191,183 @@ def test_edit_recurring_shape_resets_anchor_and_audits_before_after(tmp_path, fr
     assert audit["after"]["recurrence"] == edited.recurrence
 
 
+def test_edit_recurring_shape_without_fire_at_derives_server_candidate(tmp_path, frozen_clock):
+    """A native recurrence PATCH never needs a caller-computed next instant."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    edited = svc.edit(record.id, "dev_agent", recurrence={"byday": ["TH"]})
+    expected = next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+
+    assert edited.fire_at == expected
+    assert edited.recurrence["anchor_date"] == expected.date().isoformat()
+
+
+@pytest.mark.parametrize(
+    ("stored_rule", "editor_rule", "cleared_selectors"),
+    [
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "bymonthday": None, "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"bymonthday"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": None, "bymonthday": 15, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "ordinal"},
+        ),
+        (
+            {"freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "DAILY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "YEARLY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+    ],
+    ids=["monthly-date-to-ordinal", "monthly-ordinal-to-date", "weekly-to-daily", "monthly-to-yearly"],
+)
+def test_edit_recurring_editor_selector_clears_are_normalized_before_validation(
+    tmp_path, frozen_clock, stored_rule, editor_rule, cleared_selectors,
+):
+    """The editor's explicit selector nulls clear merged stored selectors."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    fire_at = next_recurring_occurrence(
+        {**stored_rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=stored_rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+    before_recurrence = dict(record.recurrence)
+
+    edited = svc.edit(
+        record.id, "dev_agent", recurrence=editor_rule, timezone="UTC",
+    )
+    persisted = db.schedules.get(record.id)
+
+    assert edited.recurrence["freq"] == editor_rule["freq"]
+    assert all(selector not in edited.recurrence for selector in cleared_selectors)
+    assert persisted.recurrence == edited.recurrence
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+    assert edited.recurrence["anchor_date"] == edited.fire_at.date().isoformat()
+    audit = db.get_audit_logs_by_action("schedule_edited")[-1]["payload"]
+    assert audit["before"]["recurrence"] == before_recurrence
+    assert audit["after"]["recurrence"] == edited.recurrence
+
+
+def test_edit_recurring_partial_patch_preserves_omitted_selectors(tmp_path, frozen_clock):
+    """Only explicit null selectors clear the ordinary PATCH merge result."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "MONTHLY", "interval": 1, "bymonthday": 15,
+        "time": "09:00", "tz": "UTC", "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    edited = svc.edit(record.id, "dev_agent", recurrence={"interval": 2})
+
+    assert edited.recurrence["interval"] == 2
+    assert edited.recurrence["bymonthday"] == 15
+    assert "byday" not in edited.recurrence
+    assert "ordinal" not in edited.recurrence
+
+
+def test_edit_recurring_timing_without_fire_at_derives_and_preserves_anchor(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC", "until": None, "count": None}
+    fire_at = next_recurring_occurrence({**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW)
+    record = svc.create(agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+                        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x", source_instruction="x")
+
+    edited = svc.edit(record.id, "dev_agent", recurrence={"time": "10:00"})
+
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+
+
+def test_edit_recurring_timezone_without_fire_at_derives_candidate_and_preserves_anchor(tmp_path, frozen_clock):
+    """Timezone-only native PATCHes use the daemon rule and retain their anchor."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    edited = svc.edit(record.id, "dev_agent", timezone="Asia/Shanghai")
+
+    assert edited.timezone == "Asia/Shanghai"
+    assert edited.recurrence["tz"] == "Asia/Shanghai"
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+
+
+@pytest.mark.parametrize("include_timezone", [False, True])
+def test_edit_recurring_rule_timezone_without_fire_at_persists_authoritative_timezone(
+    tmp_path, frozen_clock, include_timezone,
+):
+    """A rule timezone is the one stored timezone for every accepted recurring edit."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    fields = {"recurrence": {"tz": "Asia/Shanghai"}}
+    if include_timezone:
+        fields["timezone"] = "Asia/Shanghai"
+    edited = svc.edit(record.id, "dev_agent", **fields)
+
+    persisted = db.schedules.get(record.id)
+    assert edited.timezone == edited.recurrence["tz"] == "Asia/Shanghai"
+    assert persisted.timezone == persisted.recurrence["tz"] == "Asia/Shanghai"
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+
+
 def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -213,7 +390,8 @@ def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen
     assert db.schedules.get(record.id).recurrence == record.recurrence
 
 
-def test_edit_recurring_rejects_caller_supplied_anchor_reset(tmp_path, frozen_clock):
+@pytest.mark.parametrize("supplied_anchor", ["2026-07-22", "2026-07-23"])
+def test_edit_recurring_rejects_caller_supplied_anchor_key(tmp_path, frozen_clock, supplied_anchor):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
     rule = {
@@ -228,16 +406,15 @@ def test_edit_recurring_rejects_caller_supplied_anchor_reset(tmp_path, frozen_cl
         fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
         source_instruction="x",
     )
-    reset_anchor = "2026-07-23"
     reset_fire_at = next_recurring_occurrence(
-        {**record.recurrence, "anchor_date": reset_anchor}, _FROZEN_NOW,
+        {**record.recurrence, "anchor_date": supplied_anchor}, _FROZEN_NOW,
     )
 
     with pytest.raises(ScheduleServiceError, match="anchor_date"):
         svc.edit(
             record.id,
             "dev_agent",
-            recurrence={"anchor_date": reset_anchor},
+            recurrence={"anchor_date": supplied_anchor},
             fire_at=reset_fire_at,
         )
 

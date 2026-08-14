@@ -1025,7 +1025,16 @@ for audit/reconciliation).
 - **Recurring** — uses the bounded daily/weekly/monthly/yearly rule grammar.
   The server computes the first occurrence and immutable local ``anchor_date``;
   timing-only edits preserve that anchor, while cadence-shape edits reset it to
-  the newly computed next occurrence's local date.
+  the newly computed next occurrence's local date. A native recurring PATCH
+  that changes recurrence and/or timezone may omit ``fire_at``; after merging
+  and validating the rule, the server derives and persists the next eligible
+  occurrence. A supplied ``fire_at`` remains an exact-match assertion against
+  that server-computed occurrence. The recurring editor may explicitly send
+  null for inactive ``byday``, ``bymonthday``, and ``ordinal`` selectors; the
+  service removes those accepted clears after merge before validation and
+  persistence, leaving canonical stored rules without stale/null selectors.
+  DAILY/YEARLY remain selector-free and the bounded MONTHLY grammar is
+  unchanged. One-shot and weekly PATCH semantics are unchanged.
 
 **Founder controls and validation.** Founder/operator routes may pause, cancel,
 edit, or ``POST /schedules/{schedule_id}/renew`` an ARMED or PAUSED Todo.

@@ -42,6 +42,7 @@ def _now() -> datetime:
 _ALLOWED_EDIT_FIELDS = frozenset({
     "fire_at", "recurrence", "timezone",
 })
+_RECURRENCE_SELECTOR_FIELDS = frozenset({"byday", "bymonthday", "ordinal"})
 
 
 class ScheduleService:
@@ -411,16 +412,43 @@ class ScheduleService:
                 )
         elif record.kind == ScheduleKind.RECURRING:
             supplied_recurrence = fields.get("recurrence")
-            if (
-                isinstance(supplied_recurrence, dict)
-                and "anchor_date" in supplied_recurrence
-                and supplied_recurrence["anchor_date"] != (record.recurrence or {}).get("anchor_date")
-            ):
+            if isinstance(supplied_recurrence, dict) and "anchor_date" in supplied_recurrence:
                 raise ScheduleServiceError("anchor_date is server-managed for recurring schedules")
             merged_recurrence = dict(record.recurrence or {})
             if "recurrence" in fields:
                 merged_recurrence.update(fields["recurrence"])
-            merged_timezone = fields.get("timezone", record.timezone)
+                # The full-form editor explicitly clears inactive selectors so
+                # a PATCH merge cannot retain a selector from the prior shape.
+                # Canonical stored rules omit inactive selectors rather than
+                # preserving null residue.
+                for selector in _RECURRENCE_SELECTOR_FIELDS:
+                    if (
+                        selector in fields["recurrence"]
+                        and fields["recurrence"][selector] is None
+                    ):
+                        merged_recurrence.pop(selector, None)
+            # A native recurring PATCH has one persisted timezone.  A
+            # timezone-only patch updates the fully merged rule before rule
+            # validation and server-owned candidate derivation.  A recurrence
+            # patch may instead provide its own rule timezone, which likewise
+            # becomes the matching top-level value.
+            if "timezone" in fields:
+                if (
+                    isinstance(supplied_recurrence, dict)
+                    and "tz" in supplied_recurrence
+                    and supplied_recurrence["tz"] != fields["timezone"]
+                ):
+                    raise ScheduleServiceError(
+                        f"timezone {fields['timezone']!r} must match recurrence tz "
+                        f"{supplied_recurrence['tz']!r} for recurring schedules"
+                    )
+                merged_timezone = fields["timezone"]
+                merged_recurrence["tz"] = merged_timezone
+            else:
+                merged_timezone = merged_recurrence.get("tz", record.timezone)
+                if isinstance(supplied_recurrence, dict) and "tz" in supplied_recurrence:
+                    fields["timezone"] = merged_timezone
+            supplied_fire_at = "fire_at" in fields
             merged_fire_at = fields.get("fire_at", record.fire_at)
             shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}
             old_recurrence = record.recurrence or {}
@@ -450,6 +478,11 @@ class ScheduleService:
             expected = next_recurring_occurrence(merged_recurrence, after=_now())
             if expected is None:
                 raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            # Native recurring PATCHes intentionally omit fire_at when changing
+            # recurrence or timezone. The server owns cadence and DST resolution.
+            if not supplied_fire_at and ("recurrence" in fields or "timezone" in fields):
+                merged_fire_at = expected
+                fields["fire_at"] = expected
             if merged_fire_at != expected:
                 raise ScheduleServiceError(
                     f"fire_at must match the next recurring occurrence; "

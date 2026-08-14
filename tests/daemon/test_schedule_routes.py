@@ -809,6 +809,196 @@ def test_create_recurring_preserves_agent_rule_at_the_service_create_seam(
     }
 
 
+def test_patch_recurring_without_fire_at_derives_server_occurrence(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"byday": ["TH"]}, "timezone": "UTC"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fire_at"] == next_recurring_occurrence(
+        body["recurrence"], _FROZEN_NOW,
+    ).isoformat()
+
+
+@pytest.mark.parametrize(
+    ("stored_rule", "editor_rule", "cleared_selectors"),
+    [
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "bymonthday": None, "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"bymonthday"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": None, "bymonthday": 15, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "ordinal"},
+        ),
+        (
+            {"freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "DAILY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "YEARLY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+    ],
+    ids=["monthly-date-to-ordinal", "monthly-ordinal-to-date", "weekly-to-daily", "monthly-to-yearly"],
+)
+def test_patch_recurring_editor_selector_clears_are_persisted_canonically(
+    tmp_home, app, org_state, auth_headers, stored_rule, editor_rule, cleared_selectors,
+):
+    """Bearer PATCH reaches the merge seam and removes inactive selectors."""
+    from fastapi.testclient import TestClient
+
+    stored = {**stored_rule, "anchor_date": "2026-07-22"}
+    fire_at = next_recurring_occurrence(stored, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=stored, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": editor_rule, "timezone": "UTC"}, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "UTC"
+    assert persisted.timezone == persisted.recurrence["tz"] == "UTC"
+    assert all(selector not in body["recurrence"] for selector in cleared_selectors)
+    assert persisted.recurrence == body["recurrence"]
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+
+
+def test_patch_recurring_timezone_without_fire_at_derives_server_occurrence(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"timezone": "Asia/Shanghai"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["timezone"] == body["recurrence"]["tz"] == "Asia/Shanghai"
+    assert body["recurrence"]["anchor_date"] == rule["anchor_date"]
+    assert body["fire_at"] == next_recurring_occurrence(
+        body["recurrence"], _FROZEN_NOW,
+    ).isoformat()
+
+
+@pytest.mark.parametrize("include_timezone", [False, True])
+def test_patch_recurring_rule_timezone_without_fire_at_persists_authoritative_timezone(
+    tmp_home, app, org_state, auth_headers, include_timezone,
+):
+    """Bearer edits keep returned and persisted recurring timezones identical."""
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    payload = {"recurrence": {"tz": "Asia/Shanghai"}}
+    if include_timezone:
+        payload["timezone"] = "Asia/Shanghai"
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}", json=payload, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "Asia/Shanghai"
+    assert persisted.timezone == persisted.recurrence["tz"] == "Asia/Shanghai"
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+    assert body["recurrence"]["anchor_date"] == rule["anchor_date"]
+
+
+def test_patch_recurring_supplied_mismatching_fire_at_still_rejects(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"time": "10:00"}, "fire_at": fire_at.isoformat()},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_conflict"
+
+
+@pytest.mark.parametrize("anchor_date", ["2026-07-22", "2026-07-23"])
+def test_patch_recurring_rejects_caller_supplied_anchor_key(
+    tmp_home, app, org_state, auth_headers, anchor_date,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"anchor_date": anchor_date}},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_conflict"
+
+
 # ── successful create ──────────────────────────────────────────────────
 
 def test_create_one_shot_success(tmp_home, app, org_state, auth_headers):
