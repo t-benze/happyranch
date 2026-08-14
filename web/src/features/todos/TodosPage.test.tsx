@@ -757,6 +757,14 @@ describe('TodoDetailPage — mutations', () => {
 describe('TodoDetailPage — edit dialog outbound body', () => {
   beforeEach(() => {
     sessionStorage.setItem('happyranch.token', 'mock-token')
+    Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+      configurable: true,
+      value: () => false,
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => undefined,
+    })
   })
 
   it('sends recurrence with tz, top-level timezone matches, and computed fire_at for weekly edit', async () => {
@@ -812,6 +820,63 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     expect(capturedBody!.recurrence).toMatchObject({
       freq: 'MONTHLY', interval: 2, ordinal: 'second', byday: ['MO'], count: 6, until: null,
     })
+  })
+
+  it('saves a native weekly multi-select recurrence with a positive interval and no end', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    const interval = screen.getByLabelText('Repeat every')
+    await userEvent.clear(interval)
+    await userEvent.type(interval, '3')
+    await userEvent.click(screen.getByLabelText('Frequency'))
+    await userEvent.click(await screen.findByRole('option', { name: 'week' }))
+    expect(screen.getByText('Repeat on')).toBeTruthy()
+    await userEvent.click(screen.getByLabelText('Tuesday'))
+    await userEvent.click(screen.getByLabelText('Thursday'))
+    await userEvent.click(screen.getByLabelText('Never'))
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.recurrence).toMatchObject({
+      freq: 'WEEKLY', interval: 3, byday: ['MO', 'TU', 'TH'], until: null, count: null,
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
+  })
+
+  it('saves a native monthly calendar-date recurrence ending on a date without a client fire_at', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    await userEvent.click(screen.getByLabelText('Calendar date'))
+    const date = screen.getByLabelText('Date')
+    await userEvent.clear(date)
+    await userEvent.type(date, '15')
+    await userEvent.click(screen.getByLabelText('On date'))
+    await userEvent.type(screen.getByLabelText('End date'), '2026-12-31')
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.recurrence).toMatchObject({
+      freq: 'MONTHLY', bymonthday: 15, until: '2026-12-31', count: null,
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
   })
 
   it('sends correct recurrence for non-local IANA timezone (Asia/Tokyo)', async () => {
