@@ -729,6 +729,7 @@ async def resolve_escalation_in_process(
     brief: str = "",
     actor: str = "founder",
     thread_id: str | None = None,
+    resolution_path: str = "manual_break_glass",
 ) -> str:
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
     POST /tasks/{task_id}/resolve-escalation.
@@ -815,7 +816,7 @@ async def resolve_escalation_in_process(
                 decision=decision,
                 rationale=rationale,
                 actor=actor,
-                thread_id=thread_id,
+                thread_id=thread_id, resolution_path=resolution_path,
             )
             # Best-effort: consume any open notification rows not already
             # consumed by _supersede_predecessor_locked inside the helper.
@@ -849,7 +850,7 @@ async def resolve_escalation_in_process(
         org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
-            actor=actor, thread_id=thread_id,
+            actor=actor, thread_id=thread_id, resolution_path=resolution_path,
         )
         # Best-effort: mark any open notification rows for this task
         # consumed, so they don't dangle.

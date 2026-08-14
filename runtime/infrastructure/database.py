@@ -5068,6 +5068,68 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def continue_escalation_from_followup(
+        self,
+        *,
+        task_id: str,
+        thread_id: str,
+        dispatcher: str,
+        invocation_token: str,
+        max_steps: int,
+        note: str,
+        audit_payload: dict,
+    ) -> bool:
+        """Atomically consume the causal follow-up and make one queue intent.
+
+        The caller has already validated policy/evidence.  This transaction is
+        the final authority boundary: cancellation, a stale status, budget
+        exhaustion, or a replay rolls the whole operation back.  The caller may
+        notify the in-memory queue only after this commit; ``try_claim_for_step``
+        remains the at-most-once admission gate if that notification is replayed.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN")
+            task_update = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND cancelled_at IS NULL
+                     AND orchestration_step_count < ?""",
+                (TaskStatus.PENDING.value, note, now, task_id,
+                 TaskStatus.ESCALATED.value, max_steps),
+            )
+            if task_update.rowcount != 1:
+                self._conn.rollback()
+                return False
+            token_update = self._conn.execute(
+                """UPDATE thread_invocations SET status = 'consumed', consumed_at = ?
+                   WHERE invocation_token = ? AND thread_id = ? AND agent_name = ?
+                     AND purpose = ? AND status = 'pending'""",
+                (now, invocation_token, thread_id, dispatcher,
+                 ThreadInvocationPurpose.TASK_FOLLOWUP.value),
+            )
+            if token_update.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (task_id, dispatcher, "escalation_continued_autonomously",
+                 json.dumps(audit_payload), now),
+            )
+            self._conn.execute(
+                """UPDATE escalation_notifications
+                   SET consumed_at = ?, consumed_by = 'autonomous-continuation'
+                   WHERE task_id = ? AND consumed_at IS NULL""",
+                (now, task_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
     def mark_invocation_declined(
         self, token: str, *, decline_reason: str | None = None
     ) -> bool:

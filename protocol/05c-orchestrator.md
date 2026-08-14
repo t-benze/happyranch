@@ -261,7 +261,36 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder or the escalating manager resolves via `happyranch resolve-escalation --decision supersede|continue` (an agent may self-attribute with `--as-agent <name>`; the CLI defaults to founder). Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Continue re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
+**Resolution**: The direct `POST /tasks/{id}/resolve-escalation` / CLI route remains a named **manual break-glass** exception under the shared-bearer trust model. It is auditable as `resolution_path=manual_break_glass`, but is not the autonomous-continuation path. Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
+
+### THR-166 bounded autonomous continuation
+
+The sole autonomous edge is `POST /threads/{thread_id}/resolve-escalation`
+with `decision=continue`, exercised by the task's **same assigned manager**
+using the pending `TASK_FOLLOWUP` causally minted from that root's own
+`task_escalated` system message. REPLY, BOOTSTRAP, another manager, another
+thread, a replayed token, or a noncausal follow-up fail closed.
+
+The server accepts only immutable founder policy
+`THR-166-genuine-human-blocker@1` (`founder:THR-166:seq-29`) and the exact
+class `repair_review_reverify_reevaluate_original_gate`. It never authorizes
+the original protected/destructive action. A structured attestation and an
+exact snapshot of every post-escalation terminal descendant are audited; task,
+owner, thread, invocation, escalation, descendants, terminal status, verdict,
+and result snapshot are derived and compared server-side. Free-form rationale,
+brief text, KB text, and quotes are audit context only, never authority.
+
+Absolute human blockers remain escalated: schema/migration or overloaded
+meaning; permission/sandbox/allow-rule changes; auth, credentials, security,
+privacy, or data access; spend/budget; destructive/irreversible action;
+external contract/product commitment; genuine ambiguity/novel situations;
+cancellation; live children; exhausted budget; and absent, stale, unrelated,
+nonterminal, malformed, or conflicting evidence. Unknown conditions fail
+closed. A successful transition atomically consumes the follow-up, records a
+distinct audit event, consumes notification intent, and moves `escalated` to
+`pending`; post-commit queue delivery is recoverable because run-step's claim
+CAS remains at-most-once. Cancellation wins if it commits first and prevents a
+late delivery from resurrecting execution.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.
