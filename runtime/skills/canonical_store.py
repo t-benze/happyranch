@@ -545,7 +545,8 @@ class CanonicalSkillStore:
         Args:
             slug: Skill slug
             version: Package version
-            content_hash: Content hash from lifecycle ledger (SHA-256 of manifest)
+            content_hash: Immutable B2 custom-skill version/provenance hash
+                (SHA-256 of manifest)
             manifest: Parsed manifest dict with members list
             artifact_store: ArtifactStore instance for loading member bytes
 

@@ -373,9 +373,8 @@ def agent_skills_effective(
     except Exception:
         pass
 
-    # THR-055: Union is release-managed skills only.
-    # User-authored custom skills are resolved via the lifecycle ledger
-    # and are not exposed through this legacy effective API.
+    # THR-055: Union is release-managed skills only. B2 custom skills use
+    # their dedicated custom-skills API and are not exposed here.
     union: dict[str, tuple[SkillEntry, str]] = {}
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")

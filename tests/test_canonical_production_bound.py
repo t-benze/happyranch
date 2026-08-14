@@ -376,12 +376,12 @@ class TestOrgSlugRemediation:
                     )
 
 
-# ── Finding 7: Lifecycle manifest provenance ──────────────────────────
+# ── Finding 7: B2 custom-skill manifest provenance ───────────────────
 
-class TestLifecycleManifestProvenance:
-    """Lifecycle manifest hash is preserved separately from tree/member hashes.
+class TestCustomSkillManifestProvenance:
+    """B2 manifest hash is preserved separately from tree/member hashes.
 
-    The content_hash in the lifecycle ledger binds the manifest bytes.
+    The immutable custom-skill version/provenance hash binds the manifest bytes.
     Materialized tree hashes are computed independently from the source tree.
     """
 
