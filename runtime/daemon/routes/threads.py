@@ -34,7 +34,11 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    load_org_config,
+    resolve_org_setting_threads,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -1912,14 +1916,20 @@ async def resolve_escalation_from_thread(
             or causal_payload.get("root_task_id") != task.id
         ):
             _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
+        max_steps = org.orchestrator._settings.max_orchestration_steps
+        max_revise_rounds = load_org_config(
+            org.orchestrator._paths,
+        ).max_revise_rounds
+        if org.db.autonomous_continuation_budget_exhausted(
+            task.id,
+            max_steps=max_steps,
+            max_revise_rounds=max_revise_rounds,
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
         try:
             snapshots = _validate_th166_evidence(org, task=task, body=body)
         except ValueError as exc:
             _continuation_reject(org, task.id, dispatcher, str(exc))
-
-        max_steps = org.orchestrator._settings.max_orchestration_steps
-        if task.orchestration_step_count >= max_steps:
-            _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
         audit_payload = {
             "policy_id": THR166_POLICY["id"],
             "policy_version": THR166_POLICY["version"],
@@ -1940,9 +1950,16 @@ async def resolve_escalation_from_thread(
             committed = org.db.continue_escalation_from_followup(
                 task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
                 invocation_token=body.invocation_token, max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
                 note=note, audit_payload=audit_payload,
             )
         if not committed:
+            if org.db.autonomous_continuation_budget_exhausted(
+                task.id,
+                max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
+            ):
+                _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
             _continuation_reject(org, task.id, dispatcher, "continuation_state_changed")
         # This is intentionally after the durable queue intent.  If process
         # delivery fails, a recovery delivery is safe because run_step's CAS

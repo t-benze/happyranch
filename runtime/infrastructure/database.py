@@ -5067,6 +5067,61 @@ class Database:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    def _autonomous_continuation_retry_lineage_cte(self) -> str:
+        """Return the persisted per-slice retry predicate used by THR-166.
+
+        The production retry ceiling treats a FAILED direct child as exhausted
+        when its revisit chain contains an earlier FAILED child of this same
+        parent.  Keep the 200-hop bound aligned with
+        ``run_step._is_slice_retry_exhausted``.
+        """
+        return """WITH RECURSIVE retry_lineage
+                   (child_id, id, parent_task_id, status, revisit_of_task_id, depth) AS (
+                   SELECT id, id, parent_task_id, status, revisit_of_task_id, 0
+                     FROM tasks
+                    WHERE parent_task_id = ? AND status = 'failed'
+                   UNION ALL
+                   SELECT retry_lineage.child_id, predecessor.id,
+                          predecessor.parent_task_id, predecessor.status,
+                          predecessor.revisit_of_task_id, retry_lineage.depth + 1
+                     FROM retry_lineage
+                     JOIN tasks AS predecessor
+                       ON predecessor.id = retry_lineage.revisit_of_task_id
+                    WHERE retry_lineage.depth < 199
+               )"""
+
+    @_synchronized
+    def autonomous_continuation_budget_exhausted(
+        self, task_id: str, *, max_steps: int, max_revise_rounds: int,
+    ) -> bool:
+        """Whether a root is under any absolute THR-166 budget blocker.
+
+        This derives all three durable causes from task state and lineage:
+        orchestration steps, the configured revise-round cap, and the existing
+        per-slice retry ceiling.  It intentionally does not inspect request
+        evidence or manager-authored prose.
+        """
+        cte = self._autonomous_continuation_retry_lineage_cte()
+        row = self._conn.execute(
+            f"""{cte}
+                SELECT 1
+                  FROM tasks
+                 WHERE id = ?
+                   AND (
+                       orchestration_step_count >= ?
+                       OR (? > 0 AND revision_count >= ?)
+                       OR EXISTS (
+                           SELECT 1 FROM retry_lineage
+                            WHERE depth > 0
+                              AND parent_task_id = ?
+                              AND status = 'failed'
+                       )
+                   )""",
+            (task_id, task_id, max_steps, max_revise_rounds,
+             max_revise_rounds, task_id),
+        ).fetchone()
+        return row is not None
+
     @_synchronized
     def continue_escalation_from_followup(
         self,
@@ -5076,6 +5131,7 @@ class Database:
         dispatcher: str,
         invocation_token: str,
         max_steps: int,
+        max_revise_rounds: int,
         note: str,
         audit_payload: dict,
     ) -> bool:
@@ -5090,15 +5146,27 @@ class Database:
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN")
-            task_update = self._conn.execute(
-                """UPDATE tasks
+            cte = self._autonomous_continuation_retry_lineage_cte()
+            self._conn.execute(
+                f"""{cte}
+                UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ? AND status = ? AND cancelled_at IS NULL
-                     AND orchestration_step_count < ?""",
-                (TaskStatus.PENDING.value, note, now, task_id,
-                 TaskStatus.ESCALATED.value, max_steps),
+                     AND orchestration_step_count < ?
+                     AND (? <= 0 OR revision_count < ?)
+                     AND NOT EXISTS (
+                         SELECT 1 FROM retry_lineage
+                          WHERE depth > 0
+                            AND parent_task_id = ?
+                            AND status = 'failed'
+                     )""",
+                (task_id, TaskStatus.PENDING.value, note, now, task_id,
+                 TaskStatus.ESCALATED.value, max_steps, max_revise_rounds,
+                 max_revise_rounds, task_id),
             )
-            if task_update.rowcount != 1:
+            # sqlite3 reports ``rowcount=-1`` for an UPDATE prefixed by a
+            # recursive CTE, so use SQLite's statement-local change count.
+            if self._conn.execute("SELECT changes()").fetchone()[0] != 1:
                 self._conn.rollback()
                 return False
             token_update = self._conn.execute(

@@ -284,9 +284,11 @@ Absolute human blockers remain escalated: schema/migration or overloaded
 meaning; permission/sandbox/allow-rule changes; auth, credentials, security,
 privacy, or data access; spend/budget; destructive/irreversible action;
 external contract/product commitment; genuine ambiguity/novel situations;
-cancellation; live children; exhausted budget; and absent, stale, unrelated,
+cancellation; live children; exhausted orchestration-step, revise-round, or
+per-slice retry budget; and absent, stale, unrelated,
 nonterminal, malformed, or conflicting evidence. Unknown conditions fail
-closed. A successful transition atomically consumes the follow-up, records a
+closed. The same server-derived budget predicate is checked both before the
+user-visible response and in the final atomic transition. A successful transition atomically consumes the follow-up, records a
 distinct audit event, consumes notification intent, and moves `escalated` to
 `pending`; post-commit queue delivery is recoverable because run-step's claim
 CAS remains at-most-once. Cancellation wins if it commits first and prevents a

@@ -639,6 +639,149 @@ async def test_autonomous_continue_rejects_exhausted_step_budget(client_with_run
     assert org.db.get_task("T-BUDGET").status == TaskStatus.ESCALATED
 
 
+def _assert_budget_rejection_is_non_mutating(org, *, task_id: str, token: str, queue) -> None:
+    """All absolute-budget rejections leave the causal continuation untouched."""
+    assert org.db.get_task(task_id).status == TaskStatus.ESCALATED
+    invocation = org.db.get_invocation_any_status(token)
+    assert invocation is not None
+    assert invocation.status == ThreadInvocationStatus.PENDING
+    assert not [
+        row for row in org.db.get_audit_logs(task_id)
+        if row["action"] == "escalation_continued_autonomously"
+    ]
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_exhausted_revise_budget_at_route_and_cas(
+    client_with_runtime, monkeypatch,
+):
+    """A root escalated by the production revise-cap flow cannot continue."""
+    from runtime.models import NextStep
+    from tests.orchestrator.conftest import ScriptedRunAgent
+
+    client, org = client_with_runtime
+    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
+    org.db.insert_thread(ThreadRecord(id="THR-REVISION", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-REVISION", brief="test", revision_count=1,
+        assigned_agent="engineering_head", dispatched_from_thread_id="THR-REVISION",
+    ))
+    org.db.insert_task(TaskRecord(
+        id="T-REVISION-WORKER", brief="first revision", parent_task_id="T-REVISION",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+    ))
+    (org.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    scripted = ScriptedRunAgent()
+    scripted.enqueue(
+        "engineering_head",
+        decision=NextStep(action="delegate", agent="dev_agent", prompt="one more revision"),
+        summary="attempting a capped revision",
+    )
+    monkeypatch.setattr(org.orchestrator, "_run_agent", scripted)
+    org.orchestrator.run_step("T-REVISION")
+    assert org.db.get_task("T-REVISION").status == TaskStatus.ESCALATED
+    assert "iteration_budget_exhausted" in (org.db.get_task("T-REVISION").note or "")
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-REVISION", task_id="T-REVISION", agent="engineering_head",
+    )
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-REVISION/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-REVISION", token=payload["invocation_token"], queue=queue,
+    )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_exhausted_per_slice_retry_at_route_and_cas(
+    client_with_runtime,
+):
+    """A root escalated by the production slice-retry flow cannot continue."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-RETRY", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY", brief="test", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-RETRY",
+    ))
+    org.db.update_task(
+        "T-RETRY", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-ORIGINAL", brief="first slice failure", parent_task_id="T-RETRY",
+        status=TaskStatus.FAILED,
+    ))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-RETRY", brief="second slice failure", parent_task_id="T-RETRY",
+        revisit_of_task_id="T-RETRY-ORIGINAL", status=TaskStatus.FAILED,
+    ))
+    _enqueue_parent_if_waiting(org.orchestrator, "T-RETRY-RETRY")
+    assert org.db.get_task("T-RETRY").status == TaskStatus.ESCALATED
+    assert "per-slice retry ceiling" in (org.db.get_task("T-RETRY").note or "")
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RETRY", task_id="T-RETRY", agent="engineering_head",
+    )
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RETRY/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RETRY", token=payload["invocation_token"], queue=queue,
+    )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_cas_rechecks_budget_after_stale_prevalidation(
+    client_with_runtime, monkeypatch,
+):
+    """A revise cap reached after the precheck still rolls back the atomic edge."""
+    client, org = client_with_runtime
+    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
+    org.db.insert_thread(ThreadRecord(id="THR-RACE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-RACE", brief="test", dispatched_from_thread_id="THR-RACE"))
+    org.db.update_task("T-RACE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RACE", task_id="T-RACE", agent="engineering_head",
+    )
+    original = org.db.autonomous_continuation_budget_exhausted
+    injected = False
+
+    def stale_precheck(*args, **kwargs):
+        nonlocal injected
+        exhausted = original(*args, **kwargs)
+        if not exhausted and not injected:
+            injected = True
+            org.db.update_task("T-RACE", revision_count=1)
+        return exhausted
+
+    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", stale_precheck)
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RACE/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RACE", token=payload["invocation_token"], queue=queue,
+    )
+
+
 # ── Thread followup test (THR-080 #3) ──────────────────────────────
 
 @pytest.mark.asyncio
