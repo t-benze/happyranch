@@ -148,6 +148,12 @@ PRD's approved cutline (§3.1 "Bounded monthly grammar," item 5 below).
 | `count` | int ≥ 1 \| null | all | "Ends: After N **successful dispatches**." **Never passed as RRULE `COUNT` (item 1 — see §5.4 for the full mechanism).** Mutually exclusive with `until`. Both null = "Ends: Never" (§6.4). |
 
 `YEARLY` carries no `byday`/`bymonthday`/`ordinal` — the occurrence day is
+anchored. For a full recurring-editor PATCH only, an inactive selector may be
+sent as explicit `null` to clear it from the stored-rule merge. The service
+removes those accepted `byday`/`bymonthday`/`ordinal` clears before validation
+and persistence; canonical stored rules therefore omit inactive selectors.
+This is a PATCH-clear boundary, not a grammar expansion: DAILY/YEARLY remain
+selector-free and MONTHLY still has exactly one bounded selector.
 always `anchor_date`'s own month/day; this keeps yearly inside the bounded
 scope instead of growing a second by-month grammar nobody asked for. A
 leap-day (Feb 29) `anchor_date` skips non-leap years identically to a

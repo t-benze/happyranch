@@ -817,8 +817,9 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.timezone).toBe('Asia/Shanghai')
     expect(capturedBody!.fire_at).toBeUndefined()
-    expect(capturedBody!.recurrence).toMatchObject({
-      freq: 'MONTHLY', interval: 2, ordinal: 'second', byday: ['MO'], count: 6, until: null,
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'MONTHLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
+      until: null, count: 6, byday: ['MO'], bymonthday: null, ordinal: 'second',
     })
   })
 
@@ -846,13 +847,14 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     await userEvent.click(screen.getByText('Save changes'))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
-    expect(capturedBody!.recurrence).toMatchObject({
-      freq: 'WEEKLY', interval: 3, byday: ['MO', 'TU', 'TH'], until: null, count: null,
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'WEEKLY', interval: 3, time: '09:00', tz: 'Asia/Shanghai',
+      until: null, count: null, byday: ['MO', 'TU', 'TH'], bymonthday: null, ordinal: null,
     })
     expect(capturedBody!.fire_at).toBeUndefined()
   })
 
-  it('saves a native monthly calendar-date recurrence ending on a date without a client fire_at', async () => {
+  it('saves a native monthly ordinal-to-date transition with its inactive ordinal selectors cleared', async () => {
     let capturedBody: Record<string, unknown> | null = null
     mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
       capturedBody = body as Record<string, unknown>
@@ -873,8 +875,91 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     await userEvent.click(screen.getByText('Save changes'))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
-    expect(capturedBody!.recurrence).toMatchObject({
-      freq: 'MONTHLY', bymonthday: 15, until: '2026-12-31', count: null,
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'MONTHLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
+      until: '2026-12-31', count: null, byday: null, bymonthday: 15, ordinal: null,
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
+  })
+
+  it('saves a native monthly date-to-ordinal transition with its inactive date selector cleared', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    const monthlyDate = {
+      ...ARMED_RECURRING_MONTHLY,
+      recurrence: {
+        freq: 'MONTHLY', interval: 2, bymonthday: 15,
+        time: '09:00', tz: 'Asia/Shanghai', until: null, count: 6, anchor_date: '2026-08-10',
+      },
+    }
+    mockDetailWithEdit(monthlyDate, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(monthlyDate)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByLabelText('Named weekday'))
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'MONTHLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
+      until: null, count: 6, byday: ['MO'], bymonthday: null, ordinal: 'first',
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
+  })
+
+  it('saves a native weekly-to-daily transition with all selectors explicitly cleared', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    const weeklyRecurring = {
+      ...ARMED_RECURRING_MONTHLY,
+      recurrence: {
+        freq: 'WEEKLY', interval: 2, byday: ['MO'],
+        time: '09:00', tz: 'Asia/Shanghai', until: null, count: 6, anchor_date: '2026-08-10',
+      },
+    }
+    mockDetailWithEdit(weeklyRecurring, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(weeklyRecurring)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByLabelText('Frequency'))
+    await userEvent.click(await screen.findByRole('option', { name: 'day' }))
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'DAILY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
+      until: null, count: 6, byday: null, bymonthday: null, ordinal: null,
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
+  })
+
+  it('saves a native monthly-to-yearly transition with all selectors explicitly cleared', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByLabelText('Frequency'))
+    await userEvent.click(await screen.findByRole('option', { name: 'year' }))
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.recurrence).toEqual({
+      freq: 'YEARLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
+      until: null, count: 6, byday: null, bymonthday: null, ordinal: null,
     })
     expect(capturedBody!.fire_at).toBeUndefined()
   })

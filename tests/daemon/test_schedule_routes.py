@@ -836,6 +836,59 @@ def test_patch_recurring_without_fire_at_derives_server_occurrence(
     ).isoformat()
 
 
+@pytest.mark.parametrize(
+    ("stored_rule", "editor_rule", "cleared_selectors"),
+    [
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "bymonthday": None, "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"bymonthday"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": None, "bymonthday": 15, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "ordinal"},
+        ),
+        (
+            {"freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "DAILY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "YEARLY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+    ],
+    ids=["monthly-date-to-ordinal", "monthly-ordinal-to-date", "weekly-to-daily", "monthly-to-yearly"],
+)
+def test_patch_recurring_editor_selector_clears_are_persisted_canonically(
+    tmp_home, app, org_state, auth_headers, stored_rule, editor_rule, cleared_selectors,
+):
+    """Bearer PATCH reaches the merge seam and removes inactive selectors."""
+    from fastapi.testclient import TestClient
+
+    stored = {**stored_rule, "anchor_date": "2026-07-22"}
+    fire_at = next_recurring_occurrence(stored, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=stored, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": editor_rule, "timezone": "UTC"}, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "UTC"
+    assert persisted.timezone == persisted.recurrence["tz"] == "UTC"
+    assert all(selector not in body["recurrence"] for selector in cleared_selectors)
+    assert persisted.recurrence == body["recurrence"]
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+
+
 def test_patch_recurring_timezone_without_fire_at_derives_server_occurrence(
     tmp_home, app, org_state, auth_headers,
 ):

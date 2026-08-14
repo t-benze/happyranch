@@ -1029,8 +1029,12 @@ for audit/reconciliation).
   that changes recurrence and/or timezone may omit ``fire_at``; after merging
   and validating the rule, the server derives and persists the next eligible
   occurrence. A supplied ``fire_at`` remains an exact-match assertion against
-  that server-computed occurrence. One-shot and weekly PATCH semantics are
-  unchanged.
+  that server-computed occurrence. The recurring editor may explicitly send
+  null for inactive ``byday``, ``bymonthday``, and ``ordinal`` selectors; the
+  service removes those accepted clears after merge before validation and
+  persistence, leaving canonical stored rules without stale/null selectors.
+  DAILY/YEARLY remain selector-free and the bounded MONTHLY grammar is
+  unchanged. One-shot and weekly PATCH semantics are unchanged.
 
 **Founder controls and validation.** Founder/operator routes may pause, cancel,
 edit, or ``POST /schedules/{schedule_id}/renew`` an ARMED or PAUSED Todo.

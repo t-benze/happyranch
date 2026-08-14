@@ -42,6 +42,7 @@ def _now() -> datetime:
 _ALLOWED_EDIT_FIELDS = frozenset({
     "fire_at", "recurrence", "timezone",
 })
+_RECURRENCE_SELECTOR_FIELDS = frozenset({"byday", "bymonthday", "ordinal"})
 
 
 class ScheduleService:
@@ -416,6 +417,16 @@ class ScheduleService:
             merged_recurrence = dict(record.recurrence or {})
             if "recurrence" in fields:
                 merged_recurrence.update(fields["recurrence"])
+                # The full-form editor explicitly clears inactive selectors so
+                # a PATCH merge cannot retain a selector from the prior shape.
+                # Canonical stored rules omit inactive selectors rather than
+                # preserving null residue.
+                for selector in _RECURRENCE_SELECTOR_FIELDS:
+                    if (
+                        selector in fields["recurrence"]
+                        and fields["recurrence"][selector] is None
+                    ):
+                        merged_recurrence.pop(selector, None)
             # A native recurring PATCH has one persisted timezone.  A
             # timezone-only patch updates the fully merged rule before rule
             # validation and server-owned candidate derivation.  A recurrence

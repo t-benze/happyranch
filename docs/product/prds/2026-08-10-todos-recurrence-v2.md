@@ -120,6 +120,12 @@ by the last successful run.
   creates a new rule version and resets `anchor_date` to that version’s newly
   calculated next local occurrence date. The edit must be atomically validated
   and audit before/after rules including the anchor.
+- The full recurring editor explicitly sends `null` for inactive `byday`,
+  `bymonthday`, and `ordinal` selectors. After its PATCH merge, the server
+  removes those explicit clears before validation and persistence, so stored
+  rules contain no stale or null selector residue. This does not broaden the
+  grammar: DAILY/YEARLY still have no selector, and MONTHLY still has exactly
+  one bounded selector.
 - Edits calculate only an occurrence strictly after the edit; they never create
   a retroactive occurrence. An `ARMED` or `PAUSED` Todo may be edited. A Todo
   already claimed as `FIRING`, or terminal, rejects the edit with

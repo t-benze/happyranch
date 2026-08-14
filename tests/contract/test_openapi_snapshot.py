@@ -284,3 +284,14 @@ def test_schedule_edit_contract_documents_server_derived_recurring_fire_at() -> 
     assert "omit" in description.lower()
     assert "server" in description.lower()
     assert "strict" in description.lower()
+
+
+def test_schedule_edit_contract_documents_recurring_selector_clears() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    schema = app.openapi()["components"]["schemas"]["ScheduleEditBody"]
+    description = schema["properties"]["recurrence"]["description"].lower()
+    assert "byday" in description
+    assert "bymonthday" in description
+    assert "ordinal" in description
+    assert "null" in description
+    assert "after merge" in description

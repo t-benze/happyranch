@@ -337,7 +337,13 @@ class ScheduleEditBody(BaseModel):
         ),
     )
     recurrence: dict | SkipJsonSchema[None] = Field(
-        None, description="Weekly or native recurring rule patch."
+        None,
+        description=(
+            "Weekly or native recurring rule patch. A recurring editor may set "
+            "inactive byday, bymonthday, and ordinal selectors to null; the "
+            "server removes those explicit clears after merge before validation "
+            "and persistence."
+        ),
     )
     timezone: str | SkipJsonSchema[None] = Field(
         None, description="IANA timezone string"
@@ -353,6 +359,8 @@ def edit_schedule(
     Native recurring recurrence/timezone edits may omit ``fire_at``: the
     server validates the merged rule and persists its own next occurrence.
     A supplied ``fire_at`` remains a strict exact-match assertion.
+    An editor may explicitly null inactive recurrence selectors; they are
+    canonicalized away after merge before validation and persistence.
     """
     svc = ScheduleService(org.db)
     acting_agent = f"operator@{slug}"

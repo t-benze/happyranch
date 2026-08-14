@@ -214,6 +214,9 @@ export function EditDialog({
         tz: timezone || 'UTC',
         until: ends === 'on' ? until : null,
         count: ends === 'after' ? Number(count) : null,
+        byday: null,
+        bymonthday: null,
+        ordinal: null,
       }
       if (frequency === 'WEEKLY') recurrence.byday = recurrenceDays
       if (frequency === 'MONTHLY' && monthMode === 'date') recurrence.bymonthday = Number(monthDay)
