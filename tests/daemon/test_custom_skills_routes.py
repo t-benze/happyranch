@@ -82,18 +82,41 @@ def test_agent_create_rejects_another_agents_originated_skill_without_mutation(c
     assert _custom_counts(org) == before
 
 
-def test_agent_create_keeps_non_pilot_agents_out(client_with_runtime):
+def test_agent_create_is_available_to_every_verified_agent(client_with_runtime):
     client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-NON-PILOT", brief="create a custom skill"))
     org.sessions.set_active("TASK-NON-PILOT", "dev_agent", "sess-non-pilot", org_slug="alpha")
     client.headers.pop("Authorization", None)
-    before = _custom_counts(org)
     response = client.post(
         f"{BASE}/agent-create", params={"session_id": "sess-non-pilot"},
         json=_body("frontend-development"),
     )
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] in {"agent_not_in_pilot", "slug_not_allowed_for_agent"}
-    assert _custom_counts(org) == before
+    assert response.status_code == 201, response.text
+    assert response.json()["provenance"]["agent_name"] == "dev_agent"
+
+
+def test_skills_agent_returns_only_b2_custom_skill_mapping(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-B2", brief="create a custom skill"))
+    org.sessions.set_active("TASK-B2", "dev_agent", "sess-b2", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    response = client.post(
+        "/api/v1/orgs/alpha/skills/agent",
+        params={"session_id": "sess-b2"},
+        json=_body("b2-agent-skill"),
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert set(payload) == {"skill", "version", "hidden_reason", "provenance"}
+    assert payload["skill"]["origin_kind"] == "agent"
+    assert payload["version"]["source_task_id"] == "TASK-B2"
+    assert payload["provenance"] == {
+        "verified_org": "alpha",
+        "task_id": "TASK-B2",
+        "agent_name": "dev_agent",
+        "session_id": "sess-b2",
+        "task_brief_digest": payload["version"]["task_brief_digest"],
+    }
 
 
 @pytest.mark.parametrize("method,path,payload", [

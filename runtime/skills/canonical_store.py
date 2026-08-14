@@ -533,13 +533,12 @@ class CanonicalSkillStore:
 
         The manifest is a JSON dict with a ``members`` list:
             {"members": [{"path": "SKILL.md", "hash": "sha256:abc...",
-                          "artifact_key": "skill-lifecycle/..."}, ...]}
+                          "artifact_key": "custom-skills/..."}, ...]}
 
         Each member's bytes are loaded from the artifact store, their hash
         is validated, and they are written into the canonical tree.
 
-        The *content_hash* is the package-version content hash from the
-        lifecycle ledger. It is the SHA-256 of the manifest JSON itself
+        The *content_hash* is the immutable custom-skill version content hash. It is the SHA-256 of the manifest JSON itself
         (binding full-package provenance, distinct from individual member
         hashes). We preserve and verify the manifest hash separately.
 
