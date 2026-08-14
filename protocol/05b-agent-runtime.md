@@ -356,7 +356,7 @@ preflighting, or reconciling any links, and must not withdraw or mutate an
 existing valid workspace state.  For valid contexts, system-contract links are
 unioned across all ordinary session contexts so a later single-context launch
 never withdraws a valid link belonging to another context; release-managed and
-lifecycle links remain policy-reconciled and withdrawable.
+B2 custom-skill links remain policy-reconciled and withdrawable.
 
 #### Canonical skill store + workspace symlinks (macOS-only)
 
@@ -416,7 +416,7 @@ Policy withdrawal and atomic link repair remain safe.
 
 **Ownership and provenance:**
 - Canonical packages are content-addressed trees from exact verified
-provenance/members for system, release-managed, and lifecycle
+provenance/members for system, release-managed, and B2 custom-skill
 version-pinned packages.
 - The readonly hardening is cosmetic — the executor shares the daemon's uid
 and can chmod files back to writable. Do not describe byte targets, local
@@ -427,7 +427,7 @@ executor-only writable/unwritable, or automatically recovered.
 Before each executor launch, the daemon compares actual canonical package
 content against the ledger-declared member hashes:
 - System-contract packages: compared against the shipped source tree hash.
-- Lifecycle skills: each member's actual hash compared against the
+- B2 custom skills: each member's actual hash compared against the
   ArtifactStore manifest.
 On mismatch the daemon emits a durable integrity/operations event and
 refuses the session. Corrupted bytes are NEVER silently accepted as valid
@@ -454,7 +454,7 @@ mismatched-hash entries are atomically repaired.
   **system-contract links are unioned across all ordinary session contexts**
   (task, thread, wake, dream, schedule, bootstrap) and retained so a later
   single-context launch never withdraws a valid link belonging to another
-  context.  **Release-managed and lifecycle links remain policy-reconciled**
+  context.  **Release-managed and B2 custom-skill links remain policy-reconciled**
   and are withdrawn when the agent becomes ineligible, retired, or unassigned.
 
 **Legacy compatibility fallback:** The legacy per-session copy model
@@ -485,7 +485,7 @@ skipped.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
 materialization for a given agent workspace — system-contract injection +
-on-disk verification, managed-skill injection, and lifecycle-ledger injection
+on-disk verification, managed-skill injection, and B2 custom-skill injection
 — runs inside a single unified transaction (``materialize_workspace_skills``)
 protected by a process-local ``threading.RLock`` (re-entrant lock) keyed by
 the canonical (resolved) workspace path. The legacy wholesale copy

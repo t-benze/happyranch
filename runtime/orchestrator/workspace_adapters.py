@@ -294,7 +294,7 @@ def materialize_workspace_skills(
     """Serialize the complete pre-spawn skill materialization transaction.
 
     All three materialization steps — system-contract injection,
-    managed-skill injection, and lifecycle-ledger injection — run under a
+    managed-skill injection, and B2 custom-skill injection — run under a
     process-local lock keyed by the canonical workspace path so concurrent
     task/thread/wake/dream/schedule/bootstrap callers targeting the same
     workspace serialize their complete transaction.
@@ -315,7 +315,7 @@ def materialize_workspace_skills(
     **Unknown-context no-op:** an unrecognised context string (one that is
     not a valid ``SessionContext`` value) returns immediately without
     creating, building, preflighting, or reconciling any system, managed, or
-    lifecycle links, and must not withdraw or mutate an existing valid
+    custom-skill links, and must not withdraw or mutate an existing valid
     workspace state.
 
     Args:
@@ -329,7 +329,7 @@ def materialize_workspace_skills(
         agent_name: agent to resolve eligibility for
         team: agent's team name
         skills_root: directory containing managed-catalog skill packages
-        org_root: per-org root (optional; for lifecycle ledger resolution)
+        org_root: per-org root (optional; for custom-skill resolution)
         db: optional DB handle for recording materialization events
     """
     from runtime.skills.system_contracts import SessionContext
@@ -378,7 +378,7 @@ def materialize_workspace_skills_union(
     ``materialize_workspace_skills`` preserves the ordinary-context
     system-contract union on every regular launch; this function supports
     the executor-switch path with an explicit context list.  In both cases,
-    release-managed and lifecycle links remain policy-reconciled and
+    release-managed and custom-skill links remain policy-reconciled and
     withdrawable — only system contracts are union-preserved.
 
     This is the correct executor-switch materialization: the switched
@@ -600,7 +600,7 @@ def _materialize_unified_canonical(
 
     Unified expected set = system contracts (union across ALL ordinary
     session contexts) + release-managed catalog + PUBLISHED/active
-    lifecycle-ledger skills. This single set is reconciled via
+    B2 custom skills. This single set is reconciled via
     repair_workspace_skills ONCE.
 
     System contracts are unioned across all six ordinary SessionContext
@@ -749,7 +749,7 @@ def _materialize_unified_canonical(
 
     # ── Reconcile ONCE with unified expected set ────────────────────
     # Both provider roots get the same full set so system contracts
-    # remain while managed/lifecycle links are created/withdrawn.
+    # remain while managed/custom-skill links are created/withdrawn.
     for subdir in (".claude/skills", ".agents/skills"):
         materializer.repair_workspace_skills(
             expected_specs, workspace, subdir,
@@ -774,7 +774,7 @@ def _build_custom_skill_canonical_specs(
 
     Each visible skill is independent: an artifact/build fault is persisted as
     a failed materialization for an identified task session and does not block
-    system, managed, lifecycle, or sibling custom skills.
+    system, managed, or sibling custom skills.
     """
     import hashlib
     import tempfile
@@ -1205,7 +1205,7 @@ def inject_managed_skills(
 ) -> None:
     """CUTOVER: Forwards to canonical store for compatibility.
 
-    Managed-catalog and lifecycle skills are now resolved via
+    Managed-catalog and B2 custom skills are now resolved via
     materialize_workspace_skills / _materialize_unified_canonical.
     """
     materialize_workspace_skills(
@@ -1350,8 +1350,8 @@ def _skills_directory_readonly_section(skills_dir: str, agent_name: str) -> list
 
     Skill entries under BOTH ``.claude/skills`` and ``.agents/skills`` are
     daemon-materialized from the canonical skill store. This section
-    directs agents NOT to edit these managed links and to use the
-    lifecycle workflow instead.
+    directs agents NOT to edit these managed links and to use the B2
+    custom-skill workflow instead.
 
     **IMPORTANT:** This is operational guidance, NOT enforcement. The
     executor and daemon share the same OS identity — there is NO OS-level
@@ -1385,20 +1385,16 @@ def _skills_directory_readonly_section(skills_dir: str, agent_name: str) -> list
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",
     ]
-    if agent_name in {"frontend_engineer", "product_lead"}:
-        lines.extend([
-            "If a new custom skill is needed, use the verified B2 create-skill ",
-            "workflow. The response includes the editable custom skill, immutable version, ",
-            "default-hidden reason, and verified agent/task/session provenance:\n",
-            "```",
-            "happyranch skills create --from-file <path> --session-id <your-session-id>",
-            "```\n",
-        ])
-    else:
-        lines.extend([
-            "If a new custom skill is needed, use the injected create-skill workflow; ",
-            "verified agents can create it directly, and founders later configure eligibility.\n",
-        ])
+    lines.extend([
+        "If a new custom skill is needed, every verified agent can use the B2 ",
+        "create-skill workflow directly; there is no pilot roster or slug restriction. ",
+        "It remains bound to this session. The response includes the editable custom ",
+        "skill, immutable version, default-hidden reason, and verified agent/task/session ",
+        "provenance:\n",
+        "```",
+        "happyranch skills create --from-file <path> --session-id <your-session-id>",
+        "```\n",
+    ])
     return lines
 
 

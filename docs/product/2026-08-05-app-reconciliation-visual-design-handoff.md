@@ -109,7 +109,7 @@ These rules apply to every frame below.
 
 **Accessibility and responsive:** semantic primary navigation and group labels; active route/group communicated with text and `aria-current`-appropriate semantics; keyboard path through organization switcher, navigation, command/help, and canonical handoffs; visible focus and non-color selected state. Desktop is the supported target; report, rather than conceal, narrow-width limitations.
 
-**Preserve / do not design:** no path migration, responsive-shell promise, hidden/deleted normal route, novel record fields, role/RBAC model, assistant governance write, Skills lifecycle mutation, Work Hours semantic change, or prototype/developer route promotion.
+**Preserve / do not design:** no path migration, responsive-shell promise, hidden/deleted normal route, novel record fields, role/RBAC model, assistant governance write, B2 custom-Skills behavior change, Work Hours semantic change, or prototype/developer route promotion.
 
 **Acceptance evidence:** a route-to-group/deep-link crosswalk for every changed route; before/after 1440×900 light/dark captures; deterministic checks for legacy redirects and selected-route highlighting; browser evidence from each changed triage/evidence surface to its canonical record; loading, empty, populated, stale/disconnected, failure, and 401/403 frames for each changed family.
 

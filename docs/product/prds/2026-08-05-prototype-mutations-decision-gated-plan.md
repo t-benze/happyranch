@@ -21,7 +21,7 @@ This plan reconciles three kinds of evidence without treating them as equivalent
 
 - The updated `screens.zip` is visual/workflow intent. Its Skills edit/import/assign, candidate, assistant approval, retention/export/history, and Job-context controls show potential outcomes, not approved contracts.
 - PR #555 and THR-140 establish the current product boundary: #576 changes the placement of an existing Work Hours owner; #577 changes AppShell grouping. Neither creates new authority, routes, record types, or retention policy.
-- Current implementation establishes the factual baseline. The custom-skill lifecycle ledger preserves proposal/decision history separately from assignment/materialization projections; Dream KB candidates have limited persistence in the daemon but no established **general browser candidate-governance contract**; audit is append-only; artifact provenance is limited; the assistant has conversation/tool evidence but no governance-write route; and `JobRecord` lacks prototype `thread`, `routed_via`, `kind`, and `pr_ref` fields.
+- Current implementation establishes the factual baseline. B2 custom Skills use one immediately editable record for verified agents and founders, default Hidden — eligibility not configured, while retaining version, provenance, validation, and materialization evidence; Dream KB candidates have limited persistence in the daemon but no established **general browser candidate-governance contract**; audit is append-only; artifact provenance is limited; the assistant has conversation/tool evidence but no governance-write route; and `JobRecord` lacks prototype `thread`, `routed_via`, `kind`, and `pr_ref` fields.
 
 The browser has no generalized role model. Server-side authorization, organization scope, and participant checks are authoritative; founder-authenticated actions are the current baseline. This package does not approve delegation, remote operators, client-side RBAC, autonomous approval, or a new generic “operator” role.
 
@@ -44,46 +44,29 @@ This common shape intentionally does **not** create a generalized authorization 
 | ID | Founder decision needed | Recommendation | What is deliberately given up if accepted |
 | --- | --- | --- | --- |
 | D1 | Whether to authorize any founder-only mutation pilot now, and which one family is first | Authorize no more than one family after its contract review; start with a bounded candidate-review or Job-context read model, not assistant writes or retention controls | A broad “make all prototype buttons work” release |
-| D2 | Whether custom Skills may expand beyond the current proposal-ledger cutline; if yes, which actions | Keep direct catalog import/edit/validate/assign retired; consider only immutable human-sponsored draft/version flow after separate approval | Fast self-service catalog mutation and delegated rollout |
+| D2 | Whether custom Skills need a new capability beyond the completed B2 authoring and eligibility model | Keep B2’s immediately editable record, default-hidden eligibility, immutable versions, provenance, validation, and materialization evidence; require a separately scoped ruling for any new capability | Unbounded catalog mutation, delegated rollout, or permission changes |
 | D3 | Which Knowledge/Dream candidate sources and terminal actions are allowed, and whether acceptance may create/update shared KB | Keep candidate review separate from KB mutation; Founder decides candidate classes and explicit promotion semantics | One-click auto-promotion and untraceable direct KB edits |
 | D4 | Whether the assistant may execute any governance write, and the exact target/action allowlist | Keep assistant navigation-only unless one canonical action family, confirmation model, and audit receipt are approved | Conversational approve/reject across arbitrary records |
 | D5 | Retention, deletion, export, and review-history policy for operational evidence | Do not add generic retention/delete/export/history controls before a written policy, data classification, and export audit contract | A polished evidence-control UI in the near term |
 | D6 | Whether to persist JobRecord context/action data and which fields are authoritative | Add immutable, optional submission context only after Engineering proposes a backward-compatible model; preserve current job review actions | Prototype Job rail fields, inferred PR links, and a generic “action context” blob |
 
-## Family 1 — Skills lifecycle and custom-skill actions
+## Family 1 — B2 custom-skill actions
 
 ### Customer outcome and current factual baseline
 
-The customer outcome is reusable internal guidance whose origin, review, target audience, and effective version can be reconstructed without ever turning a skill into a permission grant. Current contract evidence distinguishes immutable proposal/decision history from assignment and runtime materialization projections. Technical validation is not approval; rejection is terminal; rollback or unassignment does not rewrite decision history; and a failed materialization can leave an earlier effective version intact.
+The customer outcome is reusable internal guidance whose origin, target audience, and effective version can be reconstructed without ever turning a skill into a permission grant. B2 uses the same immediately editable custom-skill record for verified agents and founders. It is default Hidden — eligibility not configured, and retains immutable versions, provenance, deterministic validation, and runtime materialization evidence.
 
-THR-140 consultation confirms that direct catalog writes (`POST /skills`, `PATCH /skills/{id}`, and catalog validation) return `410 legacy_cutover`. Still-mounted `/skills/new` and `/skills/:skillId/edit` screens are therefore a reconciliation defect, not a usable workflow. The lifecycle proposal ledger is the safe current write boundary: its founder-facing actions are bounded, and proposal-detail publish/assign/rollback or stale-refresh mutations are not part of the present cutline. System-contract and platform-managed skills remain outside custom-skill mutation.
+Legacy proposal UI, content, records, history, routes, adapters, and compatibility behavior are deleted. System-contract and platform-managed skills remain outside custom-skill mutation.
 
-### Proposed target workflow and canonical lifecycle
+### Current B2 workflow and boundaries
 
-If D2 is approved, the target is a **human-sponsored custom-skill lifecycle**, not agent self-service:
+1. A verified agent creates a task/session-bound custom skill directly, or a founder creates the same record in the web console.
+2. The service validates the exact content and retains an immutable version, provenance, and validation evidence.
+3. The record remains editable but hidden until the founder configures explicit organization, team, or agent eligibility.
+4. Eligibility affects only future-session guidance visibility; it never grants tools, credentials, sandbox access, or authority.
+5. Materialization is recorded separately from validation and eligibility.
 
-1. An agent may emit a task-bound proposal artifact; a human founder sponsors or declines it.
-2. The founder creates or forks a human-owned draft version. Editing after submission creates a new immutable version and invalidates prior validation/review for that replacement.
-3. Deterministic validation records a result against that exact hash. Failed drafts remain visible with findings.
-4. The founder reviews the locked version with provenance and rationale, then approves, rejects (terminal for that version), or returns it to a new draft version.
-5. A separately approved publication/assignment/rollback phase may be designed later; it is not implicitly authorized by approval of drafting and review.
-6. Runtime materialization remains a projection: `assigned_not_yet_effective`, `effective`, and materialization failure are distinct from package review state.
-
-Canonical records are `SkillProposal`, `SkillVersion`, `ValidationResult`, `ReviewDecision`, `Assignment`, and `MaterializationEvent`. The package's review lifecycle must never collapse assignment/effectiveness into one status. Content hash and immutable version ID are the transition keys.
-
-### Authority, API/data/audit, privacy, and conflict needs
-
-Founder is the only author/sponsor, reviewer, and publisher/assignment authority in the first possible pilot; same-person separation is a Founder decision only if a future pilot introduces a second human role. Agents can submit proposal artifacts only and must receive server-side denial for draft persistence, approval, publication, assignment, rollback, permissions, or configuration changes. No skill field may change sandbox, tools, credentials, allow rules, or agent/repository configuration.
-
-The API proposal must use explicit versioned resources rather than revive generic catalog mutation endpoints. It needs exact-hash preconditions, idempotency for submit/review, source/protected-slug checks, `409` on superseded drafts, retained validation findings, and complete audit evidence (proposal/task/session, sponsor, actor, decision/rationale, hash, old/new state, and materialization result). Source package contents and task provenance require an internal sensitivity classification and redaction rules before display/export.
-
-### Visual design, dependencies, non-goals, acceptance
-
-The visual design needs separate queues for proposals/drafts versus published catalog, an immutable version/diff/provenance panel, technical-validation versus human-decision labels, and a timeline that separates decision, assignment, and runtime effect. Disabled/unavailable controls must name the authority or lifecycle prerequisite. Forms preserve unsaved input; stale versions require reload/fork, not silent overwrite.
-
-Dependencies: first retire or redirect every legacy 410-backed catalog entry point; reconcile ledger truth with legacy fixtures; confirm canonical stores/materialization behavior; and define protected-source/path/content checks. Non-goals: marketplace, external sharing, executable plugins, arbitrary import, agent review, delegated roles, bulk rollout, or permissions.
-
-Acceptance is measurable only after D2: an agent proposal cannot change catalog/assignment/permission state; one-byte changes invalidate the reviewed version; validation failure stays inspectable; every decision/action can be reconstructed by hash; an unavailable publish/assign/rollback control cannot produce a write; and a materialization result names the exact approved version without misrepresenting review state.
+No skill field may change sandbox, tools, credentials, allow rules, or agent/repository configuration. Any capability beyond this B2 model requires a separately scoped ruling.
 
 ## Family 2 — Knowledge and Dreams candidate actions
 

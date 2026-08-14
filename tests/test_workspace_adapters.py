@@ -516,30 +516,38 @@ def test_skills_directory_readonly_section_both_roots(tmp_path: Path) -> None:
             "must not reference HAPPYRANCH_ALLOW_SAME_OWNER_EXECUTOR env var"
         )
 
-        # Does NOT claim immutable or ACL denial
-        for forbidden in ("immutable", "ACL denial"):
-            assert forbidden not in text.lower().replace("-", " "), (
+        # Does not claim filesystem immutability or ACL denial. A B2 response
+        # accurately names its returned immutable version.
+        normalized = text.lower().replace("-", " ")
+        for forbidden in ("filesystem immutable", "os enforced immutable", "ACL denial"):
+            assert forbidden.lower() not in normalized, (
                 f"must not claim {forbidden!r}"
             )
 
         assert "happyranch skills create --from-file <path>" in text
-        assert "pilot roster" in text
-        assert "happyranch skills create --from-file <path>" in text
+        assert "immutable version" in text
+        assert "default-hidden reason" in text
+        assert "verified agent/task/session" in text
+        assert "provenance" in text
 
 
-def test_skills_directory_rendered_guidance_avoids_pilot_only_commands_for_non_pilot(
+def test_skills_directory_rendered_guidance_exposes_b2_create_skill_to_every_verified_agent(
     test_settings, tmp_dir, runtime,
 ) -> None:
-    """A non-pilot's rendered prompt must route skill needs to its manager/thread."""
+    """Every verified agent gets the session-bound B2 create-skill guidance."""
     workspace = tmp_dir / "workspaces" / "dev_agent"
     adapter = CodexWorkspaceAdapter(test_settings, runtime, slug="test")
 
     adapter.write_agents_md(workspace, "dev_agent", "You are the Dev Agent.")
 
     text = (workspace / "AGENTS.md").read_text()
-    assert "manager/thread" in text
-    assert "happyranch skills create" not in text
-    assert "happyranch skills create" not in text
+    assert "happyranch skills create --from-file <path> --session-id <your-session-id>" in text
+    assert "every verified agent can use the B2" in text
+    assert "there is no pilot roster or slug restriction" in text
+    assert "immutable version" in text
+    assert "default-hidden reason" in text
+    assert "verified agent/task/session" in text
+    assert "provenance" in text
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
@@ -925,25 +933,20 @@ class TestProductionDocumentRendering:
             "must assert external re-sync/redeploy recovery"
         )
 
-        # Must NOT claim OS-enforced or immutable or ACL protection
+        # Must NOT claim OS-enforced filesystem immutability or ACL denial.
         assert "OS-enforced security boundary" in text, (
             "must disclaim OS-enforced security boundary"
         )
-        # Must not claim immutable targets
-        assert "immutable" not in (
-            text.split("## Skills Directory (do not edit)")[1]
-            .split("## ")[0] if "## Skills Directory (do not edit)" in text
-            and text.count("## ", text.index("## Skills Directory (do not edit)") + 1) > 0
-            else text
-        ), (
-            "rendered Skills Directory section must not claim immutable"
-        )
-
-        # Must not claim ACL denial or distinct OS account
+        # A returned B2 version is accurately immutable; only a filesystem
+        # security claim is forbidden here.
         skills_section = text.split("## Skills Directory (do not edit)")[1]
         next_section_idx = skills_section.find("\n## ")
         if next_section_idx != -1:
             skills_section = skills_section[:next_section_idx]
+        normalized = skills_section.lower().replace("-", " ")
+        assert "filesystem immutable" not in normalized
+        assert "os enforced immutable" not in normalized
+        assert "acl denial" not in normalized
         assert "ACL" not in skills_section, (
             "CLAUDE.md Skills Directory section must not claim ACL enforcement"
         )
@@ -1021,7 +1024,7 @@ class TestProductionDocumentRendering:
             "must assert external re-sync/redeploy recovery"
         )
 
-        # Must NOT claim OS-enforced or immutable or ACL protection
+        # Must NOT claim OS-enforced filesystem immutability or ACL denial.
         assert "OS-enforced security boundary" in text, (
             "must disclaim OS-enforced security boundary"
         )
@@ -1032,13 +1035,12 @@ class TestProductionDocumentRendering:
         if next_section_idx != -1:
             skills_section = skills_section[:next_section_idx]
 
-        # Must not claim immutable targets or ACL denial
-        assert "immutable" not in skills_section, (
-            "AGENTS.md Skills Directory section must not claim immutable"
-        )
-        assert "ACL" not in skills_section, (
-            "AGENTS.md Skills Directory section must not claim ACL enforcement"
-        )
+        # A returned B2 version is accurately immutable; only a filesystem
+        # security claim is forbidden here.
+        normalized = skills_section.lower().replace("-", " ")
+        assert "filesystem immutable" not in normalized
+        assert "os enforced immutable" not in normalized
+        assert "acl denial" not in normalized
         assert "distinct" not in skills_section.lower(), (
             "AGENTS.md Skills Directory section must not claim distinct identity"
         )

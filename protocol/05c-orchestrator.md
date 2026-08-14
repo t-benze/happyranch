@@ -883,7 +883,7 @@ removed; no ``_WHOLESALE_DUMP_ENABLED`` flag remains.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
 materialization for a given agent workspace — system-contract injection +
-on-disk verification, managed-skill injection, and lifecycle-ledger injection
+on-disk verification, managed-skill injection, and B2 custom-skill injection
 — runs inside a single unified transaction (``materialize_workspace_skills``)
 protected by a process-local ``threading.RLock`` keyed by the canonical
 (resolved) workspace path. The legacy wholesale copy and its former
@@ -900,7 +900,7 @@ one. The lock serializes writers only; it does NOT block readers.
 
 Named fail-closed behavior: a materialization failure produces a named
 actionable error (``SystemContractMaterializationError``,
-``LifecycleMaterializationError``, ``PermissionError``, or ``OSError``) — never
+``PermissionError``, or ``OSError``) — never
 a bare ``FileNotFoundError``. The caller persists the terminal failure and no
 agent subprocess is launched.
 
@@ -1202,7 +1202,7 @@ single-context launch never withdraws a valid system-contract link
 belonging to another context.  An unrecognised context string is a no-op:
 the function returns immediately without creating, building, preflighting,
 or reconciling any links, and must not withdraw or mutate an existing
-valid workspace state.  Release-managed and lifecycle links remain
+valid workspace state.  Release-managed and B2 custom-skill links remain
 policy-reconciled and are withdrawn when the agent becomes ineligible or
 unassigned.
 

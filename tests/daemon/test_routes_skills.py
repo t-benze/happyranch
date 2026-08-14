@@ -735,7 +735,7 @@ class TestValidateSkill:
         assert r.status_code == 401
 
     def test_validate_records_validation_event(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy validate route returns 410 Gone with lifecycle migration guidance."""
+        """THR-055: legacy validate route returns 410 Gone with B2 guidance."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
@@ -745,7 +745,7 @@ class TestValidateSkill:
         assert r.status_code == 410
         body = r.json()
         assert body.get("detail", {}).get("code") == "legacy_cutover"
-        assert "skill-lifecycle/validate" in body.get("detail", {}).get("detail", "")
+        assert "B2 custom-skills routes" in body.get("detail", {}).get("detail", "")
 
 
 class TestEditSkill:
@@ -1080,7 +1080,7 @@ class TestAssignSkill:
         assert r.status_code == 410
         body = r.json()
         assert body.get("detail", {}).get("code") == "legacy_cutover"
-        assert "skill-lifecycle/assign" in body.get("detail", {}).get("detail", "")
+        assert "B2 custom-skill eligibility management" in body.get("detail", {}).get("detail", "")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
