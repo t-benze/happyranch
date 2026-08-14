@@ -157,12 +157,13 @@ Slice A's `received_nonlaunchable` receipt:
   `AdapterEntry` if profile binding fails) so no partial adapter/profile/
   registry state survives. `GET /api/v1/runtime/custom-cli/status` (keyed
   only by `intended_profile_name`, never token plaintext) exposes the
-  deterministic wrapper destination plus the latest operation's id and
-  projection state, except that a historical `committed` projection is
-  reported as null unless its profile remains in both the durable runtime
-  profile store and active executor registry. This read-time reconciliation
-  lets the founder reconnect after removing a profile without mutating the
-  historical projection record. The browser can find the daemon-issued
+  deterministic wrapper destination plus the latest live receipt's id and
+  projection state. A historical `committed` projection whose profile is no
+  longer present in both the durable runtime profile store and active executor
+  registry is not a receipt: `operation_id`, `profile_state`, and `reason`
+  are all reported as null. This read-time reconciliation lets the founder
+  reconnect after removing a profile without mutating the historical
+  projection record. The browser can find the daemon-issued
   wrapper path to show in a connect prompt and detect when the candidate
   CLI's own `/connect` call has landed.
   The daemon also runs a periodic projection sweep that finds each

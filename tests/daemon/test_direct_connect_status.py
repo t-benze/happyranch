@@ -193,9 +193,12 @@ def test_status_hides_committed_projection_after_live_profile_is_removed(client,
     )
 
     assert response.status_code == 200
-    assert response.json()["operation_id"] == operation_id
-    assert response.json()["profile_state"] is None
-    assert response.json()["reason"] is None
+    assert response.json() == {
+        "wrapper_destination": str(authority.wrapper_destination),
+        "operation_id": None,
+        "profile_state": None,
+        "reason": None,
+    }
 
 
 def test_status_after_failed_projection_reports_reason(client, tmp_path):
