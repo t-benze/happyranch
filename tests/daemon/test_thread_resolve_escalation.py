@@ -782,6 +782,67 @@ async def test_autonomous_continue_cas_rechecks_budget_after_stale_prevalidation
     )
 
 
+@pytest.mark.asyncio
+async def test_autonomous_continue_cas_rechecks_slice_retry_after_stale_prevalidation(
+    client_with_runtime, monkeypatch,
+):
+    """The final SQL CAS rejects a retry lineage persisted after route precheck."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-RETRY-RACE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-RACE", brief="test", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-RETRY-RACE",
+    ))
+    org.db.update_task("T-RETRY-RACE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RETRY-RACE", task_id="T-RETRY-RACE", agent="engineering_head",
+    )
+    from runtime.daemon.routes import threads as thread_routes
+
+    original_budget_precheck = org.db.autonomous_continuation_budget_exhausted
+    original_evidence_validation = thread_routes._validate_th166_evidence
+    precheck_results = []
+    injected = False
+
+    def observe_budget_precheck(*args, **kwargs):
+        exhausted = original_budget_precheck(*args, **kwargs)
+        precheck_results.append(exhausted)
+        return exhausted
+
+    def inject_after_evidence_validation(*args, **kwargs):
+        nonlocal injected
+        snapshots = original_evidence_validation(*args, **kwargs)
+        if not injected:
+            injected = True
+            org.db.insert_task(TaskRecord(
+                id="T-RETRY-RACE-ORIGINAL", brief="first slice failure",
+                parent_task_id="T-RETRY-RACE", status=TaskStatus.FAILED,
+            ))
+            org.db.insert_task(TaskRecord(
+                id="T-RETRY-RACE-RETRY", brief="second slice failure",
+                parent_task_id="T-RETRY-RACE", revisit_of_task_id="T-RETRY-RACE-ORIGINAL",
+                status=TaskStatus.FAILED,
+            ))
+        return snapshots
+
+    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", observe_budget_precheck)
+    monkeypatch.setattr(thread_routes, "_validate_th166_evidence", inject_after_evidence_validation)
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RETRY-RACE/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    assert injected
+    assert precheck_results == [False, True]
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RETRY-RACE", token=payload["invocation_token"], queue=queue,
+    )
+
+
 # ── Thread followup test (THR-080 #3) ──────────────────────────────
 
 @pytest.mark.asyncio
