@@ -9,6 +9,7 @@ from runtime.models import (
     TaskStatus,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
+    ThreadMessageKind,
     ThreadRecord,
     ThreadStatus,
 )
@@ -30,6 +31,42 @@ def _mint_authorized_invocation(org, thread_id: str, agent: str) -> str:
     return inv.invocation_token
 
 
+def _autonomous_continue_payload(org, *, thread_id: str, task_id: str, agent: str) -> dict:
+    """Seed the causal THR-166 repair/review/reverify evidence seam."""
+    org.db.add_thread_participant(thread_id, agent, added_by="founder")
+    org.db.update_task(task_id, assigned_agent=agent)
+    org.db.insert_audit_log(task_id, "orchestrator", "escalation", {"reason": "revise"})
+    seq = org.db.append_thread_message(
+        thread_id=thread_id, speaker=agent, kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated", "task_id": task_id,
+                        "root_task_id": task_id},
+    )
+    child_id = f"{task_id}-REVERIFY"
+    org.db.insert_task(TaskRecord(
+        id=child_id, brief="bounded reverify", parent_task_id=task_id,
+        status=TaskStatus.COMPLETED,
+    ))
+    inv = org.db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=agent, triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    return {
+        "task_id": task_id, "decision": "continue", "dispatcher": agent,
+        "invocation_token": inv.invocation_token,
+        "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
+        "policy_provenance": "founder:THR-166:seq-29",
+        "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+        "attestation_checks": [
+            "no_schema_or_overloaded_column_change", "no_permission_sandbox_or_allow_rule_change",
+            "no_auth_credentials_security_privacy_or_data_access_change", "no_spend_or_budget_change",
+            "no_destructive_or_irreversible_action", "no_external_contract_or_product_commitment",
+            "no_genuine_ambiguity_or_novel_situation", "evidence_terminal_fresh_and_consistent",
+            "original_protected_gate_not_authorized",
+        ],
+        "evidence": [{"task_id": child_id, "terminal_status": "completed"}],
+    }
+
+
 # ── Happy path tests (manager-authorized) ──────────────────────────
 
 @pytest.mark.asyncio
@@ -48,17 +85,9 @@ async def test_thread_resolve_escalation_continue_succeeds(
     ))
     org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
 
-    token = _mint_authorized_invocation(org, "THR-1", "engineering_head")
-
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
-        json={
-            "task_id": "T-1",
-            "decision": "continue",
-            "rationale": "proceed",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
+        json=_autonomous_continue_payload(org, thread_id="THR-1", task_id="T-1", agent="engineering_head"),
     )
     assert r.status_code == 200, f"got {r.status_code} {r.text}"
     assert r.json()["new_status"] == "pending"
@@ -95,8 +124,8 @@ async def test_thread_resolve_escalation_rejects_task_not_in_lineage(
             "dispatcher": "engineering_head",
         },
     )
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "task_not_in_thread_lineage"
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "wrong_invocation_purpose"
 
 
 @pytest.mark.asyncio
@@ -186,17 +215,9 @@ async def test_thread_resolve_escalation_continue_rejects_live_children(
         TaskRecord(id="T-5-CHD", brief="child", parent_task_id="T-5")
     )
 
-    token = _mint_authorized_invocation(org, "THR-5", "engineering_head")
-
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-5/resolve-escalation",
-        json={
-            "task_id": "T-5",
-            "decision": "continue",
-            "rationale": "go",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
+        json=_autonomous_continue_payload(org, thread_id="THR-5", task_id="T-5", agent="engineering_head"),
     )
     assert r.status_code == 409
     detail = r.json()["detail"]
@@ -223,20 +244,12 @@ async def test_thread_resolve_escalation_checks_parent_chain_lineage(
     ))
     org.db.update_task("T-CHD", status=TaskStatus.ESCALATED, block_kind=None)
 
-    token = _mint_authorized_invocation(org, "THR-6", "engineering_head")
-
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-6/resolve-escalation",
-        json={
-            "task_id": "T-CHD",
-            "decision": "continue",
-            "rationale": "proceed",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
+        json=_autonomous_continue_payload(org, thread_id="THR-6", task_id="T-CHD", agent="engineering_head"),
     )
-    assert r.status_code == 200, f"got {r.status_code} {r.text}"
-    assert r.json()["new_status"] == "pending"
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "continuation_not_root"
 
 
 # ── RED tests: authority enforcement (THR-080 #2) ──────────────────
@@ -257,18 +270,9 @@ async def test_thread_resolve_escalation_rejects_unauthorized_worker(
     ))
     org.db.update_task("T-AUTH", status=TaskStatus.ESCALATED, block_kind=None)
 
-    # Mint invocation for dev_agent (a worker, not a manager in conftest teams.yaml).
-    token = _mint_authorized_invocation(org, "THR-AUTH", "dev_agent")
-
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-AUTH/resolve-escalation",
-        json={
-            "task_id": "T-AUTH",
-            "decision": "continue",
-            "rationale": "i want to continue",
-            "invocation_token": token,
-            "dispatcher": "dev_agent",
-        },
+        json=_autonomous_continue_payload(org, thread_id="THR-AUTH", task_id="T-AUTH", agent="dev_agent"),
     )
     assert r.status_code == 403, f"got {r.status_code} {r.text}"
     detail = r.json()["detail"]
@@ -323,25 +327,17 @@ async def test_thread_resolve_escalation_derives_actor_from_dispatcher(
     ))
     org.db.update_task("T-ACTOR", status=TaskStatus.ESCALATED, block_kind=None)
 
-    token = _mint_authorized_invocation(org, "THR-ACTOR", "engineering_head")
-
     # Try to spoof actor as "founder" while presenting engineering_head's token.
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-ACTOR/resolve-escalation",
-        json={
-            "task_id": "T-ACTOR",
-            "decision": "continue",
-            "rationale": "spoof test",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
+        json=_autonomous_continue_payload(org, thread_id="THR-ACTOR", task_id="T-ACTOR", agent="engineering_head"),
     )
     assert r.status_code == 200, f"got {r.status_code} {r.text}"
 
     # The audit log should show the REAL actor (engineering_head), not
     # any spoofed value.
     logs = org.db.get_audit_logs("T-ACTOR")
-    resolved_logs = [e for e in logs if e["action"] == "escalation_resolved"]
+    resolved_logs = [e for e in logs if e["action"] == "escalation_continued_autonomously"]
     assert len(resolved_logs) >= 1
     assert resolved_logs[0]["agent"] == "engineering_head"
 
@@ -366,15 +362,10 @@ async def test_thread_resolve_escalation_rejects_replayed_token(
     ))
     org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
 
-    token = _mint_authorized_invocation(org, "THR-REPLAY", "engineering_head")
-
-    payload = {
-        "task_id": "T-REPLAY",
-        "decision": "continue",
-        "rationale": "first call",
-        "invocation_token": token,
-        "dispatcher": "engineering_head",
-    }
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-REPLAY", task_id="T-REPLAY", agent="engineering_head",
+    )
+    token = payload["invocation_token"]
 
     # First call: succeeds.
     r1 = client.post(
@@ -404,6 +395,452 @@ async def test_thread_resolve_escalation_rejects_replayed_token(
     assert r2.status_code == 409, f"replay: got {r2.status_code} {r2.text}"
     detail = r2.json()["detail"]
     assert detail["code"] == "invocation_token_consumed"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_manager_prose_and_protected_attestation(
+    client_with_runtime,
+):
+    """A brief/rationale cannot replace the founder policy or waive a fence."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-POL", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-POL", brief="manager says it is safe", dispatched_from_thread_id="THR-POL"))
+    org.db.update_task("T-POL", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-POL", task_id="T-POL", agent="engineering_head",
+    )
+    payload["policy_id"] = "manager-brief-authority"
+    payload["rationale"] = "this is only a frontend repair"
+    r = client.post("/api/v1/orgs/alpha/threads/THR-POL/resolve-escalation", json=payload)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "policy_or_attestation_mismatch"
+    assert org.db.get_task("T-POL").status == TaskStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_uses_only_post_escalation_bounded_lineage(
+    client_with_runtime,
+):
+    """TASK-5000: REVISE repair/review/reverify, never a later unrelated PASS."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-5000", subject="THR-166", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="TASK-5000", brief="original destructive gate", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-5000", status=TaskStatus.ESCALATED,
+    ))
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-5000", task_id="TASK-5000", agent="engineering_head",
+    )
+    helper_child = payload["evidence"][0]["task_id"]
+    for task_id, parent_id in (
+        ("TASK-5001", "TASK-5000"),
+        ("TASK-5001-REPAIR", "TASK-5001"),
+        ("TASK-5001-REVIEW", "TASK-5001"),
+        ("TASK-5001-REVERIFY", "TASK-5001"),
+    ):
+        org.db.insert_task(TaskRecord(
+            id=task_id, brief="bounded repair evidence", parent_task_id=parent_id,
+            status=TaskStatus.COMPLETED,
+        ))
+    # This late result is neither a descendant nor evidence for the unpark.
+    org.db.insert_task(TaskRecord(id="TASK-5025", brief="later pass", status=TaskStatus.COMPLETED))
+    payload["evidence"] = [
+        {"task_id": task_id, "terminal_status": "completed"}
+        for task_id in ("TASK-5001", "TASK-5001-REPAIR", "TASK-5001-REVIEW", "TASK-5001-REVERIFY", helper_child)
+    ]
+    response = client.post("/api/v1/orgs/alpha/threads/THR-5000/resolve-escalation", json=payload)
+    assert response.status_code == 200, response.text
+    audit = [row for row in org.db.get_audit_logs("TASK-5000")
+             if row["action"] == "escalation_continued_autonomously"]
+    assert len(audit) == 1
+    assert "TASK-5025" not in {row["task_id"] for row in audit[0]["payload"]["evidence"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda payload: payload.update({"evidence": []}), "evidence_lineage_mismatch"),
+        (lambda payload: payload["evidence"][0].update({"output_summary": "forged"}), "evidence_result_mismatch"),
+        (lambda payload: payload.update({"dispatcher": "other_manager"}), "invocation_token_invalid"),
+    ],
+)
+async def test_autonomous_continue_rejects_unrelated_conflicting_and_wrong_owner_proofs(
+    client_with_runtime, mutate, expected,
+):
+    """Structured evidence and ownership are server-derived and fail closed."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-FAIL", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-FAIL", brief="test", dispatched_from_thread_id="THR-FAIL"))
+    org.db.update_task("T-FAIL", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-FAIL", task_id="T-FAIL", agent="engineering_head",
+    )
+    mutate(payload)
+    response = client.post("/api/v1/orgs/alpha/threads/THR-FAIL/resolve-escalation", json=payload)
+    assert response.status_code in {401, 409}
+    assert response.json()["detail"]["code"] == expected
+    assert org.db.get_task("T-FAIL").status == TaskStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_wrong_owner_and_noncausal_followup(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-CAUSE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-CAUSE", brief="test", dispatched_from_thread_id="THR-CAUSE"))
+    org.db.update_task("T-CAUSE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-CAUSE", task_id="T-CAUSE", agent="engineering_head",
+    )
+    org.db.update_task("T-CAUSE", assigned_agent="other_manager")
+    wrong_owner = client.post("/api/v1/orgs/alpha/threads/THR-CAUSE/resolve-escalation", json=payload)
+    assert wrong_owner.status_code == 409
+    assert wrong_owner.json()["detail"]["code"] == "continuation_wrong_owner"
+
+    org.db.update_task("T-CAUSE", assigned_agent="engineering_head")
+    unrelated_seq = org.db.append_thread_message(
+        thread_id="THR-CAUSE", speaker="system", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated", "task_id": "OTHER", "root_task_id": "OTHER"},
+    )
+    unrelated = org.db.mint_thread_invocation(
+        thread_id="THR-CAUSE", agent_name="engineering_head", triggering_seq=unrelated_seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    payload["invocation_token"] = unrelated.invocation_token
+    noncausal = client.post("/api/v1/orgs/alpha/threads/THR-CAUSE/resolve-escalation", json=payload)
+    assert noncausal.status_code == 409
+    assert noncausal.json()["detail"]["code"] == "continuation_noncausal_followup"
+    assert org.db.get_task("T-CAUSE").status == TaskStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_stale_and_nonterminal_evidence(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-EVIDENCE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-EVIDENCE", brief="test", dispatched_from_thread_id="THR-EVIDENCE"))
+    org.db.insert_task(TaskRecord(
+        id="T-EVIDENCE-OLD", brief="pre-escalation", parent_task_id="T-EVIDENCE",
+        status=TaskStatus.COMPLETED,
+    ))
+    org.db.update_task("T-EVIDENCE", status=TaskStatus.ESCALATED, block_kind=None)
+    stale = _autonomous_continue_payload(
+        org, thread_id="THR-EVIDENCE", task_id="T-EVIDENCE", agent="engineering_head",
+    )
+    stale["evidence"].append({"task_id": "T-EVIDENCE-OLD", "terminal_status": "completed"})
+    stale_response = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
+    assert stale_response.status_code == 409
+    assert stale_response.json()["detail"]["code"] == "evidence_stale"
+
+    org.db.update_task("T-EVIDENCE-OLD", status=TaskStatus.PENDING)
+    nonterminal = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
+    assert nonterminal.status_code == 409
+    assert nonterminal.json()["detail"]["code"] == "cannot_continue_live_children"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_same_token_duplicate_with_one_audit_and_queue(
+    client_with_runtime,
+):
+    """The route-level replay seam produces one durable continue and delivery."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-ONCE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-ONCE", brief="test", dispatched_from_thread_id="THR-ONCE"))
+    org.db.update_task("T-ONCE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-ONCE", task_id="T-ONCE", agent="engineering_head",
+    )
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    assert client.post("/api/v1/orgs/alpha/threads/THR-ONCE/resolve-escalation", json=payload).status_code == 200
+    duplicate = client.post("/api/v1/orgs/alpha/threads/THR-ONCE/resolve-escalation", json=payload)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "invocation_token_consumed"
+    assert [row[1] for row in list(queue._queue)] == ["T-ONCE"]
+    assert len([row for row in org.db.get_audit_logs("T-ONCE")
+                if row["action"] == "escalation_continued_autonomously"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_cancel_wins_and_late_queue_claim_cannot_resurrect(
+    client_with_runtime,
+):
+    """Cancel before continue fails closed; later cancel blocks stale delivery."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-CANCEL", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-CANCEL-BEFORE", brief="test", dispatched_from_thread_id="THR-CANCEL"))
+    org.db.update_task("T-CANCEL-BEFORE", status=TaskStatus.ESCALATED, block_kind=None)
+    before = _autonomous_continue_payload(
+        org, thread_id="THR-CANCEL", task_id="T-CANCEL-BEFORE", agent="engineering_head",
+    )
+    assert client.post("/api/v1/orgs/alpha/tasks/T-CANCEL-BEFORE/cancel", json={}).status_code == 200
+    rejected = client.post("/api/v1/orgs/alpha/threads/THR-CANCEL/resolve-escalation", json=before)
+    assert rejected.status_code == 409
+    assert org.db.get_task("T-CANCEL-BEFORE").status == TaskStatus.CANCELLED
+
+    org.db.insert_task(TaskRecord(id="T-CANCEL-AFTER", brief="test", dispatched_from_thread_id="THR-CANCEL"))
+    org.db.update_task("T-CANCEL-AFTER", status=TaskStatus.ESCALATED, block_kind=None)
+    after = _autonomous_continue_payload(
+        org, thread_id="THR-CANCEL", task_id="T-CANCEL-AFTER", agent="engineering_head",
+    )
+    assert client.post("/api/v1/orgs/alpha/threads/THR-CANCEL/resolve-escalation", json=after).status_code == 200
+    assert client.post("/api/v1/orgs/alpha/tasks/T-CANCEL-AFTER/cancel", json={}).status_code == 200
+    assert not org.db.try_claim_for_step(
+        "T-CANCEL-AFTER", TaskStatus.PENDING, None, new_count=1,
+    )
+    assert org.db.get_task("T-CANCEL-AFTER").status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_check", [
+    "schema_or_overloaded_column_change",
+    "permission_sandbox_or_allow_rule_change",
+    "auth_credentials_security_privacy_or_data_access_change",
+    "spend_or_budget_change",
+    "destructive_or_irreversible_action",
+    "external_contract_or_product_commitment",
+    "genuine_ambiguity_or_novel_situation",
+])
+async def test_autonomous_continue_keeps_each_protected_boundary_escalated(
+    client_with_runtime, blocked_check,
+):
+    """No structured attestation can turn a protected boundary into a continue."""
+    client, org = client_with_runtime
+    task_id = f"T-BLOCK-{blocked_check[:5]}"
+    org.db.insert_thread(ThreadRecord(id=task_id, subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id=task_id, brief="test", dispatched_from_thread_id=task_id))
+    org.db.update_task(task_id, status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(org, thread_id=task_id, task_id=task_id, agent="engineering_head")
+    payload["attestation_checks"][0] = blocked_check
+    response = client.post(f"/api/v1/orgs/alpha/threads/{task_id}/resolve-escalation", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "policy_or_attestation_mismatch"
+    assert org.db.get_task(task_id).status == TaskStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_exhausted_step_budget(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-BUDGET", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-BUDGET", brief="test", dispatched_from_thread_id="THR-BUDGET"))
+    org.db.update_task(
+        "T-BUDGET", status=TaskStatus.ESCALATED, block_kind=None,
+        orchestration_step_count=org.orchestrator._settings.max_orchestration_steps,
+    )
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-BUDGET", task_id="T-BUDGET", agent="engineering_head",
+    )
+    response = client.post("/api/v1/orgs/alpha/threads/THR-BUDGET/resolve-escalation", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    assert org.db.get_task("T-BUDGET").status == TaskStatus.ESCALATED
+
+
+def _assert_budget_rejection_is_non_mutating(org, *, task_id: str, token: str, queue) -> None:
+    """All absolute-budget rejections leave the causal continuation untouched."""
+    assert org.db.get_task(task_id).status == TaskStatus.ESCALATED
+    invocation = org.db.get_invocation_any_status(token)
+    assert invocation is not None
+    assert invocation.status == ThreadInvocationStatus.PENDING
+    assert not [
+        row for row in org.db.get_audit_logs(task_id)
+        if row["action"] == "escalation_continued_autonomously"
+    ]
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_exhausted_revise_budget_at_route_and_cas(
+    client_with_runtime, monkeypatch,
+):
+    """A root escalated by the production revise-cap flow cannot continue."""
+    from runtime.models import NextStep
+    from tests.orchestrator.conftest import ScriptedRunAgent
+
+    client, org = client_with_runtime
+    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
+    org.db.insert_thread(ThreadRecord(id="THR-REVISION", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-REVISION", brief="test", revision_count=1,
+        assigned_agent="engineering_head", dispatched_from_thread_id="THR-REVISION",
+    ))
+    org.db.insert_task(TaskRecord(
+        id="T-REVISION-WORKER", brief="first revision", parent_task_id="T-REVISION",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+    ))
+    (org.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    scripted = ScriptedRunAgent()
+    scripted.enqueue(
+        "engineering_head",
+        decision=NextStep(action="delegate", agent="dev_agent", prompt="one more revision"),
+        summary="attempting a capped revision",
+    )
+    monkeypatch.setattr(org.orchestrator, "_run_agent", scripted)
+    org.orchestrator.run_step("T-REVISION")
+    assert org.db.get_task("T-REVISION").status == TaskStatus.ESCALATED
+    assert "iteration_budget_exhausted" in (org.db.get_task("T-REVISION").note or "")
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-REVISION", task_id="T-REVISION", agent="engineering_head",
+    )
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-REVISION/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-REVISION", token=payload["invocation_token"], queue=queue,
+    )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_exhausted_per_slice_retry_at_route_and_cas(
+    client_with_runtime,
+):
+    """A root escalated by the production slice-retry flow cannot continue."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-RETRY", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY", brief="test", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-RETRY",
+    ))
+    org.db.update_task(
+        "T-RETRY", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-ORIGINAL", brief="first slice failure", parent_task_id="T-RETRY",
+        status=TaskStatus.FAILED,
+    ))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-RETRY", brief="second slice failure", parent_task_id="T-RETRY",
+        revisit_of_task_id="T-RETRY-ORIGINAL", status=TaskStatus.FAILED,
+    ))
+    _enqueue_parent_if_waiting(org.orchestrator, "T-RETRY-RETRY")
+    assert org.db.get_task("T-RETRY").status == TaskStatus.ESCALATED
+    assert "per-slice retry ceiling" in (org.db.get_task("T-RETRY").note or "")
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RETRY", task_id="T-RETRY", agent="engineering_head",
+    )
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RETRY/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RETRY", token=payload["invocation_token"], queue=queue,
+    )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_cas_rechecks_budget_after_stale_prevalidation(
+    client_with_runtime, monkeypatch,
+):
+    """A revise cap reached after the precheck still rolls back the atomic edge."""
+    client, org = client_with_runtime
+    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
+    org.db.insert_thread(ThreadRecord(id="THR-RACE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-RACE", brief="test", dispatched_from_thread_id="THR-RACE"))
+    org.db.update_task("T-RACE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RACE", task_id="T-RACE", agent="engineering_head",
+    )
+    original = org.db.autonomous_continuation_budget_exhausted
+    injected = False
+
+    def stale_precheck(*args, **kwargs):
+        nonlocal injected
+        exhausted = original(*args, **kwargs)
+        if not exhausted and not injected:
+            injected = True
+            org.db.update_task("T-RACE", revision_count=1)
+        return exhausted
+
+    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", stale_precheck)
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RACE/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RACE", token=payload["invocation_token"], queue=queue,
+    )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_cas_rechecks_slice_retry_after_stale_prevalidation(
+    client_with_runtime, monkeypatch,
+):
+    """The final SQL CAS rejects a retry lineage persisted after route precheck."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-RETRY-RACE", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(
+        id="T-RETRY-RACE", brief="test", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-RETRY-RACE",
+    ))
+    org.db.update_task("T-RETRY-RACE", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-RETRY-RACE", task_id="T-RETRY-RACE", agent="engineering_head",
+    )
+    from runtime.daemon.routes import threads as thread_routes
+
+    original_budget_precheck = org.db.autonomous_continuation_budget_exhausted
+    original_evidence_validation = thread_routes._validate_th166_evidence
+    precheck_results = []
+    injected = False
+
+    def observe_budget_precheck(*args, **kwargs):
+        exhausted = original_budget_precheck(*args, **kwargs)
+        precheck_results.append(exhausted)
+        return exhausted
+
+    def inject_after_evidence_validation(*args, **kwargs):
+        nonlocal injected
+        snapshots = original_evidence_validation(*args, **kwargs)
+        if not injected:
+            injected = True
+            org.db.insert_task(TaskRecord(
+                id="T-RETRY-RACE-ORIGINAL", brief="first slice failure",
+                parent_task_id="T-RETRY-RACE", status=TaskStatus.FAILED,
+            ))
+            org.db.insert_task(TaskRecord(
+                id="T-RETRY-RACE-RETRY", brief="second slice failure",
+                parent_task_id="T-RETRY-RACE", revisit_of_task_id="T-RETRY-RACE-ORIGINAL",
+                status=TaskStatus.FAILED,
+            ))
+        return snapshots
+
+    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", observe_budget_precheck)
+    monkeypatch.setattr(thread_routes, "_validate_th166_evidence", inject_after_evidence_validation)
+    queue = client.app.state.daemon.queue._queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-RETRY-RACE/resolve-escalation", json=payload,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
+    assert injected
+    assert precheck_results == [False, True]
+    _assert_budget_rejection_is_non_mutating(
+        org, task_id="T-RETRY-RACE", token=payload["invocation_token"], queue=queue,
+    )
 
 
 # ── Thread followup test (THR-080 #3) ──────────────────────────────

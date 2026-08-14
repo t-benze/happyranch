@@ -5,6 +5,7 @@ import json as _json
 import mimetypes
 import re
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -23,6 +24,7 @@ from runtime.infrastructure.thread_store import render_transcript_body
 from runtime.models import (
     ResponderStatusEntry,
     TaskRecord,
+    TaskStatus,
     ThreadAttachment,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
@@ -32,7 +34,11 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    load_org_config,
+    resolve_org_setting_threads,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -1687,6 +1693,104 @@ class ThreadResolveEscalationBody(BaseModel):
     # invocation token is being presented.
     invocation_token: str = ""
     dispatcher: str = ""
+    # Required only for the THR-166 autonomous continue path.  These are
+    # deliberately structured: neither a manager brief nor a prose rationale
+    # is an authorization boundary.
+    policy_id: str = ""
+    policy_version: str = ""
+    policy_provenance: str = ""
+    continuation_class: str = ""
+    attestation_checks: list[str] = Field(default_factory=list)
+    evidence: list["TerminalEvidence"] = Field(default_factory=list)
+
+
+class TerminalEvidence(BaseModel):
+    """Server-compared snapshot of one post-escalation terminal descendant."""
+    task_id: str
+    terminal_status: Literal["completed", "failed", "superseded", "cancelled"]
+    verdict: str | None = None
+    output_summary: str | None = None
+
+
+# This is the immutable, server-owned founder authority for THR-166.  Body
+# fields must match it exactly; callers cannot supply a manager-authored brief,
+# a KB quote, or a free-form rationale as an alternative authority source.
+THR166_POLICY = {
+    "id": "THR-166-genuine-human-blocker",
+    "version": "1",
+    "provenance": "founder:THR-166:seq-29",
+    "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+    "required_checks": frozenset({
+        "no_schema_or_overloaded_column_change",
+        "no_permission_sandbox_or_allow_rule_change",
+        "no_auth_credentials_security_privacy_or_data_access_change",
+        "no_spend_or_budget_change",
+        "no_destructive_or_irreversible_action",
+        "no_external_contract_or_product_commitment",
+        "no_genuine_ambiguity_or_novel_situation",
+        "evidence_terminal_fresh_and_consistent",
+        "original_protected_gate_not_authorized",
+    }),
+}
+
+
+def _continuation_reject(org, task_id: str, actor: str, code: str, **context: object) -> None:
+    """Audit a fail-closed autonomous attempt without changing task state."""
+    AuditLogger(org.db).log_escalation_continuation_rejected(
+        task_id, actor=actor,
+        payload={"policy_id": THR166_POLICY["id"], "reason": code, **context},
+    )
+    detail: dict[str, object] = {"code": code}
+    if code == "cannot_continue_live_children":
+        detail["remedy"] = "Wait for children to become terminal or use supersede."
+    raise HTTPException(status_code=409, detail=detail)
+
+
+def _validate_th166_evidence(org, *, task, body: ThreadResolveEscalationBody) -> list[dict]:
+    """Return canonical evidence or fail closed on any stale/conflicting row."""
+    if (
+        body.policy_id != THR166_POLICY["id"]
+        or body.policy_version != THR166_POLICY["version"]
+        or body.policy_provenance != THR166_POLICY["provenance"]
+        or body.continuation_class != THR166_POLICY["continuation_class"]
+        or set(body.attestation_checks) != THR166_POLICY["required_checks"]
+        or len(body.attestation_checks) != len(THR166_POLICY["required_checks"])
+    ):
+        raise ValueError("policy_or_attestation_mismatch")
+
+    # The continuation is allowed only after the bounded repair subtree has
+    # reached terminal states.  Evidence must name every descendant exactly;
+    # this prevents an unrelated PASS or a stale pre-escalation result from
+    # becoming an unpark trigger.
+    descendant_ids = set(org.db.get_descendant_task_ids(task.id))
+    evidence_ids = {entry.task_id for entry in body.evidence}
+    if not descendant_ids or evidence_ids != descendant_ids or len(body.evidence) != len(evidence_ids):
+        raise ValueError("evidence_lineage_mismatch")
+    logs = org.db.get_audit_logs(task.id)
+    escalations = [row for row in logs if row["action"] == "escalation"]
+    if not escalations:
+        raise ValueError("escalation_provenance_missing")
+    escalated_at = escalations[-1]["timestamp"]
+    snapshots: list[dict] = []
+    for entry in body.evidence:
+        evidence_task = org.db.get_task(entry.task_id)
+        if evidence_task is None or evidence_task.status.value != entry.terminal_status:
+            raise ValueError("evidence_terminal_mismatch")
+        if evidence_task.created_at.isoformat() <= escalated_at:
+            raise ValueError("evidence_stale")
+        results = org.db.get_task_results(entry.task_id)
+        latest = results[-1] if results else None
+        actual_verdict = latest.get("verdict") if latest else None
+        actual_summary = latest.get("output_summary") if latest else None
+        if entry.verdict != actual_verdict or entry.output_summary != actual_summary:
+            raise ValueError("evidence_result_mismatch")
+        snapshots.append({
+            "task_id": entry.task_id,
+            "terminal_status": entry.terminal_status,
+            "verdict": actual_verdict,
+            "output_summary": actual_summary,
+        })
+    return snapshots
 
 
 @router.post("/threads/{thread_id}/resolve-escalation")
@@ -1723,12 +1827,20 @@ async def resolve_escalation_from_thread(
             status_code=422,
             detail={"code": "missing_invocation_token"},
         )
-    _validate_invocation_token(
+    # Supersede retains the established manager/founder thread resolution
+    # behavior.  Autonomous continue is the deliberately narrower THR-166
+    # path: the one causal TASK_FOLLOWUP minted for this exact escalation.
+    required_purposes = (
+        [ThreadInvocationPurpose.TASK_FOLLOWUP]
+        if body.decision == "continue"
+        else [ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP]
+    )
+    invocation = _validate_invocation_token(
         org,
         token=body.invocation_token,
         expected_agent=body.dispatcher,
         expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        require_purposes=required_purposes,
     )
     if not org.db.is_thread_participant(thread_id, body.dispatcher):
         raise HTTPException(
@@ -1776,6 +1888,86 @@ async def resolve_escalation_from_thread(
             },
         )
 
+    if body.decision == "continue":
+        # Same-owner is derived from the stored task assignment, never from
+        # a caller actor field.  Autonomous continuation is root-only: a
+        # descendant must finish through its ordinary parent lifecycle.
+        if task.assigned_agent != dispatcher:
+            _continuation_reject(
+                org, task.id, dispatcher, "continuation_wrong_owner",
+                assigned_agent=task.assigned_agent,
+            )
+        if task.parent_task_id is not None:
+            _continuation_reject(org, task.id, dispatcher, "continuation_not_root")
+        if task.status is not TaskStatus.ESCALATED or task.cancelled_at is not None:
+            _continuation_reject(org, task.id, dispatcher, "continuation_not_live_escalation")
+        if _has_live_children_for_continuation(org, task.id):
+            _continuation_reject(org, task.id, dispatcher, "cannot_continue_live_children")
+
+        causal_message = org.db.get_thread_message_by_seq(
+            thread_id, invocation.triggering_seq,
+        )
+        causal_payload = causal_message.system_payload if causal_message else None
+        if (
+            causal_message is None
+            or causal_payload is None
+            or causal_payload.get("kind_tag") != "task_escalated"
+            or causal_payload.get("task_id") != task.id
+            or causal_payload.get("root_task_id") != task.id
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
+        max_steps = org.orchestrator._settings.max_orchestration_steps
+        max_revise_rounds = load_org_config(
+            org.orchestrator._paths,
+        ).max_revise_rounds
+        if org.db.autonomous_continuation_budget_exhausted(
+            task.id,
+            max_steps=max_steps,
+            max_revise_rounds=max_revise_rounds,
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
+        try:
+            snapshots = _validate_th166_evidence(org, task=task, body=body)
+        except ValueError as exc:
+            _continuation_reject(org, task.id, dispatcher, str(exc))
+        audit_payload = {
+            "policy_id": THR166_POLICY["id"],
+            "policy_version": THR166_POLICY["version"],
+            "policy_provenance": THR166_POLICY["provenance"],
+            "continuation_class": THR166_POLICY["continuation_class"],
+            "attestation_checks": sorted(THR166_POLICY["required_checks"]),
+            "evidence": snapshots,
+            "actor": dispatcher,
+            "thread_id": thread_id,
+            "invocation_token": body.invocation_token,
+            "causal_escalation_seq": invocation.triggering_seq,
+            "prior_status": TaskStatus.ESCALATED.value,
+            "new_status": TaskStatus.PENDING.value,
+            "queue_intent": {"task_id": task.id, "claimed": False},
+        }
+        note = f"{dispatcher} autonomous bounded continuation (THR-166)"
+        async with org.db_lock:
+            committed = org.db.continue_escalation_from_followup(
+                task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
+                invocation_token=body.invocation_token, max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
+                note=note, audit_payload=audit_payload,
+            )
+        if not committed:
+            if org.db.autonomous_continuation_budget_exhausted(
+                task.id,
+                max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
+            ):
+                _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
+            _continuation_reject(org, task.id, dispatcher, "continuation_state_changed")
+        # This is intentionally after the durable queue intent.  If process
+        # delivery fails, a recovery delivery is safe because run_step's CAS
+        # admits at most one manager session; cancellation wins its own CAS.
+        if state.queue is not None:
+            state.queue.put_nowait(org.slug, task.id)
+        return {"ok": True, "task_id": task.id, "new_status": "pending"}
+
     new_status = await resolve_escalation_in_process(
         org, state,
         task_id=body.task_id,
@@ -1784,12 +1976,21 @@ async def resolve_escalation_from_thread(
         brief=body.brief,
         actor=actor,
         thread_id=thread_id,
+        resolution_path="thread_manual_supersede",
     )
     # Consume the invocation token to prevent replay — mirrors the reply
     # route's token lifecycle. A single invocation can perform at most one
     # state-changing resolution.
     org.db.consume_invocation(body.invocation_token)
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}
+
+
+def _has_live_children_for_continuation(org, task_id: str) -> bool:
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    return any(
+        child is None or child.status not in TERMINAL_STATES
+        for child in (org.db.get_task(cid) for cid in org.db.get_children(task_id))
+    )
 
 
 def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:

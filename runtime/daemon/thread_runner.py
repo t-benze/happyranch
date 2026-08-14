@@ -177,7 +177,7 @@ def _purpose_note(
     return f"Message {triggering_seq} was posted to this thread"
 
 
-def _continue_cli_example(task_id: str, invoked_agent: str) -> str:
+def _manual_break_glass_cli_example(task_id: str, invoked_agent: str) -> str:
     return (
         f'  `happyranch resolve-escalation --task-id {task_id} '
         f'--decision continue --as-agent {invoked_agent} '
@@ -199,11 +199,11 @@ def _maybe_unresolved_escalations_note(
     """Guardrail: when a manager receives a REPLY/BOOTSTRAP invocation in a
     thread that carries unresolved ``task_escalated`` system messages whose live
     task rows are still supersedable, surface the concrete task ids and the
-    resolution options available for each: ``continue`` (resume the SAME task
-    in place — only valid when the predecessor's block kind is
-    ``"escalated"``) and ``resolves`` (dispatch a new task naming the
-    predecessor — valid for both ``"escalated"`` and ``"delegated"`` block
-    kinds).
+    resolution options available for each: the named manual break-glass
+    ``continue`` route (only for a founder-directed manual action on an
+    ``"escalated"`` predecessor) and ``resolves`` (dispatch a new task naming
+    the predecessor — valid for both ``"escalated"`` and ``"delegated"``
+    block kinds).
 
     Derived from thread messages + task status, never from brief prose.
     """
@@ -246,11 +246,11 @@ def _maybe_unresolved_escalations_note(
                 f"Task **{tid}** escalated in this thread and is still "
                 f"awaiting a founder-authorized resolution. Pick the option "
                 f"that matches the founder's reply:\n\n"
-                f"- If the founder's reply resolves this escalation with no "
-                f"new task-shaped work needed, resume the SAME task in "
-                f"place — original brief untouched, the reply is appended "
-                f"as an audited note:\n"
-                f"{_continue_cli_example(tid, invoked_agent)}\n\n"
+                f"- Do not self-authorize a continue from the reply or its "
+                f"prose. The direct route is a named manual break-glass "
+                f"exception under the shared-bearer model; use it only for "
+                f"a founder-directed manual action:\n"
+                f"{_manual_break_glass_cli_example(tid, invoked_agent)}\n\n"
                 f"- If the founder's reply requires new delegated work, "
                 f"your next self-dispatched task MUST include the explicit "
                 f"linkage:\n"
@@ -283,10 +283,9 @@ def _maybe_unresolved_escalations_note(
     for tid, block_kind in escalated:
         if block_kind == "escalated":
             per_task_lines.append(
-                f"**{tid}** — if the founder's reply resolves this "
-                f"escalation with no new task-shaped work needed, resume "
-                f"it in place:\n"
-                f"{_continue_cli_example(tid, invoked_agent)}\n"
+                f"**{tid}** — do not self-authorize from a reply. The direct "
+                f"continue route is manual break-glass only:\n"
+                f"{_manual_break_glass_cli_example(tid, invoked_agent)}\n"
                 f"  Otherwise, if new delegated work is needed:\n"
                 f"{_resolves_json_example(tid)}"
             )

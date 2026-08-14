@@ -95,6 +95,7 @@ class AuditLogger:
         *,
         actor: str = "founder",
         thread_id: str | None = None,
+        resolution_path: str = "manual_break_glass",
     ) -> None:
         """Record that an escalated task was resolved.
 
@@ -103,7 +104,11 @@ class AuditLogger:
         thread when the resolution came from the thread surface. Back-compat:
         both params are keyword-only with founder/None defaults.
         """
-        payload: dict = {"decision": decision, "rationale": rationale}
+        payload: dict = {
+            "decision": decision,
+            "rationale": rationale,
+            "resolution_path": resolution_path,
+        }
         if thread_id is not None:
             payload["thread_id"] = thread_id
         self._db.insert_audit_log(
@@ -111,6 +116,20 @@ class AuditLogger:
             agent=actor,
             action="escalation_resolved",
             payload=payload,
+        )
+
+    def log_escalation_continuation_rejected(
+        self, task_id: str, *, actor: str, payload: dict,
+    ) -> None:
+        """Record a rejected THR-166 autonomous-continuation attempt.
+
+        This is intentionally separate from the legacy/manual resolution audit:
+        rejected policy attempts must remain reviewable without changing the
+        meaning of ``audit_log.task_id``.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id, agent=actor,
+            action="escalation_continuation_rejected", payload=payload,
         )
 
     def log_zombie_flagged(self, task_id: str, agent: str) -> None:

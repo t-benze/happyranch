@@ -4,9 +4,9 @@
 When a manager receives a REPLY/BOOTSTRAP invocation in a thread that carries
 unresolved ``task_escalated`` system messages whose live task rows are still
 supersedable, the prompt MUST name the concrete task ids and the resolution
-options available for each: ``continue`` (resume the SAME task in place —
-only valid when the predecessor's block kind is ``"escalated"``) and
-``resolves`` (dispatch a new task naming the predecessor — valid for both
+options available for each: the named manual break-glass ``continue`` route
+(only for a founder-directed manual action on an ``"escalated"`` predecessor)
+and ``resolves`` (dispatch a new task naming the predecessor — valid for both
 ``"escalated"`` and ``"delegated"`` block kinds).
 """
 from __future__ import annotations
