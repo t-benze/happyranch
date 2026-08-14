@@ -97,6 +97,7 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
                 stored_profiles = load_runtime_profiles()
                 live_profile = get_registry().get_profile(intended_profile_name)
                 if intended_profile_name not in stored_profiles or live_profile is None:
+                    operation_id = None
                     profile_state = None
                     reason = None
     return {

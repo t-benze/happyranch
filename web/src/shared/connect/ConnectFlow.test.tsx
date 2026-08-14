@@ -129,6 +129,28 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(promptText).toContain('YOUR CLI\'s expectations');
   });
 
+  test('a stale removed committed projection stays in the waiting copy-prompt state', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'stale-id',
+      profile_state: null,
+      reason: null,
+    }));
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await expect(
+      screen.findByText(/finishing connection/i, {}, { timeout: 200 }),
+    ).rejects.toThrow();
+    expect(screen.getByLabelText(/waiting for adapter submission/i)).toBeInTheDocument();
+    expect(screen.queryByText(/finishing connection/i)).not.toBeInTheDocument();
+  });
+
   test('a polled committed status renders Connected without a browser commit', async () => {
     const user = userEvent.setup();
     await mockMint();

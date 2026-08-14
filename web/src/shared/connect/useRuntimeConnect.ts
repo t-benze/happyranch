@@ -469,11 +469,11 @@ export function useDirectConnect({
     mutationFn: (operationId: string) => directConnect.commit(operationId),
   });
 
-  // The candidate CLI's /connect receipt moves waiting -> committing. The
-  // daemon owns projection; this hook only observes its terminal status.
+  // A daemon-projected candidate CLI receipt moves waiting -> committing.
+  // The daemon owns projection; this hook only observes its terminal status.
   useEffect(() => {
     if (state.stage === 'waiting') {
-      if (state.expired || !statusData?.operation_id) return;
+      if (state.expired || !statusData?.operation_id || statusData.profile_state == null) return;
       setState({
         stage: 'committing',
         name: state.name,
