@@ -191,6 +191,44 @@ def test_edit_recurring_shape_resets_anchor_and_audits_before_after(tmp_path, fr
     assert audit["after"]["recurrence"] == edited.recurrence
 
 
+def test_edit_recurring_shape_without_fire_at_derives_server_candidate(tmp_path, frozen_clock):
+    """A native recurrence PATCH never needs a caller-computed next instant."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    edited = svc.edit(record.id, "dev_agent", recurrence={"byday": ["TH"]})
+    expected = next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+
+    assert edited.fire_at == expected
+    assert edited.recurrence["anchor_date"] == expected.date().isoformat()
+
+
+def test_edit_recurring_timing_without_fire_at_derives_and_preserves_anchor(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC", "until": None, "count": None}
+    fire_at = next_recurring_occurrence({**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW)
+    record = svc.create(agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+                        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x", source_instruction="x")
+
+    edited = svc.edit(record.id, "dev_agent", recurrence={"time": "10:00"})
+
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+
+
 def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)

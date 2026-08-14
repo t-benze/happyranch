@@ -206,6 +206,12 @@ a bare “Fired” label.
 Creation and edit validate the whole candidate rule atomically. The API returns
 stable, actionable error codes rather than only a generic create failure:
 
+For a native recurring edit that changes the recurrence and/or top-level
+timezone, the founder UI omits `fire_at`; the daemon derives and persists the
+next eligible instant from the merged validated rule. A supplied `fire_at`
+remains a strict exact-match assertion. This keeps recurrence and DST authority
+on the server and does not alter one-shot or legacy weekly edit behavior.
+
 - `invalid_interval`, `invalid_time`, `invalid_timezone`, `invalid_until`,
   `invalid_count`, and `end_condition_conflict`;
 - `invalid_freq_fields` and `invalid_byday`;

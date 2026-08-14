@@ -328,10 +328,16 @@ class ScheduleEditBody(BaseModel):
     model_config = {"extra": "forbid"}
 
     fire_at: str | SkipJsonSchema[None] = Field(
-        None, description="ISO-8601 datetime for the next fire"
+        None,
+        description=(
+            "ISO-8601 datetime for the next fire. For a native recurring "
+            "recurrence/timezone edit, omit this field and the server derives "
+            "the next eligible occurrence; when supplied it must exactly match "
+            "the server-computed occurrence."
+        ),
     )
     recurrence: dict | SkipJsonSchema[None] = Field(
-        None, description="Weekly recurrence dict"
+        None, description="Weekly or native recurring rule patch."
     )
     timezone: str | SkipJsonSchema[None] = Field(
         None, description="IANA timezone string"
@@ -342,7 +348,12 @@ class ScheduleEditBody(BaseModel):
 def edit_schedule(
     slug: str, schedule_id: str, body: ScheduleEditBody, org: OrgDep, request: Request,
 ) -> dict:
-    """Edit mutable fields of a Todo (fire_at, recurrence, timezone)."""
+    """Edit mutable Todo fields.
+
+    Native recurring recurrence/timezone edits may omit ``fire_at``: the
+    server validates the merged rule and persists its own next occurrence.
+    A supplied ``fire_at`` remains a strict exact-match assertion.
+    """
     svc = ScheduleService(org.db)
     acting_agent = f"operator@{slug}"
 

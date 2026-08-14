@@ -809,6 +809,57 @@ def test_create_recurring_preserves_agent_rule_at_the_service_create_seam(
     }
 
 
+def test_patch_recurring_without_fire_at_derives_server_occurrence(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"byday": ["TH"]}, "timezone": "UTC"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fire_at"] == next_recurring_occurrence(
+        body["recurrence"], _FROZEN_NOW,
+    ).isoformat()
+
+
+def test_patch_recurring_supplied_mismatching_fire_at_still_rejects(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"time": "10:00"}, "fire_at": fire_at.isoformat()},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_conflict"
+
+
 # ── successful create ──────────────────────────────────────────────────
 
 def test_create_one_shot_success(tmp_home, app, org_state, auth_headers):

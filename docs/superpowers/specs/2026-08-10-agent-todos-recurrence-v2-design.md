@@ -810,6 +810,15 @@ new editable field is added here (review-renewal is a **separate** control,
 §7.6, precisely because it touches `expires_at`/`indefinite`, which
 `edit()` deliberately excludes).
 
+For a native `RECURRING` PATCH that supplies a recurrence and/or top-level
+timezone edit but omits `fire_at`, the daemon derives and persists the next
+eligible occurrence from the fully merged, validated rule. The caller does not
+calculate recurrence or DST. If `fire_at` is supplied, the existing strict
+exact-match validation remains: it is an assertion of the server-computed next
+occurrence, not an alternate scheduling authority. This omission-and-derive
+rule is native-recurring only; one-shot and legacy weekly PATCH semantics stay
+unchanged.
+
 **Anchor-reset rule (item 4 — dev_agent seq245, product_lead seq248):** a
 timing-only edit (a change to `time` or `tz` inside `recurrence`, or to
 top-level `timezone`, with `freq`/`interval`/`byday`/`bymonthday`/`ordinal`

@@ -421,6 +421,7 @@ class ScheduleService:
             if "recurrence" in fields:
                 merged_recurrence.update(fields["recurrence"])
             merged_timezone = fields.get("timezone", record.timezone)
+            supplied_fire_at = "fire_at" in fields
             merged_fire_at = fields.get("fire_at", record.fire_at)
             shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}
             old_recurrence = record.recurrence or {}
@@ -450,6 +451,11 @@ class ScheduleService:
             expected = next_recurring_occurrence(merged_recurrence, after=_now())
             if expected is None:
                 raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            # Native recurring PATCHes intentionally omit fire_at when changing
+            # recurrence or timezone. The server owns cadence and DST resolution.
+            if not supplied_fire_at and ("recurrence" in fields or "timezone" in fields):
+                merged_fire_at = expected
+                fields["fire_at"] = expected
             if merged_fire_at != expected:
                 raise ScheduleServiceError(
                     f"fire_at must match the next recurring occurrence; "

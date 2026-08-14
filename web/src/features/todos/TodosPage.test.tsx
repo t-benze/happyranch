@@ -37,6 +37,24 @@ const ARMED_WEEKLY_TZ: ScheduleRecord = {
   updated_at: '2026-07-20T00:00:00Z',
 }
 
+const ARMED_RECURRING_MONTHLY: ScheduleRecord = {
+  schedule_id: 'SCHEDULE-120',
+  agent_name: 'investment_advisor',
+  team: 'engineering',
+  kind: 'recurring',
+  fire_at: '2026-08-10T01:00:00Z',
+  recurrence: {
+    freq: 'MONTHLY', interval: 2, ordinal: 'second', byday: ['MO'],
+    time: '09:00', tz: 'Asia/Shanghai', until: null, count: 6, anchor_date: '2026-08-10',
+  },
+  timezone: 'Asia/Shanghai',
+  normalized_brief: 'Review the recurring portfolio allocation',
+  source_instruction: 'Review the portfolio on the second Monday every other month.',
+  status: 'armed', active: 1, expires_at: '2026-10-23T00:00:00Z', indefinite: 0,
+  spawned_task_ids: [], last_fired_at: null, fire_count: 0,
+  created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-20T00:00:00Z',
+}
+
 const ARMED_ONESHOT: ScheduleRecord = {
   schedule_id: 'SCHEDULE-058',
   agent_name: 'support_agent',
@@ -768,6 +786,32 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     expect(capturedBody!.fire_at).toBeDefined()
     expect(typeof capturedBody!.fire_at).toBe('string')
     expect((capturedBody!.fire_at as string).endsWith('Z')).toBe(true)
+  })
+
+  it('renders native recurring values and saves its rule without a client fire_at', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    expect(screen.getByText(/Every 2 months on the second Monday at 09:00 Asia\/Shanghai/)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    expect(screen.getByText('Monthly pattern')).toBeTruthy()
+    expect(screen.getByText('Named weekday')).toBeTruthy()
+    expect(screen.getByText('After count')).toBeTruthy()
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.timezone).toBe('Asia/Shanghai')
+    expect(capturedBody!.fire_at).toBeUndefined()
+    expect(capturedBody!.recurrence).toMatchObject({
+      freq: 'MONTHLY', interval: 2, ordinal: 'second', byday: ['MO'], count: 6, until: null,
+    })
   })
 
   it('sends correct recurrence for non-local IANA timezone (Asia/Tokyo)', async () => {

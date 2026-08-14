@@ -275,3 +275,12 @@ def test_schedule_edit_body_schema_no_null_type() -> None:
         assert not has_null_anyof, (
             f"ScheduleEditBody.{field_name} exposes anyOf null branch: {prop_json}"
         )
+
+
+def test_schedule_edit_contract_documents_server_derived_recurring_fire_at() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    operation = app.openapi()["paths"]["/api/v1/orgs/{slug}/schedules/{schedule_id}"]["patch"]
+    description = operation["description"]
+    assert "omit" in description.lower()
+    assert "server" in description.lower()
+    assert "strict" in description.lower()

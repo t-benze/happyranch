@@ -78,6 +78,7 @@ export function EditDialog({
   loading = false,
 }: EditDialogProps): JSX.Element {
   const isWeekly = schedule.kind === 'weekly'
+  const isRecurring = schedule.kind === 'recurring'
   const initialRecurrence = schedule.recurrence ?? {}
 
   const [fireAtDate, setFireAtDate] = useState('')
@@ -85,6 +86,25 @@ export function EditDialog({
   const [weekday, setWeekday] = useState(initialRecurrence.day ?? 'Mon')
   const [weeklyTime, setWeeklyTime] = useState(initialRecurrence.time ?? '09:00')
   const [timezone, setTimezone] = useState(schedule.timezone || 'UTC')
+  const [frequency, setFrequency] = useState(String(initialRecurrence.freq ?? 'DAILY'))
+  const [interval, setInterval] = useState(String(initialRecurrence.interval ?? 1))
+  const [recurrenceTime, setRecurrenceTime] = useState(String(initialRecurrence.time ?? '09:00'))
+  const [recurrenceDays, setRecurrenceDays] = useState<string[]>(
+    Array.isArray(initialRecurrence.byday) ? initialRecurrence.byday : [],
+  )
+  const [monthMode, setMonthMode] = useState<'date' | 'ordinal'>(
+    initialRecurrence.ordinal ? 'ordinal' : 'date',
+  )
+  const [monthDay, setMonthDay] = useState(String(initialRecurrence.bymonthday ?? 1))
+  const [ordinal, setOrdinal] = useState(String(initialRecurrence.ordinal ?? 'first'))
+  const [ordinalDay, setOrdinalDay] = useState(
+    Array.isArray(initialRecurrence.byday) ? String(initialRecurrence.byday[0] ?? 'MO') : 'MO',
+  )
+  const [ends, setEnds] = useState<'never' | 'on' | 'after'>(
+    initialRecurrence.until ? 'on' : initialRecurrence.count ? 'after' : 'never',
+  )
+  const [until, setUntil] = useState(String(initialRecurrence.until ?? ''))
+  const [count, setCount] = useState(String(initialRecurrence.count ?? 1))
   const [localError, setLocalError] = useState<string | null>(null)
 
   const displayedError = localError ?? validationError
@@ -124,8 +144,26 @@ export function EditDialog({
       setWeekday(initialRecurrence.day ?? 'Mon')
       setWeeklyTime(initialRecurrence.time ?? '09:00')
     }
+    if (isRecurring) {
+      setFrequency(String(initialRecurrence.freq ?? 'DAILY'))
+      setInterval(String(initialRecurrence.interval ?? 1))
+      setRecurrenceTime(String(initialRecurrence.time ?? '09:00'))
+      setRecurrenceDays(Array.isArray(initialRecurrence.byday) ? initialRecurrence.byday : [])
+      setMonthMode(initialRecurrence.ordinal ? 'ordinal' : 'date')
+      setMonthDay(String(initialRecurrence.bymonthday ?? 1))
+      setOrdinal(String(initialRecurrence.ordinal ?? 'first'))
+      setOrdinalDay(Array.isArray(initialRecurrence.byday) ? String(initialRecurrence.byday[0] ?? 'MO') : 'MO')
+      setEnds(initialRecurrence.until ? 'on' : initialRecurrence.count ? 'after' : 'never')
+      setUntil(String(initialRecurrence.until ?? ''))
+      setCount(String(initialRecurrence.count ?? 1))
+    }
     setTimezone(tz)
-  }, [open, schedule, isWeekly, initialRecurrence.day, initialRecurrence.time])
+  }, [
+    open, schedule, isWeekly, isRecurring, initialRecurrence.byday,
+    initialRecurrence.bymonthday, initialRecurrence.count, initialRecurrence.day,
+    initialRecurrence.freq, initialRecurrence.interval, initialRecurrence.ordinal,
+    initialRecurrence.time, initialRecurrence.until,
+  ])
 
   const nextFirePreview = useMemo((): { date: Date; tz: string } | null => {
     const tz = timezone || 'UTC'
@@ -134,19 +172,58 @@ export function EditDialog({
       if (!iso) return null
       return { date: new Date(iso), tz }
     }
+    if (isRecurring) return null
     if (fireAtDate && fireAtTime) {
       const iso = serializeOneShotInTz(fireAtDate, fireAtTime, tz)
       if (!iso) return null
       return { date: new Date(iso), tz }
     }
     return null
-  }, [isWeekly, weekday, weeklyTime, fireAtDate, fireAtTime, timezone])
+  }, [isWeekly, isRecurring, weekday, weeklyTime, fireAtDate, fireAtTime, timezone])
 
   const handleSave = async () => {
     setLocalError(null)
     const fields: ScheduleEditFields = {}
 
-    if (isWeekly) {
+    if (isRecurring) {
+      const parsedInterval = Number(interval)
+      if (!Number.isInteger(parsedInterval) || parsedInterval < 1) {
+        setLocalError('Repeat interval must be a positive whole number.')
+        return
+      }
+      if (frequency === 'WEEKLY' && recurrenceDays.length === 0) {
+        setLocalError('Choose at least one weekday for a weekly recurrence.')
+        return
+      }
+      if (frequency === 'MONTHLY' && monthMode === 'date' && (!Number.isInteger(Number(monthDay)) || Number(monthDay) < 1 || Number(monthDay) > 31)) {
+        setLocalError('Choose a calendar date from 1 through 31.')
+        return
+      }
+      if (ends === 'on' && !until) {
+        setLocalError('Choose an end date.')
+        return
+      }
+      if (ends === 'after' && (!Number.isInteger(Number(count)) || Number(count) < 1)) {
+        setLocalError('Occurrence count must be a positive whole number.')
+        return
+      }
+      const recurrence: Record<string, string | number | string[] | null> = {
+        freq: frequency,
+        interval: parsedInterval,
+        time: recurrenceTime,
+        tz: timezone || 'UTC',
+        until: ends === 'on' ? until : null,
+        count: ends === 'after' ? Number(count) : null,
+      }
+      if (frequency === 'WEEKLY') recurrence.byday = recurrenceDays
+      if (frequency === 'MONTHLY' && monthMode === 'date') recurrence.bymonthday = Number(monthDay)
+      if (frequency === 'MONTHLY' && monthMode === 'ordinal') {
+        recurrence.ordinal = ordinal
+        recurrence.byday = [ordinalDay]
+      }
+      fields.recurrence = recurrence
+      fields.timezone = timezone || 'UTC'
+    } else if (isWeekly) {
       const tz = timezone || 'UTC'
       fields.recurrence = { day: weekday, time: weeklyTime, tz }
       fields.timezone = tz
@@ -225,7 +302,20 @@ export function EditDialog({
             </p>
           </div>
 
-          {isWeekly ? (
+          {isRecurring ? (
+            <RecurringFields
+              frequency={frequency} setFrequency={setFrequency}
+              interval={interval} setInterval={setInterval}
+              time={recurrenceTime} setTime={setRecurrenceTime}
+              days={recurrenceDays} setDays={setRecurrenceDays}
+              monthMode={monthMode} setMonthMode={setMonthMode}
+              monthDay={monthDay} setMonthDay={setMonthDay}
+              ordinal={ordinal} setOrdinal={setOrdinal}
+              ordinalDay={ordinalDay} setOrdinalDay={setOrdinalDay}
+              ends={ends} setEnds={setEnds} until={until} setUntil={setUntil}
+              count={count} setCount={setCount}
+            />
+          ) : isWeekly ? (
             <>
               <div className="space-y-1">
                 <Label htmlFor="edit-weekday">Weekday</Label>
@@ -324,4 +414,27 @@ export function EditDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+interface RecurringFieldsProps {
+  frequency: string; setFrequency: (value: string) => void; interval: string; setInterval: (value: string) => void
+  time: string; setTime: (value: string) => void; days: string[]; setDays: (value: string[]) => void
+  monthMode: 'date' | 'ordinal'; setMonthMode: (value: 'date' | 'ordinal') => void
+  monthDay: string; setMonthDay: (value: string) => void; ordinal: string; setOrdinal: (value: string) => void
+  ordinalDay: string; setOrdinalDay: (value: string) => void; ends: 'never' | 'on' | 'after'; setEnds: (value: 'never' | 'on' | 'after') => void
+  until: string; setUntil: (value: string) => void; count: string; setCount: (value: string) => void
+}
+
+function RecurringFields(props: RecurringFieldsProps): JSX.Element {
+  const toggleDay = (day: string) => props.setDays(props.days.includes(day) ? props.days.filter((d) => d !== day) : [...props.days, day])
+  return <>
+    <div className="grid grid-cols-2 gap-3">
+      <div className="space-y-1"><Label htmlFor="edit-recurrence-interval">Repeat every</Label><Input id="edit-recurrence-interval" type="number" min="1" value={props.interval} onChange={(e) => props.setInterval(e.target.value)} /></div>
+      <div className="space-y-1"><Label htmlFor="edit-recurrence-frequency">Frequency</Label><Select value={props.frequency} onValueChange={props.setFrequency}><SelectTrigger id="edit-recurrence-frequency"><SelectValue /></SelectTrigger><SelectContent>{[['DAILY','day'],['WEEKLY','week'],['MONTHLY','month'],['YEARLY','year']].map(([value,label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+    </div>
+    {props.frequency === 'WEEKLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">Repeat on</legend><div className="flex flex-wrap gap-2">{WEEKDAYS.map((day) => <label key={day.value} className="text-fg flex items-center gap-1 text-sm"><input type="checkbox" checked={props.days.includes(day.value.toUpperCase().slice(0, 2))} onChange={() => toggleDay(day.value.toUpperCase().slice(0, 2))} />{day.label}</label>)}</div></fieldset>}
+    {props.frequency === 'MONTHLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">Monthly pattern</legend><div className="flex gap-4 text-sm"><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'date'} onChange={() => props.setMonthMode('date')} /> Calendar date</label><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'ordinal'} onChange={() => props.setMonthMode('ordinal')} /> Named weekday</label></div>{props.monthMode === 'date' ? <div className="space-y-1"><Label htmlFor="edit-month-day">Date</Label><Input id="edit-month-day" type="number" min="1" max="31" value={props.monthDay} onChange={(e) => props.setMonthDay(e.target.value)} /></div> : <div className="grid grid-cols-2 gap-3"><div className="space-y-1"><Label htmlFor="edit-month-ordinal">Ordinal</Label><Select value={props.ordinal} onValueChange={props.setOrdinal}><SelectTrigger id="edit-month-ordinal"><SelectValue /></SelectTrigger><SelectContent>{['first','second','third','fourth','fifth','last'].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div><div className="space-y-1"><Label htmlFor="edit-month-weekday">Weekday</Label><Select value={props.ordinalDay} onValueChange={props.setOrdinalDay}><SelectTrigger id="edit-month-weekday"><SelectValue /></SelectTrigger><SelectContent>{WEEKDAYS.map((day) => <SelectItem key={day.value} value={day.value.toUpperCase().slice(0,2)}>{day.label}</SelectItem>)}</SelectContent></Select></div></div>}</fieldset>}
+    <div className="space-y-1"><Label htmlFor="edit-recurrence-time">Time</Label><Input id="edit-recurrence-time" type="time" value={props.time} onChange={(e) => props.setTime(e.target.value)} /></div>
+    <fieldset className="space-y-2"><legend className="text-sm font-medium">Ends</legend><div className="flex flex-wrap gap-3 text-sm"><label><input type="radio" name="recurrence-ends" checked={props.ends === 'never'} onChange={() => props.setEnds('never')} /> Never</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'on'} onChange={() => props.setEnds('on')} /> On date</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'after'} onChange={() => props.setEnds('after')} /> After count</label></div>{props.ends === 'on' && <Input aria-label="End date" type="date" value={props.until} onChange={(e) => props.setUntil(e.target.value)} />}{props.ends === 'after' && <Input aria-label="Occurrence count" type="number" min="1" value={props.count} onChange={(e) => props.setCount(e.target.value)} />}</fieldset>
+  </>
 }
