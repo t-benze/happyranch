@@ -6,7 +6,7 @@ Covers:
 2. Symlink materializer: create, repair (stale, broken, wrong-target, ordinary-dir),
    safe withdrawal, batch materialization, fail-closed behavior
 3. Platform isolation: identity probes, ownership verification, symlink validation
-4. Integration: store → materializer → workspace link lifecycle
+4. Integration: store → materializer → workspace link flow
 """
 
 from __future__ import annotations
@@ -238,7 +238,7 @@ class TestCanonicalStoreBasic:
         """Manifest members with ../ in paths are rejected."""
         art_dir = tmp_path / "artifacts"
         art_dir.mkdir()
-        key = "skill-lifecycle/evil/abc/SKILL.md"
+        key = "custom-skills/evil/abc/SKILL.md"
         (art_dir / key).parent.mkdir(parents=True)
         (art_dir / key).write_bytes(b"content")
 
@@ -293,8 +293,8 @@ class TestCanonicalStoreBasic:
         skill_hash = hashlib.sha256(skill_content).hexdigest()
         ref_hash = hashlib.sha256(ref_content).hexdigest()
 
-        skill_key = "skill-lifecycle/test-manifest/deadbeef/SKILL.md"
-        ref_key = "skill-lifecycle/test-manifest/deadbeef/references/helper.md"
+        skill_key = "custom-skills/test-manifest/deadbeef/SKILL.md"
+        ref_key = "custom-skills/test-manifest/deadbeef/references/helper.md"
         (art_dir / skill_key).parent.mkdir(parents=True)
         (art_dir / ref_key).parent.mkdir(parents=True)
         (art_dir / skill_key).write_bytes(skill_content)
@@ -336,7 +336,7 @@ class TestCanonicalStoreBasic:
         art_dir = tmp_path / "artifacts"
         art_dir.mkdir()
 
-        skill_key = "skill-lifecycle/bad/abc/SKILL.md"
+        skill_key = "custom-skills/bad/abc/SKILL.md"
         (art_dir / skill_key).parent.mkdir(parents=True)
         (art_dir / skill_key).write_bytes(b"actual content")
 
@@ -633,8 +633,8 @@ class TestWriteViaLinkIsolation:
 class TestStoreMaterializerIntegration:
     """End-to-end: store → materialize → verify → withdraw."""
 
-    def test_full_lifecycle(self, store, materializer, skill_source_dir, workspace_dir):
-        """Full lifecycle: build, materialize (Claude + Agents), verify, withdraw."""
+    def test_full_canonical_flow(self, store, materializer, skill_source_dir, workspace_dir):
+        """Full canonical flow: build, materialize, verify, withdraw."""
         content_hash = "deadbeef12345678"
         store.build_from_source("test-skill", "1.0.0", content_hash, skill_source_dir)
 

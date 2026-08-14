@@ -14,7 +14,7 @@ interface Row {
   type: 'managed' | 'system_contract' | 'user_authored';
   system_contract: boolean;
   visibility_category: 'toggleable' | 'read_only';
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   assigned_agent_count: number;
   effective_agent_count: number;
   has_assigned_not_yet_effective: boolean;

@@ -125,7 +125,7 @@ class TestSkillsCatalogList:
 
     def test_catalog_custom_filter(self, tmp_home, app, org_state, auth_headers):
         """Custom filter returns empty — THR-055: legacy user store retired.
-        Custom skills are now lifecycle-managed, not filesystem-based."""
+        Custom skills are now B2-record-managed, not filesystem-based."""
         _seed_skills_and_config(org_state.root, allow=["hr:standard-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -220,7 +220,7 @@ class TestSkillsCatalogList:
         self, tmp_home, app, org_state, auth_headers,
     ):
         """THR-055: legacy user-authored store at org.root/skills/ is RETIRED.
-        The custom catalog filter returns only lifecycle-published skills.
+        The custom catalog filter returns only B2-record-backed skills.
         Filesystem-seeded user skills no longer appear."""
         _seed_skills_and_config(org_state.root)
         _seed_user_skill(org_state.root, "my-skill")
@@ -319,7 +319,7 @@ class TestSkillsCatalogDetail:
 
     def test_detail_for_user_authored_skill(self, tmp_home, app, org_state, auth_headers):
         """THR-055: user-authored skills via legacy filesystem return 404.
-        Custom skill detail is now available through lifecycle routes only."""
+        Custom skill detail is now available through B2 routes only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -343,7 +343,7 @@ class TestSkillsCatalogDetail:
 
     def test_detail_user_skill_with_assignments(self, tmp_home, app, org_state, auth_headers):
         """THR-055: legacy user skill detail returns 404.
-        Assignment tracking is now handled by lifecycle routes."""
+        Assignment tracking is now handled by B2 routes."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-skill"], agent_name="dev_agent")
         # Also assign to qa_engineer
         cfg = _yaml.safe_load((org_state.root / "org" / "config.yaml").read_text())
@@ -467,7 +467,7 @@ class TestAgentSkillsEffective:
         self, tmp_home, app, org_state, auth_headers,
     ):
         """THR-055: legacy effective API does NOT include user-authored skills.
-        Custom skill effective resolution is now lifecycle-only."""
+        Custom skill effective resolution is now B2-only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -546,7 +546,7 @@ class TestCreateSkill:
     """POST /api/v1/orgs/{slug}/skills"""
 
     def test_create_valid_skill_returns_201(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy POST /skills returns 410 Gone — use lifecycle routes."""
+        """THR-055: legacy POST /skills returns 410 Gone — use B2 routes."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
@@ -1022,7 +1022,7 @@ class TestValidationGuard:
 
 
 class TestPhase2FullFlow:
-    """End-to-end Phase 2 lifecycle: create → validate → edit → re-validate."""
+    """End-to-end B2 flow: create → validate → edit → re-validate."""
 
     def test_full_create_edit_revalidate_flow(self, tmp_home, app, org_state, auth_headers):
         """THR-055: legacy create + edit + validate all return 410 Gone."""
@@ -1084,14 +1084,14 @@ class TestAssignSkill:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# THR-055: Daemon HTTP lifecycle route authority, spoof, residue tests
+# THR-055: Daemon HTTP B2 route authority, spoof, residue tests
 # ═══════════════════════════════════════════════════════════════════════════
 
 import json
 
 
-class TestLifecycleHTTPAuthority:
+class TestB2HTTPAuthority:
     """Daemon HTTP-route tests proving:
-    - Founder bearer can submit proposals
+    - Founder bearer can manage B2 custom skills
     - Legacy routes return 410 with no side effects
     """

@@ -11,7 +11,7 @@ export interface CatalogSkillItem {
   policy_class: string;
   status: string;
   version: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   assigned_agent_count: number;
   effective_agent_count: number;
   has_assigned_not_yet_effective: boolean;
@@ -97,20 +97,20 @@ export interface EditSkillRequest {
 export interface CreateSkillResponse {
   skill_id: string;
   source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
 }
 
 export interface ValidateSkillResponse {
   skill_id: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
 }
 
 export interface EditSkillResponse {
   skill_id: string;
   source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
   version: string;
 }

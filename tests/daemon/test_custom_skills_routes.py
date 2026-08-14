@@ -1,6 +1,8 @@
 """Route contract tests for THR-055 B2 custom-skill APIs."""
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from runtime.models import TaskRecord
@@ -197,6 +199,56 @@ def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_ru
     listed = next(skill for skill in catalog.json()["skills"] if skill["id"] == skill_id)
     assert listed["hidden_reason"] is None
     assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
+
+
+def test_b2_recover_deletes_only_corrupt_version_with_audit(
+    client_with_runtime, monkeypatch,
+):
+    """The retained operator route repairs a refused B2 canonical package."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
+
+    client, org = client_with_runtime
+    created = _create(client, slug="recoverable-b2", skill_md="# Recover\n\nOriginal")
+    content_hash = created["content_hash"]
+    version = str(created["version_id"])
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    conn = getattr(org.db, "_conn", org.db)
+    record = conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id = ?", (created["version_id"],)
+    ).fetchone()
+    artifact = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(record["content_artifact_key"])
+    source = org.root / "recovery-source"
+    source.mkdir()
+    (source / "SKILL.md").write_bytes(artifact)
+    expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact + b"\x00").hexdigest()
+    store = CanonicalSkillStore()
+    package = store.build_from_source("recoverable-b2", version, content_hash, source, verify_source_hash=expected_tree_hash)
+    _make_writable_for_removal(package)
+    (package / "SKILL.md").write_text("# Recover\n\nTampered")
+
+    with pytest.raises(Exception, match="skills recover"):
+        store.build_from_source("recoverable-b2", version, content_hash, source, verify_source_hash=expected_tree_hash)
+    response = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": "recoverable-b2", "version": version, "content_hash": content_hash},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["skill_id"] == created["skill_id"]
+    assert response.json()["artifact_key"] == record["content_artifact_key"]
+    assert not package.exists()
+    audit = conn.execute(
+        "SELECT source, ok, version, reason_codes FROM skill_validation_events WHERE skill_id = ? ORDER BY id DESC LIMIT 1",
+        (created["skill_id"],),
+    ).fetchone()
+    assert dict(audit) == {"source": "operator_recovery", "ok": 1, "version": version, "reason_codes": '["operator_recovery"]'}
+
+    foreign = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": "recoverable-b2", "version": version, "content_hash": "0" * 64},
+    )
+    assert foreign.status_code == 400
 
 
 def test_effective_custom_skill_distinguishes_next_session_from_materialized(client_with_runtime):

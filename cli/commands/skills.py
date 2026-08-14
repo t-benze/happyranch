@@ -608,7 +608,7 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
 
     The created skill is stored immediately as a default-hidden custom-skill
     record. It becomes visible to the assignee only after a founder configures
-    eligibility through the B2 web UI or API; no separate proposal, review,
+    eligibility through the B2 web UI or API; no retired submission/review
     or publish step exists.
     """
     if not args.from_file:
@@ -694,6 +694,56 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------------------
 
+def cmd_skills_recover(args: argparse.Namespace) -> None:
+    """Request explicit B2-provenance recovery after operator confirmation."""
+    import httpx
+    import re
+
+    from cli._shared import resolve_org_slug
+    from cli.client.client import port_file
+
+    if not re.fullmatch(r"[a-f0-9]{64}", args.content_hash):
+        print("error: content_hash must be exactly 64 lowercase hex characters", file=sys.stderr)
+        sys.exit(1)
+    port_path = port_file()
+    if not port_path.exists():
+        print("error: daemon not running — start it with scripts/daemon.sh start", file=sys.stderr)
+        sys.exit(1)
+    port = port_path.read_text().strip()
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10.0) as client:
+            response = client.get("/api/v1/orgs")
+            available = [item["slug"] for item in response.json().get("orgs", [])] if response.status_code == 200 else []
+    except Exception:
+        available = []
+    org = resolve_org_slug(args_org=getattr(args, "org", None), available=available)
+    print(f"Recovery target: {args.slug}@{args.version} ({args.content_hash[:16]}...)")
+    try:
+        confirmed = input("Delete corrupted canonical package? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        confirmed = "n"
+    if confirmed not in {"y", "yes"}:
+        print("Aborted.")
+        return
+    token_path = port_path.parent / "daemon.token"
+    if not token_path.exists():
+        print("error: daemon auth token not found", file=sys.stderr)
+        sys.exit(1)
+    with httpx.Client(
+        base_url=f"http://127.0.0.1:{port}",
+        headers={"Authorization": f"Bearer {token_path.read_text().strip()}", "X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    ) as client:
+        response = client.post(
+            f"/api/v1/orgs/{org}/skills/recover",
+            json={"slug": args.slug, "version": args.version, "content_hash": args.content_hash},
+        )
+    if response.status_code != 200:
+        print(f"error ({response.status_code}): {response.json().get('detail', response.text)}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ {response.json()['message']}")
+
+
 def register(sub) -> None:
     """Register the 'skills' subcommand family."""
     p = sub.add_parser("skills", help="Runtime-managed skill policy inspection")
@@ -759,3 +809,13 @@ def register(sub) -> None:
     )
     p_create.add_argument("--org", help="Org slug (default: auto-detect)")
     p_create.set_defaults(func=cmd_skills_create)
+
+    p_recover = skills_sub.add_parser(
+        "recover",
+        help="Operator recovery for a corrupted B2 canonical package",
+    )
+    p_recover.add_argument("slug", help="B2 custom-skill slug")
+    p_recover.add_argument("version", help="B2 custom-skill version ID")
+    p_recover.add_argument("content_hash", help="B2 version SHA-256 hash")
+    p_recover.add_argument("--org", help="Org slug (default: auto-detect)")
+    p_recover.set_defaults(func=cmd_skills_recover)

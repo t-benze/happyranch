@@ -2343,6 +2343,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skills/recover": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skills/validation": {
       "GET": {
         "params": [

@@ -886,7 +886,7 @@ def _compute_dir_hash(src_dir: Path) -> str:
 # ── Pre-launch integrity validation ────────────────────────────────
 # Before every executor launch, validate that workspace skill links
 # resolve to the expected canonical packages and that canonical package
-# integrity (tree hashes, member hashes for lifecycle packages) is
+# integrity (tree hashes and B2 custom-skill artifact hashes) is
 # intact. The executor and daemon share the same OS identity — a
 # same-UID process can mutate canonical targets between checks.
 # Detection-only: no automatic repair from same-UID local sources.
@@ -942,7 +942,7 @@ def validate_workspace_skills_integrity(
     For EVERY expected spec, validates:
     - The canonical package exists and is non-empty
     - The canonical tree hash matches the expected value computed from
-      ledger-declared member hashes (lifecycle) or the source tree hash
+      B2-declared member hashes or the source tree hash
       (system contracts)
     - Workspace symlinks at BOTH ``.claude/skills`` and ``.agents/skills``
       point to the correct canonical target
@@ -1139,7 +1139,7 @@ def validate_workspace_skills_integrity(
     # - Corrupted canonical bytes (hash mismatch, tampered content) →
     #   set-executor CANNOT recover bytes — it only repairs links.
     #   Recovery is manual, operator-invoked: `happyranch skills
-    #   recover <slug> <version> <content_hash>`. Validates ledger
+    #   recover <slug> <version> <content_hash>`. Validates B2 provenance
     #   provenance and member hashes before deletion; refuses already-
     #   valid targets. Next materialization rebuilds from ArtifactStore.
     #   There is NO automatic same-UID local source repair and
