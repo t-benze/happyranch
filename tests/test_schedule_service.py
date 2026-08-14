@@ -254,6 +254,38 @@ def test_edit_recurring_timezone_without_fire_at_derives_candidate_and_preserves
     assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
 
 
+@pytest.mark.parametrize("include_timezone", [False, True])
+def test_edit_recurring_rule_timezone_without_fire_at_persists_authoritative_timezone(
+    tmp_path, frozen_clock, include_timezone,
+):
+    """A rule timezone is the one stored timezone for every accepted recurring edit."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None,
+    }
+    fire_at = next_recurring_occurrence(
+        {**rule, "anchor_date": _FROZEN_NOW.date().isoformat()}, _FROZEN_NOW,
+    )
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=fire_at, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x",
+    )
+
+    fields = {"recurrence": {"tz": "Asia/Shanghai"}}
+    if include_timezone:
+        fields["timezone"] = "Asia/Shanghai"
+    edited = svc.edit(record.id, "dev_agent", **fields)
+
+    persisted = db.schedules.get(record.id)
+    assert edited.timezone == edited.recurrence["tz"] == "Asia/Shanghai"
+    assert persisted.timezone == persisted.recurrence["tz"] == "Asia/Shanghai"
+    assert edited.fire_at == next_recurring_occurrence(edited.recurrence, _FROZEN_NOW)
+    assert edited.recurrence["anchor_date"] == record.recurrence["anchor_date"]
+
+
 def test_edit_recurring_validates_shape_before_computing_anchor(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)

@@ -435,6 +435,8 @@ class ScheduleService:
                 merged_recurrence["tz"] = merged_timezone
             else:
                 merged_timezone = merged_recurrence.get("tz", record.timezone)
+                if isinstance(supplied_recurrence, dict) and "tz" in supplied_recurrence:
+                    fields["timezone"] = merged_timezone
             supplied_fire_at = "fire_at" in fields
             merged_fire_at = fields.get("fire_at", record.fire_at)
             shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}

@@ -865,6 +865,38 @@ def test_patch_recurring_timezone_without_fire_at_derives_server_occurrence(
     ).isoformat()
 
 
+@pytest.mark.parametrize("include_timezone", [False, True])
+def test_patch_recurring_rule_timezone_without_fire_at_persists_authoritative_timezone(
+    tmp_home, app, org_state, auth_headers, include_timezone,
+):
+    """Bearer edits keep returned and persisted recurring timezones identical."""
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    payload = {"recurrence": {"tz": "Asia/Shanghai"}}
+    if include_timezone:
+        payload["timezone"] = "Asia/Shanghai"
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}", json=payload, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "Asia/Shanghai"
+    assert persisted.timezone == persisted.recurrence["tz"] == "Asia/Shanghai"
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+    assert body["recurrence"]["anchor_date"] == rule["anchor_date"]
+
+
 def test_patch_recurring_supplied_mismatching_fire_at_still_rejects(
     tmp_home, app, org_state, auth_headers,
 ):
