@@ -1,6 +1,8 @@
 """Route contract tests for THR-055 B2 custom-skill APIs."""
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from runtime.models import TaskRecord
@@ -82,18 +84,41 @@ def test_agent_create_rejects_another_agents_originated_skill_without_mutation(c
     assert _custom_counts(org) == before
 
 
-def test_agent_create_keeps_non_pilot_agents_out(client_with_runtime):
+def test_agent_create_is_available_to_every_verified_agent(client_with_runtime):
     client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-NON-PILOT", brief="create a custom skill"))
     org.sessions.set_active("TASK-NON-PILOT", "dev_agent", "sess-non-pilot", org_slug="alpha")
     client.headers.pop("Authorization", None)
-    before = _custom_counts(org)
     response = client.post(
         f"{BASE}/agent-create", params={"session_id": "sess-non-pilot"},
         json=_body("frontend-development"),
     )
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] in {"agent_not_in_pilot", "slug_not_allowed_for_agent"}
-    assert _custom_counts(org) == before
+    assert response.status_code == 201, response.text
+    assert response.json()["provenance"]["agent_name"] == "dev_agent"
+
+
+def test_skills_agent_returns_only_b2_custom_skill_mapping(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-B2", brief="create a custom skill"))
+    org.sessions.set_active("TASK-B2", "dev_agent", "sess-b2", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    response = client.post(
+        "/api/v1/orgs/alpha/skills/agent",
+        params={"session_id": "sess-b2"},
+        json=_body("b2-agent-skill"),
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert set(payload) == {"skill", "version", "hidden_reason", "provenance"}
+    assert payload["skill"]["origin_kind"] == "agent"
+    assert payload["version"]["source_task_id"] == "TASK-B2"
+    assert payload["provenance"] == {
+        "verified_org": "alpha",
+        "task_id": "TASK-B2",
+        "agent_name": "dev_agent",
+        "session_id": "sess-b2",
+        "task_brief_digest": payload["version"]["task_brief_digest"],
+    }
 
 
 @pytest.mark.parametrize("method,path,payload", [
@@ -174,6 +199,165 @@ def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_ru
     listed = next(skill for skill in catalog.json()["skills"] if skill["id"] == skill_id)
     assert listed["hidden_reason"] is None
     assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
+
+
+def test_b2_recover_deletes_only_corrupt_version_with_audit(
+    client_with_runtime, monkeypatch,
+):
+    """The retained operator route repairs a refused B2 canonical package."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
+
+    client, org = client_with_runtime
+    created = _create(client, slug="recoverable-b2", skill_md="# Recover\n\nOriginal")
+    current = client.post(
+        f"{BASE}/{created['skill_id']}/versions",
+        json={"skill_md": "# Recover\n\nCurrent"},
+    )
+    assert current.status_code == 201, current.text
+    content_hash = current.json()["content_hash"]
+    version = str(current.json()["version_id"])
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    conn = getattr(org.db, "_conn", org.db)
+    record = conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id = ?", (current.json()["version_id"],)
+    ).fetchone()
+    artifact = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(record["content_artifact_key"])
+    source = org.root / "recovery-source"
+    source.mkdir()
+    (source / "SKILL.md").write_bytes(artifact)
+    expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact + b"\x00").hexdigest()
+    store = CanonicalSkillStore()
+    package = store.build_from_source("recoverable-b2", version, content_hash, source, verify_source_hash=expected_tree_hash)
+    _make_writable_for_removal(package)
+    (package / "SKILL.md").write_text("# Recover\n\nTampered")
+
+    with pytest.raises(Exception, match="skills recover"):
+        store.build_from_source("recoverable-b2", version, content_hash, source, verify_source_hash=expected_tree_hash)
+    response = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": "recoverable-b2", "version": version, "content_hash": content_hash},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["skill_id"] == created["skill_id"]
+    assert response.json()["artifact_key"] == record["content_artifact_key"]
+    assert not package.exists()
+    audit = conn.execute(
+        "SELECT source, ok, version, reason_codes FROM skill_validation_events WHERE skill_id = ? ORDER BY id DESC LIMIT 1",
+        (created["skill_id"],),
+    ).fetchone()
+    assert dict(audit) == {"source": "operator_recovery", "ok": 1, "version": version, "reason_codes": '["operator_recovery"]'}
+
+    foreign = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": "recoverable-b2", "version": version, "content_hash": "0" * 64},
+    )
+    assert foreign.status_code == 400
+
+
+def test_b2_recover_refuses_corrupt_historical_version_after_current_advances(
+    client_with_runtime, monkeypatch,
+):
+    """Recovery cannot delete an otherwise valid historical B2 package."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
+
+    client, org = client_with_runtime
+    created = _create(client, slug="stale-recoverable-b2", skill_md="# Recover\n\nVersion A")
+    current = client.post(
+        f"{BASE}/{created['skill_id']}/versions",
+        json={"skill_md": "# Recover\n\nVersion B"},
+    )
+    assert current.status_code == 201, current.text
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    conn = getattr(org.db, "_conn", org.db)
+    historical = conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id = ?", (created["version_id"],)
+    ).fetchone()
+    artifact = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(historical["content_artifact_key"])
+    source = org.root / "stale-recovery-source"
+    source.mkdir()
+    (source / "SKILL.md").write_bytes(artifact)
+    expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact + b"\x00").hexdigest()
+    package = CanonicalSkillStore().build_from_source(
+        "stale-recoverable-b2",
+        str(created["version_id"]),
+        created["content_hash"],
+        source,
+        verify_source_hash=expected_tree_hash,
+    )
+    _make_writable_for_removal(package)
+    (package / "SKILL.md").write_text("# Recover\n\nTampered")
+
+    response = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={
+            "slug": "stale-recoverable-b2",
+            "version": str(created["version_id"]),
+            "content_hash": created["content_hash"],
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert "current" in response.json()["detail"]
+    assert package.exists()
+    audit = conn.execute(
+        "SELECT source, ok, version, reason_codes FROM skill_validation_events WHERE skill_id = ? ORDER BY id DESC LIMIT 1",
+        (created["skill_id"],),
+    ).fetchone()
+    assert dict(audit) == {
+        "source": "operator_recovery",
+        "ok": 0,
+        "version": None,
+        "reason_codes": '["stale_current_version"]',
+    }
+
+
+def test_b2_recover_refuses_missing_and_ineligible_current_provenance(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="ineligible-recoverable-b2")
+    conn = getattr(org.db, "_conn", org.db)
+
+    missing = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": "ineligible-recoverable-b2", "version": "99999", "content_hash": created["content_hash"]},
+    )
+    assert missing.status_code == 404
+    missing_audit = conn.execute(
+        "SELECT skill_id, reason_codes FROM skill_validation_events WHERE slug = ? ORDER BY id DESC LIMIT 1",
+        ("ineligible-recoverable-b2",),
+    ).fetchone()
+    assert dict(missing_audit) == {
+        "skill_id": "custom:ineligible-recoverable-b2",
+        "reason_codes": '["b2_provenance_not_found"]',
+    }
+
+    invalid = client.post(
+        f"{BASE}/{created['skill_id']}/versions",
+        json={"skill_md": "not markdown"},
+    )
+    assert invalid.status_code == 201
+    assert invalid.json()["validation_state"] == "invalid"
+    refused = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={
+            "slug": "ineligible-recoverable-b2",
+            "version": str(invalid.json()["version_id"]),
+            "content_hash": invalid.json()["content_hash"],
+        },
+    )
+    assert refused.status_code == 409
+    audit = conn.execute(
+        "SELECT source, ok, version, reason_codes FROM skill_validation_events WHERE skill_id = ? ORDER BY id DESC LIMIT 1",
+        (created["skill_id"],),
+    ).fetchone()
+    assert dict(audit) == {
+        "source": "operator_recovery",
+        "ok": 0,
+        "version": None,
+        "reason_codes": '["ineligible_current_version"]',
+    }
 
 
 def test_effective_custom_skill_distinguishes_next_session_from_materialized(client_with_runtime):

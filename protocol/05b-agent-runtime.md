@@ -356,7 +356,7 @@ preflighting, or reconciling any links, and must not withdraw or mutate an
 existing valid workspace state.  For valid contexts, system-contract links are
 unioned across all ordinary session contexts so a later single-context launch
 never withdraws a valid link belonging to another context; release-managed and
-lifecycle links remain policy-reconciled and withdrawable.
+B2 custom-skill links remain policy-reconciled and withdrawable.
 
 #### Canonical skill store + workspace symlinks (macOS-only)
 
@@ -402,7 +402,8 @@ allowed; valid existing packages may be reused.
 <agent> --executor <current-executor>`` (re-materializes links only, NEVER
 recovers corrupted bytes). (b) For corrupted canonical bytes:
 ``happyranch skills recover <slug> <version> <content_hash>`` — the sole
-operator-invoked recovery path. Validates ledger provenance and every
+operator-invoked recovery path. Accepts only the eligible current B2 version,
+validates its ledger provenance and every
 declared member SHA-256 hash against the ArtifactStore before deletion;
 refuses already-valid targets. The next materialization will rebuild the
 package from the ArtifactStore. No automatic repair from same-UID local
@@ -416,7 +417,7 @@ Policy withdrawal and atomic link repair remain safe.
 
 **Ownership and provenance:**
 - Canonical packages are content-addressed trees from exact verified
-provenance/members for system, release-managed, and lifecycle
+provenance/members for system, release-managed, and B2 custom-skill
 version-pinned packages.
 - The readonly hardening is cosmetic — the executor shares the daemon's uid
 and can chmod files back to writable. Do not describe byte targets, local
@@ -427,7 +428,7 @@ executor-only writable/unwritable, or automatically recovered.
 Before each executor launch, the daemon compares actual canonical package
 content against the ledger-declared member hashes:
 - System-contract packages: compared against the shipped source tree hash.
-- Lifecycle skills: each member's actual hash compared against the
+- B2 custom skills: each member's actual hash compared against the
   ArtifactStore manifest.
 On mismatch the daemon emits a durable integrity/operations event and
 refuses the session. Corrupted bytes are NEVER silently accepted as valid
@@ -454,7 +455,7 @@ mismatched-hash entries are atomically repaired.
   **system-contract links are unioned across all ordinary session contexts**
   (task, thread, wake, dream, schedule, bootstrap) and retained so a later
   single-context launch never withdraws a valid link belonging to another
-  context.  **Release-managed and lifecycle links remain policy-reconciled**
+  context.  **Release-managed and B2 custom-skill links remain policy-reconciled**
   and are withdrawn when the agent becomes ineligible, retired, or unassigned.
 
 **Legacy compatibility fallback:** The legacy per-session copy model
@@ -473,133 +474,7 @@ repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
 These are resolved via the `SkillRegistry` and unioned with system contracts;
 release and system-contract slugs win on collision.
 
-**THR-055 B2 additive custom-skill schema (Slice A3).** The runtime carries
-the additive B2 tables: `custom_skills`, immutable
-`custom_skill_versions`, `custom_skill_eligibility_rules`,
-`custom_skill_eligibility_events`, `custom_skill_materializations`, and
-`custom_skill_events`. They establish identity/version provenance,
-eligibility audit, and per-session evidence only. Slice A2's unit-tested pure
-visibility resolver is now wired through tested custom-skill CRUD, eligibility
-store/preview/write/resolve/explain routes, the Effective Skills read-projection
-extension, and next-task-session canonical-store materialization with per-session
-success/failure evidence. The `create-skill` CLI posts to
-`/custom-skills/agent-create`, which returns a B2 default-hidden record
-(`skill_id`, `version_id`, `content_hash`, `validation_state`, `hidden_reason`).
-
-**Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
-custom skills are governed exclusively by the immutable lifecycle ledger
-(`skill_lifecycle_packages`, `skill_lifecycle_assignments`). Only PUBLISHED
-skills with an active version-pinned assignment for the target agent are
-materialized. Proposed, draft, validated, approved-but-unpublished, rolled_back,
-retired, and legacy-quarantined content never reaches the workspace.
-
-**Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
-(`<org_root>/skills/`) is retired and quarantined. During migration, legacy
-SKILL.md content is copied to the org ArtifactStore under
-`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for retention; the
-ledger stores only the artifact reference key, never the mutable filesystem path.
-Quarantined content is never resolved by `inject_managed_skills`.
-
-**Content retention (task-artifact policy).** Lifecycle proposal content
-is stored in the org ArtifactStore under content-addressed keys:
-- ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
-- ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
-- ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset
-- ``skill-lifecycle/<slug>/<manifest_hash[:16]>/manifest.json`` — canonical manifest
-
-The manifest is a JSON document listing every package member with its
-normalized relative path, SHA-256 hash, artifact key, and size in bytes.
-The package-version ``content_hash`` in the lifecycle ledger is the SHA-256
-of the manifest (binding full-package provenance, distinct from individual
-member hashes). The ``content_artifact_key`` points to the manifest artifact.
-
-The ledger tables store only immutable metadata (hash, version, provenance);
-the artifact store holds the sole canonical copy of every package byte.
-Materialization loads the manifest from the ArtifactStore, validates each
-member's hash byte-for-byte, and writes the complete directory tree
-(SKILL.md + references/ + assets/) fail-closed into the target workspace.
-Legacy single-SKILL.md artifacts (pre-manifest format) are still supported
-by the materializer as backward compatibility.
-
-**Failure-atomic persistence.** All ledger writes (package row insert +
-lifecycle event insert) execute inside an explicit ``BEGIN IMMEDIATE`` /
-``COMMIT`` transaction. Any SQLite failure rolls back both rows atomically.
-Artifacts newly created during the request are cleaned up on ledger failure
-(compensation); pre-existing artifacts from content-addressed deduplication
-are never deleted. An ArtifactStore write failure before any ledger row
-aborts without any side effects.
-
-**Session-bound authority.** Agent proposal submission requires verified
-task/session binding via the SessionTracker. A single agent-only path exists,
-plus a human-only legacy route:
-
-- **Opaque session path (agent CLI).** The agent commands
-  ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
-  The CLI builds a token-free transport (no bearer token read or sent) using
-  only the daemon port. Org is resolved via the established
-  ``resolve_org_slug(args_org=, available=)`` convention. The CLI sends the
-  opaque session ID to
-  ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent`` — an agent-only
-  route that does NOT accept the master bearer token. The server independently
-  derives all four identity dimensions (org_slug, task_id, agent_name,
-  active session_id) from the SessionTracker's additive context index
-  (``get_context_by_session()``) — never from body/query/env/client claims,
-  task lookup by agent, team membership, or YAML eligibility. Path-selected
-  org is cross-checked against the session's org; cross-org and mismatched
-  contexts are denied with 403. The server rejects the **presence** of every client-controlled trusted
-  identity/authority field in the direct HTTP body — ``task_id``,
-  ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
-  ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
-  ``permissions`` — before request-model parsing, session lookup,
-  policy checks, or any persistence. Presence includes empty values.
-  Rejection returns exact HTTP 403 with error code
-  ``body_identity_rejected``; no lifecycle package, event,
-  materialization, or ArtifactStore residue is produced. This is the
-  proposal authoring workflow.
-
-- **B2 create-skill path (agent CLI).** The agent commands
-  ``happyranch skills create --from-file <path> --session-id <session-id> [--org <slug>]``.
-  This is an ADDITIONAL verified-agent authoring path (THR-055 B2) that
-  sends a bearer-free HTTP POST to
-  ``POST /api/v1/orgs/{slug}/custom-skills/agent-create``.
-  Identity derivation, body-key rejection, cross-org enforcement, and
-  per-binding lease/re-verification follow the same SessionTracker pattern
-  as the proposal path. The skill is created as a B2 default-hidden record;
-  its response contains ``skill_id``, ``version_id``, ``content_hash``,
-  ``validation_state``, and ``hidden_reason``. It remains hidden until a
-  founder configures eligibility.
-
-- **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
-  is restricted to bearer-authenticated human/founder callers. Non-bearer
-  (agent) callers receive 403 directing them to the dedicated
-  ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
-
-All identity derives exclusively from the server's verified context.
-
-**Agent-id × canonical-slug pilot policy (THR-055 seq 127 corrective).** The
-agent-only route enforces a fixed server-side policy BEFORE any artifact
-creation or ledger write. The policy does NOT inspect team membership,
-prompts, org config/YAML eligibility, request metadata, or body identity
-claims:
-
-| Agent | Allowed slug |
-| --- | --- |
-| ``frontend_engineer`` | ``frontend-development`` |
-| ``product_lead`` | ``product-manager-prd`` (lowercase) |
-
-Every other agent is denied (403). Either permitted agent with the wrong slug
-is denied (403). Human/founder lifecycle authority (claim, draft, edit, validate,
-submit-review, review, publish, assign, retire, rollback, all eligibility/
-permission/config mutations) remains unchanged and returns 403 for agent
-invocations. Proposals remain immutable and task/session-provenanced,
-``standard_operational`` only, with content excluded from catalog/effective
-resolution/materialization until founder publication.
-
-Human/founder lifecycle mutations (claim, validate, review, publish, assign,
-rollback, retire) require the master bearer token and are gated behind
-bearer-only routes with no agent path. Agent callers receive server-side
-403 for all lifecycle mutations other than their own active pilot
-task/session-bound proposal submission.
+**THR-055 B2 custom skills.** Custom skills use `custom_skills`, immutable `custom_skill_versions`, eligibility rules/events, per-session materialization evidence, and custom-skill events. The only agent create path is `POST /api/v1/orgs/{slug}/skills/agent`, invoked by `happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]`. It is bearer-free, derives org/task/agent/session from the verified SessionTracker binding, returns `{skill, version, hidden_reason, provenance}`, and creates a default-hidden editable B2 record. Every verified agent may use it; founders configure eligibility later.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
@@ -611,7 +486,7 @@ skipped.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
 materialization for a given agent workspace — system-contract injection +
-on-disk verification, managed-skill injection, and lifecycle-ledger injection
+on-disk verification, managed-skill injection, and B2 custom-skill injection
 — runs inside a single unified transaction (``materialize_workspace_skills``)
 protected by a process-local ``threading.RLock`` (re-entrant lock) keyed by
 the canonical (resolved) workspace path. The legacy wholesale copy
@@ -638,18 +513,12 @@ The lock serializes writers only; it does NOT block readers.
 Named fail-closed behavior: if materialization fails for a real filesystem
 error (disk full, permission denied, missing source), the error propagates
 as a named exception (``SystemContractMaterializationError``,
-``LifecycleMaterializationError``, or the underlying ``OSError``) — never
+or the underlying ``OSError``) — never
 a bare ``FileNotFoundError``. The caller persists the terminal failure and
 no agent subprocess is launched. Recovery requires fixing the underlying
 filesystem/permission issue and explicitly re-dispatching.
 
-**Atomic emergency rollback.** The `POST /skill-lifecycle/rollback` handler wraps
-package status change, assignment deactivation, and event insertion in an explicit
-`BEGIN IMMEDIATE`/`COMMIT` transaction — all three mutations roll back together
-on failure. Workspace residue is cleaned up on the next spawn by fail-closed
-materialization.
-
-**Visibility only — NO capability change.** Skills govern which guidance
+ **Visibility only — NO capability change.** Skills govern which guidance
 playbooks an agent sees. They grant no tools, credentials, network access,
 filesystem access, sandbox policy, or permission-map/allow-rule/auth changes.
 

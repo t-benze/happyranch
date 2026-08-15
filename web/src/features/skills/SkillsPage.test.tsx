@@ -14,7 +14,7 @@ interface Row {
   type: 'managed' | 'system_contract' | 'user_authored';
   system_contract: boolean;
   visibility_category: 'toggleable' | 'read_only';
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   assigned_agent_count: number;
   effective_agent_count: number;
   has_assigned_not_yet_effective: boolean;
@@ -126,11 +126,33 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.queryByRole('link', { name: 'Proposals' })).not.toBeInTheDocument();
   });
 
+  test('retired proposals URL shows unavailable state on the catalog 404 without legacy controls', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(
+        `/api/v1/orgs/${SLUG}/skills/catalog/proposals`,
+        () => HttpResponse.json({ detail: { code: 'not_found', skill_id: 'proposals' } }, { status: 404 }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals` });
+
+    expect(await screen.findByText('Could not load this skill')).toBeInTheDocument();
+    expect(
+      screen.getByText('This skill is unavailable right now, or the link is out of date.'),
+    ).toBeInTheDocument();
+    expect(document.querySelector('main')?.textContent).not.toMatch(
+      /proposal|queue|approve|reject|claim/i,
+    );
+  });
+
   test('exposes an "Add custom skill" entry point to the create route', async () => {
     mount();
     await screen.findByText('kb-curation');
     const add = screen.getByRole('link', { name: /Add custom skill/i });
-    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/new`);
+    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/custom/new`);
   });
 
   test('read-only system contract shows no toggle/edit control', async () => {

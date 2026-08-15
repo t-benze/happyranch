@@ -153,7 +153,7 @@ def _get_canonical_store_root(settings=None) -> Path:
 # ── Canonical strict SHA-256 hash parser ────────────────────────────
 # THE single authoritative validator for member-hash declarations.
 # Every caller — workspace adapters, recovery route, manifest materialization,
-# lifecycle spec construction — must use this parser. No competing parsers.
+# custom-skill spec construction — must use this parser. No competing parsers.
 # Accepts ONLY "sha256:<64 lowercase hex>".
 
 _SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -211,7 +211,7 @@ def _compute_tree_hash_from_manifest_members(
     """Compute expected canonical tree hash from manifest members.
 
     Validates each member's artifact-store bytes against the immutable
-    ledger-declared SHA-256 hash BEFORE computing the tree hash.
+    B2 version-declared SHA-256 hash BEFORE computing the tree hash.
     Used by both the pre-materialization spec builder
     (``_compute_manifest_tree_hash`` in workspace_adapters) and the
     ``build_from_manifest`` reuse verification path.
@@ -252,13 +252,13 @@ def _compute_tree_hash_from_manifest_members(
                 f"Failed to load artifact {member_artifact_key}: {exc}",
             ) from exc
 
-        # Validate bytes against immutable ledger-declared hash
+        # Validate bytes against immutable B2 version-declared hash
         actual_hex = hashlib.sha256(member_bytes).hexdigest()
         if actual_hex != expected_hex:
             raise CanonicalStoreError(
                 "member_hash_mismatch",
                 f"Member artifact hash mismatch for {member_path}: "
-                f"ledger declares {expected_hex[:16]}..., "
+                f"B2 version declares {expected_hex[:16]}..., "
                 f"artifact store has {actual_hex[:16]}...",
             )
 
@@ -533,20 +533,20 @@ class CanonicalSkillStore:
 
         The manifest is a JSON dict with a ``members`` list:
             {"members": [{"path": "SKILL.md", "hash": "sha256:abc...",
-                          "artifact_key": "skill-lifecycle/..."}, ...]}
+                          "artifact_key": "custom-skills/..."}, ...]}
 
         Each member's bytes are loaded from the artifact store, their hash
         is validated, and they are written into the canonical tree.
 
-        The *content_hash* is the package-version content hash from the
-        lifecycle ledger. It is the SHA-256 of the manifest JSON itself
+        The *content_hash* is the immutable custom-skill version content hash. It is the SHA-256 of the manifest JSON itself
         (binding full-package provenance, distinct from individual member
         hashes). We preserve and verify the manifest hash separately.
 
         Args:
             slug: Skill slug
             version: Package version
-            content_hash: Content hash from lifecycle ledger (SHA-256 of manifest)
+            content_hash: Immutable B2 custom-skill version/provenance hash
+                (SHA-256 of manifest)
             manifest: Parsed manifest dict with members list
             artifact_store: ArtifactStore instance for loading member bytes
 

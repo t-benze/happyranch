@@ -879,262 +879,6 @@ exposure directly from disk (no daemon round-trip):
   a skill is or isn't available, including both gate results and
   eligibility provenance.
 
-### 4.5 THR-055 Lifecycle-Ledger Custom Skills (Internal Pilot)
-
-#### THR-055 B2 additive custom-skill schema
-
-The runtime has additive B2 persistence tables:
-`custom_skills`, immutable `custom_skill_versions`,
-`custom_skill_eligibility_rules`, `custom_skill_eligibility_events`,
-`custom_skill_materializations`, and `custom_skill_events`. They store B2
-identity/version provenance, visibility-policy audit, and session evidence.
-The unit-tested visibility resolver is wired through custom-skill CRUD,
-eligibility, effective-skills projection, and session materialization routes.
-
-User-authored custom skills are governed by an immutable lifecycle ledger,
-replacing the legacy per-org filesystem store (`<org_root>/skills/`).
-
-**Lifecycle states:** `proposed → draft → validated → in_review → approved
-→ published → assigned`. `rolled_back` and `retired` are terminal re-assignment
-states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
-
-**Agent authority.** Agents may submit proposals and create skills through
-two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
-
-1. **B2 create-skill session CLI (THR-055 B2).** The agent invokes
-   ``happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]``.
-   This is an **additional verified-agent authoring route** at
-   ``POST /api/v1/orgs/{slug}/custom-skills/agent-create``. It is bearer-free
-   and derives identity only from the verified SessionTracker context. A
-   created skill is a B2 default-hidden record; the response contains
-   ``skill_id``, ``version_id``, ``content_hash``, ``validation_state``, and
-   ``hidden_reason``.
-
-2. **Separate legacy agent-proposal route.** The agent commands
-   ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
-   The proposal file contains only
-   package metadata/content accepted by ``ProposalRequest`` (slug, name,
-   description, skill_md, version, policy_class, references, assets, purpose,
-   target_agent_suggestion). It must NOT contain any client-controlled
-   trusted identity/authority field: ``org``, ``org_slug``, ``agent``,
-   ``agent_name``, ``task_id``, ``session_id``, ``proposer_agent``,
-   ``actor``, ``eligibility``, ``permission``, or ``permissions``.
-   The CLI builds a
-   token-free transport (no bearer token read or sent) using only the daemon
-   port. It resolves org via the established ``resolve_org_slug(args_org=,
-   available=)`` convention. The opaque session ID is sent to
-   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
-   accept the master bearer token. The server independently derives all four
-   identity dimensions (org_slug, task_id, agent_name, active session_id) from
-   the SessionTracker's additive context index — never from body, query,
-   environment, task lookup by agent, team membership, or client-asserted
-   identity. The server rejects the **presence** of every client-controlled
-   trusted identity/authority field in the direct HTTP body — ``task_id``,
-   ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
-   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
-   ``permissions`` — before request-model parsing, session lookup, policy
-   checks, or any persistence. Presence includes empty values. Rejection
-   returns exact HTTP 403 with error code ``body_identity_rejected``; no
-   lifecycle package, event, materialization, or ArtifactStore residue is
-   produced. Path-selected org is cross-checked against the session's
-   org; cross-org and mismatched contexts are denied.
-
-3. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
-   is restricted to bearer-authenticated human/founder callers. Non-bearer
-   (agent) callers receive 403 directing them to the dedicated
-   ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
-
-**Agent-id × canonical-slug pilot policy.** The agent-only route enforces a fixed
-server-side policy BEFORE any artifact creation or ledger/event write:
-
-| Agent | Allowed slug |
-| --- | --- |
-| ``frontend_engineer`` | ``frontend-development`` |
-| ``product_lead`` | ``product-manager-prd`` (lowercase; canonical spelling from "product-manager-PRD") |
-
-Every other agent is denied (403). Either permitted agent with the wrong slug
-is denied (403). This fixed map does NOT inspect team membership, prompts, org
-config/YAML eligibility, request metadata, or body identity claims.
-
-All other lifecycle mutations (claim, draft edit/fork/edit, validate,
-submit-review, review, publish, assign, retire, rollback, and any eligibility/
-permission/config mutation surface reachable from this API) return server-side
-403 for agent invocations. No agent route may gain an alternate mutation method.
-Human/founder lifecycle authority remains as merged.
-
-**Proposal submission CLI (corrected — two agent paths).** The two
-agent submission workflows are described in §4.5 "Agent authority" above.
-The shipping CLI forms are::
-
-    happyranch skills propose --from-file <proposal.json> \
-      --session-id <session-id> [--org <slug>]
-
-    happyranch skills create --from-file <path> \
-      --session-id <session-id> [--org <slug>]
-
-The B2 ``skills create`` path (THR-055 B2) is an ADDITIONAL verified-agent
-authoring route at ``POST /api/v1/orgs/{slug}/custom-skills/agent-create`` that shares
-the same SessionTracker identity derivation, body-key rejection, and
-binding-lease pattern as the proposal route. The created skill is a B2
-default-hidden record and returns ``skill_id``, ``version_id``,
-``content_hash``, ``validation_state``, and ``hidden_reason``.
-
-There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
-or mechanisms. Identity is derived server-side exclusively from the verified
-SessionTracker context — never from CLI flags, query fields, body claims,
-namespace inspection, or client-asserted identity. The transport is
-bearer-free: the CLI reads only the daemon port and builds a plain
-``httpx.Client`` with NO ``Authorization`` header. Callers cannot supply
-trusted identity; body identity claims (presence of all eleven
-prohibited trusted keys, including empty values) are rejected with exact
-HTTP 403 ``body_identity_rejected`` before any persistence — see §4.5
-Agent authority.
-
-Malformed JSON, missing ``--from-file`` or ``--session-id`` flags, and body
-identity-key attacks fail locally with exit code 1 or 2. Lifecycle validation
-errors (4xx/422) from the daemon are rendered as ``error (<HTTP-status>): <detail>``
-and exit with code 1, where ``<HTTP-status>`` is the HTTP response status code
-and ``<detail>`` is the ``detail`` field from the daemon's JSON error response body.
-The CLI unconditionally reads the response as JSON — non-JSON responses raise
-before the renderer. On success the CLI prints status, skill_id, version_id,
-version, and content_hash.
-
-After submission, the proposal enters the lifecycle at ``proposed`` status. All
-subsequent actions remain founder-only (§4.5). Pilot constraints are unchanged:
-maximum two concurrently published custom skills, ``standard_operational``
-policy class only, two internal use cases (frontend-development,
-product-manager-prd). Proposals are immutable and task/session-provenanced with
-content excluded from catalog/effective resolution/materialization until
-founder publication.
-
-**Artifact retention.** All package members (SKILL.md, each
-reference file, each asset) are stored as independent content-addressed
-artifacts in the org ArtifactStore. A canonical JSON manifest
-lists every member with its normalized relative path, SHA-256 hash, artifact
-key, and size. The ``content_hash`` in the ledger is the SHA-256 of the
-manifest (binding full-package provenance, distinct from individual member
-hashes). The ``content_artifact_key`` points to the manifest artifact.
-
-Ledger tables store only immutable metadata (hash, version, provenance); the
-artifact store holds the sole canonical copy of every package byte. All
-ledger writes (package row + event insert) execute inside an explicit
-``BEGIN IMMEDIATE``/``COMMIT`` transaction so both rows commit or roll back
-together. On ledger failure, newly created artifacts are cleaned up via
-compensation; pre-existing artifacts from content-addressed deduplication
-are never deleted. Materialization loads the manifest, validates each
-member hash, and writes the complete directory tree (SKILL.md + references/
-+ assets/) fail-closed into the workspace. Legacy single-SKILL.md artifacts
-are still supported by the materializer for backward compatibility.
-
-**Legacy migration/quarantine.** On startup, existing `<org_root>/skills/`
-content is quarantined into the ledger with status `LEGACY_QUARANTINED`. Content
-is copied to the ArtifactStore under `skill-lifecycle/legacy/<slug>/<hash>/SKILL.md`
-for immutable retention. Quarantined skills are never materialized — only
-published+assigned lifecycle skills reach the workspace. Migration is idempotent
-and handles malformed/unsafe filesystem and YAML fixtures.
-
-**Atomic rollback (version-pinned, assignment-level only).**
-`POST /skill-lifecycle/rollback` and the v2
-`POST /skill-lifecycle/proposals/{version_id}/rollback` deactivate
-assignments only — never mutate package decision status. Package
-lifecycle ends at ``published`` or terminal ``rejected``;
-assignment/unassignment is a separate append-only projection. For v2
-exact-version rollback, only assignments to the addressed
-``package_version_id`` are deactivated; if that exact version is
-REJECTED the operation returns ``rejected_terminal`` (409) with no
-assignment/event mutation. Legacy rollback (skill_id only) inspects
-every active assignment and rejects the request before any mutation if
-any assignment points to a REJECTED package version. All rollback
-mutations execute inside ``BEGIN IMMEDIATE``/``COMMIT``. Workspace
-residue is cleaned up on the next spawn by fail-closed materialization.
-
-**Terminal REJECTED.** ``in_review → rejected`` is a terminal decision
-status. After rejection, every later claim, validation, review/approval,
-publish, assign, materialization, rollback, retire, or recovery attempt
-on that proposal/version is blocked with error code ``rejected_terminal``
-(HTTP 409). Rejection retains immutable package, all evidence,
-actor/time/rationale, and append-only history. A future change is a new
-proposal/version only.
-
-**Immutable proposer vs optional claimant.** ``PackageVersion.created_by``
-/ ``proposer_agent`` is immutable proposer identity derived from verified
-server-side session context. A founder claim is a SEPARATE optional
-``claimed_by`` / ``claimed_at`` — never a rewrite of the author identity.
-Existing agent-authored rows remain readable with compatible derivation.
-New additive nullable columns preserve legacy rows with NULL.
-
-**Reproducible validation.** Validation events record: immutable
-``content_hash``, mandatory non-blank ``validator_version`` (e.g.
-``"THR-055/1.0.0"`` or legacy ``"LEGACY/1.0.0"``), deterministic
-``validator_key`` (derived from version when not explicit), and distinct
-per-invocation run/event id. Re-runs append distinct events; never
-overwrite history. Missing/blank ``validator_version`` is rejected (400).
-
-**Founder-only proposal review endpoints.** All v2 proposal-scoped routes
-are under ``/skill-lifecycle/proposals/{version_id}/...`` and require
-bearer authentication (``_require_human``). Concurrency-protected with
-``expected_event_id`` marker: check + mutation execute inside a single
-``BEGIN IMMEDIATE``/``COMMIT``. Stale marker returns 409 with
-``stale_concurrency`` code and authoritative refresh state:
-- ``POST /proposals/{version_id}/claim`` — claim with concurrency
-- ``POST /proposals/{version_id}/validate`` — validate with deterministic metadata
-- ``POST /proposals/{version_id}/submit-review`` — VALIDATED → IN_REVIEW
-- ``POST /proposals/{version_id}/review`` — approve/reject with concurrency
-- ``POST /proposals/{version_id}/publish`` — publish with approval event id
-- ``POST /proposals/{version_id}/assign`` — assign to agent
-- ``POST /proposals/{version_id}/rollback`` — version-pinned rollback
-- ``GET /proposals/queue`` — paginated/filterable queue
-- ``GET /proposals/{version_id}`` — full detail with concurrency marker
-
-**Decision vs assignment separation.** Package decision lifecycle ends at
-``published`` or terminal ``rejected``. Assignment/unassignment/
-materialization are append-only version-pinned projections. ``rollback``
-and ``retire`` deactivate assignments only — they do NOT set package
-status to ``ROLLED_BACK`` or ``RETIRED``. Historical legacy rows retain
-their status for backward compatibility; new flows never generate
-``ROLLED_BACK`` or ``RETIRED`` as package decision status.
-
-**Materialization preflight.** Before writing any filesystem bytes,
-materialization checks that the target package version is not terminally
-REJECTED. A rejected version immediately raises ``LifecycleMaterializationError``
-with no workspace residue produced.
-
-**Migration.** This THR-055 implementation is additive: two new nullable
-columns ``claimed_by`` / ``claimed_at`` via ``ALTER TABLE ADD COLUMN``.
-No column drops, no semantic changes to existing columns, no overloaded-column
-semantic migration. All legacy rows remain readable.
-
-**Legacy route cutover.** `POST /skills`, `PATCH /skills/{id}`,
-`POST /skills/{id}/validate`, and `POST /agents/{agent}/skills/{skill}/assign`
-return 410 Gone with migration guidance. The lifecycle routes are the sole
-runtime source for governed custom skills.
-
-Registry and eligibility mutations emit audit rows under the `config:skills`
-scope prefix (matching the established `config:<section>` convention from
-THR-035).
-
-### 4.5 Fenced Non-Goals
-
-The following are **explicitly out of scope** for the runtime-managed skill
-policy:
-
-- Skills **do not** grant tools, credentials, network access, filesystem
-  access, sandbox policy, permission maps, allow-rule, or auth changes.
-- System/contract skills are **not toggleable** — they are outside the catalog.
-- **No destructive SQLite migration** — two additive nullable columns
-  (``claimed_by`` / ``claimed_at``) were added via ``ALTER TABLE ADD COLUMN``.
-  No column drops, no semantic changes to existing columns, and no
-  overloaded-column semantic migration. All legacy rows remain readable
-  with NULL for new columns. This is the sole additive migration surface
-  and is distinct from the prohibited destructive/overloaded-column
-  class.
-- **No web Settings UI** or marketplace in v1.
-- **No executable/permission-bearing package surface** — v1 packages include
-  `SKILL.md`, `skill.yaml`, and optional `references/` and `assets/`
-  directories only.
-- **No auth or permission-model change** — the existing executor-native
-  sandboxing + system prompt guardrails remain the sole capability gate.
-
 ### 4.6 Session-Time Skill Freshness & Protocol Doc Injection (THR-070)
 
 **Skill body freshness.** System/contract skill bodies are copied from the
@@ -1184,7 +928,7 @@ removed; no ``_WHOLESALE_DUMP_ENABLED`` flag remains.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
 materialization for a given agent workspace — system-contract injection +
-on-disk verification, managed-skill injection, and lifecycle-ledger injection
+on-disk verification, managed-skill injection, and B2 custom-skill injection
 — runs inside a single unified transaction (``materialize_workspace_skills``)
 protected by a process-local ``threading.RLock`` keyed by the canonical
 (resolved) workspace path. The legacy wholesale copy and its former
@@ -1201,7 +945,7 @@ one. The lock serializes writers only; it does NOT block readers.
 
 Named fail-closed behavior: a materialization failure produces a named
 actionable error (``SystemContractMaterializationError``,
-``LifecycleMaterializationError``, ``PermissionError``, or ``OSError``) — never
+``PermissionError``, or ``OSError``) — never
 a bare ``FileNotFoundError``. The caller persists the terminal failure and no
 agent subprocess is launched.
 
@@ -1503,7 +1247,7 @@ single-context launch never withdraws a valid system-contract link
 belonging to another context.  An unrecognised context string is a no-op:
 the function returns immediately without creating, building, preflighting,
 or reconciling any links, and must not withdraw or mutate an existing
-valid workspace state.  Release-managed and lifecycle links remain
+valid workspace state.  Release-managed and B2 custom-skill links remain
 policy-reconciled and are withdrawn when the agent becomes ineligible or
 unassigned.
 

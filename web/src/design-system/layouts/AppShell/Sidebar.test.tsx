@@ -446,7 +446,7 @@ describe('Sidebar-routed surfaces', () => {
   });
 });
 
-describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surface)', () => {
+describe('THR-055: retired Proposal review absent from global/sidebar nav', () => {
   test('Skills nav item is present in the flat primary navigation', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
@@ -456,7 +456,7 @@ describe('THR-055: Proposal review not in global/sidebar nav (now on Skills surf
     });
   });
 
-  test('Proposal review is absent from sidebar nav (entry moved to Skills surface)', async () => {
+  test('retired Proposal review is absent from sidebar nav', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
     await waitFor(() => {

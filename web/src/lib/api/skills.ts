@@ -11,7 +11,7 @@ export interface CatalogSkillItem {
   policy_class: string;
   status: string;
   version: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   assigned_agent_count: number;
   effective_agent_count: number;
   has_assigned_not_yet_effective: boolean;
@@ -97,20 +97,20 @@ export interface EditSkillRequest {
 export interface CreateSkillResponse {
   skill_id: string;
   source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
 }
 
 export interface ValidateSkillResponse {
   skill_id: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
 }
 
 export interface EditSkillResponse {
   skill_id: string;
   source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
   validation: { ok: boolean; errors: string[] };
   version: string;
 }
@@ -133,14 +133,14 @@ export const createSkill = (
   slug: string,
   body: CreateSkillRequest,
 ): Promise<CreateSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use submitProposal from skillLifecycle.ts */
+  /** @deprecated Legacy route retired (410 Gone). Use B2 custom-skills routes */
   request(`/orgs/${slug}/skills`, { method: 'POST', body: JSON.stringify(body) });
 
 export const validateSkill = (
   slug: string,
   skillId: string,
 ): Promise<ValidateSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use validateVersion from skillLifecycle.ts */
+  /** @deprecated Legacy route retired (410 Gone). Use B2 custom-skills routes */
   request(`/orgs/${slug}/skills/${skillId}/validate`, { method: 'POST' });
 
 export const editSkill = (
@@ -148,7 +148,7 @@ export const editSkill = (
   skillId: string,
   body: EditSkillRequest,
 ): Promise<EditSkillResponse> =>
-  /** @deprecated Legacy route retired (410 Gone). Use submitForReview/reviewDecision from skillLifecycle.ts */
+  /** @deprecated Legacy route retired (410 Gone). Use B2 custom-skills routes */
   request(`/orgs/${slug}/skills/${skillId}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
@@ -181,7 +181,7 @@ export interface AssignSkillResponse {
   materializes_on: string | null;
 }
 
-/** @deprecated Legacy route retired (410 Gone). Use assignSkill from skillLifecycle.ts */
+/** @deprecated Legacy route retired (410 Gone). Use B2 custom-skill eligibility routes */
 export const assignSkill = (
   slug: string,
   agentId: string,

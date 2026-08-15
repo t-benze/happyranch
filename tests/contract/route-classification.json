@@ -113,7 +113,6 @@
     "DELETE /api/v1/executor-binaries/{kind}",
     "GET /api/v1/executors/runtime/profiles",
     "DELETE /api/v1/executors/runtime/profiles/{name}",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals",
     "POST /api/v1/orgs/{slug}/custom-skills",
     "GET /api/v1/orgs/{slug}/custom-skills/catalog",
     "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}",
@@ -127,26 +126,6 @@
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility/preview",
     "PUT /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility",
     "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility/explain",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/{skill_id}",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/catalog/custom",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/events/{skill_id}",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/{skill_id}/claim",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/validate",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/submit-review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/publish",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/assign",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/rollback",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/retire",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/proposals/queue",
-    "GET /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/claim",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/validate",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/publish",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/assign",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/submit-review",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/{version_id}/rollback",
     "GET /api/v1/runtime/adapters/{adapter_id}",
     "DELETE /api/v1/runtime/adapters/{adapter_id}",
     "GET /api/v1/runtime/adapters",
@@ -201,10 +180,8 @@
 
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
 
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055)",
-
-    "POST /api/v1/orgs/{slug}/skills/recover": "operator CLI-only recovery route; not in SPA",
-    "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — opaque session-binding B1 create-skill path, not exercised from the Web UI (THR-055)",
+    "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — B2 custom-skill creation with verified session provenance (THR-055)",
+    "POST /api/v1/orgs/{slug}/skills/recover": "bearer-authenticated operator/CLI-only B2 canonical-package recovery; no browser client or consumer",
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)"
   }
 }

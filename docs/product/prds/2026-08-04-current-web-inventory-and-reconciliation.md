@@ -13,7 +13,7 @@
 
 This is the audited current-web inventory retained from PR #555. It replaces no product decision: it proves that every route-mounted shipped family is either tied to a requirement in one of the four domain PRDs or explicitly out of scope with an owner. “Shipped” means a present browser/API contract, not a new roadmap commitment or a claim that the prototype is authoritative.
 
-The founder-supplied HTML bundle is evidence of proposed UX only. When it conflicts with implementation, the current daemon and web contract wins. In particular, Work Hours and the skills lifecycle are shipped constraints, not greenfield designs; prototype-only controls are not requirements.
+The founder-supplied HTML bundle is evidence of proposed UX only. When it conflicts with implementation, the current daemon and web contract wins. In particular, Work Hours and B2 custom Skills are shipped constraints, not greenfield designs; prototype-only controls are not requirements.
 
 ## Shared authority, data, and UX baseline
 
@@ -37,7 +37,7 @@ The founder-supplied HTML bundle is evidence of proposed UX only. When it confli
 | Settings: assistant/system/org/agents/executors | org/team writes; runtime/executor/profile/adapter contracts | Core FR-19–22. System values remain read-only when restart/route constraints say so. |
 | Work Hours overview/detail/wakes and `/schedule` redirect | effective config/status/next wakes/settings/teams/agents | Work Hours PRD FR-1–10; redirect is compatibility only. |
 | Skills catalog/detail/status and mounted legacy create/edit/validation/assignment routes | Catalog/status/validation reads remain compatibility evidence. Direct `POST /skills`, `PATCH /skills/{skill_id}`, direct validation, and direct assignment return `410 Gone` / `legacy_cutover`. `/skills/new` and `/skills/:skillId/edit` remain mounted, with legacy-named controls/adapters. | Skills PRD FR-1–5. Retired compatibility, not working acceptance: the mounted pages and legacy catalog flow are an Engineering implementation-reconciliation defect. This record does not authorize a remedy. |
-| Skills lifecycle proposals queue/detail and lifecycle actions | The versioned proposal/decision ledger is the sole current Skills write boundary: verified-session proposal submission plus founder-gated lifecycle validation, review, publication, assignment, rollback, and retirement. | Skills FR-6–13. Immutable proposal/decision history remains separate from assignment and materialization projections; current proposal UI is bounded by the actions actually wired and server-authorized. |
+| B2 custom Skills | Verified agents and founders create the same immediately editable custom-skill record. It starts Hidden — eligibility not configured; retained evidence is the B2 version, provenance, validation, and materialization record. | Eligibility controls future-session guidance visibility only; it never grants permissions or tools. Legacy Proposals UI, content, records, history, routes, adapters, and compatibility are deleted. |
 | Knowledge Base | list/search/detail/stats, create/update/delete/reindex | Evidence PRD FR-1–4. CLI-only `--as-founder` impersonation path excluded (Engineering). |
 | Artifacts and thread attachments | list/upload/download/delete, participation-scoped attachment download | Evidence FR-5–7; checks/diffs/review history need persisted records. |
 | Audit | paginated/filterable append-only timeline | Evidence FR-8–9; corrections are new events. |
@@ -52,7 +52,7 @@ The founder-supplied HTML bundle is evidence of proposed UX only. When it confli
 
 Each page’s supporting dialogs, drawers, rows, state views, query/mutation hooks, and component-registry primitives inherit the table disposition; they are not silently omitted. The four independently shippable domains are intentionally separate: core operations; Work Hours; skills governance; evidence/observability/assistant.
 
-Retained decisions: (1) Work Hours uses implemented leaf resolution, one org gate plus eligibility, atomic validation/last-known-good, and its wake-to-root-task contract; (2) Skills direct catalog writes are retired compatibility (`410 legacy_cutover`), while the lifecycle proposal ledger is the sole current write boundary; (3) Skills preserve immutable proposal/decision history separately from assignment/effectiveness and materialization projections, with terminal rejection; (4) browser authority remains founder-authenticated; and (5) assistant conversations and tool evidence do not imply direct approval authority.
+Retained decisions: (1) Work Hours uses implemented leaf resolution, one org gate plus eligibility, atomic validation/last-known-good, and its wake-to-root-task contract; (2) B2 Skills use one immediately editable custom-skill record for verified agents and founders, default-hidden until eligibility is configured; (3) B2 Skills retain immutable versions, provenance, validation, and materialization evidence, while legacy proposal lifecycle state is deleted; (4) browser authority remains founder-authenticated; and (5) assistant conversations and tool evidence do not imply direct approval authority.
 
 ## Genuine gaps and gates
 

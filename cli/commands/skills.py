@@ -9,7 +9,6 @@ Commands:
   skills catalog validate   — validate registry + eligibility policy
   skills effective          — show effective skills for an agent
   skills policy explain     — explain why a skill is/isn't available
-  skills propose            — submit a custom-skill proposal (agent-only)
 """
 
 from __future__ import annotations
@@ -589,105 +588,6 @@ def _fmt_pc(pc) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Command: skills propose --from-file <path> --session-id <session-id>
-# ---------------------------------------------------------------------------
-
-def cmd_skills_propose(args: argparse.Namespace) -> None:
-    """Submit a custom-skill proposal via the agent-only session-bound route.
-
-    Agent callers must supply only their opaque active session ID — the
-    server derives org, task_id, and agent_name from the SessionTracker
-    context. The proposal file must contain only package metadata/content
-    (slug, name, description, skill_md, version, policy_class, references,
-    assets, purpose, target_agent_suggestion). It must NOT contain org,
-    agent, task, session, proposer_agent, eligibility, or permission
-    identity — any such fields are rejected by the server.
-
-    This command does NOT send the master bearer token; it uses the
-    session-binding authentication path exclusively.
-    """
-    if not args.from_file:
-        print("error: --from-file <path> is required", file=sys.stderr)
-        sys.exit(1)
-    if not args.session_id:
-        print("error: --session-id <session-id> is required", file=sys.stderr)
-        sys.exit(1)
-
-    # Read proposal file
-    try:
-        body = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"Error reading proposal file {args.from_file}: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    # Reject forbidden identity fields in the proposal body
-    forbidden = {"org", "agent", "agent_name", "task_id", "task",
-                 "session_id", "session", "proposer_agent", "proposer",
-                 "actor", "eligibility", "permission", "identity"}
-    for key in forbidden:
-        if key in body:
-            print(
-                f"error: proposal file must not contain identity field '{key}'. "
-                f"Org, agent, task, and session identity are derived from the "
-                f"server's verified session context.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # Build a minimal token-free transport — this route uses
-    # opaque session-binding, NOT the master bearer token.
-    import httpx
-    from cli.client.client import port_file
-
-    port_path = port_file()
-    if not port_path.exists():
-        print("error: daemon not running — start it with scripts/daemon.sh start",
-              file=sys.stderr)
-        sys.exit(1)
-    port = port_path.read_text().strip()
-    base_url = f"http://127.0.0.1:{port}"
-    # Deliberately NO Authorization header — this is the agent
-    # session-binding path. bearer-free by construction.
-    token_free_client = httpx.Client(
-        base_url=base_url,
-        headers={"X-HappyRanch-Surface": "cli"},
-        timeout=30.0,
-    )
-
-    # Resolve org for routing (the server cross-checks against session context)
-    from cli._shared import resolve_org_slug
-    try:
-        r = token_free_client.get("/api/v1/orgs")
-        available = [o["slug"] for o in r.json().get("orgs", [])] if r.status_code == 200 else []
-    except Exception:
-        available = []
-    org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
-
-    resp = token_free_client.post(
-        f"/api/v1/orgs/{org}/skill-lifecycle/proposals/agent",
-        json=body,
-        params={"session_id": args.session_id},
-    )
-
-    if resp.status_code == 201:
-        result = resp.json()
-        print(f"Proposal submitted successfully.")
-        print(f"  skill_id:  {result['skill_id']}")
-        print(f"  version_id: {result['version_id']}")
-        print(f"  version:   {result['version']}")
-        print(f"  status:    {result['status']}")
-        print(f"  content_hash: {result['content_hash']}")
-        if result.get("content_artifact_key"):
-            print(f"  artifact:  {result['content_artifact_key']}")
-        print()
-        print("This proposal is now visible to the founder for review and publication.")
-    else:
-        detail = resp.json().get("detail", resp.text)
-        print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
 # Command: skills create --from-file <path> --session-id <session-id>
 # ---------------------------------------------------------------------------
 
@@ -708,7 +608,7 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
 
     The created skill is stored immediately as a default-hidden custom-skill
     record. It becomes visible to the assignee only after a founder configures
-    eligibility through the B2 web UI or API; no separate proposal, review,
+    eligibility through the B2 web UI or API; no retired submission/review
     or publish step exists.
     """
     if not args.from_file:
@@ -769,7 +669,7 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
 
     resp = token_free_client.post(
-        f"/api/v1/orgs/{org}/custom-skills/agent-create",
+        f"/api/v1/orgs/{org}/skills/agent",
         json=body,
         params={"session_id": args.session_id},
     )
@@ -777,10 +677,10 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
     if resp.status_code == 201:
         result = resp.json()
         print(f"Skill created successfully.")
-        print(f"  skill_id:  {result['skill_id']}")
-        print(f"  version_id: {result['version_id']}")
-        print(f"  content_hash: {result['content_hash']}")
-        print(f"  validation_state: {result['validation_state']}")
+        print(f"  skill_id:  {result['skill']['id']}")
+        print(f"  version_id: {result['version']['id']}")
+        print(f"  content_hash: {result['version']['content_hash']}")
+        print(f"  validation_state: {result['version']['validation_state']}")
         print(f"  hidden_reason: {result['hidden_reason']}")
         print()
         print("This skill is created immediately and hidden by default.")
@@ -791,125 +691,58 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Command: skills recover <slug> <version> <content_hash>
-# ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
 
 def cmd_skills_recover(args: argparse.Namespace) -> None:
-    """Operator-invoked one-step recovery for a corrupted canonical package.
-
-    Validates identity/path inputs and ledger provenance, revalidates
-    member SHA-256 hashes against the ArtifactStore, then deletes the
-    corrupted canonical package. The next materialization will rebuild
-    from the ArtifactStore (which must be verified against the release
-    source for same-owner deployments).
-
-    Operator surface only — no automatic recovery from same-UID sources.
-    """
+    """Request explicit B2-provenance recovery after operator confirmation."""
     import httpx
+    import re
+
+    from cli._shared import resolve_org_slug
     from cli.client.client import port_file
 
+    if not re.fullmatch(r"[a-f0-9]{64}", args.content_hash):
+        print("error: content_hash must be exactly 64 lowercase hex characters", file=sys.stderr)
+        sys.exit(1)
     port_path = port_file()
     if not port_path.exists():
-        print("error: daemon not running — start it with scripts/daemon.sh start",
-              file=sys.stderr)
+        print("error: daemon not running — start it with scripts/daemon.sh start", file=sys.stderr)
         sys.exit(1)
     port = port_path.read_text().strip()
-
-    org = getattr(args, 'org', None)
-
-    # Resolve org slug
-    from cli._shared import resolve_org_slug
     try:
-        with httpx.Client(
-            base_url=f"http://127.0.0.1:{port}",
-            timeout=10.0,
-        ) as client:
-            r = client.get("/api/v1/orgs")
-            available = [o["slug"] for o in r.json().get("orgs", [])] \
-                if r.status_code == 200 else []
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10.0) as client:
+            response = client.get("/api/v1/orgs")
+            available = [item["slug"] for item in response.json().get("orgs", [])] if response.status_code == 200 else []
     except Exception:
         available = []
-    org = resolve_org_slug(args_org=org, available=available)
-
-    # Validate local inputs before calling the daemon
-    slug = args.slug.strip()
-    version = args.version.strip()
-    content_hash = args.content_hash.strip()
-
-    if not slug or not version or not content_hash:
-        print("error: slug, version, and content_hash must all be non-empty",
-              file=sys.stderr)
-        sys.exit(1)
-
-    import re
-    if not re.match(r"^[a-f0-9]{64}$", content_hash):
-        print(
-            "error: content_hash must be exactly 64 lowercase hex characters",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Confirm with operator before deletion
-    print(f"Recovery target:")
-    print(f"  slug:         {slug}")
-    print(f"  version:      {version}")
-    print(f"  content_hash: {content_hash[:16]}...")
-    print()
-    print("This will DELETE the corrupted canonical package from disk.")
-    print("The next daemon launch/materialization will rebuild from the")
-    print(
-        "ArtifactStore (which must be verified against the release\n"
-        "source for same-owner deployments)."
-    )
-    print()
-
+    org = resolve_org_slug(args_org=getattr(args, "org", None), available=available)
+    print(f"Recovery target: {args.slug}@{args.version} ({args.content_hash[:16]}...)")
     try:
-        response = input("Proceed? [y/N] ").strip().lower()
+        confirmed = input("Delete corrupted canonical package? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        response = "n"
-
-    if response not in ("y", "yes"):
+        confirmed = "n"
+    if confirmed not in {"y", "yes"}:
         print("Aborted.")
-        sys.exit(0)
-
-    # Call the daemon recovery endpoint
+        return
     token_path = port_path.parent / "daemon.token"
     if not token_path.exists():
         print("error: daemon auth token not found", file=sys.stderr)
         sys.exit(1)
-    token = token_path.read_text().strip()
-
     with httpx.Client(
         base_url=f"http://127.0.0.1:{port}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-HappyRanch-Surface": "cli",
-        },
+        headers={"Authorization": f"Bearer {token_path.read_text().strip()}", "X-HappyRanch-Surface": "cli"},
         timeout=30.0,
     ) as client:
-        resp = client.post(
+        response = client.post(
             f"/api/v1/orgs/{org}/skills/recover",
-            json={
-                "slug": slug,
-                "version": version,
-                "content_hash": content_hash,
-            },
+            json={"slug": args.slug, "version": args.version, "content_hash": args.content_hash},
         )
+    if response.status_code != 200:
+        print(f"error ({response.status_code}): {response.json().get('detail', response.text)}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ {response.json()['message']}")
 
-        if resp.status_code == 200:
-            result = resp.json()
-            print(f"✓ {result['message']}")
-        else:
-            detail = resp.json().get("detail", resp.text)
-            print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
-            sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Register subcommands
-# ---------------------------------------------------------------------------
 
 def register(sub) -> None:
     """Register the 'skills' subcommand family."""
@@ -961,22 +794,6 @@ def register(sub) -> None:
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
     p_exp.set_defaults(func=cmd_skills_policy_explain)
 
-    # --- skills propose --from-file <path> --session-id <session-id> ---
-    p_propose = skills_sub.add_parser(
-        "propose",
-        help="Submit a custom-skill proposal (agent-only, session-bound)",
-    )
-    p_propose.add_argument(
-        "--from-file", dest="from_file", required=True,
-        help="Path to proposal JSON file (package metadata/content only)",
-    )
-    p_propose.add_argument(
-        "--session-id", dest="session_id", required=True,
-        help="Opaque active session ID (from task context)",
-    )
-    p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
-    p_propose.set_defaults(func=cmd_skills_propose)
-
     # --- skills create --from-file <path> --session-id <session-id> ---
     p_create = skills_sub.add_parser(
         "create",
@@ -993,17 +810,12 @@ def register(sub) -> None:
     p_create.add_argument("--org", help="Org slug (default: auto-detect)")
     p_create.set_defaults(func=cmd_skills_create)
 
-    # --- skills recover <slug> <version> <content_hash> ---
     p_recover = skills_sub.add_parser(
         "recover",
-        help="Operator recovery: delete a corrupted canonical package "
-             "(next materialization rebuilds from ArtifactStore)",
+        help="Operator recovery for a corrupted B2 canonical package",
     )
-    p_recover.add_argument("slug", help="Skill slug (e.g., hr:test-skill)")
-    p_recover.add_argument("version", help="Package version (e.g., 1.0.0)")
-    p_recover.add_argument(
-        "content_hash",
-        help="Content hash from lifecycle ledger (64 lowercase hex chars)",
-    )
+    p_recover.add_argument("slug", help="B2 custom-skill slug")
+    p_recover.add_argument("version", help="B2 custom-skill version ID")
+    p_recover.add_argument("content_hash", help="B2 version SHA-256 hash")
     p_recover.add_argument("--org", help="Org slug (default: auto-detect)")
     p_recover.set_defaults(func=cmd_skills_recover)

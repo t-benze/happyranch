@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from runtime.daemon.sessions import SessionTracker
@@ -102,6 +104,29 @@ def test_get_by_session_independent_per_agent() -> None:
     assert t.get_by_session("sess-fe") == ("TASK-002", "frontend_engineer")
 
 
+def test_binding_lease_serializes_same_binding_session_replacement() -> None:
+    """Session mutation waits for in-flight B2 creation on the same binding."""
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-1", org_slug="alpha")
+    lease = t._get_binding_lease("TASK-001", "dev_agent")
+    replacement_started = threading.Event()
+    replacement = threading.Thread(
+        target=lambda: (
+            replacement_started.set(),
+            t.set_active("TASK-001", "dev_agent", "sess-2", org_slug="alpha"),
+        ),
+    )
+
+    with lease:
+        replacement.start()
+        assert replacement_started.wait(timeout=1)
+        assert t.get_active("TASK-001", "dev_agent") == "sess-1"
+
+    replacement.join(timeout=1)
+    assert not replacement.is_alive()
+    assert t.get_active("TASK-001", "dev_agent") == "sess-2"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # THR-055 seq 127 fix-forward: session context cleanup on clear/replacement
 # ═══════════════════════════════════════════════════════════════════════════
@@ -109,7 +134,7 @@ def test_get_by_session_independent_per_agent() -> None:
 class TestContextCleanup:
     """Regression: _context_by_session must be cleaned on clear() and
     on set_active() replacement, so revoked/completed/superseded opaque
-    capabilities cannot create proposals.
+    capabilities cannot create B2 custom skills.
     """
 
     def test_clear_removes_context_by_session(self) -> None:

@@ -7,7 +7,6 @@ without grepping the process table.
 """
 from __future__ import annotations
 
-import threading
 from threading import Lock
 
 
@@ -22,35 +21,16 @@ class SessionTracker:
         # only (task_id, agent_name) for backward compatibility.
         self._context_by_session: dict[str, tuple[str, str, str]] = {}
         self._lock = Lock()
-        # Per-(task_id, agent_name) lease map for linearizing the agent
-        # proposal route's authorization+persistence span against
-        # clear()/set_active() on the SAME binding.  Each key maps to
-        # a threading.Lock that is acquired by the proposal route
-        # (around authorization + persistence) and by clear()/set_active()
-        # (around session mutation).  This ensures same-binding mutual
-        # exclusion WITHOUT serializing unrelated task/agent pairs
-        # through a single SessionTracker-wide mutex.
+        # Per-(task_id, agent_name) lease map for linearizing session-bound
+        # B2 custom-skill creation against clear()/set_active() on the SAME
+        # binding. Each key maps to a threading.Lock acquired around B2
+        # creation and session mutation. This ensures same-binding mutual
+        # exclusion WITHOUT serializing unrelated task/agent pairs through
+        # a single SessionTracker-wide mutex.
         #
         # Guarded by self._lock during creation only; the Lock objects
         # themselves provide the per-binding synchronization.
         self._binding_leases: dict[tuple[str, str], Lock] = {}
-        # Two-phase test seam for deterministic concurrency proofs.
-        # Both are None in production — no runtime overhead.
-        #
-        # Phase 1 — pre-lease barrier: pauses the proposal route AFTER
-        # initial session/context resolution but BEFORE binding-lease
-        # acquisition.  Tests use this to prove terminal-wins interleavings
-        # (clear/set_active win before the route acquires the lease).
-        self._pre_lease_barrier: threading.Event | None = None
-        self._pre_lease_barrier_reached: threading.Event | None = None
-        # Phase 2 — post-authorization barrier: pauses the proposal route
-        # AFTER session revalidation + fixed-policy enforcement but BEFORE
-        # _service.submit_proposal (persistence).  Tests use this to prove
-        # proposal-wins interleavings (already-authorized proposal held
-        # pending, same-binding terminal mutations block).
-        self._proposal_barrier: threading.Event | None = None
-        # Signal: set by the route when it reaches _proposal_barrier.
-        self._barrier_reached: threading.Event | None = None
 
     def _get_binding_lease(self, task_id: str, agent: str) -> Lock:
         """Return the per-binding Lock for (task_id, agent).
@@ -76,7 +56,7 @@ class SessionTracker:
                 self._active[(task_id, agent)] = session_id
                 if old_session_id is not None and old_session_id != session_id:
                     # Invalidate the superseded session's context so stale
-                    # opaque capabilities cannot create proposals.
+                    # opaque capabilities cannot create B2 custom skills.
                     self._context_by_session.pop(old_session_id, None)
                 if org_slug is not None:
                     self._context_by_session[session_id] = (org_slug, task_id, agent)
@@ -150,5 +130,5 @@ class SessionTracker:
                 self._pids.pop((task_id, agent), None)
                 if old_session_id is not None:
                     # Invalidate the cleared session's context so completed/
-                    # cancelled/revoked opaque capabilities cannot create proposals.
+                    # cancelled/revoked opaque capabilities cannot create B2 custom skills.
                     self._context_by_session.pop(old_session_id, None)

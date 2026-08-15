@@ -36,7 +36,7 @@ export function SkillStatusBadge({
     );
   }
   const knownState = state === 'valid' ? 'validated' : state === 'invalid' ? 'failed_validation' : state;
-  const { text, tone } = validationLabel(knownState as 'in_catalog' | 'validated' | 'failed_validation' | 'proposed');
+  const { text, tone } = validationLabel(knownState as 'in_catalog' | 'validated' | 'failed_validation');
   const Icon = TONE_ICON[tone];
   return (
     <span

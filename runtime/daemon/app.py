@@ -30,7 +30,6 @@ from runtime.daemon.routes import (
     orgs,
     runtime,
     schedules,
-    skill_lifecycle,
     skills,
     tasks,
     teams,
@@ -159,24 +158,6 @@ async def _lifespan(app: FastAPI):
         except Exception as exc:
             _logger.warning(
                 "THR-106 skill-id rename migration error for org %s: %s",
-                org.slug, exc,
-            )
-        # THR-055: one-shot quarantine of legacy user-authored skills into
-        # the lifecycle ledger. Creates LEGACY_QUARANTINED PackageVersion
-        # records for pre-lifecycle filesystem skills. Idempotent by hash.
-        try:
-            from runtime.skills.lifecycle.stores import quarantine_legacy_user_skills
-            quarantined = quarantine_legacy_user_skills(
-                org.db, org.root, org.settings,
-            )
-            if quarantined > 0:
-                _logger.info(
-                    "THR-055 legacy skill quarantine for org %s: %d skills quarantined",
-                    org.slug, quarantined,
-                )
-        except Exception as exc:
-            _logger.warning(
-                "THR-055 legacy skill quarantine error for org %s: %s",
                 org.slug, exc,
             )
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
@@ -369,7 +350,6 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(custom_skills.router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
     app.include_router(custom_skills.agent_custom_skills_router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
-    app.include_router(skill_lifecycle.dual_router, prefix="/api/v1/orgs/{slug}", tags=["skill-lifecycle"])
 
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])

@@ -137,5 +137,17 @@ def _check_optional_token(
     return authorization.removeprefix("Bearer ").strip() == expected
 
 
+def _require_human(has_bearer: bool = Depends(_check_optional_token)) -> None:
+    """Require the existing founder bearer authority for human-write routes."""
+    if not has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "human_only",
+                "detail": "This action requires human/founder authority. Agent sessions are not authorized.",
+            },
+        )
+
+
 def optional_bearer() -> Depends:
     return Depends(_check_optional_token)
