@@ -2489,6 +2489,67 @@ def test_todos_edit_parses_to_cmd_schedules_edit():
     assert args.func is cmd_schedules_edit
 
 
+def test_cmd_schedules_edit_patches_payload_and_prints_response(tmp_path, capsys):
+    from cli.commands.schedules import cmd_schedules_edit
+
+    payload = {"fire_at": "2026-08-16T09:00:00+08:00"}
+    payload_path = tmp_path / "edit.json"
+    payload_path.write_text(json.dumps(payload))
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"schedule_id": "SCHEDULE-001", "status": "armed"}
+    client = MagicMock()
+    client.patch.return_value = response
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        cmd_schedules_edit(Namespace(schedule_id="SCHEDULE-001", from_file=str(payload_path)))
+
+    client.patch.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001", json=payload,
+    )
+    assert capsys.readouterr().out == "ok: SCHEDULE-001 edited (status=armed)\n"
+
+
+def test_cmd_schedules_edit_preserves_ok_error_handling(tmp_path, capsys):
+    from cli.commands.schedules import cmd_schedules_edit
+
+    payload_path = tmp_path / "edit.json"
+    payload_path.write_text(json.dumps({"timezone": "Asia/Shanghai"}))
+    response = MagicMock(status_code=409, text="conflict")
+    response.json.return_value = {"detail": {"code": "no_active_runtime"}}
+    client = MagicMock()
+    client.patch.return_value = response
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        with pytest.raises(SystemExit):
+            cmd_schedules_edit(Namespace(schedule_id="SCHEDULE-001", from_file=str(payload_path)))
+
+    client.patch.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001",
+        json={"timezone": "Asia/Shanghai"},
+    )
+    assert "No active runtime" in capsys.readouterr().out
+
+
+def test_opc_client_patch_delegates_to_authenticated_http_client():
+    from cli.client.client import OpcClient
+
+    with patch("cli.client.client.httpx.Client") as http_client_cls:
+        internal_client = http_client_cls.return_value
+        response = MagicMock()
+        internal_client.patch.return_value = response
+        client = OpcClient(base_url="http://daemon", token="secret")
+
+        assert client.patch("/path", json={"key": "value"}) is response
+
+    http_client_cls.assert_called_once_with(
+        base_url="http://daemon",
+        headers={"Authorization": "Bearer secret", "X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    )
+    internal_client.patch.assert_called_once_with("/path", json={"key": "value"})
+
+
 def test_schedules_spawn_not_under_todos():
     """happyranch todos spawn does NOT exist; spawn is only under schedules."""
     parser = build_parser()
