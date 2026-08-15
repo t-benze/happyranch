@@ -486,9 +486,11 @@ and final UI simplification remain later serial slices.
 ordinary v1 stdin/stdout wrapper path once with a unique bounded opaque canary
 inside ``AdapterInput.prompt`` before any adapter/profile persistence. The
 terminal ``AdapterOutput`` must be schema-valid, successful and
-returncode-consistent, echo that invocation ID, identify the canonical adapter,
-contain a nonblank provider ``agent_session_id``, and include the exact canary
-in canonical ``result.text``. Malformed/empty/absent output, timeout,
+returncode-consistent, echo that HappyRanch invocation ID, identify the canonical
+adapter, and include the exact canary in canonical ``result.text``. Provider
+``agent_session_id`` is optional and resume-only; when available it must be
+returned faithfully, but it cannot substitute for HappyRanch invocation-identity
+proof. Malformed/empty/absent output, timeout,
 provider-declared error, or missing/wrong canary fails closed with no durable
 adapter/profile/registry residue. Failure records retain only a bounded
 category, never candidate stdout/stderr/errors or the canary. This is a

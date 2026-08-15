@@ -147,24 +147,35 @@ def _make_behavioral_adapter_script(tmp_path: Path, name: str, mode: str = "succ
             word for word in prompt.split()
             if word.startswith("direct-connect-canary:")
         )
-        result_text = canary if {mode!r} == "success" else "provider did not receive the prompt"
+        result_text = (
+            canary
+            if {mode!r} in ("success", "null_agent_session", "nonzero_process")
+            else "direct-connect-canary:wrong" if {mode!r} == "wrong_canary"
+            else "provider did not receive the prompt"
+        )
         payload = {{
             "success": {mode!r} != "provider_error",
             "duration_seconds": 0,
-            "session_id": "wrong-invocation" if {mode!r} == "wrong_invocation" else request["invocation"]["invocation_id"],
+            "session_id": (
+                "wrong-invocation" if {mode!r} == "wrong_invocation"
+                else "" if {mode!r} == "missing_invocation"
+                else request["invocation"]["invocation_id"]
+            ),
             "returncode": 17 if {mode!r} == "inconsistent_returncode" else 0,
             "stdout_tail": "untrusted stdout secret",
             "stderr_tail": "untrusted stderr secret",
             "result": {{"text": result_text}},
             "error": "provider secret" if {mode!r} == "provider_error" else None,
-            "agent_session_id": None if {mode!r} == "blank_agent_session" else "provider-session-123",
+            "agent_session_id": None if {mode!r} == "null_agent_session" else "provider-session-123",
             "adapter_metadata": {{
-                "adapter": request["executor_context"]["provider"],
+                "adapter": "wrong-adapter" if {mode!r} == "wrong_adapter" else request["executor_context"]["provider"],
                 "adapter_version": "1.0.0",
                 "contract_version": 1,
             }},
         }}
         sys.stdout.write(json.dumps(payload))
+        if {mode!r} == "nonzero_process":
+            sys.exit(9)
     """))
     script_path.chmod(0o755)
     return script_path
@@ -421,7 +432,9 @@ class TestConformanceProbe:
         assert result.adapter_metadata.contract_version == 1
         assert result.adapter_metadata.adapter == "conformant-adapter"
 
-    def test_direct_behavioral_probe_forwards_unique_canary_to_terminal_result(self, tmp_path: Path):
+    def test_direct_behavioral_probe_forwards_unique_canary_and_retains_provider_session_id(
+        self, tmp_path: Path,
+    ):
         script = _make_behavioral_adapter_script(tmp_path, "behavioral-adapter")
 
         result = run_conformance_probe(
@@ -437,14 +450,31 @@ class TestConformanceProbe:
         assert result.result is not None and second.result is not None
         assert result.result.text != second.result.text
 
+    def test_direct_behavioral_probe_accepts_non_resumable_adapter_without_provider_session_id(
+        self, tmp_path: Path,
+    ):
+        script = _make_behavioral_adapter_script(
+            tmp_path, "non-resumable-adapter", "null_agent_session",
+        )
+
+        result = run_conformance_probe(
+            str(script), "non-resumable-adapter", require_prompt_delivery=True,
+        )
+
+        assert result.success is True
+        assert result.agent_session_id is None
+
     @pytest.mark.parametrize(
         ("mode", "reason"),
         [
             ("swallowed_prompt", "terminal result did not prove prompt delivery"),
+            ("wrong_canary", "terminal result did not prove prompt delivery"),
             ("provider_error", "provider reported failure"),
-            ("blank_agent_session", "agent session id is missing"),
             ("wrong_invocation", "invocation id is missing or does not match"),
+            ("missing_invocation", "invocation id is missing or does not match"),
+            ("wrong_adapter", "adapter identity mismatch"),
             ("inconsistent_returncode", "return code is inconsistent"),
+            ("nonzero_process", "provider process exited nonzero"),
             ("malformed", "malformed output"),
             ("empty", "absent terminal output"),
         ],

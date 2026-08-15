@@ -869,8 +869,6 @@ def run_conformance_probe(
             raise direct_failure("return code is inconsistent")
         if output.session_id != probe_input.invocation.invocation_id:
             raise direct_failure("invocation id is missing or does not match")
-        if not output.agent_session_id or not output.agent_session_id.strip():
-            raise direct_failure("agent session id is missing")
         if output.result is None or output.result.text is None or prompt_canary not in output.result.text:
             raise direct_failure("terminal result did not prove prompt delivery")
 

@@ -133,9 +133,11 @@ connection; see `protocol/05b-agent-runtime.md` for the normative detail.
 Each direct projection runs one bounded behavioral conformance probe before
 any adapter/profile persistence: it sends a fresh opaque canary in the normal
 v1 ``AdapterInput.prompt`` and accepts only a successful, returncode-consistent
-terminal ``AdapterOutput`` with the matching invocation ID, canonical adapter
-ID, nonblank provider ``agent_session_id``, and that exact canary in
-``result.text``. Candidate-controlled stdout/stderr/error text and the canary
+terminal ``AdapterOutput`` with the matching HappyRanch invocation ID, canonical
+adapter ID, and that exact canary in ``result.text``. Provider
+``agent_session_id`` is optional and resume-only; when a provider returns one,
+the adapter must preserve it faithfully, but it cannot substitute for the
+HappyRanch invocation-identity proof. Candidate-controlled stdout/stderr/error text and the canary
 are never persisted or returned on failure; the projection records only a
 bounded category. ``/connect`` remains receipt-only and starts zero
 subprocesses. This direct-only behavioral gate does not require a registered

@@ -56,9 +56,16 @@ def _behavioral_wrapper(mode: str = "success") -> bytes:
             "returncode": 0,
             "stdout_tail": "provider stdout secret",
             "stderr_tail": "provider stderr secret",
-            "result": {{"text": canary if {mode!r} == "success" else "prompt swallowed"}},
+            "result": {{
+                "text": (
+                    canary
+                    if {mode!r} in ("success", "null_agent_session")
+                    else "direct-connect-canary:wrong" if {mode!r} == "wrong_canary"
+                    else "prompt swallowed"
+                )
+            }},
             "error": "provider error secret" if {mode!r} == "provider_error" else None,
-            "agent_session_id": None if {mode!r} == "blank_agent_session" else "provider-session",
+            "agent_session_id": None if {mode!r} == "null_agent_session" else "provider-session",
             "adapter_metadata": {{
                 "adapter": request["executor_context"]["provider"],
                 "adapter_version": "1.2.3",
@@ -142,9 +149,25 @@ def test_projection_runs_real_wrapper_and_requires_terminal_canary_delivery(stor
     assert outcome.profile_name == "custom-profile"
 
 
+def test_projection_accepts_non_resumable_wrapper_without_provider_session_id(store, tmp_path):
+    from runtime.daemon.direct_connect_projection import project
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    operation_id, _ = _mint_and_receive(
+        store, tmp_path, wrapper_body=_behavioral_wrapper("null_agent_session"),
+    )
+
+    outcome = project(store, operation_id)
+
+    assert outcome.state == "committed"
+    assert load_adapters()
+    assert get_registry().get_profile("custom-profile") is not None
+
+
 @pytest.mark.parametrize(
     "mode",
-    ["swallowed_prompt", "provider_error", "blank_agent_session", "malformed", "empty"],
+    ["swallowed_prompt", "wrong_canary", "provider_error", "malformed", "empty"],
 )
 def test_projection_behavioral_conformance_failure_leaves_no_durable_adapter_or_profile(
     store, tmp_path, mode,

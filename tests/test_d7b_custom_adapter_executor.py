@@ -243,7 +243,7 @@ class TestCustomAdapterExecutorLaunch:
     def test_successful_launch(self, tmp_path):
         """A valid adapter returns ExecutorResult.success=True."""
         from runtime.orchestrator.adapter_store import compute_sha256
-        output = _valid_adapter_output()
+        output = _valid_adapter_output(agent_session_id="provider-resume-123")
         exe_path = _make_test_adapter_executable(tmp_path, output)
         exe_hash = compute_sha256(exe_path)
 
@@ -265,6 +265,7 @@ class TestCustomAdapterExecutorLaunch:
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 100
         assert result.token_usage.output_tokens == 50
+        assert result.agent_session_id == "provider-resume-123"
 
     def test_adapter_output_maps_token_usage(self, tmp_path):
         """TokenUsage from adapter output is populated in ExecutorResult."""
