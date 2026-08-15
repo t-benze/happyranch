@@ -130,7 +130,7 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     mount();
     await screen.findByText('kb-curation');
     const add = screen.getByRole('link', { name: /Add custom skill/i });
-    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/new`);
+    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/custom/new`);
   });
 
   test('read-only system contract shows no toggle/edit control', async () => {

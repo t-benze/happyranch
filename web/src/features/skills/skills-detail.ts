@@ -187,7 +187,7 @@ export function assignmentRollup(
   return { assigned, effective, notYetEffective: assigned - effective };
 }
 
-/** Destination for the Slice-4 edit screen (stubbed — not built in Slice 2). */
+/** Destination for the B2 custom-skill edit surface. */
 export function editRoutePath(slug: string, skillId: string): string {
-  return `/orgs/${slug}/skills/${skillId}/edit`;
+  return `/orgs/${slug}/skills/custom/${skillId}`;
 }

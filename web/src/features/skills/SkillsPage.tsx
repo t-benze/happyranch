@@ -121,7 +121,7 @@ export function SkillsPage(): JSX.Element {
               Runtime Validation
             </Link>
             <Link
-              to={`/orgs/${slug ?? ''}/skills/new`}
+              to={`/orgs/${slug ?? ''}/skills/custom/new`}
               className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
             >
               <Plus size={15} aria-hidden="true" />
