@@ -642,6 +642,9 @@ class DirectConnectAuthorityStore:
                 return None
             token_fingerprint = operation["token_fingerprint"]
             intended_profile_name = operation["intended_profile_name"]
+            cursor.execute(
+                "DELETE FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+            )
             cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
             cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
             cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))

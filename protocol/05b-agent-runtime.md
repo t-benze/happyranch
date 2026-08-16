@@ -174,8 +174,12 @@ Slice A's `received_nonlaunchable` receipt:
   `POST /api/v1/runtime/custom-cli/{operation_id}/forget` is the separate
   master-bearer-authenticated operator cleanup for a terminal `failed`
   projection. It is the only direct-connect route that deletes authority-store
-  rows: it refuses missing, `planned`, and `committed` operations, deletes the
-  failed operation's durable authority/receipt/projection records, and removes
+  rows: it refuses missing, `planned`, and `committed` operations, and also
+  refuses while retry validation is `running` or after it `succeeded` (the
+  latter retains the live connected binding). After a terminal failed retry,
+  ordinary forget atomically deletes that retry-attempt record together with
+  the failed operation's durable authority/receipt/projection records, without
+  rewriting its append-only direct-connect event/audit history; it then removes
   its canonical wrapper file if it still exists. `happyranch custom-cli forget
   <profile>` first reads the status route and refuses to call this cleanup
   route unless the profile state is `failed`.
