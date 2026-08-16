@@ -42,7 +42,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
 from runtime.daemon.direct_connect_retry import retry_validate
-from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.daemon.direct_connect_store import DirectConnectRetryInProgress, canonical_wrapper_destination
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
@@ -174,7 +174,13 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
                 "— this operation is still in flight or is a live connection"
             ),
         )
-    intended_profile_name = authority_store.forget_operation(operation_id)
+    try:
+        intended_profile_name = authority_store.forget_operation(operation_id)
+    except DirectConnectRetryInProgress:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="refused: retry validation is running",
+        ) from None
     if intended_profile_name is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
     wrapper_destination = canonical_wrapper_destination(

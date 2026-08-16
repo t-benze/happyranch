@@ -21,6 +21,10 @@ _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
 
 
+class DirectConnectRetryInProgress(RuntimeError):
+    """Raised when an atomic forget would race a claimed retry validation."""
+
+
 def fingerprint_registration_token(token_plaintext: str) -> str:
     """Return a domain-separated, non-reversible stable token identity."""
     return hashlib.sha256(_FINGERPRINT_DOMAIN + token_plaintext.encode("utf-8")).hexdigest()
@@ -603,7 +607,8 @@ class DirectConnectAuthorityStore:
         """Delete a terminal-failed operation and return its profile name.
 
         The caller owns deletion of the derived wrapper path.  No state other
-        than a durable failed projection is eligible for removal.
+        than a durable failed projection is eligible for removal.  A claimed
+        retry holds this same store transaction boundary until it settles.
         """
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -613,6 +618,12 @@ class DirectConnectAuthorityStore:
             ).fetchone()
             if projection is None or projection["state"] != "failed":
                 return None
+            if cursor.execute(
+                """SELECT 1 FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'running' LIMIT 1""",
+                (operation_id,),
+            ).fetchone() is not None:
+                raise DirectConnectRetryInProgress("retry validation is running")
             # A retry success binds a live profile while deliberately leaving
             # the original projection as immutable failed evidence.  That
             # historical state must never make a connected profile forgettable.
