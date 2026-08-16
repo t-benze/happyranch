@@ -271,7 +271,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       reason: profileState === 'failed' ? 'initial projection failure' : null,
     }));
     const { directConnect: api } = await import('@/lib/api');
-    const commitSpy = vi.spyOn(api, 'commit').mockImplementation(async () => {
+    const retrySpy = vi.spyOn(api, 'retry').mockImplementation(async () => {
       profileState = 'planned';
       return { operation_id: 'op-1', profile_state: 'planned' };
     });
@@ -285,11 +285,11 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
     await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
     expect(screen.queryByText(/connection failed/i)).not.toBeInTheDocument();
-    expect(commitSpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
 
     profileState = 'committed';
     await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
-    expect(commitSpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
   }, 20000);
 
   test('a planned direct commit response still renders a terminal failed status', async () => {
@@ -303,7 +303,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       reason: profileState === 'failed' ? 'conformance_probe_failed: terminal boom' : null,
     }));
     const { directConnect: api } = await import('@/lib/api');
-    const commitSpy = vi.spyOn(api, 'commit').mockImplementation(async () => {
+    const retrySpy = vi.spyOn(api, 'retry').mockImplementation(async () => {
       profileState = 'planned';
       return { operation_id: 'op-1', profile_state: 'planned' };
     });
@@ -317,12 +317,12 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
     await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
     expect(screen.queryByText(/connection failed/i)).not.toBeInTheDocument();
-    expect(commitSpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
 
     profileState = 'failed';
     await screen.findByText(/terminal boom/i, {}, { timeout: 10000 });
     expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
-    expect(commitSpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
   }, 20000);
 
   test('no pending-approval or recovery-bind UI exists anywhere in the flow', async () => {
