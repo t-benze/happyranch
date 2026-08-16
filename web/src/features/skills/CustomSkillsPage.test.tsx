@@ -18,7 +18,9 @@ const skill: {
   current_version_id: number;
   retired_at: null;
   validation_state: string;
+  content_hash?: string;
   hidden_reason?: string | null;
+  skill_md_cache?: string | null;
 } = {
   skill_id: SKILL_ID,
   slug: 'playbook',
@@ -139,6 +141,34 @@ describe('Custom Skills routes', () => {
     server.use(http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
+  test('detail renders an agent-created current guidance source without populating Add version', async () => {
+    const user = userEvent.setup();
+    const source = '# Partner guidance\n\nUse <script>unsafe()</script> literally.\n  Keep this indentation.';
+    mountDetail({ skill: { ...skill, content_hash: '4d0fc04d9c0d89a12a4c8fb914a92f7281fb8d3ba14f301d50b0af3beaaf83f7', skill_md_cache: source } });
+
+    const guidance = await screen.findByRole('region', { name: 'Current guidance / SKILL.md' });
+    expect(guidance).toHaveTextContent('Current version: v1');
+    expect(guidance).toHaveTextContent('Content hash: 4d0fc04d9c0d89a12a4c8fb914a92f7281fb8d3ba14f301d50b0af3beaaf83f7');
+    expect(guidance.querySelector('pre')?.textContent).toBe(source);
+    expect(guidance.querySelector('script')).not.toBeInTheDocument();
+    const addVersion = screen.getByPlaceholderText('SKILL.md content');
+    expect(addVersion).toHaveValue('');
+    await user.type(addVersion, '# Proposed version');
+    expect(addVersion).toHaveValue('# Proposed version');
+    expect(guidance.querySelector('pre')?.textContent).toBe(source);
+  });
+
+  test('detail safely explains null or absent legacy current guidance', async () => {
+    mountDetail({ skill: { ...skill, skill_md_cache: null } });
+    expect(await screen.findByText('No current SKILL.md content is available.')).toBeInTheDocument();
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    mountDetail();
+    expect(await screen.findByText('No current SKILL.md content is available.')).toBeInTheDocument();
   });
 
   test('detail uses the hidden eligibility badge only when the server reports it', async () => {
