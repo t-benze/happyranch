@@ -4,7 +4,7 @@ import { useParams } from 'react-router-dom';
 import { ApiError } from '@/lib/api/client';
 import * as api from '@/lib/api/customSkills';
 
-export type { EligibilityRule } from '@/lib/api/customSkills';
+export type { CustomSkill, EligibilityRule } from '@/lib/api/customSkills';
 
 /** Keep API-shaped errors and identifiers behind the feature hook boundary. */
 export function isCustomSkillForbidden(error: unknown): boolean {

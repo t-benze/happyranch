@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
-import type { CustomSkill } from '@/lib/api/customSkills';
-import { getCustomSkillId } from '@/hooks/custom-skills';
+import { getCustomSkillId, type CustomSkill } from '@/hooks/custom-skills';
 import { SkillStatusBadge } from './SkillStatusBadge';
 
 export function CustomSkillCard({ skill, slug }: { skill: CustomSkill; slug: string }): JSX.Element {
