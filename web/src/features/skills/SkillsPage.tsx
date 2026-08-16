@@ -6,9 +6,10 @@
  * commands, or permissions, and the catalog carries NO permission / approve /
  * admit / materialize-now controls. System-contract skills render read-only.
  *
- * Filters are Bundled / Custom ONLY, mapped to the daemon `?filter=` param
- * via `useSkillsCatalog`. Validation state is a per-skill label, never a
- * catalog filter (product_lead handoff §1).
+ * The general/Bundled view uses the unfiltered general catalog through
+ * `useSkillsCatalog()`. Custom exclusively uses the canonical B2 custom-skills
+ * catalog through `useCustomSkillsCatalog()` and never legacy `?filter=Custom`.
+ * Validation state is a per-skill label, never a catalog filter (product_lead handoff §1).
  *
  * Responsive: the source rail collapses to Bundled/Custom chips below `md`
  * so the skill list stays on-canvas at mobile widths (handoff §9). The global
@@ -19,7 +20,9 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { isCustomSkillForbidden, useCustomSkillsCatalog } from '@/hooks/custom-skills';
 import { useSkillsCatalog } from '@/hooks/skills';
+import { CustomSkillCard } from './CustomSkillCard';
 import { SkillCard } from './SkillCard';
 import { needsAttentionCount, type CatalogFilter } from './skills-catalog';
 
@@ -34,8 +37,11 @@ const FACETS: { value: CatalogFilter; label: string; icon: typeof Package }[] = 
 export function SkillsPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const [filter, setFilter] = useState<CatalogFilter>('all');
-  const query = useSkillsCatalog(filter === 'all' ? undefined : { filter });
-  const items = query.data?.items ?? [];
+  const customSelected = filter === 'Custom';
+  const catalogQuery = useSkillsCatalog();
+  const customQuery = useCustomSkillsCatalog(customSelected);
+  const items = catalogQuery.data?.items ?? [];
+  const customSkills = customQuery.data?.skills ?? [];
   // No facet matches the unfiltered default → header reads "All skills".
   const headingLabel =
     FACETS.find((f) => f.value === filter)?.label ?? 'All skills';
@@ -99,7 +105,7 @@ export function SkillsPage(): JSX.Element {
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">
-              {headingLabel} · {items.length}
+              {headingLabel} · {customSelected ? customSkills.length : items.length}
             </div>
             <h2 className="text-h2 text-fg">Guidance your agents can use</h2>
           </div>
@@ -140,7 +146,13 @@ export function SkillsPage(): JSX.Element {
           </span>
         </div>
 
-        {query.isLoading ? (
+        {customSelected && isCustomSkillForbidden(customQuery.error) ? (
+          <EmptyState
+            icon={<TriangleAlert size={28} />}
+            title="Founder access required"
+            body="Custom skill management is restricted to the founder. Agent sessions cannot view or change custom skills."
+          />
+        ) : (customSelected ? customQuery.isLoading : catalogQuery.isLoading) ? (
           <ul className="flex flex-col gap-3" aria-hidden="true">
             {[0, 1, 2].map((i) => (
               <li
@@ -149,13 +161,13 @@ export function SkillsPage(): JSX.Element {
               />
             ))}
           </ul>
-        ) : query.isError ? (
+        ) : (customSelected ? customQuery.isError : catalogQuery.isError) ? (
           <EmptyState
             icon={<TriangleAlert size={28} />}
-            title="Could not load skills"
-            body="The skills catalog is unavailable right now. Try again shortly."
+            title={customSelected ? 'Could not load custom skills' : 'Could not load skills'}
+            body={customSelected ? 'The custom skills catalog is unavailable right now. Try again shortly.' : 'The skills catalog is unavailable right now. Try again shortly.'}
           />
-        ) : items.length === 0 ? (
+        ) : (customSelected ? customSkills.length : items.length) === 0 ? (
           <EmptyState
             icon={<Package size={28} />}
             title="No skills here yet"
@@ -167,7 +179,11 @@ export function SkillsPage(): JSX.Element {
           />
         ) : (
           <ul className="flex flex-col gap-3">
-            {items.map((item) => (
+            {customSelected ? customSkills.map((skill) => (
+              <li key={skill.id ?? skill.skill_id}>
+                <CustomSkillCard skill={skill} slug={slug ?? ''} />
+              </li>
+            )) : items.map((item) => (
               <li key={item.skill_id}>
                 <Link
                   to={`/orgs/${slug ?? ''}/skills/${item.skill_id}`}

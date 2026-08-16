@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -75,7 +75,24 @@ const CUSTOM_NEW = row({
 
 const ALL = [CONTRACT, MANAGED, CUSTOM_DRAFT, CUSTOM_NEW];
 
-function mount(rows: Row[] = ALL) {
+const B2_API = `/api/v1/orgs/${SLUG}/custom-skills/catalog`;
+const B2_CUSTOM = {
+  id: 'custom:agent/first',
+  slug: 'agent-first-guidance',
+  name: 'agent-first-guidance',
+  description: 'B2 guidance created by an agent.',
+  current_version_id: 1,
+  retired_at: null,
+  validation_state: 'validated',
+  hidden_reason: 'no_eligibility_policy',
+};
+
+function mount(
+  rows: Row[] = ALL,
+  customSkills = [B2_CUSTOM],
+  customCatalogResponse?: () => Response | Promise<Response>,
+) {
+  const requests = { legacyFilters: [] as Array<string | null>, b2Catalog: 0 };
   sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
@@ -83,13 +100,18 @@ function mount(rows: Row[] = ALL) {
     ),
     http.get(`/api/v1/orgs/${SLUG}/skills/catalog`, ({ request }) => {
       const filter = new URL(request.url).searchParams.get('filter');
+      requests.legacyFilters.push(filter);
       const bucket = (r: Row) =>
         r.type === 'user_authored' ? 'Custom' : 'Bundled';
       const items = filter ? rows.filter((r) => bucket(r) === filter) : rows;
       return HttpResponse.json({ items });
     }),
+    http.get(B2_API, () => {
+      requests.b2Catalog += 1;
+      return customCatalogResponse?.() ?? HttpResponse.json({ skills: customSkills });
+    }),
   );
-  return renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills` });
+  return { requests, ...renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills` }) };
 }
 
 describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
@@ -222,21 +244,61 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     ).toBeInTheDocument();
   });
 
-  test('Custom filter maps to the ?filter= param and narrows the list', async () => {
-    mount();
+  test('Custom facet uses the canonical B2 catalog, renders its default-hidden status, and keeps legacy rows out', async () => {
+    const { requests } = mount();
     await screen.findByText('founder-escalation-protocol');
-    // Both the desktop rail facet and the mobile chip expose a "Custom"
-    // button (jsdom ignores the `md:` visibility utilities); either toggles
-    // the same filter state.
+    expect(requests.b2Catalog).toBe(0);
     await userEvent.click(
       screen.getAllByRole('button', { name: 'Custom' })[0],
     );
-    await waitFor(() =>
-      expect(
-        screen.queryByText('founder-escalation-protocol'),
-      ).not.toBeInTheDocument(),
+    expect(await screen.findByText('agent-first-guidance')).toBeInTheDocument();
+    expect(screen.getByText('Hidden — eligibility not configured')).toBeInTheDocument();
+    expect(screen.queryByText('vendor-comms-style')).not.toBeInTheDocument();
+    expect(screen.queryByText('founder-escalation-protocol')).not.toBeInTheDocument();
+    expect(screen.queryByText('kb-curation')).not.toBeInTheDocument();
+    expect(requests.b2Catalog).toBe(1);
+    expect(requests.legacyFilters).not.toContain('Custom');
+  });
+
+  test('Custom facet links B2 rows to the encoded B2 editor route and never shows its legacy empty state', async () => {
+    mount();
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    const custom = await screen.findByRole('link', { name: 'View agent-first-guidance' });
+    expect(custom).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/skills/custom/${encodeURIComponent(B2_CUSTOM.id)}`,
     );
-    expect(screen.getByText('vendor-comms-style')).toBeInTheDocument();
+    expect(screen.queryByText('No custom skills yet')).not.toBeInTheDocument();
+  });
+
+  test('Custom facet owns the B2 loading state', async () => {
+    mount(ALL, [], () => new Promise<Response>(() => {}));
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    expect(document.querySelectorAll('[aria-hidden="true"] .animate-pulse')).toHaveLength(3);
+  });
+
+  test('Custom facet owns the B2 empty state', async () => {
+    mount(ALL, []);
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    expect(await screen.findByText('No skills here yet')).toBeInTheDocument();
+    expect(screen.getByText('No custom skills yet. Custom skills you add will appear here.')).toBeInTheDocument();
+  });
+
+  test('Custom facet owns B2 generic-error and founder-denied states', async () => {
+    mount(ALL, [], () => new HttpResponse('unavailable', { status: 500 }));
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    expect(await screen.findByText('Could not load custom skills')).toBeInTheDocument();
+  });
+
+  test('Custom facet keeps the founder-denied B2 state at its owning surface', async () => {
+    mount(ALL, [], () => new HttpResponse('forbidden', { status: 403 }));
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
   });
 
   test('root flex container carries bounded-height classes so scroll is inner-region only (THR-092)', async () => {
