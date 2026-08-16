@@ -695,18 +695,19 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       profile_state: 'failed',
       reason: 'conformance_probe_failed: timed out',
     });
-    const commitSpy = vi
-      .spyOn(directConnectApi, 'commit')
+    const retrySpy = vi
+      .spyOn(directConnectApi, 'retry')
       .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
 
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
     expect(screen.getByText(/timed out/i)).toBeInTheDocument();
-    expect(commitSpy).not.toHaveBeenCalled();
+    expect(retrySpy).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(commitSpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(vi.spyOn(directConnectApi, 'commit')).not.toHaveBeenCalled();
   });
 });
 

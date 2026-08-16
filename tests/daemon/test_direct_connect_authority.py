@@ -413,6 +413,23 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     assert tuple(events[-1]) == ("forgotten", "terminal failed operation removed")
 
 
+def test_forget_refuses_failed_projection_with_successful_retry(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_projected_operation(store, token="hrreg_retry_connected", state="failed")
+    attempt, claimed = store.claim_retry_attempt(operation_id, now=5)
+    assert claimed
+    assert store.finish_retry_attempt(
+        attempt.attempt_id, state="succeeded", adapter_id="forget-adapter",
+        profile_name="forget-profile", now=6,
+    )
+
+    assert store.forget_operation(operation_id) is None
+    assert store.get_projection(operation_id).state == "failed"
+    assert store.get_successful_retry(operation_id) is not None
+
+
 @pytest.mark.parametrize("state", ["planned", "committed"])
 def test_forget_refuses_nonfailed_projection_without_mutating_rows(tmp_path, state) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore

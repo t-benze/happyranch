@@ -289,6 +289,50 @@ def test_concurrent_projection_has_one_committer(store, tmp_path, monkeypatch):
     assert len({outcome.adapter_id for outcome in reconciled}) == 1
 
 
+def test_concurrent_retry_validation_has_one_probe_and_preserves_failed_projection(store, tmp_path, monkeypatch):
+    import threading
+
+    from runtime.daemon.direct_connect_retry import retry_validate
+    from runtime.orchestrator import custom_adapter_registry
+
+    operation_id, _ = _mint_and_receive(store, tmp_path)
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "original failure")
+    calls = 0
+    calls_lock = threading.Lock()
+    entered_probe = threading.Event()
+    release_probe = threading.Event()
+
+    def fake_probe(_executable, adapter_id, **_kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        entered_probe.set()
+        assert release_probe.wait(timeout=5)
+        return _fake_probe_output(adapter_id)
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def run():
+        barrier.wait()
+        outcomes.append(retry_validate(store, operation_id))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    assert entered_probe.wait(timeout=5)
+    release_probe.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(outcome.state == "committed" for outcome in outcomes)
+    assert calls == 1
+    projection = store.get_projection(operation_id)
+    assert projection is not None and projection.state == "failed" and projection.reason == "original failure"
+
+
 def test_projection_state_survives_store_reopen(tmp_path, monkeypatch):
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
     from runtime.daemon.direct_connect_projection import project

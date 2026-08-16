@@ -2,6 +2,7 @@
 
 GET  /api/v1/runtime/custom-cli/status                      - wrapper destination + operation/projection state, by profile name
 POST /api/v1/runtime/custom-cli/{operation_id}/commit        - project a received receipt to a durable Connected profile
+POST /api/v1/runtime/custom-cli/{operation_id}/retry         - revalidate an immutable failed receipt snapshot
 
 Note: POST /api/v1/runtime/custom-cli/connect is intentionally NOT bound
 here — it is called by the candidate CLI itself (via the copy-pasted
@@ -17,6 +18,11 @@ export interface DirectConnectStatus {
   operation_id: string | null;
   profile_state: ProfileState;
   reason: string | null;
+  /** Present only when a retry established a live profile; the original
+   * projection remains immutable failed evidence. */
+  historical_projection_state?: 'failed';
+  historical_projection_reason?: string | null;
+  retry_state?: 'succeeded';
 }
 
 export function getStatus(intendedProfileName: string): Promise<DirectConnectStatus> {
@@ -34,6 +40,12 @@ export interface CommitResponse {
 
 export function commit(operationId: string): Promise<CommitResponse> {
   return request<CommitResponse>(`/runtime/custom-cli/${operationId}/commit`, {
+    method: 'POST',
+  });
+}
+
+export function retry(operationId: string): Promise<CommitResponse> {
+  return request<CommitResponse>(`/runtime/custom-cli/${operationId}/retry`, {
     method: 'POST',
   });
 }

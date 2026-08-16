@@ -131,6 +131,7 @@
     "GET /api/v1/runtime/adapters",
     "GET /api/v1/runtime/adapters/contract-reference",
     "POST /api/v1/runtime/custom-cli/{operation_id}/commit",
+    "POST /api/v1/runtime/custom-cli/{operation_id}/retry",
     "GET /api/v1/runtime/custom-cli/status"
   ],
   "excluded": {

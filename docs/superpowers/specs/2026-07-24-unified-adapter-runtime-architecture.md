@@ -499,6 +499,23 @@ shape-validation semantics. ``token_usage`` remains optional unless the
 candidate declares the established ``token_metering`` capability and provides
 trustworthy canonical usage.
 
+**THR-160 failed-operation retry validation.** A direct-connect terminal
+failure is historical immutable evidence, not a registration invitation:
+master-bearer ``POST /runtime/custom-cli/{operation_id}/retry`` is permitted
+only for that failed operation and uses a separate durable attempt lifecycle.
+It retrieves the original receipt's persisted wrapper path/SHA and every child
+path/SHA, independently repeats the intake/launch path, type, executable,
+no-symlink, and hash checks, and fails closed before probing on any missing,
+duplicate, unusable, or mismatched snapshot fact. It accepts no user artifact
+fields, mutable adapter record, ambient PATH lookup, new candidate manifest,
+or token replay. Every outcome appends nonsecret category-only lifecycle
+evidence; no retry overwrites the original failed projection/reason or removes
+historical failure events. Only a successful identical bounded probe may bind
+through the ordinary direct adapter/profile persistence primitives with their
+normal compensation. Status may communicate that resulting live connection to
+existing consumers, but must retain explicit historical-failure fields rather
+than claiming the projection itself became committed.
+
 ### 4.4 Registration, Conformance, Provenance
 
 | Step | Description | Gate |

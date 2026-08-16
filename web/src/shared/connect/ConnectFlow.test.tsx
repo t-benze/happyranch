@@ -229,7 +229,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(commitSpy).not.toHaveBeenCalled();
   }, 15000);
 
-  test('retry after a failed commit can reach Connected', async () => {
+  test('retry after a failed projection uses retry validation and can reach Connected', async () => {
     const user = userEvent.setup();
     await mockMint();
     await mockStatus(() => ({
@@ -239,7 +239,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       reason: 'initial projection failure',
     }));
     const { directConnect: api } = await import('@/lib/api');
-    const commitSpy = vi.spyOn(api, 'commit')
+    const retrySpy = vi.spyOn(api, 'retry')
       .mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'failed', reason: 'transient error' });
 
     renderConnect();
@@ -247,16 +247,17 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
-    expect(commitSpy).not.toHaveBeenCalled();
+    expect(retrySpy).not.toHaveBeenCalled();
 
-    commitSpy.mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'committed', profile_name: 'my-cli' });
+    retrySpy.mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'committed', profile_name: 'my-cli' });
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
     await screen.findByText(/transient error/i, {}, { timeout: 10000 });
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
 
     await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
-    expect(commitSpy).toHaveBeenCalledTimes(2);
+    expect(retrySpy).toHaveBeenCalledTimes(2);
+    expect(vi.spyOn(api, 'commit')).not.toHaveBeenCalled();
   }, 15000);
 
   test('a planned direct commit response stays in progress until status commits', async () => {

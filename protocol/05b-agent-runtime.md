@@ -179,6 +179,26 @@ Slice A's `received_nonlaunchable` receipt:
   its canonical wrapper file if it still exists. `happyranch custom-cli forget
   <profile>` first reads the status route and refuses to call this cleanup
   route unless the profile state is `failed`.
+  **THR-160 retry validation.** A distinct master-bearer
+  `POST /api/v1/runtime/custom-cli/{operation_id}/retry` action is eligible
+  only for a terminal `failed` projection. It never updates, replaces, or
+  deletes that projection or its failure reason, and `/commit` remains
+  idempotent for the historical failure. A separate durable retry-attempt
+  lifecycle supplies the atomic single-probe winner, terminal outcome, and
+  append-only category-only events. Before any probe it reads only the
+  receipt's persisted wrapper path/SHA and every persisted child path/SHA,
+  then independently rechecks each artifact with the intake/launch regular
+  file, executable, no-symlink, exact-path, and SHA-256 checks. Missing,
+  duplicate, unusable, or changed snapshot data fails closed before invocation;
+  the retry never accepts user artifact fields, a mutable adapter record,
+  ambient PATH, a new manifest, or a token replay. A successful bounded
+  conformance probe writes/binds through the same adapter/profile persistence
+  primitives and compensation rules as projection, then records a distinct
+  retry-success fact. Status may report the resulting *live* connection as
+  `committed` for existing consumers, but includes the retained historical
+  failed projection state/reason whenever retry success is the source; it never
+  claims the original projection row changed. Failed retries retain both the
+  original projection/evidence and no adapter/profile/registry residue.
 - **Slice 2 (launch fence — proof, not new gating).** `build_executor()` /
   `ExecutorRegistry._resolve_custom_adapter_eligibility()` /
   `CustomAdapterExecutor._launch()` already refuse to construct or launch
@@ -199,7 +219,8 @@ Slice A's `received_nonlaunchable` receipt:
   custom-CLI flow drives `POST /connect`, then derives connection state by
   polling `GET /runtime/custom-cli/status`. Its receipt-landing handler is
   observation-only: it polls status, never auto-fires `/commit`, and manual
-  Retry is the only browser-initiated commit path. The daemon-owned projection
+  Retry calls the dedicated `/retry` validation action only for a failed
+  operation (never fresh registration or token replay). The daemon-owned projection
   sweep actually completes receipts to `committed`/`failed`, including when no
   browser is present or the tab closes — Connect → Connected in one perceived
   action, no founder-approval wait and no separate conformance-checkin round
