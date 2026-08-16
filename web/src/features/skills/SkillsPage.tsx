@@ -6,9 +6,10 @@
  * commands, or permissions, and the catalog carries NO permission / approve /
  * admit / materialize-now controls. System-contract skills render read-only.
  *
- * Filters are Bundled / Custom ONLY, mapped to the daemon `?filter=` param
- * via `useSkillsCatalog`. Validation state is a per-skill label, never a
- * catalog filter (product_lead handoff §1).
+ * Bundled queries the general catalog with its daemon `?filter=` value via
+ * `useSkillsCatalog`; Custom queries the canonical B2 custom-skills catalog
+ * via `useCustomSkillsCatalog`, never legacy `?filter=Custom`. Validation
+ * state is a per-skill label, never a catalog filter (product_lead handoff §1).
  *
  * Responsive: the source rail collapses to Bundled/Custom chips below `md`
  * so the skill list stays on-canvas at mobile widths (handoff §9). The global
