@@ -14,6 +14,7 @@ export interface CustomSkill {
   retired_reason?: string | null;
   validation_state: string;
   content_hash?: string;
+  skill_md_cache?: string | null;
   hidden_reason?: string | null;
 }
 

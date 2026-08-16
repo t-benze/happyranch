@@ -19,6 +19,7 @@ const skill: {
   retired_at: null;
   validation_state: string;
   hidden_reason?: string | null;
+  skill_md_cache?: string | null;
 } = {
   skill_id: SKILL_ID,
   slug: 'playbook',
@@ -139,6 +140,23 @@ describe('Custom Skills routes', () => {
     server.use(http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
+  test('detail renders current guidance as literal source without populating Add version', async () => {
+    const source = '# Partner guidance\n\nUse <script>unsafe()</script> literally.\n  Keep this indentation.';
+    mountDetail({ skill: { ...skill, skill_md_cache: source } });
+
+    const guidance = await screen.findByRole('region', { name: 'Current guidance / SKILL.md' });
+    expect(guidance.querySelector('pre')).toHaveTextContent(source, { normalizeWhitespace: false });
+    expect(guidance.querySelector('script')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('SKILL.md content')).toHaveValue('');
+  });
+
+  test('detail safely falls back when a legacy response has no current guidance', async () => {
+    mountDetail({ skill: { ...skill, skill_md_cache: null } });
+
+    const guidance = await screen.findByRole('region', { name: 'Current guidance / SKILL.md' });
+    expect(guidance).toHaveTextContent('No current SKILL.md content is available.');
   });
 
   test('detail uses the hidden eligibility badge only when the server reports it', async () => {
