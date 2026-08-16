@@ -152,8 +152,8 @@ Slice A's `received_nonlaunchable` receipt:
   (D5 baseline-only — direct-connect has no manual capability-declaration
   surface). Idempotent on retry; a single winner under concurrent commit
   attempts (the `direct_connect_projections` insert is the sole arbiter;
-  losers poll for the winner's terminal state instead of racing the probe a
-  second time); every failure path compensates (removes the just-created
+  losers reconcile its durable `planned` or terminal state instead of racing
+  the probe a second time); every failure path compensates (removes the just-created
   `AdapterEntry` if profile binding fails) so no partial adapter/profile/
   registry state survives. `GET /api/v1/runtime/custom-cli/status` (keyed
   only by `intended_profile_name`, never token plaintext) exposes the

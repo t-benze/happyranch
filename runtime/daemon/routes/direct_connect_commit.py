@@ -49,7 +49,7 @@ router = APIRouter()
 
 
 @router.post("/runtime/custom-cli/{operation_id}/commit", dependencies=[require_token()])
-async def commit(operation_id: str, request: Request) -> dict[str, str]:
+async def commit(operation_id: str, request: Request) -> dict[str, str | None]:
     daemon = request.app.state.daemon
     authority_store = daemon.direct_connect_authority_store
     if authority_store is None:

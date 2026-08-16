@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -262,6 +263,61 @@ def test_commit_is_idempotent_on_retry(client, tmp_path, monkeypatch):
 
     assert first.status_code == second.status_code == 200
     assert first.json()["profile_name"] == second.json()["profile_name"]
+
+
+def test_concurrent_browser_commit_reconciles_durable_planned_winner(client, tmp_path, monkeypatch):
+    """A second authenticated commit observes, rather than fails, a live winner."""
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    probe_calls = 0
+    owner_response = []
+
+    def gated_probe(_executable, adapter_id, **_kwargs):
+        nonlocal probe_calls
+        probe_calls += 1
+        probe_started.set()
+        assert release_probe.wait(timeout=4)
+        return AdapterOutput.model_validate({
+            "success": True, "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+            "adapter_metadata": {"adapter": adapter_id, "adapter_version": "9.9.9", "contract_version": 1},
+        })
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", gated_probe)
+    owner = threading.Thread(
+        target=lambda: owner_response.append(tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")),
+    )
+    owner.start()
+    assert probe_started.wait(timeout=2)
+    time.sleep(1.1)  # Exceeds the prior 50 * 20ms concurrent-winner budget.
+    try:
+        loser = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+        assert loser.status_code == 200
+        assert loser.json() == {
+            "operation_id": operation_id, "profile_state": "planned", "reason": None,
+        }
+        assert "concurrent projection did not reach a terminal state in time" not in loser.text
+        assert probe_calls == 1
+    finally:
+        release_probe.set()
+        owner.join(timeout=4)
+
+    assert not owner.is_alive()
+    assert owner_response[0].json()["profile_state"] == "committed"
+    reconciled = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
+    )
+    assert reconciled.json()["profile_state"] == "committed"
+    events = state.direct_connect_authority_store._conn.execute(
+        "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == ["received_nonlaunchable", "committed"]
 
 
 def test_commit_probe_failure_returns_failed_profile_state(client, tmp_path, monkeypatch):

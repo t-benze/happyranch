@@ -15,42 +15,39 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 
-_CONCURRENT_WINNER_POLL_ATTEMPTS = 50
-_CONCURRENT_WINNER_POLL_INTERVAL_SECONDS = 0.02
-
-
 @dataclass(frozen=True)
 class ProjectionOutcome:
-    state: Literal["committed", "failed"]
+    state: Literal["planned", "committed", "failed"]
     adapter_id: str | None
     profile_name: str | None
     reason: str | None
 
 
-def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: str) -> ProjectionOutcome | None:
-    """Poll a bounded number of times for a concurrent winner's terminal state.
+def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: str) -> ProjectionOutcome:
+    """Reconcile a durable concurrent winner without starting another probe.
 
-    Returns ``None`` if no terminal state is observed within the bound —
-    the caller should treat that as its own failure rather than hang.
+    A failed plan insert proves the winner has already durably created its
+    projection row.  Returning that row's ``planned`` state keeps callers
+    bounded while the owner continues the probe; terminal rows remain
+    idempotent outcomes.
     """
-    for _ in range(_CONCURRENT_WINNER_POLL_ATTEMPTS):
-        projection = store.get_projection(operation_id)
-        if projection is not None and projection.state == "committed":
-            return ProjectionOutcome(
-                state="committed", adapter_id=projection.adapter_id,
-                profile_name=projection.profile_name, reason=None,
-            )
-        if projection is not None and projection.state == "failed":
-            return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=projection.reason)
-        time.sleep(_CONCURRENT_WINNER_POLL_INTERVAL_SECONDS)
-    return None
+    projection = store.get_projection(operation_id)
+    if projection is None:
+        raise RuntimeError(f"concurrent projection disappeared for operation {operation_id!r}")
+    if projection.state == "committed":
+        return ProjectionOutcome(
+            state="committed", adapter_id=projection.adapter_id,
+            profile_name=projection.profile_name, reason=None,
+        )
+    if projection.state == "failed":
+        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=projection.reason)
+    return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
 
 def project(
@@ -87,17 +84,9 @@ def project(
 
     if not store.plan_projection(operation_id, now=now):
         # Another caller won the plan race between our read of `existing`
-        # and now. Poll for its terminal result instead of racing the
+        # and now. Reconcile its durable state instead of racing the
         # conformance probe / durable writes a second time.
-        outcome = _await_concurrent_outcome(store, operation_id)
-        if outcome is not None:
-            return outcome
-        # No terminal state showed up within the bound — surface as a
-        # failure rather than silently proceeding past a live winner.
-        return ProjectionOutcome(
-            state="failed", adapter_id=None, profile_name=None,
-            reason="concurrent projection did not reach a terminal state in time",
-        )
+        return _await_concurrent_outcome(store, operation_id)
 
     adapter_id = custom_adapter_registry.generate_adapter_id(
         f"{artifacts.intended_profile_name}-adapter"
