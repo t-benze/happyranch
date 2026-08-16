@@ -289,7 +289,7 @@ export function AdapterConnect({
         name={flow.state.name}
         adapterId={flow.state.operationId}
         error={flow.state.reason}
-        onRetry={flow.retryCommit}
+        onRetry={flow.retryValidation}
         onBack={flow.back}
       />
     );

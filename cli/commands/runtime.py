@@ -254,6 +254,36 @@ def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
     print("wrapper file removed or already absent")
 
 
+def cmd_custom_cli_retry(args: argparse.Namespace) -> None:
+    """Revalidate the immutable snapshot of one failed custom-CLI operation."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    body = _get_custom_cli_status(client, args.profile_name)
+    profile_state = body.get("profile_state")
+    if profile_state != "failed":
+        print(
+            f"refused: profile_state is '{profile_state or 'none'}', not 'failed' — nothing to retry",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    operation_id = body.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        print("refused: failed profile has no operation id — nothing to retry", file=sys.stderr)
+        sys.exit(1)
+    response = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+    if not _ok(response):
+        return
+    result = response.json()
+    if result.get("profile_state") == "committed":
+        print(f"retry validated and connected custom-CLI profile {args.profile_name}")
+    else:
+        print(f"retry validation failed for custom-CLI profile {args.profile_name}", file=sys.stderr)
+
+
 def cmd_adapters_remove(args: argparse.Namespace) -> None:
     """Remove an adapter using a freshly fetched exact snapshot."""
     try:
@@ -354,6 +384,12 @@ def register(sub) -> None:
     )
     p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
     p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)
+
+    p_custom_cli_retry = custom_cli_sub.add_parser(
+        "retry", help="Revalidate a failed direct custom-CLI connection",
+    )
+    p_custom_cli_retry.add_argument("profile_name", help="Profile name used to start the connection")
+    p_custom_cli_retry.set_defaults(func=cmd_custom_cli_retry)
 
     p_adapters = sub.add_parser("adapters", help="Manage custom adapter entries")
     adapters_sub = p_adapters.add_subparsers(dest="adapters_command", required=True)

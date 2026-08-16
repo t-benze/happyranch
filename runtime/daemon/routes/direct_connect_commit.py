@@ -41,7 +41,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
-from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.daemon.direct_connect_retry import retry_validate
+from runtime.daemon.direct_connect_store import DirectConnectRetryInProgress, canonical_wrapper_destination
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
@@ -69,6 +70,32 @@ async def commit(operation_id: str, request: Request) -> dict[str, str | None]:
     return result
 
 
+@router.post("/runtime/custom-cli/{operation_id}/retry", dependencies=[require_token()])
+async def retry(operation_id: str, request: Request) -> dict[str, str]:
+    """Revalidate only an immutable terminal-failed receipt snapshot."""
+    daemon = request.app.state.daemon
+    authority_store = daemon.direct_connect_authority_store
+    if authority_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct authority unavailable"
+        )
+    projection = authority_store.get_projection(operation_id)
+    if projection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
+    if projection.state != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"refused: projection state is '{projection.state}', not 'failed'",
+        )
+    outcome = retry_validate(authority_store, operation_id)
+    result = {"operation_id": operation_id, "profile_state": outcome.state}
+    if outcome.state == "committed":
+        result["profile_name"] = outcome.profile_name
+    else:
+        result["reason"] = outcome.reason
+    return result
+
+
 @router.get("/runtime/custom-cli/status", dependencies=[require_token()])
 async def status_for_profile(intended_profile_name: str, request: Request) -> dict[str, object]:
     daemon = request.app.state.daemon
@@ -88,6 +115,13 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         if projection is not None:
             profile_state = projection.state
             reason = projection.reason
+            successful_retry = authority_store.get_successful_retry(operation_id)
+            if projection.state == "failed" and successful_retry is not None:
+                # The retry record is the fact of a live revalidation/bind.
+                # Keep the immutable projection's state and reason available
+                # separately; they are never rewritten to claim it committed.
+                profile_state = "committed"
+                reason = None
             if profile_state == "committed":
                 # A projection is historical evidence of how a profile was
                 # created, not proof that its profile still exists. The
@@ -100,12 +134,20 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
                     operation_id = None
                     profile_state = None
                     reason = None
-    return {
+    result: dict[str, object] = {
         "wrapper_destination": str(wrapper_destination),
         "operation_id": operation_id,
         "profile_state": profile_state,
         "reason": reason,
     }
+    if operation_id is not None:
+        projection = authority_store.get_projection(operation_id)
+        successful_retry = authority_store.get_successful_retry(operation_id)
+        if projection is not None and projection.state == "failed" and successful_retry is not None:
+            result["historical_projection_state"] = "failed"
+            result["historical_projection_reason"] = projection.reason
+            result["retry_state"] = "succeeded"
+    return result
 
 
 @router.post("/runtime/custom-cli/{operation_id}/forget", dependencies=[require_token()])
@@ -119,6 +161,11 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
     projection = authority_store.get_projection(operation_id)
     if projection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
+    if authority_store.get_successful_retry(operation_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="refused: retry validation established a live connection",
+        )
     if projection.state != "failed":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -127,7 +174,13 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
                 "— this operation is still in flight or is a live connection"
             ),
         )
-    intended_profile_name = authority_store.forget_operation(operation_id)
+    try:
+        intended_profile_name = authority_store.forget_operation(operation_id)
+    except DirectConnectRetryInProgress:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="refused: retry validation is running",
+        ) from None
     if intended_profile_name is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
     wrapper_destination = canonical_wrapper_destination(

@@ -21,6 +21,10 @@ _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
 
 
+class DirectConnectRetryInProgress(RuntimeError):
+    """Raised when an atomic forget would race a claimed retry validation."""
+
+
 def fingerprint_registration_token(token_plaintext: str) -> str:
     """Return a domain-separated, non-reversible stable token identity."""
     return hashlib.sha256(_FINGERPRINT_DOMAIN + token_plaintext.encode("utf-8")).hexdigest()
@@ -64,6 +68,16 @@ class DirectConnectReceipt:
 class DirectConnectProjection:
     operation_id: str
     token_fingerprint: str
+    state: str
+    adapter_id: str | None
+    profile_name: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class DirectConnectRetryAttempt:
+    attempt_id: str
+    operation_id: str
     state: str
     adapter_id: str | None
     profile_name: str | None
@@ -177,6 +191,25 @@ class DirectConnectAuthorityStore:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )"""
+        )
+        # Retry validation is intentionally separate from the immutable
+        # projection: a later successful probe must not rewrite the original
+        # terminal failure or erase its evidence.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_retry_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('running', 'succeeded', 'failed')),
+                adapter_id TEXT,
+                profile_name TEXT,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_connect_one_running_retry
+               ON direct_connect_retry_attempts(operation_id) WHERE state = 'running'"""
         )
         self._conn.commit()
 
@@ -497,18 +530,28 @@ class DirectConnectAuthorityStore:
                    WHERE operation_id = ? ORDER BY slot""",
                 (operation_id,),
             ).fetchall()
+            wrapper_path: Path | None = None
             wrapper_sha256 = ""
             children: list[dict[str, str]] = []
             for row in rows:
                 if row["kind"] == "immutable_wrapper":
+                    if wrapper_path is not None:
+                        return None
+                    wrapper_path = Path(row["declared_path"])
                     wrapper_sha256 = row["sha256"]
                 else:
                     children.append({
                         "slot": row["slot"], "executable": row["declared_path"], "sha256": row["sha256"],
                     })
+            if wrapper_path is None or not wrapper_sha256 or not children:
+                return None
+            child_slots = [child["slot"] for child in children]
+            child_paths = [child["executable"] for child in children]
+            if len(child_slots) != len(set(child_slots)) or len(child_paths) != len(set(child_paths)):
+                return None
             return DirectConnectReceiptArtifacts(
                 operation_id=operation_id,
-                wrapper_path=authority.wrapper_destination,
+                wrapper_path=wrapper_path,
                 wrapper_sha256=wrapper_sha256,
                 children=children,
                 intended_profile_name=operation["intended_profile_name"],
@@ -564,7 +607,8 @@ class DirectConnectAuthorityStore:
         """Delete a terminal-failed operation and return its profile name.
 
         The caller owns deletion of the derived wrapper path.  No state other
-        than a durable failed projection is eligible for removal.
+        than a durable failed projection is eligible for removal.  A claimed
+        retry holds this same store transaction boundary until it settles.
         """
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -573,6 +617,21 @@ class DirectConnectAuthorityStore:
                 (operation_id,),
             ).fetchone()
             if projection is None or projection["state"] != "failed":
+                return None
+            if cursor.execute(
+                """SELECT 1 FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'running' LIMIT 1""",
+                (operation_id,),
+            ).fetchone() is not None:
+                raise DirectConnectRetryInProgress("retry validation is running")
+            # A retry success binds a live profile while deliberately leaving
+            # the original projection as immutable failed evidence.  That
+            # historical state must never make a connected profile forgettable.
+            if cursor.execute(
+                """SELECT 1 FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'succeeded' LIMIT 1""",
+                (operation_id,),
+            ).fetchone() is not None:
                 return None
             operation = cursor.execute(
                 """SELECT token_fingerprint, intended_profile_name
@@ -583,6 +642,9 @@ class DirectConnectAuthorityStore:
                 return None
             token_fingerprint = operation["token_fingerprint"]
             intended_profile_name = operation["intended_profile_name"]
+            cursor.execute(
+                "DELETE FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+            )
             cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
             cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
             cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))
@@ -645,6 +707,122 @@ class DirectConnectAuthorityStore:
                        SELECT ?, operation_id, token_fingerprint, 'projection_failed', ?, ?
                        FROM direct_connect_projections WHERE operation_id = ?""",
                     (str(uuid.uuid4()), reason, now, operation_id),
+                )
+            return bool(updated)
+
+    def _read_retry_attempt(
+        self, cursor: sqlite3.Cursor, attempt_id: str
+    ) -> DirectConnectRetryAttempt | None:
+        row = cursor.execute(
+            """SELECT attempt_id, operation_id, state, adapter_id, profile_name, reason
+               FROM direct_connect_retry_attempts WHERE attempt_id = ?""",
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return DirectConnectRetryAttempt(
+            attempt_id=row["attempt_id"], operation_id=row["operation_id"], state=row["state"],
+            adapter_id=row["adapter_id"], profile_name=row["profile_name"], reason=row["reason"],
+        )
+
+    def claim_retry_attempt(
+        self, operation_id: str, *, now: float | None = None,
+    ) -> tuple[DirectConnectRetryAttempt, bool]:
+        """Claim the sole live retry for an original failed projection.
+
+        A successful retry is idempotent. A failed retry permits a later fresh
+        retry, while concurrent callers share the one running attempt.
+        """
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            projection = self._read_projection(cursor, operation_id)
+            if projection is None:
+                raise RuntimeError("direct operation not found")
+            if projection.state != "failed":
+                raise ValueError(f"projection state is '{projection.state}', not 'failed'")
+            succeeded = cursor.execute(
+                """SELECT attempt_id FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'succeeded' ORDER BY created_at DESC LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+            if succeeded is not None:
+                attempt = self._read_retry_attempt(cursor, succeeded["attempt_id"])
+                assert attempt is not None
+                return attempt, False
+            running = cursor.execute(
+                """SELECT attempt_id FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'running'""",
+                (operation_id,),
+            ).fetchone()
+            if running is not None:
+                attempt = self._read_retry_attempt(cursor, running["attempt_id"])
+                assert attempt is not None
+                return attempt, False
+            attempt_id = str(uuid.uuid4())
+            cursor.execute(
+                """INSERT INTO direct_connect_retry_attempts
+                   (attempt_id, operation_id, state, adapter_id, profile_name, reason, created_at, updated_at)
+                   VALUES (?, ?, 'running', NULL, NULL, NULL, ?, ?)""",
+                (attempt_id, operation_id, now, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   SELECT ?, operation_id, token_fingerprint, 'retry_validation_started', 'retry_validation', ?
+                   FROM direct_connect_projections WHERE operation_id = ?""",
+                (str(uuid.uuid4()), now, operation_id),
+            )
+            attempt = self._read_retry_attempt(cursor, attempt_id)
+            assert attempt is not None
+            return attempt, True
+
+    def get_retry_attempt(self, attempt_id: str) -> DirectConnectRetryAttempt | None:
+        with self._lock:
+            return self._read_retry_attempt(self._conn.cursor(), attempt_id)
+
+    def get_successful_retry(self, operation_id: str) -> DirectConnectRetryAttempt | None:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT attempt_id FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'succeeded' ORDER BY created_at DESC LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+            return self._read_retry_attempt(self._conn.cursor(), row["attempt_id"]) if row else None
+
+    def finish_retry_attempt(
+        self,
+        attempt_id: str,
+        *,
+        state: str,
+        adapter_id: str | None = None,
+        profile_name: str | None = None,
+        reason: str | None = None,
+        now: float | None = None,
+    ) -> bool:
+        """Finish one retry attempt and append only category-level evidence."""
+        if state not in {"succeeded", "failed"}:
+            raise ValueError("retry attempt must finish terminally")
+        now = time.time() if now is None else now
+        event_type = "retry_validation_succeeded" if state == "succeeded" else "retry_validation_failed"
+        detail = "retry_validation_succeeded" if state == "succeeded" else (reason or "retry_validation_failed")
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            updated = cursor.execute(
+                """UPDATE direct_connect_retry_attempts
+                   SET state = ?, adapter_id = ?, profile_name = ?, reason = ?, updated_at = ?
+                   WHERE attempt_id = ? AND state = 'running'""",
+                (state, adapter_id, profile_name, reason, now, attempt_id),
+            ).rowcount
+            if updated:
+                cursor.execute(
+                    """INSERT INTO direct_connect_events
+                       (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                       SELECT ?, p.operation_id, p.token_fingerprint, ?, ?, ?
+                       FROM direct_connect_retry_attempts r
+                       JOIN direct_connect_projections p ON p.operation_id = r.operation_id
+                       WHERE r.attempt_id = ?""",
+                    (str(uuid.uuid4()), event_type, detail, now, attempt_id),
                 )
             return bool(updated)
 

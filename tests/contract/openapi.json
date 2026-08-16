@@ -3775,6 +3775,24 @@
         ]
       }
     },
+    "/api/v1/runtime/custom-cli/{operation_id}/retry": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/runtime/use": {
       "POST": {
         "params": [

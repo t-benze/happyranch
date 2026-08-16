@@ -146,6 +146,13 @@ registration stricter. Token usage remains optional here: it is required only
 when a candidate declares the established ``token_metering`` capability and
 supplies trustworthy canonical ``token_usage``; direct candidates are not
 rejected merely for omitting optional usage fields.
+For a terminal failed direct projection, the separate master-bearer
+``POST .../{operation_id}/retry`` lifecycle revalidates the exact persisted
+wrapper/child path-and-hash snapshot before its bounded probe. It neither
+replays a registration token nor starts a fresh registration, and it never
+rewrites the original failed projection or its append-only evidence. Its
+separate attempt/event facts may establish a live bound profile; status then
+reports that live connection while exposing the retained historical failure.
 The normal Settings/onboarding UI now drives Connect → Connected in one flow;
 the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.

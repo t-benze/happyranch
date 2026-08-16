@@ -238,6 +238,61 @@ def test_status_after_failed_projection_reports_reason(client, tmp_path):
     }
 
 
+def test_status_reports_live_retry_connection_without_rewriting_failed_projection(client, tmp_path, monkeypatch):
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination, b"#!/bin/sh\ncat\n")
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }}, headers={"Authorization": f"Bearer {token}"},
+    )
+    operation_id = connect.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    assert state.direct_connect_authority_store.mark_failed(operation_id, "original failure")
+
+    def fake_probe(_executable, adapter_id, **_kwargs):
+        return AdapterOutput.model_validate({
+            "success": True, "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+            "adapter_metadata": {"adapter": adapter_id, "adapter_version": "1.0.0", "contract_version": 1},
+        })
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+    assert tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry").status_code == 200
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "wrapper_destination": str(authority.wrapper_destination),
+        "operation_id": operation_id,
+        "profile_state": "committed",
+        "reason": None,
+        "historical_projection_state": "failed",
+        "historical_projection_reason": "original failure",
+        "retry_state": "succeeded",
+    }
+    projection = state.direct_connect_authority_store.get_projection(operation_id)
+    assert projection is not None and projection.state == "failed" and projection.reason == "original failure"
+
+
 def test_status_requires_master_bearer(client):
     tc, state = client
 

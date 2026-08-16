@@ -472,8 +472,8 @@ export function useDirectConnect({
     refetchInterval: pollName !== '' ? 2500 : false,
   });
 
-  const commitMutation = useMutation({
-    mutationFn: (operationId: string) => directConnect.commit(operationId),
+  const retryMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.retry(operationId),
   });
 
   // A daemon-projected candidate CLI receipt moves waiting -> committing.
@@ -518,12 +518,12 @@ export function useDirectConnect({
       mint.mutate(state.name);
     }
   };
-  const retryCommit = (): void => {
+  const retryValidation = (): void => {
     if (state.stage !== 'failed') return;
     const { name, wrapperDestination, operationId } = state;
     directCommitPending.current = true;
     setState({ stage: 'committing', name, wrapperDestination });
-    commitMutation.mutate(operationId, {
+    retryMutation.mutate(operationId, {
       onSuccess: (resp) => {
         if (resp.profile_state === 'committed') {
           directCommitPending.current = false;
@@ -568,5 +568,5 @@ export function useDirectConnect({
     mint.reset();
   };
 
-  return { state, mint, start, regenerate, retryCommit, back };
+  return { state, mint, start, regenerate, retryValidation, back };
 }

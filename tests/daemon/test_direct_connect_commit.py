@@ -338,6 +338,159 @@ def test_commit_probe_failure_returns_failed_profile_state(client, tmp_path, mon
     assert "reason" in body
 
 
+def _failed_operation(tc: TestClient, state, tmp_path) -> str:
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "original conformance failure")
+    return operation_id
+
+
+def test_retry_validates_failed_snapshot_without_rewriting_historical_projection(
+    client, tmp_path, monkeypatch,
+):
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    _fake_probe(monkeypatch)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["profile_state"] == "committed"
+    projection = state.direct_connect_authority_store.get_projection(operation_id)
+    assert projection is not None
+    assert projection.state == "failed"
+    assert projection.reason == "original conformance failure"
+    event_types = [row[0] for row in state.direct_connect_authority_store._conn.execute(
+        "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
+    )]
+    assert "projection_failed" in event_types
+    assert "retry_validation_succeeded" in event_types
+    assert get_registry().get_profile("custom-profile") is not None
+
+
+def test_retry_probe_failure_keeps_original_failure_and_leaves_no_binding_residue(
+    client, tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    monkeypatch.setattr(
+        custom_adapter_registry, "run_conformance_probe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("probe failed")),
+    )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operation_id": operation_id,
+        "profile_state": "failed",
+        "reason": "conformance_probe_failed",
+    }
+    projection = state.direct_connect_authority_store.get_projection(operation_id)
+    assert projection is not None and projection.reason == "original conformance failure"
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+    details = state.direct_connect_authority_store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? AND event_type = 'retry_validation_failed'",
+        (operation_id,),
+    ).fetchall()
+    assert [row[0] for row in details] == ["conformance_probe_failed"]
+
+
+def test_retry_binding_failure_compensates_adapter_and_preserves_original_failure(
+    client, tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    _fake_probe(monkeypatch)
+    monkeypatch.setattr(
+        custom_adapter_registry, "_perform_adapter_profile_binding",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("binding failed")),
+    )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "profile_binding_failed"
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+    projection = state.direct_connect_authority_store.get_projection(operation_id)
+    assert projection is not None and projection.reason == "original conformance failure"
+
+
+@pytest.mark.parametrize("artifact", ["wrapper", "child"])
+def test_retry_rejects_tampered_persisted_snapshot_before_probe(client, tmp_path, monkeypatch, artifact):
+    from runtime.orchestrator import custom_adapter_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    artifacts = state.direct_connect_authority_store.get_receipt_artifacts(operation_id)
+    assert artifacts is not None
+    path = artifacts.wrapper_path if artifact == "wrapper" else artifacts.children[0]["executable"]
+    with open(path, "ab") as stream:
+        stream.write(b"# tampered\n")
+    calls = 0
+
+    def fake_probe(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("tampered artifacts must not be invoked")
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "artifact_validation_failed"
+    assert calls == 0
+    assert state.direct_connect_authority_store.get_projection(operation_id).reason == "original conformance failure"
+
+
+@pytest.mark.parametrize("projection_state", ["planned", "committed"])
+def test_retry_refuses_nonfailed_projection(client, tmp_path, projection_state):
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    if projection_state == "committed":
+        assert state.direct_connect_authority_store.mark_committed(
+            operation_id, adapter_id="custom-profile-adapter", profile_name="custom-profile",
+        )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert response.status_code == 409
+    assert f"projection state is '{projection_state}'" in response.json()["detail"]
+
+
+def test_retry_missing_operation_returns_404(client):
+    tc, _state = client
+
+    assert tc.post("/api/v1/runtime/custom-cli/does-not-exist/retry").status_code == 404
+
+
+def test_retry_requires_master_bearer_not_registration_token(client, tmp_path, monkeypatch):
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    _fake_probe(monkeypatch)
+
+    response = tc.post(
+        f"/api/v1/runtime/custom-cli/{operation_id}/retry",
+        headers={"Authorization": "Bearer hrreg_not-the-master-bearer"},
+    )
+
+    assert response.status_code == 401
+
+
 def test_forget_unknown_operation_returns_404(client):
     tc, _state = client
 
@@ -382,3 +535,148 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
         "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
     ):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+    ).fetchone()[0] == 0
+
+
+def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_history(
+    client, tmp_path, monkeypatch,
+):
+    """The production retry and forget routes leave no retry orphan behind."""
+    from runtime.orchestrator import custom_adapter_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    monkeypatch.setattr(
+        custom_adapter_registry, "run_conformance_probe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("probe failed")),
+    )
+
+    retry_response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+
+    assert retry_response.status_code == 200
+    assert retry_response.json()["reason"] == "conformance_probe_failed"
+    assert store._conn.execute(
+        "SELECT state FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+    ).fetchone()[0] == "failed"
+    event_types_before_forget = [row[0] for row in store._conn.execute(
+        "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
+    )]
+    assert {"projection_failed", "retry_validation_started", "retry_validation_failed"} <= set(
+        event_types_before_forget
+    )
+
+    forget_response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert forget_response.status_code == 200
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+    ).fetchone()[0] == 0
+    for table in (
+        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    event_types_after_forget = [row[0] for row in store._conn.execute(
+        "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
+    )]
+    assert set(event_types_before_forget) <= set(event_types_after_forget)
+    assert "forgotten" in event_types_after_forget
+    status_response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["operation_id"] is None
+    assert status_response.json()["profile_state"] is None
+
+
+def test_forget_refuses_a_durably_running_retry_without_deleting_operation_state(
+    client, tmp_path, monkeypatch,
+):
+    """The store transaction must protect a claimed retry from /forget."""
+    from runtime.daemon.direct_connect_retry import retry_validate
+    from runtime.orchestrator import custom_adapter_registry
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    probe_started = threading.Event()
+    allow_probe_to_finish = threading.Event()
+    probe_calls = 0
+    bind_calls = 0
+    original_bind = custom_adapter_registry._perform_adapter_profile_binding
+
+    def paused_probe(executable, adapter_id, **_kwargs):
+        nonlocal probe_calls
+        probe_calls += 1
+        probe_started.set()
+        assert allow_probe_to_finish.wait(timeout=5)
+        from runtime.orchestrator.adapter_contract import AdapterOutput
+        return AdapterOutput.model_validate({
+            "success": True, "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+            "adapter_metadata": {"adapter": adapter_id, "adapter_version": "9.9.9", "contract_version": 1},
+        })
+
+    def counted_bind(**kwargs):
+        nonlocal bind_calls
+        bind_calls += 1
+        return original_bind(**kwargs)
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", paused_probe)
+    monkeypatch.setattr(custom_adapter_registry, "_perform_adapter_profile_binding", counted_bind)
+    retry_outcomes = []
+    retry_thread = threading.Thread(
+        target=lambda: retry_outcomes.append(retry_validate(store, operation_id)),
+    )
+    retry_thread.start()
+    assert probe_started.wait(timeout=5)
+    running_attempt = store._conn.execute(
+        "SELECT attempt_id, state FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+    ).fetchone()
+    assert running_attempt is not None
+    assert running_attempt["state"] == "running"
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "refused: retry validation is running"
+    assert store.get_projection(operation_id).state == "failed"
+    assert store.get_receipt_artifacts(operation_id) is not None
+    for table in (
+        "direct_connect_operations", "direct_connect_artifacts", "direct_connect_receipts",
+        "direct_connect_projections", "direct_connect_authorities",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > 0
+
+    allow_probe_to_finish.set()
+    retry_thread.join(timeout=10)
+
+    assert not retry_thread.is_alive()
+    assert [outcome.state for outcome in retry_outcomes] == ["committed"]
+    assert probe_calls == bind_calls == 1
+    attempts = store._conn.execute(
+        "SELECT state FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
+    ).fetchall()
+    assert [row[0] for row in attempts] == ["succeeded"]
+    status_response = tc.get("/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"})
+    assert status_response.status_code == 200
+    assert status_response.json()["profile_state"] == "committed"
+
+
+def test_forget_refuses_failed_projection_after_retry_establishes_live_connection(client, tmp_path, monkeypatch):
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+    wrapper = state.direct_connect_authority_store.get_receipt_artifacts(operation_id).wrapper_path
+    _fake_probe(monkeypatch)
+    assert tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry").status_code == 200
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "refused: retry validation established a live connection"
+    assert wrapper.exists()
+    assert state.direct_connect_authority_store.get_projection(operation_id).state == "failed"
