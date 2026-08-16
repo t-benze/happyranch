@@ -16,14 +16,15 @@
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
  */
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   directConnect,
   executorBinaries,
   health as healthApi,
   settings as settingsApi,
 } from '@/lib/api';
+import type { DirectConnectStatus } from '@/lib/api/directConnect';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -420,6 +421,8 @@ export function useDirectConnect({
 }) {
   const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
+  const queryClient = useQueryClient();
+  const directCommitPending = useRef(false);
 
   const mint = useMutation({
     mutationFn: async (name: string) => {
@@ -485,7 +488,7 @@ export function useDirectConnect({
       });
       return;
     }
-    if (state.stage !== 'committing' || !statusData?.operation_id) return;
+    if (state.stage !== 'committing' || directCommitPending.current || !statusData?.operation_id) return;
 
     if (statusData.profile_state === 'committed') {
       setState({
@@ -518,13 +521,32 @@ export function useDirectConnect({
   const retryCommit = (): void => {
     if (state.stage !== 'failed') return;
     const { name, wrapperDestination, operationId } = state;
+    directCommitPending.current = true;
     setState({ stage: 'committing', name, wrapperDestination });
     commitMutation.mutate(operationId, {
       onSuccess: (resp) => {
         if (resp.profile_state === 'committed') {
+          directCommitPending.current = false;
           setState({ stage: 'connected', name, wrapperDestination });
           onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else if (resp.profile_state === 'planned') {
+          // The durable winner is still projecting; the status observer owns
+          // the terminal UI transition.
+          void queryClient.cancelQueries({ queryKey: ['direct-connect', 'status', name] }).then(() => {
+            queryClient.setQueryData<DirectConnectStatus>(
+              ['direct-connect', 'status', name],
+              {
+                wrapper_destination: wrapperDestination,
+                operation_id: operationId,
+                profile_state: 'planned',
+                reason: null,
+              },
+            );
+            void queryClient.invalidateQueries({ queryKey: ['direct-connect', 'status', name] });
+            directCommitPending.current = false;
+          });
         } else {
+          directCommitPending.current = false;
           setState({
             stage: 'failed', name, wrapperDestination, operationId,
             reason: resp.reason ?? 'The connection could not be completed.',
@@ -532,6 +554,7 @@ export function useDirectConnect({
         }
       },
       onError: () => {
+        directCommitPending.current = false;
         setState({
           stage: 'failed', name, wrapperDestination, operationId,
           reason: 'Could not reach the daemon to finish connecting.',

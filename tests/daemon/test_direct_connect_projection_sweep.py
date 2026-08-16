@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 
 import pytest
 
@@ -119,45 +120,42 @@ def test_sweep_and_browser_projection_race_to_one_committer(store, tmp_path, mon
     operation_id = _mint_and_receive(
         store, tmp_path, token="hrreg_race", profile_name="race-profile",
     )
-    original_plan = store.plan_projection
-    original_list_pending = store.list_operations_pending_projection
-    snapshot_barrier = threading.Barrier(2)
-    plan_barrier = threading.Barrier(2)
+    probe_started = threading.Event()
+    release_probe = threading.Event()
     probe_calls = 0
-    browser_outcomes = []
-
-    def synchronized_plan(*args, **kwargs):
-        result = original_plan(*args, **kwargs)
-        plan_barrier.wait()
-        return result
-
-    def synchronized_list_pending():
-        operation_ids = original_list_pending()
-        snapshot_barrier.wait()
-        return operation_ids
+    sweep = threading.Thread(target=lambda: _sweep_once(store))
 
     def fake_probe(_executable, adapter_id, **_kwargs):
         nonlocal probe_calls
         probe_calls += 1
+        probe_started.set()
+        assert release_probe.wait(timeout=4)
         return _fake_probe_output(adapter_id)
 
-    monkeypatch.setattr(store, "list_operations_pending_projection", synchronized_list_pending)
-    monkeypatch.setattr(store, "plan_projection", synchronized_plan)
     monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
-    def browser_commit():
-        snapshot_barrier.wait()
-        browser_outcomes.append(project(store, operation_id))
-
-    browser = threading.Thread(target=browser_commit)
-    browser.start()
-    _sweep_once(store)
-    browser.join()
+    sweep.start()
+    assert probe_started.wait(timeout=2)
+    time.sleep(1.1)  # Exceeds the prior 50 * 20ms concurrent-winner budget.
+    try:
+        browser_outcome = project(store, operation_id)
+        assert browser_outcome.state == "planned"
+        assert browser_outcome.reason is None
+        assert probe_calls == 1
+    finally:
+        release_probe.set()
+        sweep.join(timeout=4)
 
     projection = store.get_projection(operation_id)
+    assert not sweep.is_alive()
     assert probe_calls == 1
     assert projection is not None and projection.state == "committed"
-    assert browser_outcomes[0].state == "committed"
-    assert browser_outcomes[0].adapter_id == projection.adapter_id
+    reconciled = project(store, operation_id)
+    assert reconciled.state == "committed"
+    assert reconciled.adapter_id == projection.adapter_id
+    events = store._conn.execute(
+        "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == ["received_nonlaunchable", "committed"]
 
 
 def test_sweep_redacts_candidate_controlled_conformance_diagnostic(store, tmp_path, monkeypatch):

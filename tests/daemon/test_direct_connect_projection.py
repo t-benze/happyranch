@@ -283,8 +283,10 @@ def test_concurrent_projection_has_one_committer(store, tmp_path, monkeypatch):
     for t in threads:
         t.join()
 
-    assert all(o.state == "committed" for o in outcomes)
-    assert len({o.adapter_id for o in outcomes}) == 1
+    assert {outcome.state for outcome in outcomes} <= {"planned", "committed"}
+    reconciled = [project(store, operation_id) for _ in outcomes]
+    assert all(outcome.state == "committed" for outcome in reconciled)
+    assert len({outcome.adapter_id for outcome in reconciled}) == 1
 
 
 def test_projection_state_survives_store_reopen(tmp_path, monkeypatch):
