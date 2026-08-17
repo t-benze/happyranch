@@ -196,13 +196,13 @@ def test_bind_profile_contract_describes_both_paths() -> None:
 
 # ── ScheduleEditBody null-type regression ─────────────────────────────
 
-_NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone"]
+_NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone", "start_date"]
 
 _RECURRING_VALIDATION_CODES = {
     "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
     "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
     "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
-    "invalid_timezone",
+    "invalid_timezone", "invalid_start_date",
 }
 
 
@@ -213,6 +213,8 @@ def test_schedule_create_contract_documents_recurring_kind_and_validation_codes(
 
     create_schema = schemas["ScheduleCreateBody"]
     assert "recurring" in create_schema["properties"]["kind"]["description"]
+    assert "start_date" in create_schema["properties"]
+    assert "server derives" in create_schema["properties"]["fire_at"]["description"].lower()
 
     error_schema = schemas["RecurringValidationErrorResponse"]
     code_schema = error_schema["properties"]["detail"]["$ref"]
@@ -284,6 +286,7 @@ def test_schedule_edit_contract_documents_server_derived_recurring_fire_at() -> 
     assert "omit" in description.lower()
     assert "server" in description.lower()
     assert "strict" in description.lower()
+    assert "start_date" in description
 
 
 def test_schedule_edit_contract_documents_recurring_selector_clears() -> None:

@@ -81,9 +81,23 @@ class ScheduleCreateBody(BaseModel):
         min_length=1,
         description='Schedule kind: "one_shot", "weekly", or "recurring".',
     )
-    fire_at: str = Field(min_length=1)
+    fire_at: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "ISO-8601 next fire. Required except a native recurring create with "
+            "start_date, where the server derives the first occurrence."
+        ),
+    )
     recurrence: dict | SkipJsonSchema[None] = Field(None)
     timezone: str = Field(default="UTC")
+    start_date: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "Optional canonical YYYY-MM-DD local phase for native recurring schedules. "
+            "The server validates the selected recurrence and DST, derives fire_at, "
+            "and stores only its managed anchor_date."
+        ),
+    )
 
 
 class RecurringValidationErrorDetail(BaseModel):
@@ -91,7 +105,7 @@ class RecurringValidationErrorDetail(BaseModel):
         "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
         "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
         "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
-        "invalid_timezone",
+        "invalid_timezone", "invalid_start_date",
     ]
 
 
@@ -103,7 +117,7 @@ _RECURRING_VALIDATION_CODES = frozenset({
     "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
     "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
     "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
-    "invalid_timezone",
+    "invalid_timezone", "invalid_start_date",
 })
 
 
@@ -170,27 +184,27 @@ def create_schedule(
                 "valid": [k.value for k in ScheduleKind],
             },
         )
+    if body.start_date is not None and kind != ScheduleKind.RECURRING:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_start_date", "message": "start_date is only valid for recurring schedules"},
+        )
 
-    # ── parse fire_at ──
-    try:
-        fire_at = datetime.fromisoformat(body.fire_at)
-    except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_fire_at", "got": body.fire_at},
-        )
-    if fire_at.tzinfo is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_fire_at",
-                "got": body.fire_at,
-                "message": (
-                    "fire_at must include a timezone offset "
-                    "(e.g., +00:00, +08:00, Z)"
-                ),
-            },
-        )
+    if any(getattr(body, field) is None for field in body.model_fields_set & {"fire_at", "start_date"}):
+        raise HTTPException(status_code=422, detail={"code": "explicit_null"})
+    if body.fire_at is None and not (kind == ScheduleKind.RECURRING and body.start_date is not None):
+        raise HTTPException(status_code=422, detail={"code": "invalid_fire_at", "message": "fire_at is required"})
+    fire_at = None
+    if body.fire_at is not None:
+        try:
+            fire_at = datetime.fromisoformat(body.fire_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "invalid_fire_at", "got": body.fire_at})
+        if fire_at.tzinfo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_fire_at", "got": body.fire_at, "message": "fire_at must include a timezone offset (e.g., +00:00, +08:00, Z)"},
+            )
 
     # ── call service ──
     svc = ScheduleService(org.db)
@@ -204,6 +218,7 @@ def create_schedule(
             timezone=body.timezone,
             normalized_brief=body.normalized_brief,
             source_instruction=body.source_instruction,
+            start_date=body.start_date,
         )
     except ScheduleServiceError as exc:
         if kind == ScheduleKind.RECURRING and str(exc) in _RECURRING_VALIDATION_CODES:
@@ -348,6 +363,13 @@ class ScheduleEditBody(BaseModel):
     timezone: str | SkipJsonSchema[None] = Field(
         None, description="IANA timezone string"
     )
+    start_date: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "Optional canonical YYYY-MM-DD native recurring rephase. The server "
+            "derives the first fire; supplied fire_at is assertion-only."
+        ),
+    )
 
 
 @router.patch("/schedules/{schedule_id}")
@@ -356,7 +378,7 @@ def edit_schedule(
 ) -> dict:
     """Edit mutable Todo fields.
 
-    Native recurring recurrence/timezone edits may omit ``fire_at``: the
+    Native recurring recurrence/timezone/start_date edits may omit ``fire_at``: the
     server validates the merged rule and persists its own next occurrence.
     A supplied ``fire_at`` remains a strict exact-match assertion.
     An editor may explicitly null inactive recurrence selectors; they are
@@ -397,10 +419,14 @@ def edit_schedule(
         kwargs["recurrence"] = body.recurrence
     if body.timezone is not None:
         kwargs["timezone"] = body.timezone
+    if body.start_date is not None:
+        kwargs["start_date"] = body.start_date
 
     try:
         record = svc.edit(schedule_id, acting_agent, **kwargs)
     except ScheduleServiceError as exc:
+        if str(exc) in _RECURRING_VALIDATION_CODES:
+            raise HTTPException(status_code=422, detail={"code": str(exc)})
         raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
     return _schedule_to_dict(record)
 

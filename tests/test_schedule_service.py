@@ -142,6 +142,59 @@ def test_create_recurring_computes_anchor_and_requires_normalized_fire_at(tmp_pa
     assert record.recurrence["anchor_date"] == expected.date().isoformat()
 
 
+def test_create_recurring_start_date_derives_phase_without_caller_fire_at(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None,
+    }
+
+    record = svc.create(
+        agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+        fire_at=None, recurrence=rule, timezone="UTC", normalized_brief="x",
+        source_instruction="x", start_date="2026-08-21",
+    )
+
+    assert record.recurrence["anchor_date"] == "2026-08-21"
+    assert record.fire_at == datetime(2026, 8, 21, 9, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("start_date", ["2026/08/21", "2026-07-21", "2026-08-20"])
+def test_create_recurring_invalid_start_date_is_atomic(tmp_path, frozen_clock, start_date):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None}
+
+    with pytest.raises(ScheduleServiceError, match="invalid_start_date"):
+        svc.create(agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+                   fire_at=None, recurrence=rule, timezone="UTC", normalized_brief="x",
+                   source_instruction="x", start_date=start_date)
+    assert db.schedules.list() == []
+
+
+def test_edit_recurring_start_date_rephases_atomically_and_audits(tmp_path, frozen_clock):
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None}
+    original = svc.create(agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+                          fire_at=datetime(2026, 7, 24, 9, tzinfo=timezone.utc), recurrence=rule,
+                          timezone="UTC", normalized_brief="x", source_instruction="x")
+    db.schedules.update(original.id, fire_count=3, spawned_task_ids=["TASK-1"])
+
+    edited = svc.edit(original.id, "operator", start_date="2026-08-21")
+
+    assert edited.status == ScheduleStatus.ARMED
+    assert edited.fire_count == 3
+    assert edited.spawned_task_ids == ["TASK-1"]
+    assert edited.recurrence["anchor_date"] == "2026-08-21"
+    assert edited.fire_at == datetime(2026, 8, 21, 9, tzinfo=timezone.utc)
+    audit = db.get_audit_logs_by_action("schedule_edited")[-1]["payload"]
+    assert audit["start_date"] == "2026-08-21"
+    assert audit["before"]["recurrence"] == original.recurrence
+    assert audit["after"]["recurrence"] == edited.recurrence
+
+
 def test_edit_recurring_timing_preserves_anchor_and_firing_is_rejected(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)

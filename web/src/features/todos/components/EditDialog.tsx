@@ -105,6 +105,9 @@ export function EditDialog({
   )
   const [until, setUntil] = useState(String(initialRecurrence.until ?? ''))
   const [count, setCount] = useState(String(initialRecurrence.count ?? 1))
+  // Blank by default: merely opening and saving an existing recurrence must
+  // never change its server-owned cadence phase.
+  const [startDate, setStartDate] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
 
   const displayedError = localError ?? validationError
@@ -145,6 +148,7 @@ export function EditDialog({
       setWeeklyTime(initialRecurrence.time ?? '09:00')
     }
     if (isRecurring) {
+      setStartDate('')
       setFrequency(String(initialRecurrence.freq ?? 'DAILY'))
       setInterval(String(initialRecurrence.interval ?? 1))
       setRecurrenceTime(String(initialRecurrence.time ?? '09:00'))
@@ -226,6 +230,7 @@ export function EditDialog({
       }
       fields.recurrence = recurrence
       fields.timezone = timezone || 'UTC'
+      if (startDate) fields.start_date = startDate
     } else if (isWeekly) {
       const tz = timezone || 'UTC'
       fields.recurrence = { day: weekday, time: weeklyTime, tz }
@@ -306,18 +311,33 @@ export function EditDialog({
           </div>
 
           {isRecurring ? (
-            <RecurringFields
-              frequency={frequency} setFrequency={setFrequency}
-              interval={interval} setInterval={setInterval}
-              time={recurrenceTime} setTime={setRecurrenceTime}
-              days={recurrenceDays} setDays={setRecurrenceDays}
-              monthMode={monthMode} setMonthMode={setMonthMode}
-              monthDay={monthDay} setMonthDay={setMonthDay}
-              ordinal={ordinal} setOrdinal={setOrdinal}
-              ordinalDay={ordinalDay} setOrdinalDay={setOrdinalDay}
-              ends={ends} setEnds={setEnds} until={until} setUntil={setUntil}
-              count={count} setCount={setCount}
-            />
+            <>
+              <RecurringFields
+                frequency={frequency} setFrequency={setFrequency}
+                interval={interval} setInterval={setInterval}
+                time={recurrenceTime} setTime={setRecurrenceTime}
+                days={recurrenceDays} setDays={setRecurrenceDays}
+                monthMode={monthMode} setMonthMode={setMonthMode}
+                monthDay={monthDay} setMonthDay={setMonthDay}
+                ordinal={ordinal} setOrdinal={setOrdinal}
+                ordinalDay={ordinalDay} setOrdinalDay={setOrdinalDay}
+                ends={ends} setEnds={setEnds} until={until} setUntil={setUntil}
+                count={count} setCount={setCount}
+              />
+              <div className="space-y-1">
+              <Label htmlFor="edit-recurrence-start-date">Rephase starting on (optional)</Label>
+              <Input
+                id="edit-recurrence-start-date"
+                aria-describedby="edit-recurrence-start-date-help"
+                type="date"
+                value={startDate}
+                onChange={(event) => setStartDate(event.target.value)}
+              />
+              <p id="edit-recurrence-start-date-help" className="text-fg-muted text-xs">
+                Leave blank to preserve this Todo’s current phase. When set, the server validates the date and derives the first fire.
+              </p>
+              </div>
+            </>
           ) : isWeekly ? (
             <>
               <div className="space-y-1">

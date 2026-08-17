@@ -918,6 +918,9 @@ for audit/reconciliation).
   founder-set only) have no expiry.
 - **Recurring** — uses the bounded daily/weekly/monthly/yearly rule grammar.
   The server computes the first occurrence and immutable local ``anchor_date``;
+  a native create or ARMED/PAUSED founder edit may request a canonical local
+  ``start_date`` phase, which the server validates against the rule and DST,
+  derives to ``fire_at``, and records only as the managed anchor.
   timing-only edits preserve that anchor, while cadence-shape edits reset it to
   the newly computed next occurrence's local date. A native recurring PATCH
   that changes recurrence and/or timezone may omit ``fire_at``; after merging
@@ -938,7 +941,7 @@ or dispatch count, and rejects FIRING, terminal, and EXPIRED rows with
 ``state_conflict``. Recurring-create validation returns stable 422 codes:
 ``invalid_freq_fields``, ``invalid_byday``, ``monthly_selector_missing``,
 ``monthly_selector_conflict``, ``invalid_interval``,
-``anchor_date_not_settable``, ``invalid_until``, ``invalid_count``,
+``anchor_date_not_settable``, ``invalid_start_date``, ``invalid_until``, ``invalid_count``,
 ``end_condition_conflict``, ``invalid_time``, and ``invalid_timezone``.
 
 **Fire mechanism.** The schedule fire is a two-stage pipeline:

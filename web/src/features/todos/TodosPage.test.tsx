@@ -823,6 +823,24 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     })
   })
 
+  it('submits an optional recurring rephase date without calculating fire_at', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Rephase starting on (optional)'), '2026-09-14')
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.start_date).toBe('2026-09-14')
+    expect(capturedBody!.fire_at).toBeUndefined()
+  })
+
   it('saves a native weekly multi-select recurrence with a positive interval and no end', async () => {
     let capturedBody: Record<string, unknown> | null = null
     mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {

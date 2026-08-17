@@ -109,7 +109,11 @@ retroactively fired.
 ### Stable anchor and edit semantics
 
 `anchor_date` is server-computed from the local date of the first calculated
-occurrence at creation and cannot be caller-supplied. It never drifts as a Todo
+occurrence at creation and cannot be caller-supplied. An agent may optionally
+request a canonical local `start_date` phase when creating a native recurring
+Todo, and a founder may request it in an allowed edit; the daemon validates the
+selected rule/DST phase, derives the first fire, and stores only `anchor_date`.
+It never drifts as a Todo
 fires or re-arms. It is immutable for a given rule version, which prevents an
 “every two weeks” or “every two years” cadence from being re-phased by `now` or
 by the last successful run.
@@ -120,6 +124,9 @@ by the last successful run.
   creates a new rule version and resets `anchor_date` to that version’s newly
   calculated next local occurrence date. The edit must be atomically validated
   and audit before/after rules including the anchor.
+- An ARMED or PAUSED founder edit may intentionally rephase with `start_date`.
+  It atomically derives `fire_at`, retains lifecycle/counters, and audits the
+  requested phase with before/after recurrence and fire timing; it never fires.
 - The full recurring editor explicitly sends `null` for inactive `byday`,
   `bymonthday`, and `ordinal` selectors. After its PATCH merge, the server
   removes those explicit clears before validation and persistence, so stored
@@ -224,7 +231,8 @@ on the server and does not alter one-shot or legacy weekly edit behavior.
 - `monthly_selector_missing` or `monthly_selector_conflict` when monthly does
   not contain exactly one valid selector; and
 - `anchor_date_not_settable` when a caller attempts to set the server-owned
-  anchor, plus `state_conflict` for a disallowed lifecycle action.
+  anchor; `invalid_start_date` for a malformed, past, non-selected, or DST-gap
+  requested phase; plus `state_conflict` for a disallowed lifecycle action.
 
 The bounded monthly grammar accepts exactly one positive `month_day` from 1–31
 **or** exactly one weekday paired with a named ordinal (`first`, `second`,

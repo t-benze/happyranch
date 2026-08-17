@@ -831,6 +831,8 @@ export interface ScheduleEditFields {
   fire_at?: string;
   recurrence?: ScheduleRecurrence;
   timezone?: string;
+  /** Optional local YYYY-MM-DD native-recurring phase; server derives fire_at. */
+  start_date?: string;
 }
 
 export interface ScheduleRenewBody {

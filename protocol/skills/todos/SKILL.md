@@ -68,9 +68,10 @@ permission matchers.
 | `source_instruction` | ✓ | Verbatim instruction — kept for audit, never edited afterward |
 | `normalized_brief` | ✓ | Self-contained, founder-reviewable brief — immutable after creation |
 | `kind` | ✓ | `"one_shot"`, `"weekly"`, or `"recurring"` |
-| `fire_at` | ✓ | ISO-8601 with an **explicit timezone offset** (`+00:00`, `+08:00`, or `Z`) |
+| `fire_at` | ✓ except native recurring with `start_date` | ISO-8601 with an **explicit timezone offset** (`+00:00`, `+08:00`, or `Z`); omit for the server-derived phase form below |
 | `recurrence` | one_shot: omit/null; weekly/recurring: required | See recurrence section |
 | `timezone` | default `"UTC"` | Must equal `recurrence.tz` for weekly and recurring schedules |
+| `start_date` | native recurring only, optional | Canonical local `YYYY-MM-DD` phase; never send for one-shot or weekly |
 
 **Extra fields are forbidden.**  The server responds 422 for unrecognized keys.
 
@@ -98,6 +99,13 @@ permission matchers.
 
 Use this exact bounded recurrence object. The server computes and stores
 `anchor_date`; do **not** send it in an agent-authored create payload.
+
+For an explicitly instructed local phase, send top-level `start_date` and
+**omit** `fire_at`. The daemon validates that date against the complete rule
+(including DST), derives the first UTC instant, and persists only its managed
+`anchor_date`. A supplied `fire_at` is assertion-only; agents should not
+calculate it. Without `start_date`, retain the legacy rule: `fire_at` is
+required and must exactly match the server's next candidate.
 
 | `freq` | Required fields | Forbidden fields |
 | --- | --- | --- |
@@ -150,7 +158,7 @@ existing Todo to make room.
 | Invalid `kind` | 422 `invalid_kind` | Only `one_shot`, `weekly`, and `recurring` are valid |
 | Malformed `fire_at` or missing timezone offset | 422 `invalid_fire_at` | Correct the ISO-8601 timestamp; always include an offset |
 | One-shot `fire_at` is past or more than 90 days ahead | 409 `create_failed` with the service diagnostic | Correct the timestamp only when the explicit instruction supports it; otherwise report the diagnostic and ask for clarification |
-| Invalid recurring grammar | 422 with one of `invalid_freq_fields`, `invalid_byday`, `monthly_selector_missing`, `monthly_selector_conflict`, `invalid_interval`, `anchor_date_not_settable`, `invalid_until`, `invalid_count`, `end_condition_conflict`, `invalid_time`, or `invalid_timezone` | Do not guess or retry a different grammar; correct only from the explicit instruction, or ask for clarification |
+| Invalid recurring grammar or phase | 422 with one of `invalid_freq_fields`, `invalid_byday`, `monthly_selector_missing`, `monthly_selector_conflict`, `invalid_interval`, `anchor_date_not_settable`, `invalid_start_date`, `invalid_until`, `invalid_count`, `end_condition_conflict`, `invalid_time`, or `invalid_timezone` | Do not guess or retry a different grammar; correct only from the explicit instruction, or ask for clarification |
 | Cap exceeded | 409 `create_failed` | Report which cap; ask the founder which Todo to pause/cancel |
 | Ambiguous instruction | (your guard — don't call) | **Ask for clarification** — do NOT guess the date, timezone, cadence, or instruction. Escalate rather than arm nonsense. |
 
@@ -240,8 +248,7 @@ happyranch schedules create --org happyranch --from-file /tmp/schedule-weekly-ma
 ### Example 3 — fortnightly Tuesday/Thursday report, ending after six successful dispatches (recurring)
 
 This is a template only. Use it only when the founder/operator explicitly gave
-this exact commitment; verify that `fire_at` is the next computed occurrence
-at the time you arm it.
+this exact commitment and phase. Let the daemon calculate the first instant.
 
 ```json
 {
@@ -251,7 +258,7 @@ at the time you arm it.
   "source_instruction": "Every other Tuesday and Thursday at 09:00 Shanghai time, send the project report; stop after six successful reports.",
   "normalized_brief": "Send the project report to the founder's thread, covering progress, blockers, and the next planned steps.",
   "kind": "recurring",
-  "fire_at": "2026-08-18T01:00:00+00:00",
+  "start_date": "2026-08-18",
   "recurrence": {
     "freq": "WEEKLY",
     "interval": 2,
