@@ -139,7 +139,15 @@ Slice A's `received_nonlaunchable` receipt:
   subprocesses) drives one receipt through a durable `planned` →
   `committed`/`failed` state machine (`direct_connect_projections` table,
   additive to the Slice A authority store). Committing runs the SAME bounded
-  conformance probe the legacy master-bearer registration path uses, then
+  conformance probe the legacy master-bearer registration path uses. For direct
+  projection, the wrapper forwards the entire normal v1 ``AdapterInput.prompt``
+  through one real provider invocation, obtains a genuine terminal provider
+  response, and returns the wrapper-owned ``AdapterOutput``; the provider does
+  not construct that envelope. The fresh opaque canary must appear complete in
+  ``result.text``; a fabricated/static success does not prove delivery. The
+  short probe guides no optional tool use or workspace exploration without
+  enforcing or collecting telemetry about those provider-internal actions, and normal task
+  behavior is unchanged. The projection then
   reuses the EXISTING `adapter_store`/`custom_adapter_registry` persistence
   primitives (not a second write path) to durably write an
   `AdapterEntry(status="approved", registered_by="direct-connect",

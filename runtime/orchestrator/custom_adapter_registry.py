@@ -596,10 +596,22 @@ def build_probe_input(
             invocation_kind="task",
         ),
         prompt=(
-            "conformance-probe: respond with a valid AdapterOutput. "
+            "conformance-probe: Forward this entire normal v1 AdapterInput.prompt "
+            "through one real provider invocation and obtain a genuine terminal "
+            "provider response. The wrapper owns the AdapterOutput envelope; the "
+            "provider must not fabricate AdapterOutput. Do not fabricate a static "
+            "success. Do not use optional tools or explore the workspace during this "
+            "short probe. Normal task behavior is unchanged. "
+            "Return the complete opaque canary in your terminal provider response; "
+            "the wrapper must include it in AdapterOutput.result.text: "
             f"{prompt_canary}"
             if prompt_canary is not None
-            else "conformance-probe: respond with a valid AdapterOutput."
+            else "conformance-probe: Forward this entire normal v1 AdapterInput.prompt "
+            "through one real provider invocation and obtain a genuine terminal "
+            "provider response. The wrapper owns the AdapterOutput envelope; the "
+            "provider must not fabricate AdapterOutput. Do not fabricate a static "
+            "success. Do not use optional tools or explore the workspace during this "
+            "short probe. Normal task behavior is unchanged."
         ),
         workspace="/tmp/happyranch-probe-workspace",
         timeout=TimeoutInfo(
