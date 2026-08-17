@@ -1,8 +1,10 @@
 """Runtime-managed skill policy CLI commands.
 
-Reads the file/YAML-backed skill registry + eligibility policy + exposure
-DIRECTLY from disk — no daemon round-trip. All commands are read-only
-inspection/validation surfaces as defined in the THR-055 product spec.
+Reads the file/YAML-backed release-managed skill registry + eligibility policy
+directly from disk. ``skills effective`` additionally reads the authenticated
+daemon projection for B2 custom skills when available; all commands remain
+read-only inspection/validation surfaces as defined in the THR-055 product
+spec.
 
 Commands:
   skills catalog list       — list all registered skills
@@ -91,6 +93,85 @@ def _fmt_provenance(rules: list) -> list[str]:
 def _fmt_blocked(skill_id: str, gate: str, reason: str) -> str:
     """Format a blocked-reason line."""
     return f"{skill_id}: BLOCKED by {gate} — {reason}"
+
+
+def _read_custom_skill_projection(
+    args: argparse.Namespace, *, org: str, agent: str,
+) -> tuple[list[dict], str | None]:
+    """Read B2 custom-skill status from the authoritative daemon projection.
+
+    The release-managed catalog intentionally stays file/YAML-backed so this
+    command remains useful offline. B2 visibility and materialization are
+    database-backed, however, so the CLI must never reproduce that resolver.
+    """
+    if getattr(args, "offline", False):
+        return [], "offline mode requested"
+
+    import httpx
+
+    from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
+
+    try:
+        client = OpcClient.from_env()
+        response = client.get(f"/api/v1/orgs/{org}/agents/{agent}/skills/effective")
+        if response.status_code != 200:
+            return [], f"daemon returned HTTP {response.status_code}"
+        payload = response.json()
+        skills = payload.get("skills")
+        if not isinstance(skills, list):
+            return [], "daemon returned an invalid effective-skills projection"
+        return [skill for skill in skills if skill.get("type") == "custom"], None
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        return [], str(exc)
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        return [], f"daemon projection unavailable: {exc}"
+
+
+def _print_custom_skills_section(custom_skills: list[dict], unavailable_reason: str | None) -> None:
+    """Render custom skills separately from release-managed catalog output."""
+    if unavailable_reason is not None:
+        print(
+            "Custom skills: unavailable "
+            f"({unavailable_reason}); managed catalog shown from local files."
+        )
+        print()
+        return
+
+    print(f"Custom skills (authoritative daemon projection) ({len(custom_skills)}):")
+    if not custom_skills:
+        print("  (none)")
+        print()
+        return
+
+    for skill in custom_skills:
+        print(f"  {skill['skill_id']}@{skill.get('current_version', skill.get('version', '?'))}  {skill['name']}")
+        if skill.get("visible"):
+            print("    visibility: visible (guidance visibility only; not permissions)")
+        else:
+            print(f"    visibility: hidden ({skill.get('hidden_reason', 'unknown')})")
+        winning_rule = skill.get("winning_rule")
+        if winning_rule:
+            print(
+                "    eligibility: "
+                f"{winning_rule['scope_type']}({winning_rule.get('scope_target')}) "
+                f"{winning_rule['effect'].upper()}"
+            )
+        print(
+            "    current version: "
+            f"{skill.get('current_version')} hash={skill.get('current_hash')} "
+            f"validation={skill.get('validation_state')}"
+        )
+        materialization = skill.get("materialization_state")
+        if materialization == "materialized":
+            print(
+                "    session effect: materialized "
+                f"(session={skill.get('materialized_session_id')})"
+            )
+        elif materialization == "visible_next_session":
+            print("    session effect: visible next session; not yet materialized")
+        else:
+            print("    session effect: not visible; no materialization claim")
+        print()
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +347,10 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
     for entry in all_entries:
         catalog_ok[entry.id] = catalog_gate(entry).passed
 
+    custom_skills, custom_projection_unavailable_reason = _read_custom_skill_projection(
+        args, org=org, agent=agent,
+    )
+
     if args.json:
         effective_list = []
         for s in exposed:
@@ -315,6 +400,11 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
             "system_contracts": system_contracts_json,
             "effective_skills": effective_list,
             "blocked_skills": blocked_list,
+            "custom_skills": custom_skills,
+            "custom_skills_projection": {
+                "available": custom_projection_unavailable_reason is None,
+                "unavailable_reason": custom_projection_unavailable_reason,
+            },
         }
         print(json.dumps(output, indent=2))
         return
@@ -359,6 +449,9 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
                 print(f"  {_fmt_blocked(skill_id, 'catalog_gate', reason)}")
             for r in rules:
                 print(f"  {_fmt_blocked(skill_id, 'eligibility_gate', f'{r.scope}({r.id}) DENY')}")
+
+    print()
+    _print_custom_skills_section(custom_skills, custom_projection_unavailable_reason)
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +871,10 @@ def register(sub) -> None:
         help="Session context for system-contract filtering",
     )
     p_eff.add_argument("--workspace", help="Agent workspace path (for repo-capable check)")
+    p_eff.add_argument(
+        "--offline", action="store_true",
+        help="Skip daemon-backed B2 custom-skill status; retain local managed-catalog diagnostics",
+    )
     p_eff.set_defaults(func=cmd_skills_effective)
 
     # --- skills policy explain <skill_id> --agent <name> ---

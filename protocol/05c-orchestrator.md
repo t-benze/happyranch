@@ -875,18 +875,27 @@ inputs. Skills omitted by policy do not appear. Global CLI skills are untouched.
 
 ### 4.4 Admin Surface (CLI-first)
 
-V1 provides CLI commands that read the file/YAML-backed registry + resolver +
-exposure directly from disk (no daemon round-trip):
+V1 provides CLI commands for release-managed catalog diagnostics from the
+file/YAML-backed registry + resolver + exposure. `skills effective` also reads
+the existing authenticated daemon effective-skills projection when available,
+because B2 custom-skill eligibility and materialization evidence are
+database-backed and must not be re-resolved by the CLI:
 
 - `happyranch skills catalog list` — list all registered skills.
 - `happyranch skills catalog validate` — validate registry entries and
   eligibility policy; surfaces unknown-id warnings and malformed skill.yaml
   entries.
-- `happyranch skills effective --agent <name>` — show effective skills for an
-  agent, with provenance (which scope+rule admitted/denied each skill).
+- `happyranch skills effective --agent <name>` — show release-managed skills
+  from local files and B2 custom skills from the daemon projection. Custom
+  output distinguishes hidden/no-policy, visible-next-session, and successful
+  current-version materialization with rule provenance, version, and hash.
+  JSON reports custom-projection availability; text labels an unavailable
+  daemon and retains the local managed-catalog output. `--offline` explicitly
+  selects that managed-catalog-only fallback.
 - `happyranch skills policy explain <skill_id> --agent <name>` — explain why
-  a skill is or isn't available, including both gate results and
-  eligibility provenance.
+  a release-managed skill is or isn't available, including both gate results
+  and eligibility provenance; it remains catalog-only rather than inventing a
+  second B2 custom-policy resolver.
 
 ### 4.6 Session-Time Skill Freshness & Protocol Doc Injection (THR-070)
 
@@ -1052,8 +1061,11 @@ involvement.
 
 **Debug visibility.** ``happyranch skills effective --agent <name>`` displays
 a distinct "System Contracts (runtime-injected)" section separate from managed
-catalog skills. The optional ``--context`` flag filters the display by session
-context; ``--workspace`` enables the repo check.
+catalog skills, plus a distinct daemon-backed custom-skills section when the
+projection is available. The optional ``--context`` flag filters the display by
+session context; ``--workspace`` enables the repo check. B2 eligibility changes
+guidance visibility only, never permissions; a session-effect claim requires a
+successful materialization of the current version/hash.
 
 **Fences.** System-contract injection does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)

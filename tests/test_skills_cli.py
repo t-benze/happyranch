@@ -257,6 +257,29 @@ class TestSkillsEffective:
         with pytest.raises(SystemExit):
             cmd_skills_effective(ns)
 
+    def test_effective_reports_custom_projection_fallback_without_daemon(
+        self, capsys, monkeypatch, tmp_path,
+    ):
+        from cli.client.client import DaemonNotRunning, OpcClient
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        monkeypatch.setattr(
+            OpcClient, "from_env",
+            classmethod(lambda cls: (_ for _ in ()).throw(DaemonNotRunning("daemon not running"))),
+        )
+        policy_path = self._make_policy_file(tmp_path, allow=["hr:standard-skill"])
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:standard-skill" in out
+        assert "Custom skills: unavailable" in out
+        assert "daemon not running" in out
+
 
 class TestSkillsPolicyExplain:
     """Tests for 'skills policy explain <skill_id> --agent <name>'"""
