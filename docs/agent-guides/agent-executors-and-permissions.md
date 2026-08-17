@@ -261,16 +261,20 @@ flow instead.
 
 Before submitting the receipt, wrapper authors must locally send a fresh,
 opaque canary through the ordinary one-shot provider path in the entire
-``AdapterInput.prompt`` and verify that the genuine terminal provider response
-returns that exact canary in ``AdapterOutput.result.text``. Trusted daemon
-commit/projection repeats this bounded behavioral proof before it writes an
-adapter or profile; success also requires the matching invocation ID, canonical
-adapter ID, and consistent terminal return code. Provider ``agent_session_id``
-is optional and resume-only: a wrapper must faithfully propagate it when the
-provider supplies one, but it must never fabricate one or use it as a substitute
-for the HappyRanch invocation-identity proof. A wrapper must faithfully propagate
-terminal provider errors and must never invent success without a terminal provider
-response. Direct conformance does not require optional token usage:
+``AdapterInput.prompt`` through one real provider invocation. It must obtain a
+genuine terminal provider response containing the complete canary, then the
+wrapper—not the provider—must construct ``AdapterOutput`` with that canary in
+``result.text``. It must not fabricate a static success. The short probe guides
+no optional tool use or workspace exploration, without enforcing or collecting
+telemetry about provider-internal actions; normal task behavior is unchanged.
+Trusted daemon commit/projection repeats this bounded behavioral proof before it
+writes an adapter or profile; success also requires the matching invocation ID,
+canonical adapter ID, and consistent terminal return code. Provider
+``agent_session_id`` is optional and resume-only: a wrapper must faithfully
+propagate it when the provider supplies one, but it must never fabricate one or
+use it as a substitute for the HappyRanch invocation-identity proof. A wrapper
+must faithfully propagate terminal provider errors and must never invent success
+without a terminal provider response. Direct conformance does not require optional token usage:
 only candidates that declare ``token_metering`` must supply trustworthy
 canonical ``token_usage``. Failure diagnostics are category-only and never
 persist provider stdout, stderr, errors, or the canary.

@@ -131,10 +131,15 @@ shapes. A daemon-owned periodic projection sweep also invokes that coordinator
 for every receipt without a projection row, so browser closure cannot strand a
 connection; see `protocol/05b-agent-runtime.md` for the normative detail.
 Each direct projection runs one bounded behavioral conformance probe before
-any adapter/profile persistence: it sends a fresh opaque canary in the normal
-v1 ``AdapterInput.prompt`` and accepts only a successful, returncode-consistent
-terminal ``AdapterOutput`` with the matching HappyRanch invocation ID, canonical
-adapter ID, and that exact canary in ``result.text``. Provider
+any adapter/profile persistence: the wrapper forwards the entire normal v1
+``AdapterInput.prompt`` through one real provider invocation, obtains a genuine
+terminal provider response, and returns the wrapper-owned ``AdapterOutput``.
+The provider does not construct that envelope; a fabricated/static success is
+not proof. The fresh opaque canary must appear complete in ``result.text``;
+the probe accepts only a successful, returncode-consistent terminal output with
+the matching HappyRanch invocation ID and canonical adapter ID. The short probe
+guides no optional tool use or workspace exploration, but does not enforce or
+collect telemetry about those provider-internal actions; normal task behavior is unchanged. Provider
 ``agent_session_id`` is optional and resume-only; when a provider returns one,
 the adapter must preserve it faithfully, but it cannot substitute for the
 HappyRanch invocation-identity proof. Candidate-controlled stdout/stderr/error text and the canary

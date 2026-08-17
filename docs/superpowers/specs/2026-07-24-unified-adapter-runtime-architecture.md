@@ -484,10 +484,16 @@ and final UI simplification remain later serial slices.
 **THR-160 direct-connect behavioral conformance.** Trusted commit/projection
 (never receipt-only ``/runtime/custom-cli/connect``) invokes the candidate's
 ordinary v1 stdin/stdout wrapper path once with a unique bounded opaque canary
-inside ``AdapterInput.prompt`` before any adapter/profile persistence. The
-terminal ``AdapterOutput`` must be schema-valid, successful and
+inside ``AdapterInput.prompt`` before any adapter/profile persistence. The wrapper
+forwards the entire normal v1 prompt through one real provider invocation,
+obtains a genuine terminal provider response, and owns the ``AdapterOutput``
+envelope; the provider must not construct it. A fabricated/static success is
+not proof. The terminal ``AdapterOutput`` must be schema-valid, successful and
 returncode-consistent, echo that HappyRanch invocation ID, identify the canonical
-adapter, and include the exact canary in canonical ``result.text``. Provider
+adapter, and include the complete opaque canary in canonical ``result.text``.
+The short probe guides no optional tool use or workspace exploration, but does
+not enforce or collect telemetry about those provider-internal actions; normal task behavior
+is unchanged. Provider
 ``agent_session_id`` is optional and resume-only; when available it must be
 returned faithfully, but it cannot substitute for HappyRanch invocation-identity
 proof. Malformed/empty/absent output, timeout,

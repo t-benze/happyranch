@@ -95,7 +95,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
   });
 
-  test('waiting state shows the daemon-issued wrapper path, no PENDING wording, and the prompt tells the wrapper to declare its own workspace_adapter_id', async () => {
+  test('waiting state shows the daemon-issued wrapper path, no PENDING wording, and provider-neutral direct-conformance guidance', async () => {
     const user = userEvent.setup();
     const mintSpy = await mockMint();
     await mockStatus(() => ({
@@ -127,6 +127,14 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(promptText).toContain('WORKSPACE_ADAPTER_ID');
     expect(promptText).toContain('workspace_adapter_id');
     expect(promptText).toContain('YOUR CLI\'s expectations');
+    expect(promptText).toContain('ENTIRE AdapterInput.prompt');
+    expect(promptText).toContain('one real');
+    expect(promptText).toContain('provider invocation');
+    expect(promptText).toContain('genuine terminal provider response');
+    expect(promptText).toContain('wrapper, not the provider, constructs the AdapterOutput');
+    expect(promptText).toContain('complete opaque canary');
+    expect(promptText).toContain('Do not use optional tools or explore the workspace');
+    expect(promptText).toContain('normal task behavior is unchanged');
   });
 
   test('a stale removed committed projection stays in the waiting copy-prompt state', async () => {

@@ -44,6 +44,7 @@ from runtime.orchestrator.adapter_store import (
 )
 from runtime.orchestrator.custom_adapter_registry import (
     BoundedReadError,
+    build_probe_input,
     get_adapter,
     list_adapters,
     register_custom_adapter,
@@ -151,7 +152,12 @@ def _make_behavioral_adapter_script(tmp_path: Path, name: str, mode: str = "succ
             canary
             if {mode!r} in ("success", "null_agent_session", "nonzero_process")
             else "direct-connect-canary:wrong" if {mode!r} == "wrong_canary"
-            else "provider did not receive the prompt"
+            else (
+                canary[:-1] if {mode!r} == "partial_canary"
+                else "direct-connect-canary:static" if {mode!r} == "static_response"
+                else "I explored the workspace and need another turn" if {mode!r} == "exploration_only"
+                else "provider did not receive the prompt"
+            )
         )
         payload = {{
             "success": {mode!r} != "provider_error",
@@ -432,6 +438,22 @@ class TestConformanceProbe:
         assert result.adapter_metadata.contract_version == 1
         assert result.adapter_metadata.adapter == "conformant-adapter"
 
+    def test_direct_probe_input_guides_wrapper_mediated_terminal_provider_proof(self):
+        canary = "direct-connect-canary:opaque-proof"
+
+        probe_input = build_probe_input("behavioral-adapter", prompt_canary=canary)
+
+        assert "entire normal v1 AdapterInput.prompt" in probe_input.prompt
+        assert "real provider invocation" in probe_input.prompt
+        assert "genuine terminal provider response" in probe_input.prompt
+        assert "wrapper owns the AdapterOutput envelope" in probe_input.prompt
+        assert "must not fabricate AdapterOutput" in probe_input.prompt
+        assert "terminal provider response; the wrapper must include it in " in probe_input.prompt
+        assert "AdapterOutput.result.text" in probe_input.prompt
+        assert "Do not use optional tools or explore the workspace" in probe_input.prompt
+        assert "Normal task behavior is unchanged" in probe_input.prompt
+        assert canary in probe_input.prompt
+
     def test_direct_behavioral_probe_forwards_unique_canary_and_retains_provider_session_id(
         self, tmp_path: Path,
     ):
@@ -468,6 +490,9 @@ class TestConformanceProbe:
         ("mode", "reason"),
         [
             ("swallowed_prompt", "terminal result did not prove prompt delivery"),
+            ("partial_canary", "terminal result did not prove prompt delivery"),
+            ("exploration_only", "terminal result did not prove prompt delivery"),
+            ("static_response", "terminal result did not prove prompt delivery"),
             ("wrong_canary", "terminal result did not prove prompt delivery"),
             ("provider_error", "provider reported failure"),
             ("wrong_invocation", "invocation id is missing or does not match"),
