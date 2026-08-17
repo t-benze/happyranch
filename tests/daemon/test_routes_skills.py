@@ -514,6 +514,156 @@ class TestSkillsCatalogAuth:
         assert r.status_code == 401
 
 
+class TestSkillsEffectiveCliProjection:
+    """CLI transport for the daemon-owned B2 effective-skills projection."""
+
+    def test_cli_effective_projects_b2_custom_skill_from_daemon(
+        self, tmp_home, app, org_state, auth_headers, monkeypatch, capsys, tmp_path,
+    ):
+        """CLI renders the DB-backed B2 projection without reimplementing it."""
+        import argparse
+        import json
+
+        from cli.client.client import OpcClient
+        from cli.commands.skills import cmd_skills_effective
+
+        _seed_skills_and_config(org_state.root, allow=["hr:standard-skill"])
+        conn = getattr(org_state.db, "_conn", org_state.db)
+        conn.execute(
+            """INSERT INTO custom_skills
+               (id,org_slug,slug,name,description,origin_kind,created_at,created_by)
+               VALUES ('custom:cli-observable','alpha','cli-observable','CLI observable',
+                       'B2 custom skill','human','now','founder')"""
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                created_at,author_kind,author_identity)
+               VALUES ('custom:cli-observable', ?, 'custom/cli-observable/SKILL.md',
+                       '# CLI observable', 'valid', 'now', 'human', 'founder')""",
+            ("a" * 64,),
+        )
+        version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id='custom:cli-observable'",
+            (version_id,),
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_eligibility_rules
+               (skill_id,scope_type,scope_target,effect,created_at,created_by)
+               VALUES ('custom:cli-observable','agent','dev_agent','allow','now','founder')"""
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_materializations
+               (skill_id,agent_name,task_id,session_context,session_id,version_id,content_hash,
+                success,created_at)
+               VALUES ('custom:cli-observable','dev_agent',NULL,'dream','sess-cli',?,?,1,'now')""",
+            (version_id, "a" * 64),
+        )
+        conn.execute(
+            """INSERT INTO custom_skills
+               (id,org_slug,slug,name,description,origin_kind,created_at,created_by)
+               VALUES ('custom:cli-hidden','alpha','cli-hidden','CLI hidden',
+                       'Default hidden B2 skill','human','now','founder')"""
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                created_at,author_kind,author_identity)
+               VALUES ('custom:cli-hidden', ?, 'custom/cli-hidden/SKILL.md',
+                       '# CLI hidden', 'valid', 'now', 'human', 'founder')""",
+            ("b" * 64,),
+        )
+        hidden_version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id='custom:cli-hidden'",
+            (hidden_version_id,),
+        )
+        conn.execute(
+            """INSERT INTO custom_skills
+               (id,org_slug,slug,name,description,origin_kind,created_at,created_by)
+               VALUES ('custom:cli-stale','alpha','cli-stale','CLI stale',
+                       'Old materialization B2 skill','human','now','founder')"""
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                created_at,author_kind,author_identity)
+               VALUES ('custom:cli-stale', ?, 'custom/cli-stale/v1/SKILL.md',
+                       '# CLI stale v1', 'valid', 'now', 'human', 'founder')""",
+            ("c" * 64,),
+        )
+        stale_version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+                validation_state,created_at,author_kind,author_identity)
+               VALUES ('custom:cli-stale', ?, ?, 'custom/cli-stale/v2/SKILL.md',
+                       '# CLI stale v2', 'valid', 'now', 'human', 'founder')""",
+            (stale_version_id, "d" * 64),
+        )
+        current_stale_version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id='custom:cli-stale'",
+            (current_stale_version_id,),
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_eligibility_rules
+               (skill_id,scope_type,scope_target,effect,created_at,created_by)
+               VALUES ('custom:cli-stale','agent','dev_agent','allow','now','founder')"""
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_materializations
+               (skill_id,agent_name,task_id,session_context,session_id,version_id,content_hash,
+                success,created_at)
+               VALUES ('custom:cli-stale','dev_agent',NULL,'dream','sess-old',?,?,1,'now')""",
+            (stale_version_id, "c" * 64),
+        )
+        conn.commit()
+
+        test_client = TestClient(app)
+        test_client.headers.update(auth_headers)
+
+        class TestClientOpc:
+            def get(self, path, **kwargs):
+                return test_client.get(path, **kwargs)
+
+        monkeypatch.setattr(OpcClient, "from_env", classmethod(lambda cls: TestClientOpc()))
+        policy_path = tmp_path / "managed-policy.yaml"
+        policy_path.write_text(_yaml.dump({
+            "skills": {"org": {"allow": ["hr:standard-skill"], "deny": []}},
+        }))
+        ns = argparse.Namespace(
+            agent="dev_agent", org="alpha", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_effective(ns)
+        body = json.loads(capsys.readouterr().out)
+        assert any(skill["id"] == "hr:standard-skill" for skill in body["effective_skills"])
+        assert body["custom_skills_projection"]["available"] is True
+        custom = next(skill for skill in body["custom_skills"] if skill["skill_id"] == "custom:cli-observable")
+        assert custom["skill_id"] == "custom:cli-observable"
+        assert custom["materialization_state"] == "materialized"
+        assert custom["materialized_session_id"] == "sess-cli"
+        hidden = next(skill for skill in body["custom_skills"] if skill["skill_id"] == "custom:cli-hidden")
+        assert hidden["hidden_reason"] == "no_eligibility_policy"
+        assert hidden["materialization_state"] == "not_visible"
+        stale = next(skill for skill in body["custom_skills"] if skill["skill_id"] == "custom:cli-stale")
+        assert stale["current_version"] == current_stale_version_id
+        assert stale["materialization_state"] == "visible_next_session"
+
+        ns.json = False
+        cmd_skills_effective(ns)
+        text = capsys.readouterr().out
+        assert "Custom skills (authoritative daemon projection) (3):" in text
+        assert "custom:cli-observable@1" in text
+        assert "session effect: materialized (session=sess-cli)" in text
+        assert "custom:cli-hidden@" in text
+        assert "visibility: hidden (no_eligibility_policy)" in text
+        assert "custom:cli-stale@" in text
+        assert "session effect: visible next session; not yet materialized" in text
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # PHASE 2 — Write endpoints + validation guard
 # ══════════════════════════════════════════════════════════════════════════
