@@ -132,8 +132,10 @@ instruction cannot be expressed exactly (for example, "every weekday except
 the second Tuesday"), do not approximate it: ask for clarification before
 arming.
 
-`timezone` must equal `recurrence.tz`; `fire_at` must be the next server-
-computed occurrence. Normalize those values before calling the callback.
+`timezone` must equal `recurrence.tz`. For a native recurring payload with
+`start_date`, omit `fire_at` and never calculate recurrence or DST. Without
+`start_date`, the legacy `fire_at` remains required and must exactly match the
+server's next computed occurrence.
 
 - **Default expiry:** 90 days from creation.  The server does not
   accept `"indefinite": true` from the agent callback — indefinite

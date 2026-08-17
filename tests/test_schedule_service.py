@@ -173,6 +173,25 @@ def test_create_recurring_invalid_start_date_is_atomic(tmp_path, frozen_clock, s
     assert db.schedules.list() == []
 
 
+def test_create_recurring_monthly_nonselected_start_date_is_atomic(tmp_path, frozen_clock):
+    """A phase date must match the fully validated monthly selector."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+    rule = {
+        "freq": "MONTHLY", "interval": 1, "bymonthday": 15,
+        "time": "09:00", "tz": "UTC", "until": None, "count": None,
+    }
+
+    with pytest.raises(ScheduleServiceError, match="invalid_start_date"):
+        svc.create(
+            agent_name="dev_agent", team="engineering", kind=ScheduleKind.RECURRING,
+            fire_at=None, recurrence=rule, timezone="UTC", normalized_brief="x",
+            source_instruction="x", start_date="2026-08-21",
+        )
+
+    assert db.schedules.list() == []
+
+
 def test_edit_recurring_start_date_rephases_atomically_and_audits(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)

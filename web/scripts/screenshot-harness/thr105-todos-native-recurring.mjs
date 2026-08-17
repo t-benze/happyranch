@@ -29,7 +29,10 @@ await modeAProdApi({
   ...common,
   route: `/orgs/${ORG}/todos/${recurring.schedule_id}`,
   name: 'todos-native-recurring-edit',
-  prep: [["click", "getByRole('button', { name: 'Edit', exact: true })"]],
+  prep: [
+    ["click", "getByRole('button', { name: 'Edit', exact: true })"],
+    ["fill", "getByLabel('Rephase starting on (optional)')", '2026-09-14'],
+  ],
 })
-await writeFile(join(OUT, 'state-map.json'), JSON.stringify({ viewport: [1440, 900], states: ['native recurring list', 'native recurring detail', 'native recurring edit'] }, null, 2))
+await writeFile(join(OUT, 'state-map.json'), JSON.stringify({ viewport: [1440, 900], states: ['native recurring list', 'native recurring detail', 'native recurring edit with rephase date 2026-09-14'] }, null, 2))
 console.log(`Captured native recurring evidence in ${OUT}`)

@@ -816,6 +816,7 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.timezone).toBe('Asia/Shanghai')
+    expect(capturedBody!.start_date).toBeUndefined()
     expect(capturedBody!.fire_at).toBeUndefined()
     expect(capturedBody!.recurrence).toEqual({
       freq: 'MONTHLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
