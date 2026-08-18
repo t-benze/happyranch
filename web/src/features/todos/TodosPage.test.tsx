@@ -816,11 +816,30 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.timezone).toBe('Asia/Shanghai')
+    expect(capturedBody!.start_date).toBeUndefined()
     expect(capturedBody!.fire_at).toBeUndefined()
     expect(capturedBody!.recurrence).toEqual({
       freq: 'MONTHLY', interval: 2, time: '09:00', tz: 'Asia/Shanghai',
       until: null, count: 6, byday: ['MO'], bymonthday: null, ordinal: 'second',
     })
+  })
+
+  it('submits an optional recurring rephase date without calculating fire_at', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_RECURRING_MONTHLY)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Rephase starting on (optional)'), '2026-09-14')
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody!.start_date).toBe('2026-09-14')
+    expect(capturedBody!.fire_at).toBeUndefined()
   })
 
   it('saves a native weekly multi-select recurrence with a positive interval and no end', async () => {

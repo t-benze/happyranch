@@ -8,6 +8,7 @@ import pytest
 from runtime.orchestrator.schedule_rules import (
     next_recurring_occurrence,
     validate_recurring_rule,
+    validate_start_date_phase,
 )
 
 
@@ -29,6 +30,26 @@ def _error_code(rule: dict) -> str:
     error = validate_recurring_rule(rule)
     assert error is not None
     return error.code
+
+
+def test_start_date_phase_uses_daemon_dst_resolution():
+    rule = _rule(
+        freq="DAILY", tz="America/New_York", time="09:00", anchor_date="2026-01-01",
+    )
+    code, candidate = validate_start_date_phase(
+        rule, "2026-03-09", now=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    assert code == "2026-03-09"
+    assert candidate == datetime(2026, 3, 9, 13, tzinfo=timezone.utc)
+
+
+def test_start_date_phase_rejects_dst_gap():
+    code, candidate = validate_start_date_phase(
+        _rule(freq="DAILY", tz="America/New_York", time="02:30"),
+        "2026-03-08", now=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    assert code == "invalid_start_date"
+    assert candidate is None
 
 
 @pytest.mark.parametrize("freq", ["DAILY", "YEARLY"])

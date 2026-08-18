@@ -809,6 +809,24 @@ def test_create_recurring_preserves_agent_rule_at_the_service_create_seam(
     }
 
 
+def test_create_recurring_start_date_derives_fire_at_without_agent_calculation(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    _register_session(org_state)
+    payload = _create_payload(
+        kind="recurring", fire_at=None, timezone="UTC", start_date="2026-08-21",
+        recurrence={"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+    )
+    payload.pop("fire_at")
+    status, body = _post_create(TestClient(app), payload, auth_headers)
+
+    assert status == 200
+    assert body["recurrence"]["anchor_date"] == "2026-08-21"
+    assert body["fire_at"] == "2026-08-21T09:00:00+00:00"
+
+
 def test_patch_recurring_without_fire_at_derives_server_occurrence(
     tmp_home, app, org_state, auth_headers,
 ):
@@ -834,6 +852,26 @@ def test_patch_recurring_without_fire_at_derives_server_occurrence(
     assert body["fire_at"] == next_recurring_occurrence(
         body["recurrence"], _FROZEN_NOW,
     ).isoformat()
+
+
+def test_patch_recurring_start_date_rephases_without_caller_fire_at(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None, "anchor_date": "2026-07-24"}
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC",
+        fire_at=datetime(2026, 7, 24, 9, tzinfo=timezone.utc),
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}", json={"start_date": "2026-08-21"}, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recurrence"]["anchor_date"] == "2026-08-21"
+    assert response.json()["fire_at"] == "2026-08-21T09:00:00+00:00"
 
 
 @pytest.mark.parametrize(

@@ -316,6 +316,39 @@ def _localize_or_skip(naive_local_dt: datetime, tz: str) -> datetime | None:
     return localized
 
 
+def validate_start_date_phase(
+    rule: dict,
+    start_date: object,
+    *,
+    now: datetime,
+) -> tuple[str, datetime | None]:
+    """Validate an explicit recurring phase and return its first UTC instant.
+
+    ``start_date`` is deliberately transient input: callers persist only the
+    existing server-owned ``anchor_date`` after this helper has established
+    that the requested local calendar phase is real, selected by the complete
+    RRULE subset, and still future.
+    """
+    parsed_start = _parse_iso_date(start_date)
+    if parsed_start is None:
+        return "invalid_start_date", None
+    local_candidate = _localize_or_skip(
+        datetime.combine(parsed_start, time(int(rule["time"][:2]), int(rule["time"][3:]))),
+        rule["tz"],
+    )
+    if local_candidate is None:
+        return "invalid_start_date", None
+
+    candidate_rule = {**rule, "anchor_date": parsed_start.isoformat()}
+    candidate = next_recurring_occurrence(
+        candidate_rule,
+        after=local_candidate.astimezone(timezone.utc) - timedelta(microseconds=1),
+    )
+    if candidate is None or candidate != local_candidate.astimezone(timezone.utc) or candidate <= now:
+        return "invalid_start_date", None
+    return parsed_start.isoformat(), candidate
+
+
 def next_recurring_occurrence(rule: dict, after: datetime) -> datetime | None:
     """Return the next valid recurring occurrence strictly after ``after`` in UTC.
 

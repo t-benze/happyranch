@@ -2627,6 +2627,37 @@ def test_schedules_create_forwards_recurring_from_file_payload_unchanged(tmp_pat
     client.post.assert_called_once_with("/api/v1/orgs/alpha/schedules", json=payload)
 
 
+def test_schedules_create_forwards_start_date_recurring_payload_unchanged(tmp_path):
+    """The start-date form leaves daemon-owned fire_at absent at the CLI seam."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    payload = {
+        "task_id": "TASK-5190", "session_id": "sess-abc123", "agent": "dev_agent",
+        "source_instruction": "Send the monthly report on the second Monday.",
+        "normalized_brief": "Send the monthly report to the founder.",
+        "kind": "recurring", "start_date": "2026-09-14",
+        "recurrence": {
+            "freq": "MONTHLY", "interval": 1, "ordinal": "second", "byday": ["MO"],
+            "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+        },
+        "timezone": "Asia/Shanghai",
+    }
+    payload_path = tmp_path / "recurring-start-date.json"
+    payload_path.write_text(json.dumps(payload))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {
+        "schedule_id": "SCHEDULE-001", "kind": "recurring", "status": "armed",
+        "agent_name": "dev_agent",
+    }
+
+    with patch("cli.commands.schedules.OpcClient.from_env", return_value=client):
+        cmd_schedules_create(Namespace(org="alpha", from_file=str(payload_path)))
+
+    assert "fire_at" not in payload
+    client.post.assert_called_once_with("/api/v1/orgs/alpha/schedules", json=payload)
+
+
 def test_schedules_create_not_under_todos():
     """happyranch todos create does NOT exist; create is only under schedules."""
     parser = build_parser()

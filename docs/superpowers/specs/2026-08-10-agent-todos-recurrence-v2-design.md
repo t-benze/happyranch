@@ -825,6 +825,12 @@ occurrence, not an alternate scheduling authority. This omission-and-derive
 rule is native-recurring only; one-shot and legacy weekly PATCH semantics stay
 unchanged.
 
+An ARMED or PAUSED founder PATCH may also supply `start_date` as an intentional
+rephase, optionally alongside the validated rule/timezone patch. The daemon
+sets `anchor_date` to that normalized date and derives `fire_at`; no browser
+calculation is accepted as authority. The existing `schedule_edited` action
+audits the requested `start_date` and before/after recurrence and fire timing.
+
 **Anchor-reset rule (item 4 — dev_agent seq245, product_lead seq248):** a
 timing-only edit (a change to `time` or `tz` inside `recurrence`, or to
 top-level `timezone`, with `freq`/`interval`/`byday`/`bymonthday`/`ordinal`
@@ -921,12 +927,17 @@ the skill's preconditions (explicit-instruction-only, self-target,
 mandatory normalization) — those are kind-agnostic already. The example
 payload does **not** include `anchor_date` — it is server-computed
 (§3.2/§7.1) and must not appear in the agent-authored request.
+For an explicit native-recurring phase, that payload may instead include the
+top-level transient `start_date` (`YYYY-MM-DD`) and omit `fire_at`; the daemon
+validates the selected local rule/DST occurrence and persists only its managed
+`anchor_date` plus derived UTC fire.
 
 ### 8.2 CLI / API + OpenAPI/TS parity — revised (item 6, item 10)
 
-`ScheduleCreateBody`/`ScheduleEditBody` (`routes/schedules.py:59-77,
-263-273`) need no new Pydantic fields (`recurrence: dict` already accepts
-the richer shape; `kind: str` already accepts a new string value) — but
+`ScheduleCreateBody`/`ScheduleEditBody` expose the optional top-level
+`start_date` phase field for native recurring schedules; it is transient, not
+a recurrence key or DB field. The existing `recurrence: dict` accepts the
+richer rule shape; `kind: str` already accepts a new string value, but
 `kind`'s implicit value set (today informally `"one_shot"|"weekly"`) should
 gain an explicit note/enum in the OpenAPI schema so `"recurring"` isn't
 silently undocumented. **New:** a `POST /schedules/{id}/renew` route and
