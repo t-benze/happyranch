@@ -1036,7 +1036,8 @@ def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
     assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)
 
 
-def test_purpose_note_escalated_uses_escalation_wording():
+def test_escalated_task_followup_prompt_matches_governing_skill_contract():
+    """The live escalation prompt and governing skill must keep THR-166 aligned."""
     from runtime.daemon.thread_runner import _purpose_note
     from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
@@ -1056,7 +1057,29 @@ def test_purpose_note_escalated_uses_escalation_wording():
     assert "ESCALATED" in note
     assert "TASK-893" in note
     assert "needs founder CDN authorize" in note
-    assert "resolve the escalation yourself" in note
+    contract = (
+        "First evaluate the existing THR-166 policy against the server-recorded causal "
+        "terminal result",
+        "if it is eligible, submit the structured continuation request",
+        "Otherwise post the precise founder decision needed",
+        "Do not dispatch repair work from this turn",
+        "SAME root's ordinary lifecycle, which must delegate repair, review, and "
+        "reverify before returning to the original protected gate",
+        "follow-up never authorizes that gate",
+    )
+    skill = " ".join(
+        (Path(__file__).resolve().parents[1] / "protocol/skills/thread/SKILL.md")
+        .read_text()
+        .split()
+    )
+    for instruction in contract:
+        assert instruction in note
+        assert instruction in skill
+
+    # The authoritative ordinary-lifecycle instruction cannot regress to the
+    # former founder-only guidance.
+    assert "do NOT try to resolve the escalation yourself" not in note
+    assert "do NOT try to resolve the escalation yourself" not in skill
 
 
 def test_thread_store_renders_task_escalated():

@@ -2236,6 +2236,26 @@ def _maybe_post_thread_escalation(
     # `root_task_id` is the ancestor root of the escalating task. These are
     # equal for a root escalation but differ when a child escalates inside a
     # revisited chain — both are emitted for the dispatcher's downstream use.
+    # The result was persisted by the ordinary completion callback before this
+    # escalation path ran. Snapshot that exact durable row into the causal
+    # message; the continuation route re-reads and compares it, so the caller
+    # cannot substitute later repair descendants or prose as authority.
+    results = db.get_task_results(task_id)
+    latest_result = results[-1] if results else None
+    causal_terminal_result = None
+    if latest_result is not None:
+        causal_terminal_result = {
+            "task_id": task_id,
+            "result_id": latest_result["id"],
+            "terminal_status": latest_result.get("status"),
+            "verdict": latest_result.get("verdict"),
+            "output_summary": latest_result.get("output_summary"),
+            "created_at": latest_result.get("created_at"),
+        }
+    escalation_rows = [
+        row for row in db.get_audit_logs(task_id) if row["action"] == "escalation"
+    ]
+    causal_escalation_audit_id = escalation_rows[-1]["id"] if escalation_rows else None
     system_payload = {
         "kind_tag": "task_escalated",
         "task_id": task_id,
@@ -2245,6 +2265,10 @@ def _maybe_post_thread_escalation(
         "reason": reason,
         "revisit_chain_length": len(chain) if chain else 1,
     }
+    if causal_terminal_result is not None:
+        system_payload["causal_terminal_result"] = causal_terminal_result
+    if causal_escalation_audit_id is not None:
+        system_payload["causal_escalation_audit_id"] = causal_escalation_audit_id
     _append_followup_system_and_reinvoke(
         orch,
         thread_id=thread_id,

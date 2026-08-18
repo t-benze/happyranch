@@ -210,10 +210,12 @@ knows), decline.
 
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
-reason) and the prompt-header asks you to restate the ask in-thread. In that turn:
-state concisely what you need from the founder and why — do NOT try to resolve the
-escalation yourself, and do NOT dispatch a new task. Decline if the Feishu escalation
-already covers it and a thread restatement adds nothing.
+reason). First evaluate the existing THR-166 policy against the server-recorded causal
+terminal result; if it is eligible, submit the structured continuation request.
+Otherwise post the precise founder decision needed. Do not dispatch repair work from
+this turn. Acceptance only resumes this SAME root's ordinary lifecycle, which must
+delegate repair, review, and reverify before returning to the original protected gate;
+this follow-up never authorizes that gate.
 
 **What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
 dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a

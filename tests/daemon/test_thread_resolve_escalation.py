@@ -44,21 +44,17 @@ def test_thr166_compatibility_profile_and_evaluator_preserve_frozen_authority():
         }),
         attestation_count=9,
         evidence=(thread_routes.ContinuationEvidence(
-            task_id="T-1-REVERIFY", terminal_status="completed",
+            task_id="T-1", terminal_status="completed",
             verdict=None, output_summary=None,
         ),),
     )
     facts = thread_routes.ContinuationFacts(
-        descendant_ids=frozenset({"T-1-REVERIFY"}),
         escalated_at="2026-08-17T00:00:00+00:00",
-        evidence_by_task_id={
-            "T-1-REVERIFY": thread_routes.CanonicalTerminalEvidence(
-                terminal_status="completed",
-                created_at="2026-08-17T00:01:00+00:00",
-                verdict=None,
-                output_summary=None,
-            ),
-        },
+        causal_evidence=thread_routes.CanonicalTerminalEvidence(
+            task_id="T-1", result_id=1, terminal_status="completed",
+            created_at="2026-08-16T23:59:00+00:00",
+            verdict=None, output_summary=None,
+        ),
     )
 
     accepted = thread_routes.evaluate_bounded_continuation(
@@ -66,8 +62,9 @@ def test_thr166_compatibility_profile_and_evaluator_preserve_frozen_authority():
     )
     assert accepted.rejection_code is None
     assert accepted.snapshots == ({
-        "task_id": "T-1-REVERIFY", "terminal_status": "completed",
+        "task_id": "T-1", "result_id": 1, "terminal_status": "completed",
         "verdict": None, "output_summary": None,
+        "created_at": "2026-08-16T23:59:00+00:00",
     },)
 
     rejected = thread_routes.evaluate_bounded_continuation(
@@ -95,20 +92,29 @@ def _mint_authorized_invocation(org, thread_id: str, agent: str) -> str:
 
 
 def _autonomous_continue_payload(org, *, thread_id: str, task_id: str, agent: str) -> dict:
-    """Seed the causal THR-166 repair/review/reverify evidence seam."""
+    """Seed a server-recorded causal terminal-result evidence seam."""
     org.db.add_thread_participant(thread_id, agent, added_by="founder")
     org.db.update_task(task_id, assigned_agent=agent)
+    org.db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=f"sess-{task_id}",
+        status="completed", confidence_score=90, output_summary="bounded review result",
+    )
+    result = org.db.get_task_results(task_id)[-1]
     org.db.insert_audit_log(task_id, "orchestrator", "escalation", {"reason": "revise"})
+    escalation_audit_id = org.db.get_audit_logs(task_id)[-1]["id"]
     seq = org.db.append_thread_message(
         thread_id=thread_id, speaker=agent, kind=ThreadMessageKind.SYSTEM,
         system_payload={"kind_tag": "task_escalated", "task_id": task_id,
-                        "root_task_id": task_id},
+                        "root_task_id": task_id,
+                        "causal_terminal_result": {
+                            "task_id": task_id, "result_id": result["id"],
+                            "terminal_status": result["status"],
+                            "verdict": result["verdict"],
+                            "output_summary": result["output_summary"],
+                            "created_at": result["created_at"],
+                        },
+                        "causal_escalation_audit_id": escalation_audit_id},
     )
-    child_id = f"{task_id}-REVERIFY"
-    org.db.insert_task(TaskRecord(
-        id=child_id, brief="bounded reverify", parent_task_id=task_id,
-        status=TaskStatus.COMPLETED,
-    ))
     inv = org.db.mint_thread_invocation(
         thread_id=thread_id, agent_name=agent, triggering_seq=seq,
         purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
@@ -126,7 +132,8 @@ def _autonomous_continue_payload(org, *, thread_id: str, task_id: str, agent: st
             "no_genuine_ambiguity_or_novel_situation", "evidence_terminal_fresh_and_consistent",
             "original_protected_gate_not_authorized",
         ],
-        "evidence": [{"task_id": child_id, "terminal_status": "completed"}],
+        "evidence": [{"task_id": task_id, "terminal_status": "completed",
+                      "output_summary": "bounded review result"}],
     }
 
 
@@ -181,6 +188,102 @@ async def test_thread_resolve_escalation_continue_succeeds(
     assert len(audits) == 1
     assert audits[0]["payload"]["policy_id"] == "THR-166-genuine-human-blocker"
     assert audits[0]["payload"]["queue_intent"] == {"task_id": "T-1", "claimed": False}
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_accepts_the_real_causal_terminal_result_lifecycle(
+    client_with_runtime, monkeypatch,
+):
+    """The normal escalation path binds its minted follow-up to its own result."""
+    from runtime.daemon.routes.threads import THR166_POLICY
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import CompletionReport, NextStep
+    from runtime.orchestrator.executors import ExecutorResult
+
+    client, org = client_with_runtime
+    root_id = "T-LIFECYCLE"
+    thread_id = "THR-LIFECYCLE"
+    agent = "engineering_head"
+    org.db.insert_thread(ThreadRecord(id=thread_id, subject="Test", status=ThreadStatus.OPEN))
+    org.db.add_thread_participant(thread_id, agent, added_by="founder")
+    org.db.insert_task(TaskRecord(
+        id=root_id, brief="original protected gate", assigned_agent=agent,
+        dispatched_from_thread_id=thread_id,
+    ))
+    AuditLogger(org.db).log_thread_dispatch(
+        thread_id, task_id=root_id, dispatcher=agent,
+        target_agent=agent, team="engineering",
+    )
+    report = CompletionReport(
+        task_id=root_id, agent=agent, status="completed", confidence=90,
+        verdict="REQUEST_CHANGES", output_summary="review found bounded repair work",
+        decision=NextStep(action="escalate", reason="review requires founder decision"),
+    )
+    org.db.insert_task_result(
+        task_id=root_id, agent=agent, session_id="sess-lifecycle",
+        status="completed", confidence_score=90, verdict="REQUEST_CHANGES",
+        output_summary=report.output_summary,
+    )
+    monkeypatch.setattr(
+        org.orchestrator, "_run_agent",
+        lambda *args, **kwargs: (
+            ExecutorResult(success=True, session_id="sess-lifecycle", duration_seconds=0), report,
+        ),
+    )
+
+    # Real run-step terminal handling writes escalation, the causal SYSTEM row,
+    # and its TASK_FOLLOWUP. No descendant task is inserted after this point.
+    org.orchestrator.run_step(root_id)
+    assert org.db.get_task(root_id).status == TaskStatus.ESCALATED
+    assert org.db.get_children(root_id) == []
+    causal_message = next(
+        message for message in org.db.list_thread_messages(thread_id)
+        if (message.system_payload or {}).get("kind_tag") == "task_escalated"
+    )
+    invocation = next(
+        inv for inv in org.db.list_thread_invocations(thread_id)
+        if inv.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+    )
+    assert causal_message.system_payload == {
+        "kind_tag": "task_escalated", "task_id": root_id,
+        "original_task_id": root_id, "root_task_id": root_id,
+        "status": "escalated", "reason": "review requires founder decision",
+        "revisit_chain_length": 1,
+        "causal_terminal_result": {
+            "task_id": root_id, "result_id": 1, "terminal_status": "completed",
+            "verdict": "REQUEST_CHANGES", "output_summary": report.output_summary,
+            "created_at": org.db.get_task_results(root_id)[0]["created_at"],
+        },
+        "causal_escalation_audit_id": next(
+            row["id"] for row in org.db.get_audit_logs(root_id)
+            if row["action"] == "escalation"
+        ),
+    }
+    response = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/resolve-escalation",
+        json={
+            "task_id": root_id, "decision": "continue", "dispatcher": agent,
+            "invocation_token": invocation.invocation_token,
+            "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
+            "policy_provenance": "founder:THR-166:seq-29",
+            "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+            "attestation_checks": sorted(THR166_POLICY.required_checks),
+            "evidence": [{
+                "task_id": root_id, "terminal_status": "completed",
+                "verdict": "REQUEST_CHANGES", "output_summary": report.output_summary,
+            }],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert org.db.get_task(root_id).status == TaskStatus.PENDING
+    assert org.db.try_claim_for_step(root_id, TaskStatus.PENDING, None, new_count=2)
+    assert not [
+        row for row in org.db.get_audit_logs(root_id)
+        if row["action"] == "escalation_resolved"
+        and row["payload"].get("resolution_path") == "manual_break_glass"
+    ]
+    assert causal_message.system_payload is not None
 
 
 @pytest.mark.asyncio
@@ -533,10 +636,10 @@ async def test_autonomous_continue_rejects_manager_prose_and_protected_attestati
 
 
 @pytest.mark.asyncio
-async def test_autonomous_continue_uses_only_post_escalation_bounded_lineage(
+async def test_autonomous_continue_uses_only_bound_causal_terminal_result(
     client_with_runtime,
 ):
-    """TASK-5000: REVISE repair/review/reverify, never a later unrelated PASS."""
+    """Later repair/review/reverify records cannot replace the causal result."""
     client, org = client_with_runtime
     org.db.insert_thread(ThreadRecord(id="THR-5000", subject="THR-166", status=ThreadStatus.OPEN))
     org.db.insert_task(TaskRecord(
@@ -546,7 +649,6 @@ async def test_autonomous_continue_uses_only_post_escalation_bounded_lineage(
     payload = _autonomous_continue_payload(
         org, thread_id="THR-5000", task_id="TASK-5000", agent="engineering_head",
     )
-    helper_child = payload["evidence"][0]["task_id"]
     for task_id, parent_id in (
         ("TASK-5001", "TASK-5000"),
         ("TASK-5001-REPAIR", "TASK-5001"),
@@ -559,16 +661,16 @@ async def test_autonomous_continue_uses_only_post_escalation_bounded_lineage(
         ))
     # This late result is neither a descendant nor evidence for the unpark.
     org.db.insert_task(TaskRecord(id="TASK-5025", brief="later pass", status=TaskStatus.COMPLETED))
-    payload["evidence"] = [
-        {"task_id": task_id, "terminal_status": "completed"}
-        for task_id in ("TASK-5001", "TASK-5001-REPAIR", "TASK-5001-REVIEW", "TASK-5001-REVERIFY", helper_child)
-    ]
     response = client.post("/api/v1/orgs/alpha/threads/THR-5000/resolve-escalation", json=payload)
     assert response.status_code == 200, response.text
     audit = [row for row in org.db.get_audit_logs("TASK-5000")
              if row["action"] == "escalation_continued_autonomously"]
     assert len(audit) == 1
-    assert "TASK-5025" not in {row["task_id"] for row in audit[0]["payload"]["evidence"]}
+    assert audit[0]["payload"]["evidence"] == [{
+        "task_id": "TASK-5000", "result_id": 1, "terminal_status": "completed",
+        "verdict": None, "output_summary": "bounded review result",
+        "created_at": audit[0]["payload"]["evidence"][0]["created_at"],
+    }]
 
 
 @pytest.mark.asyncio
@@ -576,6 +678,9 @@ async def test_autonomous_continue_uses_only_post_escalation_bounded_lineage(
     ("mutate", "expected"),
     [
         (lambda payload: payload.update({"evidence": []}), "evidence_lineage_mismatch"),
+        (lambda payload: payload.update({"evidence": [{
+            "task_id": "UNRELATED", "terminal_status": "completed",
+        }]}), "evidence_lineage_mismatch"),
         (lambda payload: payload["evidence"][0].update({"output_summary": "forged"}), "evidence_result_mismatch"),
         (lambda payload: payload.update({"dispatcher": "other_manager"}), "invocation_token_invalid"),
     ],
@@ -631,7 +736,48 @@ async def test_autonomous_continue_rejects_wrong_owner_and_noncausal_followup(
 
 
 @pytest.mark.asyncio
-async def test_autonomous_continue_rejects_stale_and_nonterminal_evidence(client_with_runtime):
+@pytest.mark.parametrize("causal_terminal_result", [None, "malformed"])
+async def test_autonomous_continue_rejects_missing_or_malformed_causal_result(
+    client_with_runtime, causal_terminal_result,
+):
+    """A matching token/message never substitutes for a canonical result row."""
+    client, org = client_with_runtime
+    org.db.insert_thread(ThreadRecord(id="THR-CANON", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-CANON", brief="test", dispatched_from_thread_id="THR-CANON"))
+    org.db.update_task("T-CANON", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-CANON", task_id="T-CANON", agent="engineering_head",
+    )
+    system_payload = {
+        "kind_tag": "task_escalated", "task_id": "T-CANON", "root_task_id": "T-CANON",
+        "causal_escalation_audit_id": org.db.get_audit_logs("T-CANON")[-1]["id"],
+    }
+    if causal_terminal_result is not None:
+        system_payload["causal_terminal_result"] = causal_terminal_result
+    seq = org.db.append_thread_message(
+        thread_id="THR-CANON", speaker="engineering_head", kind=ThreadMessageKind.SYSTEM,
+        system_payload=system_payload,
+    )
+    inv = org.db.mint_thread_invocation(
+        thread_id="THR-CANON", agent_name="engineering_head", triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-CANON/resolve-escalation",
+        json={**payload, "invocation_token": inv.invocation_token},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] in {
+        "causal_result_missing", "causal_result_malformed",
+    }
+    assert org.db.get_task("T-CANON").status == TaskStatus.ESCALATED
+    assert org.db.get_invocation_any_status(inv.invocation_token).status == ThreadInvocationStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_autonomous_continue_rejects_stale_evidence_and_live_children(
+    client_with_runtime, monkeypatch,
+):
     client, org = client_with_runtime
     org.db.insert_thread(ThreadRecord(id="THR-EVIDENCE", subject="Test", status=ThreadStatus.OPEN))
     org.db.insert_task(TaskRecord(id="T-EVIDENCE", brief="test", dispatched_from_thread_id="THR-EVIDENCE"))
@@ -643,11 +789,24 @@ async def test_autonomous_continue_rejects_stale_and_nonterminal_evidence(client
     stale = _autonomous_continue_payload(
         org, thread_id="THR-EVIDENCE", task_id="T-EVIDENCE", agent="engineering_head",
     )
-    stale["evidence"].append({"task_id": "T-EVIDENCE-OLD", "terminal_status": "completed"})
+    original_logs = org.db.get_audit_logs
+
+    def stale_escalation(task_id):
+        logs = original_logs(task_id)
+        if task_id != "T-EVIDENCE":
+            return logs
+        return [
+            {**row, "timestamp": "2000-01-01T00:00:00+00:00"}
+            if row["action"] == "escalation" else row
+            for row in logs
+        ]
+
+    monkeypatch.setattr(org.db, "get_audit_logs", stale_escalation)
     stale_response = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
     assert stale_response.status_code == 409
     assert stale_response.json()["detail"]["code"] == "evidence_stale"
 
+    monkeypatch.setattr(org.db, "get_audit_logs", original_logs)
     org.db.update_task("T-EVIDENCE-OLD", status=TaskStatus.PENDING)
     nonterminal = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
     assert nonterminal.status_code == 409

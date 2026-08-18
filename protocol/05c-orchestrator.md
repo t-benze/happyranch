@@ -302,10 +302,12 @@ thread, a replayed token, or a noncausal follow-up fail closed.
 The server accepts only immutable founder policy
 `THR-166-genuine-human-blocker@1` (`founder:THR-166:seq-29`) and the exact
 class `repair_review_reverify_reevaluate_original_gate`. It never authorizes
-the original protected/destructive action. A structured attestation and an
-exact snapshot of every post-escalation terminal descendant are audited; task,
-owner, thread, invocation, escalation, descendants, terminal status, verdict,
-and result snapshot are derived and compared server-side. Free-form rationale,
+the original protected/destructive action. A structured attestation and the
+single exact terminal result that caused the bound escalation are audited. The
+causal `TASK_FOLLOWUP` records that result's task, result id, terminal status,
+verdict, output snapshot, and timestamp; the route re-derives and compares the
+same record, root, owner, thread, invocation, escalation, lineage, and
+freshness server-side. Later descendants, unrelated terminal records, prose,
 brief text, KB text, and quotes are audit context only, never authority.
 
 Absolute human blockers remain escalated: schema/migration or overloaded
