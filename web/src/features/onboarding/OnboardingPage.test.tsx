@@ -587,6 +587,9 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: null,
       profile_state: null,
       reason: null,
+      attempt_count: 0,
+      retry_eligible: false,
+      expires_at: null,
     });
   });
 
@@ -666,6 +669,9 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: 'op-onb-1',
       profile_state: 'committed',
       reason: null,
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: null,
     });
     const commitSpy = vi.spyOn(directConnectApi, 'commit');
 
@@ -676,7 +682,7 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     expect(commitSpy).not.toHaveBeenCalled();
   });
 
-  test('retryable error from the daemon projection shows a retry action, which succeeds on retry', async () => {
+  test('retryable candidate failure returns to the existing prompt without /retry', async () => {
     const user = userEvent.setup();
     const profileName = 'onb-retry-cli';
 
@@ -694,19 +700,20 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: 'op-onb-retry',
       profile_state: 'failed',
       reason: 'conformance_probe_failed: timed out',
+      attempt_count: 1,
+      retry_eligible: true,
+      expires_at: Date.now() / 1000 + 300,
     });
-    const retrySpy = vi
-      .spyOn(directConnectApi, 'retry')
-      .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
+    const retrySpy = vi.spyOn(directConnectApi, 'retry');
 
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
     expect(screen.getByText(/timed out/i)).toBeInTheDocument();
     expect(retrySpy).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
+    await user.click(screen.getByRole('button', { name: /back to prompt/i }));
 
-    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(retrySpy).toHaveBeenCalledTimes(1);
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    expect(retrySpy).not.toHaveBeenCalled();
     expect(vi.spyOn(directConnectApi, 'commit')).not.toHaveBeenCalled();
   });
 });

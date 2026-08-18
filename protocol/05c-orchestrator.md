@@ -160,7 +160,9 @@ separate attempt/event facts may establish a live bound profile; status then
 reports that live connection while exposing the retained historical failure.
 THR-160 adds a separate parent-token attempt series: at most two total direct
 receipts per original 30-minute authority (initial plus one changed-artifact
-resubmission after terminal conformance failure). This is not `/retry` and the
+resubmission after terminal conformance failure). Artifact equality is keyed by
+the wrapper and stable child slot, so a reordered identical manifest is not a
+changed-artifact retry. This is not `/retry` and the
 normal Settings/onboarding path sends the founder back to the existing prompt;
 it never invokes master-bearer snapshot revalidation. The parent and every
 historical attempt are retained, concurrent submissions join the one active

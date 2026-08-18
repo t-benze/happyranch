@@ -53,6 +53,42 @@ def test_current_schema_migrates_to_append_only_attempt_series(tmp_path) -> None
     store.close()
 
 
+def test_interrupted_attempt_series_migration_recovers_preserved_rows_on_reopen(tmp_path) -> None:
+    """A stale replacement table must not make startup lose legacy evidence."""
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    path = tmp_path / "direct.db"
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE direct_connect_operations (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL, intended_profile_name TEXT NOT NULL,
+        workspace_adapter_id TEXT NOT NULL, created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_receipts (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL, created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_operations_attempt_series_migration (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL, intended_profile_name TEXT NOT NULL,
+        workspace_adapter_id TEXT NOT NULL, created_at REAL NOT NULL)""")
+    conn.execute("INSERT INTO direct_connect_operations VALUES ('old-op', 'fp', 'received_nonlaunchable', 'profile', 'pi', 1)")
+    conn.execute("INSERT INTO direct_connect_receipts VALUES ('old-op', 'fp', 'received_nonlaunchable', 1)")
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(path)
+    assert store._conn.execute("SELECT operation_id FROM direct_connect_operations").fetchone()[0] == "old-op"
+    assert store._conn.execute("SELECT operation_id FROM direct_connect_receipts").fetchone()[0] == "old-op"
+    assert store._conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'direct_connect_operations_attempt_series_migration'"
+    ).fetchone() is None
+    store.close()
+
+    reopened = DirectConnectAuthorityStore(path)
+    assert reopened._conn.execute("SELECT COUNT(*) FROM direct_connect_operations").fetchone()[0] == 1
+    assert reopened._conn.execute("SELECT COUNT(*) FROM direct_connect_receipts").fetchone()[0] == 1
+    reopened.close()
+
+
 def test_conformance_failure_permits_exactly_one_changed_artifact_attempt(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 
@@ -73,6 +109,39 @@ def test_conformance_failure_permits_exactly_one_changed_artifact_attempt(tmp_pa
     store.receive(token, second, wrapper_sha256="c" * 64, wrapper_facts={}, children=[{"slot": "cli", "path": "/child", "sha256": "b" * 64, "facts": {}}], workspace_adapter_id="pi", now=5)
     assert store._conn.execute("SELECT COUNT(*) FROM direct_connect_operations").fetchone()[0] == 2
     assert store.reserve(token, now=6) is None
+
+
+def test_retry_rejects_identical_reordered_multi_child_artifacts_without_consuming_attempt(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    token = "hrreg_reordered"
+    children = [
+        {"slot": "z", "path": "/z", "sha256": "b" * 64, "facts": {}},
+        {"slot": "a", "path": "/a", "sha256": "c" * 64, "facts": {}},
+    ]
+    store.mint_authority(token_plaintext=token, name="cli", intended_profile_name="profile", workspace_adapter_id="pi", issued_at=1, expires_at=100)
+    first = store.reserve(token, now=2)
+    assert first is not None
+    store.receive(token, first, wrapper_sha256="a" * 64, wrapper_facts={}, children=children, workspace_adapter_id="pi", now=2)
+    assert store.plan_projection(first, now=3)
+    assert store.mark_failed(first, "conformance_probe_failed: retryable", now=4)
+
+    second = store.reserve(token, now=5)
+    assert second is not None
+    with pytest.raises(ValueError, match="changed artifact integrity"):
+        store.receive(token, second, wrapper_sha256="a" * 64, wrapper_facts={}, children=children, workspace_adapter_id="pi", now=5)
+
+    assert store._conn.execute("SELECT COUNT(*) FROM direct_connect_operations").fetchone()[0] == 1
+    second_attempt = store._conn.execute(
+        "SELECT attempt_number, state FROM direct_connect_attempts WHERE operation_id = ?", (second,)
+    ).fetchone()
+    assert (second_attempt["attempt_number"], second_attempt["state"]) == (2, "reserved")
+    store.receive(token, second, wrapper_sha256="d" * 64, wrapper_facts={}, children=children, workspace_adapter_id="pi", now=5)
+    assert store._conn.execute("SELECT COUNT(*) FROM direct_connect_operations").fetchone()[0] == 2
+    assert store.status_for_profile("profile", now=5) == {
+        "attempt_count": 2, "retry_eligible": False, "expires_at": 100,
+    }
 
 
 def test_retry_lifecycle_fails_closed_after_restart_expiry_or_commit(tmp_path) -> None:

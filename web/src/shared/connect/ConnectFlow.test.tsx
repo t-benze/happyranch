@@ -103,6 +103,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: null,
       profile_state: null,
       reason: null,
+      attempt_count: 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
 
     renderConnect();
@@ -145,6 +148,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'stale-id',
       profile_state: null,
       reason: null,
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: null,
     }));
 
     renderConnect();
@@ -168,6 +174,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: landed ? 'op-1' : null,
       profile_state: landed ? 'committed' : null,
       reason: null,
+      attempt_count: landed ? 1 : 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -193,6 +202,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'op-1',
       profile_state: 'failed',
       reason: 'conformance_probe_failed: boom',
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -218,6 +230,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: landed ? 'op-1' : null,
       profile_state: landed ? (committed ? 'committed' : 'planned') : null,
       reason: null,
+      attempt_count: landed ? 1 : 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -245,6 +260,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'op-1',
       profile_state: 'failed',
       reason: 'initial projection failure',
+      attempt_count: 1,
       retry_eligible: true,
       expires_at: Date.now() / 1000 + 300,
     }));
@@ -270,6 +286,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'op-1',
       profile_state: 'failed',
       reason: 'invalid direct manifest',
+      attempt_count: 1,
       retry_eligible: false,
       expires_at: Date.now() / 1000 - 1,
     }));

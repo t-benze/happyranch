@@ -68,6 +68,17 @@ def test_status_before_mint_returns_wrapper_destination_and_no_operation(client)
     assert body["wrapper_destination"].endswith("adapters/status-profile-adapter")
 
 
+def test_status_openapi_contract_requires_nonsecret_attempt_lifecycle_fields() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    schema = app.openapi()["components"]["schemas"]["DirectConnectStatusResponse"]
+
+    assert {"attempt_count", "retry_eligible", "expires_at"} <= set(schema["required"])
+    assert schema["properties"]["attempt_count"]["type"] == "integer"
+    assert schema["properties"]["retry_eligible"]["type"] == "boolean"
+    assert "token" not in schema["properties"]
+    assert "fingerprint" not in schema["properties"]
+
+
 def test_status_after_connect_reports_operation_and_null_profile_state(client, tmp_path):
     tc, state = client
     mint = tc.post("/api/v1/auth/registration-token/runtime", json={

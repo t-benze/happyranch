@@ -258,7 +258,7 @@ class DirectConnectAuthorityStore:
         other direct table are untouched; this is idempotent once the new DDL
         is installed.
         """
-        for table, columns, ddl in (
+        migrations = (
             (
                 "direct_connect_operations",
                 "operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at",
@@ -281,17 +281,47 @@ class DirectConnectAuthorityStore:
                     created_at REAL NOT NULL
                 )""",
             ),
-        ):
-            row = self._conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-            ).fetchone()
-            if row is None or "token_fingerprint TEXT NOT NULL UNIQUE" not in row["sql"]:
-                continue
-            replacement = f"{table}_attempt_series_migration"
-            self._conn.execute(ddl.format(name=replacement))
-            self._conn.execute(f"INSERT INTO {replacement} ({columns}) SELECT {columns} FROM {table}")
-            self._conn.execute(f"DROP TABLE {table}")
-            self._conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
+        )
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, columns, ddl in migrations:
+                row = self._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+                ).fetchone()
+                replacement = f"{table}_attempt_series_migration"
+                replacement_row = self._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (replacement,)
+                ).fetchone()
+                if row is not None and "token_fingerprint TEXT NOT NULL UNIQUE" in row["sql"]:
+                    # A pre-transaction interruption can leave this deterministic
+                    # scratch table behind.  The legacy table remains authoritative
+                    # until its atomic replacement commits, so discard the stale
+                    # scratch table and copy every preserved legacy row afresh.
+                    if replacement_row is not None:
+                        self._conn.execute(f"DROP TABLE {replacement}")
+                    self._conn.execute(ddl.format(name=replacement))
+                    self._conn.execute(f"INSERT INTO {replacement} ({columns}) SELECT {columns} FROM {table}")
+                    self._conn.execute(f"DROP TABLE {table}")
+                    self._conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
+                elif row is None and replacement_row is not None:
+                    # Recover an old partial migration after DROP succeeded but
+                    # before RENAME.  Accept only the exact non-UNIQUE target
+                    # shape; an unfamiliar scratch table fails closed.
+                    replacement_sql = replacement_row["sql"]
+                    if (
+                        "token_fingerprint TEXT NOT NULL" not in replacement_sql
+                        or "token_fingerprint TEXT NOT NULL UNIQUE" in replacement_sql
+                    ):
+                        raise RuntimeError("unrecognized interrupted direct-connect migration")
+                    self._conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
+                elif row is not None and replacement_row is not None:
+                    # The current table is already authoritative; a stale scratch
+                    # table can only be residue from an interrupted predecessor.
+                    self._conn.execute(f"DROP TABLE {replacement}")
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _read_authority(
         self, cursor: sqlite3.Cursor, token_fingerprint: str
@@ -543,14 +573,17 @@ class DirectConnectAuthorityStore:
                 raise RuntimeError("direct attempt is not reserved by this operation")
             if attempt["attempt_number"] > 1:
                 prior = cursor.execute(
-                    """SELECT a.sha256 FROM direct_connect_artifacts a
+                    """SELECT a.kind, a.slot, a.sha256 FROM direct_connect_artifacts a
                        JOIN direct_connect_attempts t ON t.operation_id = a.operation_id
                        WHERE t.token_fingerprint = ? AND t.attempt_number = ?
-                       ORDER BY CASE a.kind WHEN 'immutable_wrapper' THEN 0 ELSE 1 END, a.slot""",
+                       ORDER BY a.kind, a.slot""",
                     (fingerprint, attempt["attempt_number"] - 1),
                 ).fetchall()
-                proposed = [wrapper_sha256, *[str(child["sha256"]) for child in children]]
-                if [row["sha256"] for row in prior] == proposed:
+                proposed = [("immutable_wrapper", "wrapper", wrapper_sha256)]
+                proposed.extend(
+                    sorted(("upgradeable_child", str(child["slot"]), str(child["sha256"])) for child in children)
+                )
+                if [(row["kind"], row["slot"], row["sha256"]) for row in prior] == proposed:
                     raise ValueError("retry requires changed artifact integrity")
             cursor.execute(
                 """INSERT INTO direct_connect_operations
