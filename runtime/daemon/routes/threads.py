@@ -1706,7 +1706,7 @@ class ThreadResolveEscalationBody(BaseModel):
 
 
 class TerminalEvidence(BaseModel):
-    """Server-compared snapshot of one post-escalation terminal descendant."""
+    """Caller comparison input for the causal terminal result."""
     task_id: str
     terminal_status: Literal["completed", "failed", "superseded", "cancelled"]
     verdict: str | None = None
@@ -1760,6 +1760,8 @@ class ContinuationPresentation:
 class CanonicalTerminalEvidence:
     """One server-derived terminal evidence snapshot."""
 
+    task_id: str
+    result_id: int
     terminal_status: str | None
     created_at: str | None
     verdict: str | None
@@ -1770,9 +1772,8 @@ class CanonicalTerminalEvidence:
 class ContinuationFacts:
     """Durable facts supplied to the pure bounded-continuation evaluator."""
 
-    descendant_ids: frozenset[str]
     escalated_at: str | None
-    evidence_by_task_id: Mapping[str, CanonicalTerminalEvidence]
+    causal_evidence: CanonicalTerminalEvidence | None
 
 
 @dataclass(frozen=True)
@@ -1841,35 +1842,34 @@ def evaluate_bounded_continuation(
     if facts is None:
         return ContinuationEvaluation(None)
 
-    evidence_ids = {entry.task_id for entry in presentation.evidence}
-    if (
-        not facts.descendant_ids
-        or evidence_ids != facts.descendant_ids
-        or len(presentation.evidence) != len(evidence_ids)
-    ):
+    if len(presentation.evidence) != 1 or facts.causal_evidence is None:
         return ContinuationEvaluation("evidence_lineage_mismatch")
     if facts.escalated_at is None:
         return ContinuationEvaluation("escalation_provenance_missing")
 
-    snapshots: list[dict] = []
-    for entry in presentation.evidence:
-        canonical = facts.evidence_by_task_id.get(entry.task_id)
-        if canonical is None or canonical.terminal_status != entry.terminal_status:
-            return ContinuationEvaluation("evidence_terminal_mismatch")
-        if canonical.created_at is None or canonical.created_at <= facts.escalated_at:
-            return ContinuationEvaluation("evidence_stale")
-        if (
-            entry.verdict != canonical.verdict
-            or entry.output_summary != canonical.output_summary
-        ):
-            return ContinuationEvaluation("evidence_result_mismatch")
-        snapshots.append({
-            "task_id": entry.task_id,
-            "terminal_status": canonical.terminal_status,
-            "verdict": canonical.verdict,
-            "output_summary": canonical.output_summary,
-        })
-    return ContinuationEvaluation(None, tuple(snapshots))
+    entry = presentation.evidence[0]
+    canonical = facts.causal_evidence
+    if canonical.task_id != entry.task_id:
+        return ContinuationEvaluation("evidence_lineage_mismatch")
+    if canonical.terminal_status != entry.terminal_status:
+        return ContinuationEvaluation("evidence_terminal_mismatch")
+    # This result is the durable record that caused the bound escalation, so
+    # it must predate its escalation audit rather than be a later descendant.
+    if canonical.created_at is None or canonical.created_at > facts.escalated_at:
+        return ContinuationEvaluation("evidence_stale")
+    if (
+        entry.verdict != canonical.verdict
+        or entry.output_summary != canonical.output_summary
+    ):
+        return ContinuationEvaluation("evidence_result_mismatch")
+    return ContinuationEvaluation(None, ({
+        "task_id": canonical.task_id,
+        "result_id": canonical.result_id,
+        "terminal_status": canonical.terminal_status,
+        "verdict": canonical.verdict,
+        "output_summary": canonical.output_summary,
+        "created_at": canonical.created_at,
+    },))
 
 
 def _continuation_reject(org, task_id: str, actor: str, code: str, **context: object) -> None:
@@ -1884,39 +1884,55 @@ def _continuation_reject(org, task_id: str, actor: str, code: str, **context: ob
     raise HTTPException(status_code=409, detail=detail)
 
 
-def _validate_th166_evidence(org, *, task, body: ThreadResolveEscalationBody) -> list[dict]:
+def _validate_th166_evidence(
+    org, *, task, body: ThreadResolveEscalationBody, causal_payload: Mapping[str, object],
+) -> list[dict]:
     """Return canonical evidence or fail closed on any stale/conflicting row."""
     presentation = ContinuationPresentation.from_body(body)
     early = evaluate_bounded_continuation(THR166_POLICY, presentation=presentation)
     if early.rejection_code is not None:
         raise ValueError(early.rejection_code)
 
-    # The continuation is allowed only after the bounded repair subtree has
-    # reached terminal states.  Evidence must name every descendant exactly;
-    # this prevents an unrelated PASS or a stale pre-escalation result from
-    # becoming an unpark trigger.
-    descendant_ids = frozenset(org.db.get_descendant_task_ids(task.id))
     logs = org.db.get_audit_logs(task.id)
     escalations = [row for row in logs if row["action"] == "escalation"]
     escalated_at = escalations[-1]["timestamp"] if escalations else None
-    canonical_evidence: dict[str, CanonicalTerminalEvidence] = {}
-    for entry in presentation.evidence:
-        evidence_task = org.db.get_task(entry.task_id)
-        results = org.db.get_task_results(entry.task_id) if evidence_task is not None else []
-        latest = results[-1] if results else None
-        canonical_evidence[entry.task_id] = CanonicalTerminalEvidence(
-            terminal_status=evidence_task.status.value if evidence_task is not None else None,
-            created_at=evidence_task.created_at.isoformat() if evidence_task is not None else None,
-            verdict=latest.get("verdict") if latest else None,
-            output_summary=latest.get("output_summary") if latest else None,
-        )
+    snapshot = causal_payload.get("causal_terminal_result")
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("causal_result_missing")
+    result_id = snapshot.get("result_id")
+    if not isinstance(result_id, int) or snapshot.get("task_id") != task.id:
+        raise ValueError("causal_result_malformed")
+    result = next(
+        (row for row in org.db.get_task_results(task.id) if row.get("id") == result_id),
+        None,
+    )
+    if result is None:
+        raise ValueError("causal_result_missing")
+    canonical = CanonicalTerminalEvidence(
+        task_id=task.id,
+        result_id=result_id,
+        terminal_status=result.get("status"),
+        created_at=result.get("created_at"),
+        verdict=result.get("verdict"),
+        output_summary=result.get("output_summary"),
+    )
+    if canonical.terminal_status not in {"completed", "failed", "superseded", "cancelled"}:
+        raise ValueError("evidence_terminal_mismatch")
+    if snapshot != {
+        "task_id": canonical.task_id,
+        "result_id": canonical.result_id,
+        "terminal_status": canonical.terminal_status,
+        "verdict": canonical.verdict,
+        "output_summary": canonical.output_summary,
+        "created_at": canonical.created_at,
+    }:
+        raise ValueError("causal_result_conflict")
     evaluation = evaluate_bounded_continuation(
         THR166_POLICY,
         presentation=presentation,
         facts=ContinuationFacts(
-            descendant_ids=descendant_ids,
             escalated_at=escalated_at,
-            evidence_by_task_id=canonical_evidence,
+            causal_evidence=canonical,
         ),
     )
     if evaluation.rejection_code is not None:
@@ -2047,6 +2063,15 @@ async def resolve_escalation_from_thread(
             or causal_payload.get("root_task_id") != task.id
         ):
             _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
+        escalation_rows = [
+            row for row in org.db.get_audit_logs(task.id)
+            if row["action"] == "escalation"
+        ]
+        if (
+            not escalation_rows
+            or causal_payload.get("causal_escalation_audit_id") != escalation_rows[-1]["id"]
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
         max_steps = org.orchestrator._settings.max_orchestration_steps
         max_revise_rounds = load_org_config(
             org.orchestrator._paths,
@@ -2058,7 +2083,9 @@ async def resolve_escalation_from_thread(
         ):
             _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
         try:
-            snapshots = _validate_th166_evidence(org, task=task, body=body)
+            snapshots = _validate_th166_evidence(
+                org, task=task, body=body, causal_payload=causal_payload,
+            )
         except ValueError as exc:
             _continuation_reject(org, task.id, dispatcher, str(exc))
         audit_payload = {

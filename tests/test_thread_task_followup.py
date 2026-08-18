@@ -1056,7 +1056,9 @@ def test_purpose_note_escalated_uses_escalation_wording():
     assert "ESCALATED" in note
     assert "TASK-893" in note
     assert "needs founder CDN authorize" in note
-    assert "resolve the escalation yourself" in note
+    assert "existing THR-166 policy" in note
+    assert "Do not dispatch repair work from this turn" in note
+    assert "never authorizes that gate" in note
 
 
 def test_thread_store_renders_task_escalated():
