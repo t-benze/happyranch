@@ -38,6 +38,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
@@ -47,6 +49,23 @@ from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
 router = APIRouter()
+
+
+class DirectConnectStatusResponse(BaseModel):
+    """Redacted browser status for one intended direct-connect profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    wrapper_destination: str
+    operation_id: str | None
+    profile_state: str | None
+    reason: str | None
+    attempt_count: int = Field(ge=0, description="Received candidate attempts for this authority.")
+    retry_eligible: bool = Field(description="Whether one changed-artifact candidate retry remains allowed.")
+    expires_at: float | None = Field(description="Original registration-token expiry, as a Unix timestamp.")
+    historical_projection_state: str | None = None
+    historical_projection_reason: str | None = None
+    retry_state: str | None = None
 
 
 @router.post("/runtime/custom-cli/{operation_id}/commit", dependencies=[require_token()])
@@ -96,8 +115,12 @@ async def retry(operation_id: str, request: Request) -> dict[str, str]:
     return result
 
 
-@router.get("/runtime/custom-cli/status", dependencies=[require_token()])
-async def status_for_profile(intended_profile_name: str, request: Request) -> dict[str, object]:
+@router.get(
+    "/runtime/custom-cli/status",
+    dependencies=[require_token()],
+    response_model=DirectConnectStatusResponse,
+)
+async def status_for_profile(intended_profile_name: str, request: Request) -> JSONResponse:
     daemon = request.app.state.daemon
     authority_store = daemon.direct_connect_authority_store
     if authority_store is None:
@@ -140,6 +163,9 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         "profile_state": profile_state,
         "reason": reason,
     }
+    # Parent attempt facts are intentionally nonsecret: no token, fingerprint,
+    # artifact paths/hashes, or historical manifest material crosses this API.
+    result.update(authority_store.status_for_profile(intended_profile_name))
     if operation_id is not None:
         projection = authority_store.get_projection(operation_id)
         successful_retry = authority_store.get_successful_retry(operation_id)
@@ -147,7 +173,10 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
             result["historical_projection_state"] = "failed"
             result["historical_projection_reason"] = projection.reason
             result["retry_state"] = "succeeded"
-    return result
+    # Validate the actual response shape while preserving the established
+    # omission of absent historical-retry fields from the JSON payload.
+    DirectConnectStatusResponse.model_validate(result)
+    return JSONResponse(result)
 
 
 @router.post("/runtime/custom-cli/{operation_id}/forget", dependencies=[require_token()])
@@ -183,8 +212,9 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
         ) from None
     if intended_profile_name is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
-    wrapper_destination = canonical_wrapper_destination(
-        getattr(authority_store, "_runtime_root", None), intended_profile_name
-    )
-    wrapper_destination.unlink(missing_ok=True)
-    return {"operation_id": operation_id, "status": "forgotten"}
+    # Failed-operation cleanup is now an audit acknowledgement only.  The
+    # append-only parent/attempt series may have a newer receipt using the
+    # same canonical wrapper, so deleting either history or that wrapper is
+    # unsafe.  This keeps the former endpoint compatible without turning an
+    # old failed attempt into a cleanup bypass.
+    return {"operation_id": operation_id, "status": "history_retained"}

@@ -219,12 +219,16 @@ async def connect(request: Request) -> dict[str, str]:
         authority_store.terminalize_known(token, "invalid_direct_context", now=now)
         token_store.consume_runtime(token, now=now)
         _reject("invalid direct registration context")
-    reserved_record = token_store.reserve_runtime(token, now=now)
-    operation_id = authority_store.reserve(token, now=now) if reserved_record is not None else None
+    operation_id, owns_attempt = authority_store.reserve_or_join(token, now=now)
     if operation_id is None:
-        if reserved_record is not None:
-            token_store.commit_runtime(token)
-        authority_store.terminalize_known(token, "reservation_refused", now=now)
+        _reject("direct registration token is no longer available")
+    if not owns_attempt:
+        # The direct store's atomic active-attempt gate won elsewhere.  Do
+        # not reserve/consume the runtime token and never inspect artifacts.
+        return {"operation_id": operation_id, "state": "retry_in_progress"}
+    reserved_record = token_store.reserve_runtime(token, now=now)
+    if reserved_record is None:
+        authority_store.terminalize(token, operation_id, "registration_token_reservation_failed", now=now)
         _reject("direct registration token is no longer available")
     try:
         raw = await request.json()
@@ -267,7 +271,11 @@ async def connect(request: Request) -> dict[str, str]:
         authority_store.terminalize(token, operation_id, "intake_fault", now=now)
         token_store.commit_runtime(token)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake failed") from None
-    if not token_store.commit_runtime(token):
-        authority_store.compensate_received(token, operation_id, "registration_token_commit_failed", now=now)
+    # The direct parent authority, rather than the generic runtime-token
+    # record, owns the bounded second submission.  Release the generic
+    # reservation after a receipt; all legacy submission routes reject known
+    # direct authorities and projection success closes this parent forever.
+    if not token_store.release_runtime(token, now=now):
+        authority_store.compensate_received(token, operation_id, "registration_token_release_failed", now=now)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake receipt unavailable")
     return {"operation_id": receipt.operation_id, "state": receipt.state}

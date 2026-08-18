@@ -103,6 +103,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: null,
       profile_state: null,
       reason: null,
+      attempt_count: 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
 
     renderConnect();
@@ -145,6 +148,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'stale-id',
       profile_state: null,
       reason: null,
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: null,
     }));
 
     renderConnect();
@@ -168,6 +174,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: landed ? 'op-1' : null,
       profile_state: landed ? 'committed' : null,
       reason: null,
+      attempt_count: landed ? 1 : 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -193,6 +202,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'op-1',
       profile_state: 'failed',
       reason: 'conformance_probe_failed: boom',
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -218,6 +230,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: landed ? 'op-1' : null,
       profile_state: landed ? (committed ? 'committed' : 'planned') : null,
       reason: null,
+      attempt_count: landed ? 1 : 0,
+      retry_eligible: false,
+      expires_at: null,
     }));
     const { directConnect: api } = await import('@/lib/api');
     const commitSpy = vi.spyOn(api, 'commit');
@@ -237,7 +252,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(commitSpy).not.toHaveBeenCalled();
   }, 15000);
 
-  test('retry after a failed projection uses retry validation and can reach Connected', async () => {
+  test('a retryable failed projection returns to the existing prompt without /retry', async () => {
     const user = userEvent.setup();
     await mockMint();
     await mockStatus(() => ({
@@ -245,44 +260,36 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       operation_id: 'op-1',
       profile_state: 'failed',
       reason: 'initial projection failure',
+      attempt_count: 1,
+      retry_eligible: true,
+      expires_at: Date.now() / 1000 + 300,
     }));
     const { directConnect: api } = await import('@/lib/api');
-    const retrySpy = vi.spyOn(api, 'retry')
-      .mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'failed', reason: 'transient error' });
+    const retrySpy = vi.spyOn(api, 'retry');
 
     renderConnect();
     await goCustomAdapter(user);
     await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    expect(screen.getByText(/re-run the existing generated prompt with the same token/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /back to prompt/i }));
+    await screen.findByLabelText(/waiting for adapter submission/i);
     expect(retrySpy).not.toHaveBeenCalled();
-
-    retrySpy.mockResolvedValueOnce({ operation_id: 'op-1', profile_state: 'committed', profile_name: 'my-cli' });
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
-
-    await screen.findByText(/transient error/i, {}, { timeout: 10000 });
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
-
-    await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
-    expect(retrySpy).toHaveBeenCalledTimes(2);
-    expect(vi.spyOn(api, 'commit')).not.toHaveBeenCalled();
   }, 15000);
 
-  test('a planned direct commit response stays in progress until status commits', async () => {
+  test('expired or nonretryable failure has no retry prompt action', async () => {
     const user = userEvent.setup();
     await mockMint();
-    let profileState: 'planned' | 'committed' | 'failed' = 'failed';
     await mockStatus(() => ({
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1',
-      profile_state: profileState,
-      reason: profileState === 'failed' ? 'initial projection failure' : null,
+      profile_state: 'failed',
+      reason: 'invalid direct manifest',
+      attempt_count: 1,
+      retry_eligible: false,
+      expires_at: Date.now() / 1000 - 1,
     }));
-    const { directConnect: api } = await import('@/lib/api');
-    const retrySpy = vi.spyOn(api, 'retry').mockImplementation(async () => {
-      profileState = 'planned';
-      return { operation_id: 'op-1', profile_state: 'planned' };
-    });
 
     renderConnect();
     await goCustomAdapter(user);
@@ -290,48 +297,9 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
     await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
 
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
-    await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
-    expect(screen.queryByText(/connection failed/i)).not.toBeInTheDocument();
-    expect(retrySpy).toHaveBeenCalledTimes(1);
-
-    profileState = 'committed';
-    await screen.findByRole('heading', { name: /my-cli connected/i }, { timeout: 10000 });
-    expect(retrySpy).toHaveBeenCalledTimes(1);
-  }, 20000);
-
-  test('a planned direct commit response still renders a terminal failed status', async () => {
-    const user = userEvent.setup();
-    await mockMint();
-    let profileState: 'planned' | 'committed' | 'failed' = 'failed';
-    await mockStatus(() => ({
-      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
-      operation_id: 'op-1',
-      profile_state: profileState,
-      reason: profileState === 'failed' ? 'conformance_probe_failed: terminal boom' : null,
-    }));
-    const { directConnect: api } = await import('@/lib/api');
-    const retrySpy = vi.spyOn(api, 'retry').mockImplementation(async () => {
-      profileState = 'planned';
-      return { operation_id: 'op-1', profile_state: 'planned' };
-    });
-
-    renderConnect();
-    await goCustomAdapter(user);
-    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
-
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
-    await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
-    expect(screen.queryByText(/connection failed/i)).not.toBeInTheDocument();
-    expect(retrySpy).toHaveBeenCalledTimes(1);
-
-    profileState = 'failed';
-    await screen.findByText(/terminal boom/i, {}, { timeout: 10000 });
-    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
-    expect(retrySpy).toHaveBeenCalledTimes(1);
-  }, 20000);
+    expect(screen.queryByRole('button', { name: /back to prompt/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/cannot be retried/i)).toBeInTheDocument();
+  }, 15000);
 
   test('no pending-approval or recovery-bind UI exists anywhere in the flow', async () => {
     const user = userEvent.setup();

@@ -173,4 +173,5 @@ def retry_validate(
     store.finish_retry_attempt(
         attempt.attempt_id, state="succeeded", adapter_id=adapter_id, profile_name=profile_name, now=now,
     )
+    store.consume_authority_for_operation(operation_id, now=now)
     return RetryValidationOutcome(state="committed", adapter_id=adapter_id, profile_name=profile_name, reason=None)

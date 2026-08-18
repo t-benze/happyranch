@@ -75,10 +75,11 @@ def test_valid_direct_ingress_writes_exactly_one_nonlaunchable_receipt(client, t
     assert popen_calls == []
     assert state.direct_connect_authority_store.counts() == {
         "direct_connect_operations": 1, "direct_connect_artifacts": 2,
-        "direct_connect_receipts": 1, "direct_connect_events": 1,
+        "direct_connect_receipts": 1, "direct_connect_events": 2,
     }
     replay = tc.post("/api/v1/runtime/custom-cli/connect", json=_payload(wrapper_hash, child), headers={"Authorization": f"Bearer {token}"})
-    assert replay.status_code == 401
+    assert replay.status_code == 201
+    assert replay.json()["state"] == "retry_in_progress"
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 1
 
 
@@ -143,7 +144,7 @@ def test_bad_manifest_terminalizes_known_token_without_operation(client, tmp_pat
     assert popen_calls == []
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 0
     assert state.direct_connect_authority_store.counts()["direct_connect_receipts"] == 0
-    assert state.direct_connect_authority_store.counts()["direct_connect_events"] == 1
+    assert state.direct_connect_authority_store.counts()["direct_connect_events"] == 2
 
 
 @pytest.mark.parametrize("forbidden", ["executable", "wrapper_destination", "profile_name", "adapter_id", "workspace_adapter_id"])
@@ -247,7 +248,7 @@ def test_known_malformed_json_terminalizes_before_validation(client, caplog):
         "direct_connect_operations": 0,
         "direct_connect_artifacts": 0,
         "direct_connect_receipts": 0,
-        "direct_connect_events": 1,
+        "direct_connect_events": 2,
     }
     assert not state.registration_token_store.validate_runtime(token)
 
@@ -304,7 +305,7 @@ def test_token_commit_fault_compensates_nonlaunchable_receipt(client, tmp_path, 
     wrapper_hash = _write_executable(authority.wrapper_destination)
     child = tmp_path / "bin" / "child"
     _write_executable(child)
-    monkeypatch.setattr(state.registration_token_store, "commit_runtime", lambda _token: False)
+    monkeypatch.setattr(state.registration_token_store, "release_runtime", lambda _token, now=None: False)
 
     response = tc.post(
         "/api/v1/runtime/custom-cli/connect",
@@ -317,5 +318,5 @@ def test_token_commit_fault_compensates_nonlaunchable_receipt(client, tmp_path, 
         "direct_connect_operations": 0,
         "direct_connect_artifacts": 0,
         "direct_connect_receipts": 0,
-        "direct_connect_events": 2,
+        "direct_connect_events": 3,
     }

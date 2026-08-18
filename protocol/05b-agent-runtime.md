@@ -130,6 +130,34 @@ mints without the optional field remain the existing PENDING-submission path.
 If the final registration-token commit fails, Slice A compensates the
 receipt/event boundary.
 
+**THR-160 direct-connect parent authority retry.** The authority is a bounded
+parent lifecycle, not an indefinitely reusable bearer: `MAX_DIRECT_CONNECT_ATTEMPTS = 2`
+means one initial receipt plus exactly one changed-artifact resubmission while
+the original 30-minute registration-token expiry remains valid. The SQLite
+store retains an ordered append-only operation/receipt/artifact/projection/event
+series. Existing installations migrate the two former per-token UNIQUE
+operation/receipt tables by copying every row, unchanged, into same-column
+replacement tables without that obsolete constraint; events and all other
+tables remain untouched. Replacement/copy/drop/rename runs in one SQLite
+transaction; on reopen, a deterministic stale replacement table is either
+discarded while its legacy source remains authoritative or renamed only when
+the source was already dropped and the replacement has the expected target
+shape. Candidate artifact identity is keyed by wrapper plus stable child slot,
+not manifest list order. The migration is idempotent and v0/v1 startup remains
+valid. Only a terminal candidate conformance-probe failure with no bound
+profile enables attempt two; malformed, integrity, target/scope, expiry, and
+all other failures terminalize the parent. A live reservation is joined by
+concurrent matching requests, so only one receipt and probe exist. A committed
+projection consumes/closes the parent authority; known direct tokens are
+rejected by legacy registration/submission routes even if their generic runtime
+record is otherwise unconsumed. Status exposes only the latest nonsecret state,
+attempt count, retry eligibility, and expiry — never token, fingerprint, or
+historical artifact internals. Failed-operation cleanup records a retained
+history acknowledgement and never deletes a newer attempt, parent, or shared
+canonical wrapper. The normal UI tells the founder to fix artifacts and re-run
+the existing generated prompt with the same token before expiry; it does not
+use the distinct master-bearer immutable-snapshot `/retry` action.
+
 **THR-107 Slices 1–3: projection, launch fence, UI cutover.** Building on
 Slice A's `received_nonlaunchable` receipt:
 

@@ -16,15 +16,14 @@
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
  */
-import { useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   directConnect,
   executorBinaries,
   health as healthApi,
   settings as settingsApi,
 } from '@/lib/api';
-import type { DirectConnectStatus } from '@/lib/api/directConnect';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -394,10 +393,10 @@ export function buildDirectConnectPrompt(
 /** Direct-connect state machine. */
 export type DirectConnectState =
   | { stage: 'form' }
-  | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
-  | { stage: 'committing'; name: string; wrapperDestination: string }
+  | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string; previousOperationId?: string }
+  | { stage: 'committing'; name: string; token: string; wrapperDestination: string }
   | { stage: 'connected'; name: string; wrapperDestination: string }
-  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
+  | { stage: 'failed'; name: string; token: string; wrapperDestination: string; operationId: string; reason: string; retryEligible: boolean; expired: boolean };
 
 /** Mint-time value for the RuntimeRegistrationTokenMintRequest's
  *  workspace_adapter_id field — this ONLY activates the daemon's Slice-1A
@@ -425,8 +424,6 @@ export function useDirectConnect({
 }) {
   const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
-  const queryClient = useQueryClient();
-  const directCommitPending = useRef(false);
 
   const mint = useMutation({
     mutationFn: async (name: string) => {
@@ -476,23 +473,24 @@ export function useDirectConnect({
     refetchInterval: pollName !== '' ? 2500 : false,
   });
 
-  const retryMutation = useMutation({
-    mutationFn: (operationId: string) => directConnect.retry(operationId),
-  });
-
   // A daemon-projected candidate CLI receipt moves waiting -> committing.
   // The daemon owns projection; this hook only observes its terminal status.
   useEffect(() => {
     if (state.stage === 'waiting') {
       if (state.expired || !statusData?.operation_id || statusData.profile_state == null) return;
+      // A resubmission keeps polling the same profile while the candidate
+      // re-runs the prompt. Ignore the historical failed attempt until the
+      // daemon reports a fresh operation id.
+      if (statusData.operation_id === state.previousOperationId) return;
       setState({
         stage: 'committing',
         name: state.name,
+        token: state.token,
         wrapperDestination: state.wrapperDestination,
       });
       return;
     }
-    if (state.stage !== 'committing' || directCommitPending.current || !statusData?.operation_id) return;
+    if (state.stage !== 'committing' || !statusData?.operation_id) return;
 
     if (statusData.profile_state === 'committed') {
       setState({
@@ -505,9 +503,12 @@ export function useDirectConnect({
       setState({
         stage: 'failed',
         name: state.name,
+        token: state.token,
         wrapperDestination: state.wrapperDestination,
         operationId: statusData.operation_id,
         reason: statusData.reason ?? 'The connection could not be completed.',
+        retryEligible: statusData.retry_eligible === true,
+        expired: Boolean(statusData.expires_at && statusData.expires_at * 1000 <= Date.now()),
       });
     } else if (statusData.profile_state === 'planned' || statusData.profile_state == null) {
       // Daemon projection remains non-terminal; keep polling while committing.
@@ -522,48 +523,18 @@ export function useDirectConnect({
       mint.mutate(state.name);
     }
   };
-  const retryValidation = (): void => {
+  const retrySubmission = (): void => {
     if (state.stage !== 'failed') return;
-    const { name, wrapperDestination, operationId } = state;
-    directCommitPending.current = true;
-    setState({ stage: 'committing', name, wrapperDestination });
-    retryMutation.mutate(operationId, {
-      onSuccess: (resp) => {
-        if (resp.profile_state === 'committed') {
-          directCommitPending.current = false;
-          setState({ stage: 'connected', name, wrapperDestination });
-          onConnected({ name, path: wrapperDestination, via: 'custom' });
-        } else if (resp.profile_state === 'planned') {
-          // The durable winner is still projecting; the status observer owns
-          // the terminal UI transition.
-          void queryClient.cancelQueries({ queryKey: ['direct-connect', 'status', name] }).then(() => {
-            queryClient.setQueryData<DirectConnectStatus>(
-              ['direct-connect', 'status', name],
-              {
-                wrapper_destination: wrapperDestination,
-                operation_id: operationId,
-                profile_state: 'planned',
-                reason: null,
-              },
-            );
-            void queryClient.invalidateQueries({ queryKey: ['direct-connect', 'status', name] });
-            directCommitPending.current = false;
-          });
-        } else {
-          directCommitPending.current = false;
-          setState({
-            stage: 'failed', name, wrapperDestination, operationId,
-            reason: resp.reason ?? 'The connection could not be completed.',
-          });
-        }
-      },
-      onError: () => {
-        directCommitPending.current = false;
-        setState({
-          stage: 'failed', name, wrapperDestination, operationId,
-          reason: 'Could not reach the daemon to finish connecting.',
-        });
-      },
+    if (!state.retryEligible || state.expired) return;
+    // This reuses the existing prompt/token to submit a changed artifact; it
+    // is intentionally not the master-bearer /retry snapshot validation.
+    setState({
+      stage: 'waiting',
+      name: state.name,
+      token: state.token,
+      expired: false,
+      wrapperDestination: state.wrapperDestination,
+      previousOperationId: state.operationId,
     });
   };
   const back = (): void => {
@@ -572,5 +543,5 @@ export function useDirectConnect({
     mint.reset();
   };
 
-  return { state, mint, start, regenerate, retryValidation, back };
+  return { state, mint, start, regenerate, retrySubmission, back };
 }
