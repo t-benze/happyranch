@@ -32,8 +32,12 @@
 ``POST /runtime/custom-cli/{operation_id}/forget``
     Master-bearer-authed cleanup route for a terminal FAILED custom-CLI
     operation. It is the ONLY route that deletes rows from the direct-connect
-    authority store. It refuses a missing, planned, or committed projection,
-    then removes its failed authority records and the derived wrapper file.
+    authority store: it deletes eligible failed authority, receipt, and
+    projection rows, but retains every present derived wrapper. Its
+    ``wrapper_status`` reports only ``already_absent``, ``preserved_changed``,
+    or ``preserved_unsafe``. It refuses missing, planned, or committed
+    projections, and refuses when retry validation is running or has
+    succeeded, without deletion.
 """
 from __future__ import annotations
 
@@ -175,16 +179,16 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
             ),
         )
     try:
-        intended_profile_name = authority_store.forget_operation(operation_id)
+        outcome = authority_store.forget_operation(operation_id)
     except DirectConnectRetryInProgress:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="refused: retry validation is running",
         ) from None
-    if intended_profile_name is None:
+    if outcome is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
-    wrapper_destination = canonical_wrapper_destination(
-        getattr(authority_store, "_runtime_root", None), intended_profile_name
-    )
-    wrapper_destination.unlink(missing_ok=True)
-    return {"operation_id": operation_id, "status": "forgotten"}
+    return {
+        "operation_id": operation_id,
+        "status": "forgotten",
+        "wrapper_status": outcome.wrapper_status,
+    }

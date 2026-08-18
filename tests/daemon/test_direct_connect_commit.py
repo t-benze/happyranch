@@ -499,6 +499,35 @@ def test_forget_unknown_operation_returns_404(client):
     assert response.status_code == 404
 
 
+def test_forget_route_module_contract_retains_every_present_wrapper():
+    """Keep the route's normative cleanup claim aligned with the store contract."""
+    from runtime.daemon.routes import direct_connect_commit
+
+    contract = " ".join((direct_connect_commit.__doc__ or "").replace("`", "").split())
+
+    assert "Master-bearer-authed cleanup route for a terminal FAILED custom-CLI operation" in contract
+    assert "deletes eligible failed authority, receipt, and projection rows" in contract
+    assert "retains every present derived wrapper" in contract
+    assert "already_absent, preserved_changed, or preserved_unsafe" in contract
+    assert "missing, planned, or committed" in contract
+    assert "retry validation is running or has succeeded" in contract
+    assert "removes its failed authority records and the derived wrapper file" not in contract
+    assert "deletes every derived wrapper" not in contract
+
+
+def test_forget_requires_master_bearer_not_registration_token(client, tmp_path):
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+
+    response = tc.post(
+        f"/api/v1/runtime/custom-cli/{operation_id}/forget",
+        headers={"Authorization": "Bearer hrreg_not-the-master-bearer"},
+    )
+
+    assert response.status_code == 401
+    assert state.direct_connect_authority_store.get_projection(operation_id).state == "failed"
+
+
 @pytest.mark.parametrize("projection_state", ["planned", "committed"])
 def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state):
     tc, state = client
@@ -516,7 +545,7 @@ def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state)
     assert state.direct_connect_authority_store.get_projection(operation_id).state == projection_state
 
 
-def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
+def test_forget_failed_projection_removes_records_but_preserves_matching_wrapper(client, tmp_path):
     tc, state = client
     operation_id = _mint_and_connect(tc, state, tmp_path)
     store = state.direct_connect_authority_store
@@ -528,8 +557,12 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
 
     assert response.status_code == 200
-    assert response.json() == {"operation_id": operation_id, "status": "forgotten"}
-    assert not wrapper.exists()
+    assert response.json() == {
+        "operation_id": operation_id,
+        "status": "forgotten",
+        "wrapper_status": "preserved_unsafe",
+    }
+    assert wrapper.exists()
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
         "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
@@ -538,6 +571,81 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
+
+
+def test_forget_never_unlinks_a_successor_swapped_at_the_delete_point(client, tmp_path, monkeypatch):
+    """No present wrapper is deleted after a post-hash canonical-path swap."""
+    from runtime.daemon import direct_connect_store as store_module
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "conformance probe failed")
+    wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
+    successor = b"#!/bin/sh\necho successor\n"
+    successor_path = wrapper.with_name(f"{wrapper.name}.successor")
+    successor_path.write_bytes(successor)
+    successor_at_delete_path = wrapper.with_name(f"{wrapper.name}.successor-at-delete")
+    successor_at_delete_path.write_bytes(b"#!/bin/sh\necho successor-at-delete\n")
+    original_file_digest = store_module.hashlib.file_digest
+    original_unlink = type(wrapper).unlink
+    unlink_calls = []
+
+    def swap_after_receipt_hash(file_obj, algorithm):
+        digest = original_file_digest(file_obj, algorithm)
+        successor_path.replace(wrapper)
+        return digest
+
+    def replace_then_unlink(path, *, missing_ok=False):
+        """Reproduce the old final pathname deletion exactly if it is attempted."""
+        if path == wrapper:
+            unlink_calls.append(path)
+            successor_at_delete_path.replace(path)
+            return original_unlink(path, missing_ok=missing_ok)
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(store_module.hashlib, "file_digest", swap_after_receipt_hash)
+    monkeypatch.setattr(type(wrapper), "unlink", replace_then_unlink)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 200
+    assert response.json()["wrapper_status"] == "preserved_unsafe"
+    assert wrapper.read_bytes() == successor
+    assert unlink_calls == []
+    assert store.get_projection(operation_id) is None
+
+
+def test_forget_decides_changed_wrapper_before_deleting_failed_receipt(client, tmp_path, monkeypatch):
+    """The persisted failed receipt remains available through wrapper verification."""
+    from runtime.daemon import direct_connect_store as store_module
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "conformance probe failed")
+    wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
+    changed = b"#!/bin/sh\necho newer wrapper\n"
+    wrapper.write_bytes(changed)
+    original_cleanup = store_module._remove_matching_failed_wrapper
+
+    def observe_changed_cleanup(artifacts):
+        assert artifacts is not None
+        assert artifacts.wrapper_path == wrapper
+        assert store.get_projection(operation_id).state == "failed"
+        assert store.get_receipt_artifacts(operation_id) is not None
+        return original_cleanup(artifacts)
+
+    monkeypatch.setattr(store_module, "_remove_matching_failed_wrapper", observe_changed_cleanup)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 200
+    assert response.json()["wrapper_status"] == "preserved_changed"
+    assert wrapper.read_bytes() == changed
+    assert store.get_projection(operation_id) is None
 
 
 def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_history(

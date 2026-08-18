@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as clientModule from './client';
-import { getStatus, retry } from './directConnect';
+import { forget, getStatus, retry } from './directConnect';
 
 describe('directConnect.getStatus', () => {
   it('round-trips the additive terminal reason field', async () => {
@@ -33,5 +33,21 @@ describe('directConnect.retry', () => {
       method: 'POST',
     });
     expect(request).not.toHaveBeenCalledWith('/runtime/custom-cli/op-123/commit', expect.anything());
+  });
+});
+
+describe('directConnect.forget', () => {
+  it('uses the failed-only cleanup endpoint', async () => {
+    const response = {
+      operation_id: 'op-123',
+      status: 'forgotten' as const,
+      wrapper_status: 'preserved_changed' as const,
+    };
+    const request = vi.spyOn(clientModule, 'request').mockResolvedValue(response);
+
+    await expect(forget('op-123')).resolves.toEqual(response);
+    expect(request).toHaveBeenCalledWith('/runtime/custom-cli/op-123/forget', {
+      method: 'POST',
+    });
   });
 });

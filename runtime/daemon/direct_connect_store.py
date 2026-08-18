@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -92,6 +94,44 @@ class DirectConnectReceiptArtifacts:
     children: list[dict[str, str]]
     intended_profile_name: str
     workspace_adapter_id: str
+
+
+@dataclass(frozen=True)
+class DirectConnectForgetOutcome:
+    """Failed-only cleanup result, including the verified wrapper disposition."""
+
+    intended_profile_name: str
+    wrapper_status: str
+
+
+def _remove_matching_failed_wrapper(artifacts: DirectConnectReceiptArtifacts | None) -> str:
+    """Resolve a receipt wrapper without ever unlinking a mutable pathname.
+
+    POSIX provides no compare-and-unlink operation keyed to an opened file's
+    identity.  Once a pathname is verified, any pathname unlink can still
+    remove a replacement installed immediately afterwards.  Retaining a
+    present wrapper is therefore the only fail-closed disposition.
+    """
+    if artifacts is None:
+        return "preserved_unsafe"
+    wrapper_path = artifacts.wrapper_path
+    expected_sha = artifacts.wrapper_sha256
+    try:
+        descriptor = os.open(wrapper_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return "already_absent"
+    except OSError:
+        return "preserved_unsafe"
+    try:
+        with os.fdopen(descriptor, "rb") as wrapper_file:
+            if not stat.S_ISREG(os.fstat(wrapper_file.fileno()).st_mode) or not expected_sha:
+                return "preserved_unsafe"
+            actual_sha = hashlib.file_digest(wrapper_file, "sha256").hexdigest()
+    except OSError:
+        return "preserved_unsafe"
+    if actual_sha != expected_sha:
+        return "preserved_changed"
+    return "preserved_unsafe"
 
 
 class DirectConnectAuthorityStore:
@@ -507,56 +547,53 @@ class DirectConnectAuthorityStore:
             ).fetchall()
             return [row["operation_id"] for row in rows]
 
-    def get_receipt_artifacts(self, operation_id: str) -> DirectConnectReceiptArtifacts | None:
-        """Read back the immutable wrapper + children artifacts for a receipt.
+    def _read_receipt_artifacts(
+        self, cursor: sqlite3.Cursor, operation_id: str,
+    ) -> DirectConnectReceiptArtifacts | None:
+        operation = cursor.execute(
+            """SELECT token_fingerprint, intended_profile_name, workspace_adapter_id
+               FROM direct_connect_operations WHERE operation_id = ?""",
+            (operation_id,),
+        ).fetchone()
+        if operation is None or self._read_authority(cursor, operation["token_fingerprint"]) is None:
+            return None
+        rows = cursor.execute(
+            """SELECT slot, kind, declared_path, sha256 FROM direct_connect_artifacts
+               WHERE operation_id = ? ORDER BY slot""",
+            (operation_id,),
+        ).fetchall()
+        wrapper_path: Path | None = None
+        wrapper_sha256 = ""
+        children: list[dict[str, str]] = []
+        for row in rows:
+            if row["kind"] == "immutable_wrapper":
+                if wrapper_path is not None:
+                    return None
+                wrapper_path = Path(row["declared_path"])
+                wrapper_sha256 = row["sha256"]
+            else:
+                children.append({
+                    "slot": row["slot"], "executable": row["declared_path"], "sha256": row["sha256"],
+                })
+        if wrapper_path is None or not wrapper_sha256 or not children:
+            return None
+        child_slots = [child["slot"] for child in children]
+        child_paths = [child["executable"] for child in children]
+        if len(child_slots) != len(set(child_slots)) or len(child_paths) != len(set(child_paths)):
+            return None
+        return DirectConnectReceiptArtifacts(
+            operation_id=operation_id,
+            wrapper_path=wrapper_path,
+            wrapper_sha256=wrapper_sha256,
+            children=children,
+            intended_profile_name=operation["intended_profile_name"],
+            workspace_adapter_id=operation["workspace_adapter_id"],
+        )
 
-        Returns ``None`` when no ``received_nonlaunchable`` operation exists
-        for ``operation_id`` (or its authority row is missing).
-        """
+    def get_receipt_artifacts(self, operation_id: str) -> DirectConnectReceiptArtifacts | None:
+        """Read back the immutable wrapper + children artifacts for a receipt."""
         with self._lock:
-            cursor = self._conn.cursor()
-            operation = cursor.execute(
-                """SELECT token_fingerprint, intended_profile_name, workspace_adapter_id
-                   FROM direct_connect_operations WHERE operation_id = ?""",
-                (operation_id,),
-            ).fetchone()
-            if operation is None:
-                return None
-            authority = self._read_authority(cursor, operation["token_fingerprint"])
-            if authority is None:
-                return None
-            rows = cursor.execute(
-                """SELECT slot, kind, declared_path, sha256 FROM direct_connect_artifacts
-                   WHERE operation_id = ? ORDER BY slot""",
-                (operation_id,),
-            ).fetchall()
-            wrapper_path: Path | None = None
-            wrapper_sha256 = ""
-            children: list[dict[str, str]] = []
-            for row in rows:
-                if row["kind"] == "immutable_wrapper":
-                    if wrapper_path is not None:
-                        return None
-                    wrapper_path = Path(row["declared_path"])
-                    wrapper_sha256 = row["sha256"]
-                else:
-                    children.append({
-                        "slot": row["slot"], "executable": row["declared_path"], "sha256": row["sha256"],
-                    })
-            if wrapper_path is None or not wrapper_sha256 or not children:
-                return None
-            child_slots = [child["slot"] for child in children]
-            child_paths = [child["executable"] for child in children]
-            if len(child_slots) != len(set(child_slots)) or len(child_paths) != len(set(child_paths)):
-                return None
-            return DirectConnectReceiptArtifacts(
-                operation_id=operation_id,
-                wrapper_path=wrapper_path,
-                wrapper_sha256=wrapper_sha256,
-                children=children,
-                intended_profile_name=operation["intended_profile_name"],
-                workspace_adapter_id=operation["workspace_adapter_id"],
-            )
+            return self._read_receipt_artifacts(self._conn.cursor(), operation_id)
 
     def plan_projection(self, operation_id: str, *, now: float | None = None) -> bool:
         """Durably record projection intent exactly once per operation.
@@ -603,12 +640,12 @@ class DirectConnectAuthorityStore:
         with self._lock:
             return self._read_projection(self._conn.cursor(), operation_id)
 
-    def forget_operation(self, operation_id: str) -> str | None:
-        """Delete a terminal-failed operation and return its profile name.
+    def forget_operation(self, operation_id: str) -> DirectConnectForgetOutcome | None:
+        """Atomically clean up one terminal failed operation and its wrapper.
 
-        The caller owns deletion of the derived wrapper path.  No state other
-        than a durable failed projection is eligible for removal.  A claimed
-        retry holds this same store transaction boundary until it settles.
+        The wrapper's receipt path and SHA are inspected and resolved while
+        the failed receipt remains present and the store lock excludes retry
+        claims. Only after that result is final are authority rows deleted.
         """
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -642,6 +679,9 @@ class DirectConnectAuthorityStore:
                 return None
             token_fingerprint = operation["token_fingerprint"]
             intended_profile_name = operation["intended_profile_name"]
+            wrapper_status = _remove_matching_failed_wrapper(
+                self._read_receipt_artifacts(cursor, operation_id)
+            )
             cursor.execute(
                 "DELETE FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
             )
@@ -664,7 +704,10 @@ class DirectConnectAuthorityStore:
                    VALUES (?, ?, ?, 'forgotten', 'terminal failed operation removed', ?)""",
                 (str(uuid.uuid4()), operation_id, token_fingerprint, time.time()),
             )
-            return intended_profile_name
+            return DirectConnectForgetOutcome(
+                intended_profile_name=intended_profile_name,
+                wrapper_status=wrapper_status,
+            )
 
     def mark_committed(
         self, operation_id: str, *, adapter_id: str, profile_name: str, now: float | None = None

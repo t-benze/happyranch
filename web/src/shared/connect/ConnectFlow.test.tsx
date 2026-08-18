@@ -18,7 +18,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ConnectFlow } from './ConnectFlow';
+import { ConnectFlow, FailedConnectionClearedBody } from './ConnectFlow';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -207,6 +207,102 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
     expect(commitSpy).not.toHaveBeenCalled();
   }, 15000);
+
+  test('a failed connection clears only after confirmation and offers reconnect with the wrapper result', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1', profile_state: 'failed', reason: 'terminal failure',
+    }));
+    const { directConnect: api } = await import('@/lib/api');
+    const forgetSpy = vi.spyOn(api, 'forget').mockResolvedValue({
+      operation_id: 'op-1', status: 'forgotten', wrapper_status: 'preserved_changed',
+    });
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+
+    await user.click(screen.getByRole('button', { name: /clear failed connection/i }));
+    expect(forgetSpy).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /confirm clear failed connection/i }));
+
+    await screen.findByText(/failed connection cleared/i);
+    expect(forgetSpy).toHaveBeenCalledWith('op-1');
+    expect(screen.getByText(/preserved because it changed/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /reconnect this cli/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+  }, 15000);
+
+  test('a server refusal keeps the failed result visible without claiming it cleared', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1', profile_state: 'failed', reason: 'terminal failure',
+    }));
+    const { directConnect: api } = await import('@/lib/api');
+    const { ApiError } = await import('@/lib/api');
+    vi.spyOn(api, 'forget').mockRejectedValue(new ApiError(409, null, 'refused: retry validation is running'));
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    await user.click(screen.getByRole('button', { name: /clear failed connection/i }));
+    await user.click(screen.getByRole('button', { name: /confirm clear failed connection/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('refused: retry validation is running');
+    expect(screen.getByText(/connection failed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/failed connection cleared/i)).not.toBeInTheDocument();
+  }, 15000);
+
+  test('clear shows a submitting disabled state until the server returns', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => ({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1', profile_state: 'failed', reason: 'terminal failure',
+    }));
+    let resolveForget: (value: { operation_id: string; status: 'forgotten'; wrapper_status: 'preserved_unsafe' }) => void;
+    const pendingForget = new Promise<{ operation_id: string; status: 'forgotten'; wrapper_status: 'preserved_unsafe' }>((resolve) => {
+      resolveForget = resolve;
+    });
+    const { directConnect: api } = await import('@/lib/api');
+    vi.spyOn(api, 'forget').mockReturnValue(pendingForget);
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    await user.click(screen.getByRole('button', { name: /clear failed connection/i }));
+    await user.click(screen.getByRole('button', { name: /confirm clear failed connection/i }));
+
+    expect(screen.getByRole('button', { name: /clearing/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^retry$/i })).toBeDisabled();
+    resolveForget!({ operation_id: 'op-1', status: 'forgotten', wrapper_status: 'preserved_unsafe' });
+    expect(await screen.findByText(/could not safely prove it matched/i)).toBeInTheDocument();
+  }, 15000);
+
+  test.each([
+    ['already_absent', /failed wrapper was already absent/i],
+    ['preserved_changed', /preserved because it changed/i],
+    ['preserved_unsafe', /could not safely prove it matched/i],
+  ] as const)('reports the %s wrapper cleanup result', (wrapperStatus, message) => {
+    render(
+      <FailedConnectionClearedBody
+        name="my-cli"
+        wrapperStatus={wrapperStatus}
+        onReconnect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(message)).toBeInTheDocument();
+  });
 
   test('a planned status keeps finishing the connection until a later committed poll', async () => {
     const user = userEvent.setup();

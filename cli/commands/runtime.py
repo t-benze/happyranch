@@ -250,8 +250,16 @@ def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
     response = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
     if not _ok(response):
         return
-    print(f"forgot failed custom-CLI connection for {args.profile_name}")
-    print("wrapper file removed or already absent")
+    print(f"cleared failed custom-CLI connection record for {args.profile_name}")
+    wrapper_messages = {
+        "already_absent": "wrapper file was already absent",
+        "preserved_changed": "wrapper file was preserved because it changed",
+        "preserved_unsafe": "wrapper file was preserved because it could not be safely verified",
+    }
+    wrapper_status = response.json().get("wrapper_status")
+    print(wrapper_messages.get(
+        wrapper_status, "wrapper disposition was not confirmed because the server returned an unknown cleanup status",
+    ))
 
 
 def cmd_custom_cli_retry(args: argparse.Namespace) -> None:
@@ -380,7 +388,7 @@ def register(sub) -> None:
     p_custom_cli_status.set_defaults(func=cmd_custom_cli_status)
 
     p_custom_cli_forget = custom_cli_sub.add_parser(
-        "forget", help="Remove a failed direct custom-CLI connection",
+        "forget", help="Clear a failed direct custom-CLI connection record",
     )
     p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
     p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)
