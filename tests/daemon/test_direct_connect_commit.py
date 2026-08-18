@@ -528,7 +528,11 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
 
     assert response.status_code == 200
-    assert response.json() == {"operation_id": operation_id, "status": "forgotten"}
+    assert response.json() == {
+        "operation_id": operation_id,
+        "status": "forgotten",
+        "wrapper_status": "removed",
+    }
     assert not wrapper.exists()
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
@@ -538,6 +542,24 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
+
+
+def test_forget_failed_projection_preserves_changed_wrapper(client, tmp_path):
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "conformance probe failed")
+    wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
+    changed = b"#!/bin/sh\necho newer wrapper\n"
+    wrapper.write_bytes(changed)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 200
+    assert response.json()["wrapper_status"] == "preserved_changed"
+    assert wrapper.read_bytes() == changed
+    assert store.get_projection(operation_id) is None
 
 
 def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_history(

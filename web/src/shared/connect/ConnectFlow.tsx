@@ -291,8 +291,15 @@ export function AdapterConnect({
         error={flow.state.reason}
         onRetry={flow.retryValidation}
         onBack={flow.back}
+        onClear={flow.clearFailed}
+        isClearing={flow.isClearing}
+        clearError={flow.forgetError}
       />
     );
+  }
+
+  if (flow.state.stage === 'cleared') {
+    return <FailedConnectionClearedBody name={flow.state.name} wrapperStatus={flow.state.wrapperStatus} onReconnect={flow.back} />;
   }
 
   // Connected state
@@ -926,6 +933,9 @@ export function AdapterBindFailedBody({
   error,
   onRetry,
   onBack,
+  onClear,
+  isClearing,
+  clearError,
 }: {
   name: string;
   /** The direct-connect operation id (not an adapter id, despite the prop
@@ -934,7 +944,14 @@ export function AdapterBindFailedBody({
   error: string;
   onRetry: () => void;
   onBack: () => void;
+  onClear: () => void;
+  isClearing: boolean;
+  clearError: unknown;
 }): JSX.Element {
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const clearErrorMessage = clearError instanceof ApiError
+    ? (typeof clearError.detail === 'string' ? clearError.detail : clearError.message)
+    : clearError instanceof Error ? clearError.message : null;
   return (
     <div className="mt-6 max-w-lg">
       <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
@@ -957,8 +974,8 @@ export function AdapterBindFailedBody({
             Error: {error}
           </p>
         </div>
-        <div className="mt-4 flex items-center gap-3">
-          <Button onClick={onRetry}>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button onClick={onRetry} disabled={isClearing}>
             <RefreshCw aria-hidden="true" size={15} />
             Retry
           </Button>
@@ -966,8 +983,51 @@ export function AdapterBindFailedBody({
             <ArrowLeft aria-hidden="true" size={14} />
             Back
           </Button>
+          {confirmingClear ? (
+            <>
+              <Button variant="destructive" onClick={onClear} disabled={isClearing}>
+                {isClearing ? 'Clearing…' : 'Confirm clear failed connection'}
+              </Button>
+              <Button variant="secondary" onClick={() => setConfirmingClear(false)} disabled={isClearing}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="secondary" onClick={() => setConfirmingClear(true)}>
+              Clear failed connection
+            </Button>
+          )}
         </div>
+        <p className="text-text-muted mt-3 text-xs">
+          This removes only the failed connection record. It does not remove a newer wrapper.
+        </p>
+        {clearErrorMessage && <p className="text-feedback-danger mt-2 text-sm" role="alert">{clearErrorMessage}</p>}
       </div>
+    </div>
+  );
+}
+
+export function FailedConnectionClearedBody({
+  name,
+  wrapperStatus,
+  onReconnect,
+}: {
+  name: string;
+  wrapperStatus: import('@/lib/api/directConnect').ForgetWrapperStatus;
+  onReconnect: () => void;
+}): JSX.Element {
+  const wrapperMessage = {
+    removed: 'The matching failed wrapper was removed.',
+    already_absent: 'The failed wrapper was already absent.',
+    preserved_changed: 'The wrapper was preserved because it changed after the failed connection.',
+    preserved_unsafe: 'The wrapper was preserved because HappyRanch could not safely prove it matched.',
+  }[wrapperStatus];
+  return (
+    <div className="mt-6 max-w-lg border-border-default bg-surface rounded-lg border p-4">
+      <p className="text-text-primary text-sm font-medium">Failed connection cleared</p>
+      <p className="text-text-secondary mt-2 text-sm"><span className="font-mono">{name}</span>&rsquo;s failed connection record was cleared.</p>
+      <p className="text-text-secondary mt-1 text-sm">{wrapperMessage}</p>
+      <Button className="mt-4" onClick={onReconnect}>Reconnect this CLI</Button>
     </div>
   );
 }

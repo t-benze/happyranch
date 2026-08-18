@@ -24,7 +24,7 @@ import {
   health as healthApi,
   settings as settingsApi,
 } from '@/lib/api';
-import type { DirectConnectStatus } from '@/lib/api/directConnect';
+import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directConnect';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -397,7 +397,8 @@ export type DirectConnectState =
   | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
   | { stage: 'committing'; name: string; wrapperDestination: string }
   | { stage: 'connected'; name: string; wrapperDestination: string }
-  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
+  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string }
+  | { stage: 'cleared'; name: string; wrapperStatus: ForgetWrapperStatus };
 
 /** Mint-time value for the RuntimeRegistrationTokenMintRequest's
  *  workspace_adapter_id field — this ONLY activates the daemon's Slice-1A
@@ -478,6 +479,9 @@ export function useDirectConnect({
 
   const retryMutation = useMutation({
     mutationFn: (operationId: string) => directConnect.retry(operationId),
+  });
+  const forgetMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.forget(operationId),
   });
 
   // A daemon-projected candidate CLI receipt moves waiting -> committing.
@@ -566,11 +570,21 @@ export function useDirectConnect({
       },
     });
   };
+  const clearFailed = (): void => {
+    if (state.stage !== 'failed' || forgetMutation.isPending) return;
+    const { name, operationId } = state;
+    forgetMutation.mutate(operationId, {
+      onSuccess: (resp) => setState({ stage: 'cleared', name, wrapperStatus: resp.wrapper_status }),
+    });
+  };
   const back = (): void => {
     setState({ stage: 'form' });
     setExpiresAt(0);
     mint.reset();
   };
 
-  return { state, mint, start, regenerate, retryValidation, back };
+  return {
+    state, mint, start, regenerate, retryValidation, back, clearFailed,
+    forgetError: forgetMutation.error, isClearing: forgetMutation.isPending,
+  };
 }
