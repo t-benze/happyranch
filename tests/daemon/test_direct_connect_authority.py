@@ -399,7 +399,11 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     operation_id = _seed_projected_operation(store, token="hrreg_forget_failed", state="failed")
     event_count = store._conn.execute("SELECT COUNT(*) FROM direct_connect_events").fetchone()[0]
 
-    assert store.forget_operation(operation_id) == "forget-profile"
+    outcome = store.forget_operation(operation_id)
+
+    assert outcome is not None
+    assert outcome.intended_profile_name == "forget-profile"
+    assert outcome.wrapper_status == "preserved_unsafe"
 
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
@@ -411,6 +415,80 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     ).fetchall()
     assert len(events) == event_count + 1
     assert tuple(events[-1]) == ("forgotten", "terminal failed operation removed")
+
+
+def test_forget_decides_unsafe_wrapper_before_deleting_failed_operation(tmp_path, monkeypatch) -> None:
+    """Wrapper safety is resolved while the failed receipt remains authoritative."""
+    from runtime.daemon import direct_connect_store as store_module
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_projected_operation(store, token="hrreg_forget_unsafe", state="failed")
+    observed = []
+
+    def preserve_unsafe(artifacts):
+        assert artifacts is None
+        assert store.get_projection(operation_id).state == "failed"
+        assert store._conn.execute(
+            "SELECT COUNT(*) FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,),
+        ).fetchone()[0] > 0
+        observed.append(operation_id)
+        return "preserved_unsafe"
+
+    monkeypatch.setattr(store_module, "_remove_matching_failed_wrapper", preserve_unsafe)
+
+    outcome = store.forget_operation(operation_id)
+
+    assert outcome is not None
+    assert outcome.wrapper_status == "preserved_unsafe"
+    assert observed
+    assert store.get_projection(operation_id) is None
+
+
+def test_forget_holds_retry_claim_outside_wrapper_cleanup_and_deletion(tmp_path, monkeypatch) -> None:
+    """A retry cannot claim the failed operation while forget owns its cleanup boundary."""
+    from runtime.daemon import direct_connect_store as store_module
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_projected_operation(store, token="hrreg_forget_race", state="failed")
+    cleanup_started = threading.Event()
+    allow_cleanup = threading.Event()
+    retry_started = threading.Event()
+    retry_finished = threading.Event()
+    retry_errors = []
+
+    def paused_cleanup(_artifacts):
+        cleanup_started.set()
+        assert allow_cleanup.wait(timeout=5)
+        return "already_absent"
+
+    monkeypatch.setattr(store_module, "_remove_matching_failed_wrapper", paused_cleanup)
+    forget_thread = threading.Thread(target=lambda: store.forget_operation(operation_id))
+    forget_thread.start()
+    assert cleanup_started.wait(timeout=5)
+
+    def claim_retry():
+        retry_started.set()
+        try:
+            store.claim_retry_attempt(operation_id)
+        except RuntimeError as exc:
+            retry_errors.append(str(exc))
+        finally:
+            retry_finished.set()
+
+    retry_thread = threading.Thread(target=claim_retry)
+    retry_thread.start()
+    assert retry_started.wait(timeout=5)
+    assert not retry_finished.wait(timeout=0.1)
+
+    allow_cleanup.set()
+    forget_thread.join(timeout=5)
+    retry_thread.join(timeout=5)
+
+    assert not forget_thread.is_alive()
+    assert not retry_thread.is_alive()
+    assert retry_errors == ["direct operation not found"]
 
 
 def test_forget_refuses_failed_projection_with_successful_retry(tmp_path) -> None:

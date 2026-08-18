@@ -37,19 +37,12 @@
 """
 from __future__ import annotations
 
-import hashlib
-import stat
-
 from fastapi import APIRouter, HTTPException, Request, status
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
 from runtime.daemon.direct_connect_retry import retry_validate
-from runtime.daemon.direct_connect_store import (
-    DirectConnectReceiptArtifacts,
-    DirectConnectRetryInProgress,
-    canonical_wrapper_destination,
-)
+from runtime.daemon.direct_connect_store import DirectConnectRetryInProgress, canonical_wrapper_destination
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
@@ -181,54 +174,17 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
                 "— this operation is still in flight or is a live connection"
             ),
         )
-    artifacts = authority_store.get_receipt_artifacts(operation_id)
     try:
-        intended_profile_name = authority_store.forget_operation(operation_id)
+        outcome = authority_store.forget_operation(operation_id)
     except DirectConnectRetryInProgress:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="refused: retry validation is running",
         ) from None
-    if intended_profile_name is None:
+    if outcome is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
-    wrapper_status = _remove_matching_failed_wrapper(artifacts)
     return {
         "operation_id": operation_id,
         "status": "forgotten",
-        "wrapper_status": wrapper_status,
+        "wrapper_status": outcome.wrapper_status,
     }
-
-
-def _remove_matching_failed_wrapper(artifacts: DirectConnectReceiptArtifacts | None) -> str:
-    """Delete only the exact wrapper recorded by the failed receipt.
-
-    The persisted receipt path and SHA, rather than the current canonical
-    destination, are the cleanup authority.  A later candidate may have staged
-    a different wrapper at that canonical path; retain it unless the regular
-    file we inspect still has the failed receipt's immutable SHA.
-    """
-    if artifacts is None:
-        return "preserved_unsafe"
-    wrapper_path = artifacts.wrapper_path
-    expected_sha = artifacts.wrapper_sha256
-    try:
-        mode = wrapper_path.lstat().st_mode
-    except FileNotFoundError:
-        return "already_absent"
-    except OSError:
-        return "preserved_unsafe"
-    if not stat.S_ISREG(mode) or not expected_sha:
-        return "preserved_unsafe"
-    try:
-        actual_sha = hashlib.sha256(wrapper_path.read_bytes()).hexdigest()
-    except OSError:
-        return "preserved_unsafe"
-    if actual_sha != expected_sha:
-        return "preserved_changed"
-    try:
-        wrapper_path.unlink()
-    except FileNotFoundError:
-        return "already_absent"
-    except OSError:
-        return "preserved_unsafe"
-    return "removed"

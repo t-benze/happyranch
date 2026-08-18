@@ -214,7 +214,15 @@ def test_custom_cli_forget_refuses_a_live_committed_profile_without_post(capsys)
     client.post.assert_not_called()
 
 
-def test_custom_cli_forget_posts_failed_operation_and_confirms_cleanup(capsys) -> None:
+@pytest.mark.parametrize(("wrapper_status", "expected_detail"), [
+    ("removed", "wrapper file removed"),
+    ("already_absent", "wrapper file was already absent"),
+    ("preserved_changed", "wrapper file was preserved because it changed"),
+    ("preserved_unsafe", "wrapper file was preserved because it could not be safely verified"),
+])
+def test_custom_cli_forget_posts_failed_operation_and_reports_wrapper_outcome(
+    capsys, wrapper_status, expected_detail,
+) -> None:
     from cli.commands.runtime import cmd_custom_cli_forget
 
     client = MagicMock()
@@ -224,15 +232,17 @@ def test_custom_cli_forget_posts_failed_operation_and_confirms_cleanup(capsys) -
         "profile_state": "failed",
         "reason": "probe failed",
     })
-    client.post.return_value = _response({"operation_id": "op-123", "status": "forgotten"})
+    client.post.return_value = _response({
+        "operation_id": "op-123", "status": "forgotten", "wrapper_status": wrapper_status,
+    })
 
     with patch("cli.commands.runtime.OpcClient.from_env", return_value=client):
         cmd_custom_cli_forget(argparse.Namespace(profile_name="my-cli"))
 
     client.post.assert_called_once_with("/api/v1/runtime/custom-cli/op-123/forget")
     output = capsys.readouterr().out
-    assert "forgot failed custom-CLI connection for my-cli" in output
-    assert "wrapper file removed or already absent" in output
+    assert "cleared failed custom-CLI connection record for my-cli" in output
+    assert expected_detail in output
 
 
 @pytest.mark.parametrize("profile_state", [None, "planned", "committed"])

@@ -544,7 +544,10 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     ).fetchone()[0] == 0
 
 
-def test_forget_failed_projection_preserves_changed_wrapper(client, tmp_path):
+def test_forget_decides_changed_wrapper_before_deleting_failed_receipt(client, tmp_path, monkeypatch):
+    """The persisted failed receipt remains available through wrapper verification."""
+    from runtime.daemon import direct_connect_store as store_module
+
     tc, state = client
     operation_id = _mint_and_connect(tc, state, tmp_path)
     store = state.direct_connect_authority_store
@@ -553,6 +556,16 @@ def test_forget_failed_projection_preserves_changed_wrapper(client, tmp_path):
     wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
     changed = b"#!/bin/sh\necho newer wrapper\n"
     wrapper.write_bytes(changed)
+    original_cleanup = store_module._remove_matching_failed_wrapper
+
+    def observe_changed_cleanup(artifacts):
+        assert artifacts is not None
+        assert artifacts.wrapper_path == wrapper
+        assert store.get_projection(operation_id).state == "failed"
+        assert store.get_receipt_artifacts(operation_id) is not None
+        return original_cleanup(artifacts)
+
+    monkeypatch.setattr(store_module, "_remove_matching_failed_wrapper", observe_changed_cleanup)
 
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
 
