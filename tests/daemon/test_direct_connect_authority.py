@@ -89,6 +89,82 @@ def test_interrupted_attempt_series_migration_recovers_preserved_rows_on_reopen(
     reopened.close()
 
 
+def test_interrupted_attempt_series_migration_promotes_source_absent_replacements(tmp_path) -> None:
+    """A post-copy/drop restart retains target-shaped replacement history."""
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    path = tmp_path / "direct.db"
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE direct_connect_authorities (
+        token_fingerprint TEXT PRIMARY KEY, name TEXT NOT NULL,
+        intended_profile_name TEXT NOT NULL, wrapper_destination TEXT NOT NULL,
+        workspace_adapter_id TEXT NOT NULL, issued_at REAL NOT NULL,
+        expires_at REAL NOT NULL, state TEXT NOT NULL, provenance TEXT NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_reservations (
+        token_fingerprint TEXT PRIMARY KEY, operation_id TEXT NOT NULL,
+        state TEXT NOT NULL, reason TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_operations_attempt_series_migration (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+        intended_profile_name TEXT NOT NULL, workspace_adapter_id TEXT NOT NULL,
+        created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_artifacts (
+        operation_id TEXT NOT NULL, slot TEXT NOT NULL, kind TEXT NOT NULL,
+        declared_path TEXT NOT NULL, sha256 TEXT NOT NULL, structural_facts TEXT NOT NULL,
+        PRIMARY KEY (operation_id, slot))""")
+    conn.execute("""CREATE TABLE direct_connect_receipts_attempt_series_migration (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'), created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_events (
+        event_id TEXT PRIMARY KEY, operation_id TEXT, token_fingerprint TEXT NOT NULL,
+        event_type TEXT NOT NULL, detail TEXT NOT NULL, created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_projections (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+        adapter_id TEXT, profile_name TEXT, reason TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_retry_attempts (
+        attempt_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, state TEXT NOT NULL,
+        adapter_id TEXT, profile_name TEXT, reason TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_lifecycles (
+        token_fingerprint TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT, updated_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE direct_connect_attempts (
+        operation_id TEXT PRIMARY KEY, token_fingerprint TEXT NOT NULL, attempt_number INTEGER NOT NULL,
+        state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+        UNIQUE(token_fingerprint, attempt_number))""")
+    conn.execute("INSERT INTO direct_connect_authorities VALUES ('fp', 'cli', 'profile', '/runtime/adapters/profile-adapter', 'pi', 1, 100, 'minted_nonlaunchable', 'runtime-master-mint')")
+    conn.execute("INSERT INTO direct_connect_reservations VALUES ('fp', 'op', 'received_nonlaunchable', NULL, 2, 2)")
+    conn.execute("INSERT INTO direct_connect_operations_attempt_series_migration VALUES ('op', 'fp', 'received_nonlaunchable', 'profile', 'pi', 2)")
+    conn.executemany(
+        "INSERT INTO direct_connect_artifacts VALUES (?, ?, ?, ?, ?, ?)",
+        [("op", "wrapper", "immutable_wrapper", "/runtime/adapters/profile-adapter", "a" * 64, "{}"),
+         ("op", "child", "upgradeable_child", "/runtime/child", "b" * 64, "{}")],
+    )
+    conn.execute("INSERT INTO direct_connect_receipts_attempt_series_migration VALUES ('op', 'fp', 'received_nonlaunchable', 2)")
+    conn.execute("INSERT INTO direct_connect_events VALUES ('event', 'op', 'fp', 'received', 'receipt retained', 2)")
+    conn.execute("INSERT INTO direct_connect_projections VALUES ('op', 'fp', 'failed', NULL, NULL, 'probe failed', 3, 4)")
+    conn.execute("INSERT INTO direct_connect_retry_attempts VALUES ('retry', 'op', 'failed', NULL, NULL, 'retry failed', 5, 6)")
+    conn.execute("INSERT INTO direct_connect_lifecycles VALUES ('fp', 'open', NULL, 4)")
+    conn.execute("INSERT INTO direct_connect_attempts VALUES ('op', 'fp', 1, 'received', 2, 2)")
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(path)
+    assert tuple(store._conn.execute("SELECT operation_id, token_fingerprint FROM direct_connect_operations").fetchone()) == ("op", "fp")
+    assert tuple(store._conn.execute("SELECT operation_id, token_fingerprint FROM direct_connect_receipts").fetchone()) == ("op", "fp")
+    assert store._conn.execute("SELECT COUNT(*) FROM direct_connect_artifacts").fetchone()[0] == 2
+    for table in ("direct_connect_events", "direct_connect_projections", "direct_connect_retry_attempts", "direct_connect_reservations", "direct_connect_attempts"):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
+    assert store._conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'direct_connect_operations_attempt_series_migration'"
+    ).fetchone() is None
+    store.close()
+
+    reopened = DirectConnectAuthorityStore(path)
+    assert reopened._conn.execute("SELECT COUNT(*) FROM direct_connect_operations").fetchone()[0] == 1
+    assert reopened._conn.execute("SELECT COUNT(*) FROM direct_connect_receipts").fetchone()[0] == 1
+    assert reopened._conn.execute("SELECT COUNT(*) FROM direct_connect_retry_attempts").fetchone()[0] == 1
+    reopened.close()
+
+
 def test_conformance_failure_permits_exactly_one_changed_artifact_attempt(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 

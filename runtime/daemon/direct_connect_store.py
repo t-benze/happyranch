@@ -140,16 +140,6 @@ class DirectConnectAuthorityStore:
             )"""
         )
         self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS direct_connect_operations (
-                operation_id TEXT PRIMARY KEY,
-                token_fingerprint TEXT NOT NULL UNIQUE,
-                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
-                intended_profile_name TEXT NOT NULL,
-                workspace_adapter_id TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )"""
-        )
-        self._conn.execute(
             """CREATE TABLE IF NOT EXISTS direct_connect_artifacts (
                 operation_id TEXT NOT NULL,
                 slot TEXT NOT NULL,
@@ -158,14 +148,6 @@ class DirectConnectAuthorityStore:
                 sha256 TEXT NOT NULL,
                 structural_facts TEXT NOT NULL,
                 PRIMARY KEY (operation_id, slot)
-            )"""
-        )
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS direct_connect_receipts (
-                operation_id TEXT PRIMARY KEY,
-                token_fingerprint TEXT NOT NULL UNIQUE,
-                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
-                created_at REAL NOT NULL
             )"""
         )
         self._conn.execute(
@@ -213,6 +195,24 @@ class DirectConnectAuthorityStore:
                ON direct_connect_retry_attempts(operation_id) WHERE state = 'running'"""
         )
         self._migrate_attempt_series_tables()
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_operations (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                intended_profile_name TEXT NOT NULL,
+                workspace_adapter_id TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_receipts (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                created_at REAL NOT NULL
+            )"""
+        )
         # Parent lifecycle is deliberately separate from immutable mint
         # intent.  It is the sole authority for the bounded direct-only
         # reuse policy; no token material is stored here.
