@@ -317,7 +317,7 @@ def test_concurrent_browser_commit_reconciles_durable_planned_winner(client, tmp
     events = state.direct_connect_authority_store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,),
     ).fetchall()
-    assert [event["event_type"] for event in events] == ["received_nonlaunchable", "committed"]
+    assert [event["event_type"] for event in events] == ["attempt_reserved", "received_nonlaunchable", "committed"]
 
 
 def test_commit_probe_failure_returns_failed_profile_state(client, tmp_path, monkeypatch):
@@ -516,7 +516,7 @@ def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state)
     assert state.direct_connect_authority_store.get_projection(operation_id).state == projection_state
 
 
-def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
+def test_forget_failed_projection_retains_records_and_wrapper(client, tmp_path):
     tc, state = client
     operation_id = _mint_and_connect(tc, state, tmp_path)
     store = state.direct_connect_authority_store
@@ -528,19 +528,19 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
 
     assert response.status_code == 200
-    assert response.json() == {"operation_id": operation_id, "status": "forgotten"}
-    assert not wrapper.exists()
+    assert response.json() == {"operation_id": operation_id, "status": "history_retained"}
+    assert wrapper.exists()
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
         "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
     ):
-        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
 
 
-def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_history(
+def test_forget_after_terminal_failed_retry_retains_append_only_history(
     client, tmp_path, monkeypatch,
 ):
     """The production retry and forget routes leave no retry orphan behind."""
@@ -573,23 +573,23 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
     assert forget_response.status_code == 200
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
-    ).fetchone()[0] == 0
+    ).fetchone()[0] == 1
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
         "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
     ):
-        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     event_types_after_forget = [row[0] for row in store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
     )]
     assert set(event_types_before_forget) <= set(event_types_after_forget)
-    assert "forgotten" in event_types_after_forget
+    assert "forget_requested" in event_types_after_forget
     status_response = tc.get(
         "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
     )
     assert status_response.status_code == 200
-    assert status_response.json()["operation_id"] is None
-    assert status_response.json()["profile_state"] is None
+    assert status_response.json()["operation_id"] == operation_id
+    assert status_response.json()["profile_state"] == "failed"
 
 
 def test_forget_refuses_a_durably_running_retry_without_deleting_operation_state(

@@ -289,7 +289,8 @@ export function AdapterConnect({
         name={flow.state.name}
         adapterId={flow.state.operationId}
         error={flow.state.reason}
-        onRetry={flow.retryValidation}
+        retryEligible={flow.state.retryEligible && !flow.state.expired}
+        onRetry={flow.retrySubmission}
         onBack={flow.back}
       />
     );
@@ -924,6 +925,7 @@ export function AdapterBindFailedBody({
   name,
   adapterId,
   error,
+  retryEligible,
   onRetry,
   onBack,
 }: {
@@ -932,6 +934,7 @@ export function AdapterBindFailedBody({
    *  name — kept stable to avoid an unrelated churn in this component). */
   adapterId: string;
   error: string;
+  retryEligible: boolean;
   onRetry: () => void;
   onBack: () => void;
 }): JSX.Element {
@@ -946,8 +949,7 @@ export function AdapterBindFailedBody({
         </div>
         <p className="text-text-secondary mt-2 text-xs">
           <span className="font-mono">{name}</span> reported in, but
-          HappyRanch could not finish connecting it. This may be transient —
-          retry below.
+          HappyRanch could not finish connecting it.
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
           <p className="text-text-muted font-mono text-xs">
@@ -958,15 +960,22 @@ export function AdapterBindFailedBody({
           </p>
         </div>
         <div className="mt-4 flex items-center gap-3">
-          <Button onClick={onRetry}>
-            <RefreshCw aria-hidden="true" size={15} />
-            Retry
-          </Button>
+          {retryEligible ? (
+            <Button onClick={onRetry}>
+              <RefreshCw aria-hidden="true" size={15} />
+              Back to prompt
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={14} />
             Back
           </Button>
         </div>
+        <p className="text-text-secondary mt-3 text-xs">
+          {retryEligible
+            ? 'Fix the wrapper or dependency artifact, then re-run the existing generated prompt with the same token before it expires. This creates the one allowed changed-artifact retry.'
+            : 'This token is expired or this failure cannot be retried. Generate a new prompt to start again.'}
+        </p>
       </div>
     </div>
   );

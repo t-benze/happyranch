@@ -155,7 +155,7 @@ def test_sweep_and_browser_projection_race_to_one_committer(store, tmp_path, mon
     events = store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,),
     ).fetchall()
-    assert [event["event_type"] for event in events] == ["received_nonlaunchable", "committed"]
+    assert [event["event_type"] for event in events] == ["attempt_reserved", "received_nonlaunchable", "committed"]
 
 
 def test_sweep_redacts_candidate_controlled_conformance_diagnostic(store, tmp_path, monkeypatch):

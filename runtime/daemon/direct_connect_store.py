@@ -19,6 +19,7 @@ from pathlib import Path
 FIRST_PARTY_WORKSPACE_ADAPTER_IDS = frozenset({"claude", "codex", "opencode", "pi"})
 _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
+MAX_DIRECT_CONNECT_ATTEMPTS = 2
 
 
 class DirectConnectRetryInProgress(RuntimeError):
@@ -211,7 +212,86 @@ class DirectConnectAuthorityStore:
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_connect_one_running_retry
                ON direct_connect_retry_attempts(operation_id) WHERE state = 'running'"""
         )
+        self._migrate_attempt_series_tables()
+        # Parent lifecycle is deliberately separate from immutable mint
+        # intent.  It is the sole authority for the bounded direct-only
+        # reuse policy; no token material is stored here.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_lifecycles (
+                token_fingerprint TEXT PRIMARY KEY,
+                state TEXT NOT NULL CHECK (state IN ('open', 'terminalized', 'consumed')),
+                reason TEXT,
+                updated_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS direct_connect_attempts (
+                operation_id TEXT PRIMARY KEY,
+                token_fingerprint TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+                state TEXT NOT NULL CHECK (state IN ('reserved', 'received', 'terminalized')),
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                UNIQUE(token_fingerprint, attempt_number)
+            )"""
+        )
+        # Backfill pre-series receipts as their immutable first attempt.
+        self._conn.execute(
+            """INSERT OR IGNORE INTO direct_connect_lifecycles
+               (token_fingerprint, state, reason, updated_at)
+               SELECT token_fingerprint, 'open', NULL, expires_at FROM direct_connect_authorities"""
+        )
+        self._conn.execute(
+            """INSERT OR IGNORE INTO direct_connect_attempts
+               (operation_id, token_fingerprint, attempt_number, state, created_at, updated_at)
+               SELECT operation_id, token_fingerprint, 1, 'received', created_at, created_at
+               FROM direct_connect_operations"""
+        )
         self._conn.commit()
+
+    def _migrate_attempt_series_tables(self) -> None:
+        """Replace only obsolete per-token UNIQUE constraints, preserving rows.
+
+        SQLite cannot drop an inline UNIQUE constraint.  The migration copies
+        the exact existing rows into same-column replacement tables inside the
+        opening transaction, then atomically renames them.  Events and every
+        other direct table are untouched; this is idempotent once the new DDL
+        is installed.
+        """
+        for table, columns, ddl in (
+            (
+                "direct_connect_operations",
+                "operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at",
+                """CREATE TABLE {name} (
+                    operation_id TEXT PRIMARY KEY,
+                    token_fingerprint TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                    intended_profile_name TEXT NOT NULL,
+                    workspace_adapter_id TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )""",
+            ),
+            (
+                "direct_connect_receipts",
+                "operation_id, token_fingerprint, state, created_at",
+                """CREATE TABLE {name} (
+                    operation_id TEXT PRIMARY KEY,
+                    token_fingerprint TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+                    created_at REAL NOT NULL
+                )""",
+            ),
+        ):
+            row = self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if row is None or "token_fingerprint TEXT NOT NULL UNIQUE" not in row["sql"]:
+                continue
+            replacement = f"{table}_attempt_series_migration"
+            self._conn.execute(ddl.format(name=replacement))
+            self._conn.execute(f"INSERT INTO {replacement} ({columns}) SELECT {columns} FROM {table}")
+            self._conn.execute(f"DROP TABLE {table}")
+            self._conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
 
     def _read_authority(
         self, cursor: sqlite3.Cursor, token_fingerprint: str
@@ -272,6 +352,12 @@ class DirectConnectAuthorityStore:
                     "runtime-master-mint",
                 ),
             )
+            cursor.execute(
+                """INSERT INTO direct_connect_lifecycles
+                   (token_fingerprint, state, reason, updated_at)
+                   VALUES (?, 'open', NULL, ?)""",
+                (fingerprint, issued_at),
+            )
             authority = self._read_authority(cursor, fingerprint)
             if authority is None:
                 raise RuntimeError("direct authority readback failed")
@@ -288,11 +374,16 @@ class DirectConnectAuthorityStore:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM direct_connect_authorities").fetchone()[0])
 
-    def reserve(self, token_plaintext: str, *, now: float | None = None) -> str | None:
-        """Reserve one unexpired direct authority exactly once.
+    def is_known_direct_token(self, token_plaintext: str) -> bool:
+        """Return whether a token is reserved for the direct-only surface."""
+        return self.get_for_token(token_plaintext) is not None
 
-        A reservation is distinct from the immutable mint row so old minted
-        authority data is never rewritten into a different trust target.
+    def reserve_or_join(self, token_plaintext: str, *, now: float | None = None) -> tuple[str | None, bool]:
+        """Atomically reserve the next bounded attempt or join an active one.
+
+        The second submission is allowed only after the first terminal
+        conformance failure.  A matching concurrent caller gets the existing
+        operation id and must not parse artifacts or start another projection.
         """
         now = time.time() if now is None else now
         fingerprint = fingerprint_registration_token(token_plaintext)
@@ -300,18 +391,67 @@ class DirectConnectAuthorityStore:
             cursor = self._conn.cursor()
             authority = self._read_authority(cursor, fingerprint)
             if authority is None or authority.expires_at < now:
-                return None
+                return None, False
+            lifecycle = cursor.execute(
+                "SELECT state FROM direct_connect_lifecycles WHERE token_fingerprint = ?", (fingerprint,)
+            ).fetchone()
+            if lifecycle is None or lifecycle["state"] != "open":
+                return None, False
+            active = cursor.execute(
+                """SELECT a.operation_id FROM direct_connect_attempts a
+                   LEFT JOIN direct_connect_projections p ON p.operation_id = a.operation_id
+                   WHERE a.token_fingerprint = ?
+                     AND (a.state = 'reserved' OR p.state IS NULL OR p.state = 'planned')
+                   ORDER BY a.attempt_number DESC LIMIT 1""",
+                (fingerprint,),
+            ).fetchone()
+            if active is not None:
+                return active["operation_id"], False
+            attempt_count = int(cursor.execute(
+                "SELECT COUNT(*) FROM direct_connect_attempts WHERE token_fingerprint = ?", (fingerprint,)
+            ).fetchone()[0])
+            if attempt_count >= MAX_DIRECT_CONNECT_ATTEMPTS:
+                return None, False
+            if attempt_count:
+                previous = cursor.execute(
+                    """SELECT p.state, p.reason FROM direct_connect_attempts a
+                       JOIN direct_connect_projections p ON p.operation_id = a.operation_id
+                       WHERE a.token_fingerprint = ? ORDER BY a.attempt_number DESC LIMIT 1""",
+                    (fingerprint,),
+                ).fetchone()
+                if previous is None or previous["state"] != "failed" or not str(previous["reason"] or "").startswith("conformance_probe_failed:"):
+                    return None, False
             operation_id = str(uuid.uuid4())
-            try:
-                cursor.execute(
-                    """INSERT INTO direct_connect_reservations
-                       (token_fingerprint, operation_id, state, reason, created_at, updated_at)
-                       VALUES (?, ?, 'reserved', NULL, ?, ?)""",
-                    (fingerprint, operation_id, now, now),
-                )
-            except sqlite3.IntegrityError:
-                return None
-            return operation_id
+            cursor.execute(
+                """INSERT INTO direct_connect_reservations
+                   (token_fingerprint, operation_id, state, reason, created_at, updated_at)
+                   VALUES (?, ?, 'reserved', NULL, ?, ?)
+                   ON CONFLICT(token_fingerprint) DO UPDATE SET
+                       operation_id=excluded.operation_id, state='reserved', reason=NULL, updated_at=excluded.updated_at""",
+                (fingerprint, operation_id, now, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_attempts
+                   (operation_id, token_fingerprint, attempt_number, state, created_at, updated_at)
+                   VALUES (?, ?, ?, 'reserved', ?, ?)""",
+                (operation_id, fingerprint, attempt_count + 1, now, now),
+            )
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, ?, ?, 'attempt_reserved', ?, ?)""",
+                (str(uuid.uuid4()), operation_id, fingerprint, f"attempt={attempt_count + 1}", now),
+            )
+            return operation_id, True
+
+    def reserve(self, token_plaintext: str, *, now: float | None = None) -> str | None:
+        """Reserve one unexpired direct authority exactly once.
+
+        A reservation is distinct from the immutable mint row so old minted
+        authority data is never rewritten into a different trust target.
+        """
+        operation_id, owner = self.reserve_or_join(token_plaintext, now=now)
+        return operation_id if owner else None
 
     def terminalize(self, token_plaintext: str, operation_id: str, reason: str, *, now: float | None = None) -> bool:
         """Durably make a reservation non-reusable without creating an operation."""
@@ -326,6 +466,14 @@ class DirectConnectAuthorityStore:
                 (reason, now, fingerprint, operation_id),
             ).rowcount
             if updated:
+                cursor.execute(
+                    """UPDATE direct_connect_attempts SET state = 'terminalized', updated_at = ?
+                       WHERE operation_id = ? AND state = 'reserved'""", (now, operation_id)
+                )
+                cursor.execute(
+                    """UPDATE direct_connect_lifecycles SET state = 'terminalized', reason = ?, updated_at = ?
+                       WHERE token_fingerprint = ?""", (reason, now, fingerprint)
+                )
                 cursor.execute(
                     """INSERT INTO direct_connect_events
                        (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
@@ -342,18 +490,12 @@ class DirectConnectAuthorityStore:
             cursor = self._conn.cursor()
             if self._read_authority(cursor, fingerprint) is None:
                 return False
-            existing = cursor.execute(
-                "SELECT state FROM direct_connect_reservations WHERE token_fingerprint = ?",
-                (fingerprint,),
-            ).fetchone()
-            if existing is not None:
-                return False
             cursor.execute(
-                """INSERT INTO direct_connect_reservations
-                   (token_fingerprint, operation_id, state, reason, created_at, updated_at)
-                   VALUES (?, ?, 'terminalized', ?, ?, ?)""",
-                (fingerprint, str(uuid.uuid4()), reason, now, now),
+                """UPDATE direct_connect_lifecycles SET state = 'terminalized', reason = ?, updated_at = ?
+                   WHERE token_fingerprint = ? AND state = 'open'""", (reason, now, fingerprint)
             )
+            if not cursor.rowcount:
+                return False
             cursor.execute(
                 """INSERT INTO direct_connect_events
                    (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
@@ -394,6 +536,22 @@ class DirectConnectAuthorityStore:
             ).fetchone()
             if authority is None or reservation is None or reservation["state"] != "reserved":
                 raise RuntimeError("direct authority is not reserved by this operation")
+            attempt = cursor.execute(
+                "SELECT attempt_number FROM direct_connect_attempts WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if attempt is None:
+                raise RuntimeError("direct attempt is not reserved by this operation")
+            if attempt["attempt_number"] > 1:
+                prior = cursor.execute(
+                    """SELECT a.sha256 FROM direct_connect_artifacts a
+                       JOIN direct_connect_attempts t ON t.operation_id = a.operation_id
+                       WHERE t.token_fingerprint = ? AND t.attempt_number = ?
+                       ORDER BY CASE a.kind WHEN 'immutable_wrapper' THEN 0 ELSE 1 END, a.slot""",
+                    (fingerprint, attempt["attempt_number"] - 1),
+                ).fetchall()
+                proposed = [wrapper_sha256, *[str(child["sha256"]) for child in children]]
+                if [row["sha256"] for row in prior] == proposed:
+                    raise ValueError("retry requires changed artifact integrity")
             cursor.execute(
                 """INSERT INTO direct_connect_operations
                    (operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at)
@@ -430,6 +588,10 @@ class DirectConnectAuthorityStore:
                    SET state = 'received_nonlaunchable', updated_at = ?
                    WHERE token_fingerprint = ? AND operation_id = ? AND state = 'reserved'""",
                 (now, fingerprint, operation_id),
+            )
+            cursor.execute(
+                """UPDATE direct_connect_attempts SET state = 'received', updated_at = ?
+                   WHERE operation_id = ? AND state = 'reserved'""", (now, operation_id)
             )
             receipt = cursor.execute(
                 """SELECT operation_id, token_fingerprint, state FROM direct_connect_receipts
@@ -495,6 +657,37 @@ class DirectConnectAuthorityStore:
                 (intended_profile_name,),
             ).fetchone()
             return row["operation_id"] if row is not None else None
+
+    def status_for_profile(self, intended_profile_name: str, *, now: float | None = None) -> dict[str, object]:
+        """Return nonsecret parent/attempt status for browser polling."""
+        now = time.time() if now is None else now
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT o.operation_id, o.token_fingerprint, a.expires_at, l.state,
+                          COUNT(t.operation_id) AS attempt_count
+                   FROM direct_connect_operations o
+                   JOIN direct_connect_authorities a ON a.token_fingerprint = o.token_fingerprint
+                   JOIN direct_connect_lifecycles l ON l.token_fingerprint = o.token_fingerprint
+                   JOIN direct_connect_attempts t ON t.token_fingerprint = o.token_fingerprint
+                   WHERE o.intended_profile_name = ?
+                   GROUP BY o.operation_id, o.token_fingerprint, a.expires_at, l.state
+                   ORDER BY o.created_at DESC LIMIT 1""",
+                (intended_profile_name,),
+            ).fetchone()
+            if row is None:
+                return {"attempt_count": 0, "retry_eligible": False, "expires_at": None}
+            projection = self._read_projection(self._conn.cursor(), row["operation_id"])
+            retry_eligible = (
+                row["state"] == "open" and row["expires_at"] >= now
+                and int(row["attempt_count"]) < MAX_DIRECT_CONNECT_ATTEMPTS
+                and projection is not None and projection.state == "failed"
+                and str(projection.reason or "").startswith("conformance_probe_failed:")
+            )
+            return {
+                "attempt_count": int(row["attempt_count"]),
+                "retry_eligible": retry_eligible,
+                "expires_at": row["expires_at"],
+            }
 
     def list_operations_pending_projection(self) -> list[str]:
         """received_nonlaunchable operation_ids with no projection row yet, oldest first."""
@@ -642,27 +835,22 @@ class DirectConnectAuthorityStore:
                 return None
             token_fingerprint = operation["token_fingerprint"]
             intended_profile_name = operation["intended_profile_name"]
-            cursor.execute(
-                "DELETE FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
-            )
-            cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
-            cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
-            cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))
-            cursor.execute("DELETE FROM direct_connect_projections WHERE operation_id = ?", (operation_id,))
-            cursor.execute(
-                """DELETE FROM direct_connect_reservations
-                   WHERE token_fingerprint = ? AND operation_id = ?""",
-                (token_fingerprint, operation_id),
-            )
-            cursor.execute(
-                "DELETE FROM direct_connect_authorities WHERE token_fingerprint = ?",
-                (token_fingerprint,),
-            )
+            # History and the parent authority are append-only.  In
+            # particular, a cleanup request for attempt 1 must never remove
+            # a staged attempt 2 or the canonical wrapper it needs.
+            newer = cursor.execute(
+                """SELECT 1 FROM direct_connect_attempts newer
+                   JOIN direct_connect_attempts current ON current.operation_id = ?
+                   WHERE newer.token_fingerprint = current.token_fingerprint
+                     AND newer.attempt_number > current.attempt_number LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
             cursor.execute(
                 """INSERT INTO direct_connect_events
                    (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
-                   VALUES (?, ?, ?, 'forgotten', 'terminal failed operation removed', ?)""",
-                (str(uuid.uuid4()), operation_id, token_fingerprint, time.time()),
+                   VALUES (?, ?, ?, 'forget_requested', ?, ?)""",
+                (str(uuid.uuid4()), operation_id, token_fingerprint,
+                 "history retained; newer attempt protected" if newer else "history retained", time.time()),
             )
             return intended_profile_name
 
@@ -681,12 +869,28 @@ class DirectConnectAuthorityStore:
             ).rowcount
             if updated:
                 cursor.execute(
+                    """UPDATE direct_connect_lifecycles SET state = 'consumed', reason = 'projection_committed', updated_at = ?
+                       WHERE token_fingerprint = (SELECT token_fingerprint FROM direct_connect_projections WHERE operation_id = ?)""",
+                    (now, operation_id),
+                )
+                cursor.execute(
                     """INSERT INTO direct_connect_events
                        (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
                        SELECT ?, operation_id, token_fingerprint, 'committed', ?, ?
                        FROM direct_connect_projections WHERE operation_id = ?""",
                     (str(uuid.uuid4()), f"adapter={adapter_id} profile={profile_name}", now, operation_id),
                 )
+            return bool(updated)
+
+    def consume_authority_for_operation(self, operation_id: str, *, now: float | None = None) -> bool:
+        """Close a parent when a compatible retry validation binds a profile."""
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            updated = self._conn.execute(
+                """UPDATE direct_connect_lifecycles SET state = 'consumed', reason = 'bound_profile', updated_at = ?
+                   WHERE token_fingerprint = (SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?)
+                     AND state = 'open'""", (now, operation_id)
+            ).rowcount
             return bool(updated)
 
     def mark_failed(self, operation_id: str, reason: str, *, now: float | None = None) -> bool:

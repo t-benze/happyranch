@@ -871,6 +871,12 @@ def submit_adapter(
     """
     # Extract raw token from Authorization header
     raw_token = _extract_registration_token(request)
+    direct_store = getattr(request.app.state.daemon, "direct_connect_authority_store", None)
+    if direct_store is not None and direct_store.is_known_direct_token(raw_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="direct-connect authorities may only use /runtime/custom-cli/connect",
+        )
     store = request.app.state.daemon.registration_token_store
     token_record = store.validate_runtime(raw_token)
     if token_record is None:

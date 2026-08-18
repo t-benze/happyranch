@@ -858,6 +858,12 @@ def runtime_conformance_checkin(
     step before attempting registration.
     """
     token_value = _extract_token(request)
+    direct_store = getattr(request.app.state.daemon, "direct_connect_authority_store", None)
+    if direct_store is not None and direct_store.is_known_direct_token(token_value):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="direct-connect authorities may only use /runtime/custom-cli/connect",
+        )
     store = request.app.state.daemon.registration_token_store
 
     # Validate runtime token
@@ -925,6 +931,12 @@ def runtime_register_executor(
        register the in-memory profile.
     """
     token_value = _extract_token(request)
+    direct_store = getattr(request.app.state.daemon, "direct_connect_authority_store", None)
+    if direct_store is not None and direct_store.is_known_direct_token(token_value):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="direct-connect authorities may only use /runtime/custom-cli/connect",
+        )
     store = request.app.state.daemon.registration_token_store
 
     # 1. Validate runtime token

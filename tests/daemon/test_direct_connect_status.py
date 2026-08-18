@@ -198,6 +198,9 @@ def test_status_hides_committed_projection_after_live_profile_is_removed(client,
         "operation_id": None,
         "profile_state": None,
         "reason": None,
+        "attempt_count": 1,
+        "retry_eligible": False,
+        "expires_at": authority.expires_at,
     }
 
 
@@ -235,6 +238,9 @@ def test_status_after_failed_projection_reports_reason(client, tmp_path):
         "operation_id": operation_id,
         "profile_state": "failed",
         "reason": "conformance probe failed",
+        "attempt_count": 1,
+        "retry_eligible": False,
+        "expires_at": authority.expires_at,
     }
 
 
@@ -288,6 +294,9 @@ def test_status_reports_live_retry_connection_without_rewriting_failed_projectio
         "historical_projection_state": "failed",
         "historical_projection_reason": "original failure",
         "retry_state": "succeeded",
+        "attempt_count": 1,
+        "retry_eligible": False,
+        "expires_at": authority.expires_at,
     }
     projection = state.direct_connect_authority_store.get_projection(operation_id)
     assert projection is not None and projection.state == "failed" and projection.reason == "original failure"

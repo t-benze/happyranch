@@ -158,6 +158,15 @@ replays a registration token nor starts a fresh registration, and it never
 rewrites the original failed projection or its append-only evidence. Its
 separate attempt/event facts may establish a live bound profile; status then
 reports that live connection while exposing the retained historical failure.
+THR-160 adds a separate parent-token attempt series: at most two total direct
+receipts per original 30-minute authority (initial plus one changed-artifact
+resubmission after terminal conformance failure). This is not `/retry` and the
+normal Settings/onboarding path sends the founder back to the existing prompt;
+it never invokes master-bearer snapshot revalidation. The parent and every
+historical attempt are retained, concurrent submissions join the one active
+attempt, and projection success closes the direct authority and blocks all
+legacy registration/submission endpoint use by that known token. Browser
+status is redacted to latest state, eligibility, expiry, and count.
 The normal Settings/onboarding UI now drives Connect → Connected in one flow;
 the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.

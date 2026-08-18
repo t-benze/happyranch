@@ -23,6 +23,9 @@ export interface DirectConnectStatus {
   historical_projection_state?: 'failed';
   historical_projection_reason?: string | null;
   retry_state?: 'succeeded';
+  attempt_count?: number;
+  retry_eligible?: boolean;
+  expires_at?: number | null;
 }
 
 export function getStatus(intendedProfileName: string): Promise<DirectConnectStatus> {

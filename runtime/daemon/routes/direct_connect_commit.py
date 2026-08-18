@@ -140,6 +140,9 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         "profile_state": profile_state,
         "reason": reason,
     }
+    # Parent attempt facts are intentionally nonsecret: no token, fingerprint,
+    # artifact paths/hashes, or historical manifest material crosses this API.
+    result.update(authority_store.status_for_profile(intended_profile_name))
     if operation_id is not None:
         projection = authority_store.get_projection(operation_id)
         successful_retry = authority_store.get_successful_retry(operation_id)
@@ -183,8 +186,9 @@ async def forget(operation_id: str, request: Request) -> dict[str, str]:
         ) from None
     if intended_profile_name is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="direct operation not found")
-    wrapper_destination = canonical_wrapper_destination(
-        getattr(authority_store, "_runtime_root", None), intended_profile_name
-    )
-    wrapper_destination.unlink(missing_ok=True)
-    return {"operation_id": operation_id, "status": "forgotten"}
+    # Failed-operation cleanup is now an audit acknowledgement only.  The
+    # append-only parent/attempt series may have a newer receipt using the
+    # same canonical wrapper, so deleting either history or that wrapper is
+    # unsafe.  This keeps the former endpoint compatible without turning an
+    # old failed attempt into a cleanup bypass.
+    return {"operation_id": operation_id, "status": "history_retained"}
