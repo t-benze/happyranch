@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 import threading
@@ -104,32 +105,33 @@ class DirectConnectForgetOutcome:
 
 
 def _remove_matching_failed_wrapper(artifacts: DirectConnectReceiptArtifacts | None) -> str:
-    """Remove only the exact regular wrapper captured by the failed receipt."""
+    """Resolve a receipt wrapper without ever unlinking a mutable pathname.
+
+    POSIX provides no compare-and-unlink operation keyed to an opened file's
+    identity.  Once a pathname is verified, any pathname unlink can still
+    remove a replacement installed immediately afterwards.  Retaining a
+    present wrapper is therefore the only fail-closed disposition.
+    """
     if artifacts is None:
         return "preserved_unsafe"
     wrapper_path = artifacts.wrapper_path
     expected_sha = artifacts.wrapper_sha256
     try:
-        mode = wrapper_path.lstat().st_mode
+        descriptor = os.open(wrapper_path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return "already_absent"
     except OSError:
         return "preserved_unsafe"
-    if not stat.S_ISREG(mode) or not expected_sha:
-        return "preserved_unsafe"
     try:
-        actual_sha = hashlib.sha256(wrapper_path.read_bytes()).hexdigest()
+        with os.fdopen(descriptor, "rb") as wrapper_file:
+            if not stat.S_ISREG(os.fstat(wrapper_file.fileno()).st_mode) or not expected_sha:
+                return "preserved_unsafe"
+            actual_sha = hashlib.file_digest(wrapper_file, "sha256").hexdigest()
     except OSError:
         return "preserved_unsafe"
     if actual_sha != expected_sha:
         return "preserved_changed"
-    try:
-        wrapper_path.unlink()
-    except FileNotFoundError:
-        return "already_absent"
-    except OSError:
-        return "preserved_unsafe"
-    return "removed"
+    return "preserved_unsafe"
 
 
 class DirectConnectAuthorityStore:

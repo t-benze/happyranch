@@ -252,14 +252,13 @@ def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
         return
     print(f"cleared failed custom-CLI connection record for {args.profile_name}")
     wrapper_messages = {
-        "removed": "wrapper file removed",
         "already_absent": "wrapper file was already absent",
         "preserved_changed": "wrapper file was preserved because it changed",
         "preserved_unsafe": "wrapper file was preserved because it could not be safely verified",
     }
     wrapper_status = response.json().get("wrapper_status")
     print(wrapper_messages.get(
-        wrapper_status, "wrapper removal was not confirmed because the server returned an unknown cleanup status",
+        wrapper_status, "wrapper disposition was not confirmed because the server returned an unknown cleanup status",
     ))
 
 
@@ -389,7 +388,7 @@ def register(sub) -> None:
     p_custom_cli_status.set_defaults(func=cmd_custom_cli_status)
 
     p_custom_cli_forget = custom_cli_sub.add_parser(
-        "forget", help="Remove a failed direct custom-CLI connection",
+        "forget", help="Clear a failed direct custom-CLI connection record",
     )
     p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
     p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)

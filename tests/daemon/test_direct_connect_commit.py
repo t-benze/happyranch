@@ -529,7 +529,7 @@ def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state)
     assert state.direct_connect_authority_store.get_projection(operation_id).state == projection_state
 
 
-def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
+def test_forget_failed_projection_removes_records_but_preserves_matching_wrapper(client, tmp_path):
     tc, state = client
     operation_id = _mint_and_connect(tc, state, tmp_path)
     store = state.direct_connect_authority_store
@@ -544,9 +544,9 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     assert response.json() == {
         "operation_id": operation_id,
         "status": "forgotten",
-        "wrapper_status": "removed",
+        "wrapper_status": "preserved_unsafe",
     }
-    assert not wrapper.exists()
+    assert wrapper.exists()
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
         "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
@@ -555,6 +555,50 @@ def test_forget_failed_projection_removes_records_and_wrapper(client, tmp_path):
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
+
+
+def test_forget_never_unlinks_a_successor_swapped_at_the_delete_point(client, tmp_path, monkeypatch):
+    """No present wrapper is deleted after a post-hash canonical-path swap."""
+    from runtime.daemon import direct_connect_store as store_module
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(operation_id)
+    assert store.mark_failed(operation_id, "conformance probe failed")
+    wrapper = store.get_receipt_artifacts(operation_id).wrapper_path
+    successor = b"#!/bin/sh\necho successor\n"
+    successor_path = wrapper.with_name(f"{wrapper.name}.successor")
+    successor_path.write_bytes(successor)
+    successor_at_delete_path = wrapper.with_name(f"{wrapper.name}.successor-at-delete")
+    successor_at_delete_path.write_bytes(b"#!/bin/sh\necho successor-at-delete\n")
+    original_file_digest = store_module.hashlib.file_digest
+    original_unlink = type(wrapper).unlink
+    unlink_calls = []
+
+    def swap_after_receipt_hash(file_obj, algorithm):
+        digest = original_file_digest(file_obj, algorithm)
+        successor_path.replace(wrapper)
+        return digest
+
+    def replace_then_unlink(path, *, missing_ok=False):
+        """Reproduce the old final pathname deletion exactly if it is attempted."""
+        if path == wrapper:
+            unlink_calls.append(path)
+            successor_at_delete_path.replace(path)
+            return original_unlink(path, missing_ok=missing_ok)
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(store_module.hashlib, "file_digest", swap_after_receipt_hash)
+    monkeypatch.setattr(type(wrapper), "unlink", replace_then_unlink)
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+
+    assert response.status_code == 200
+    assert response.json()["wrapper_status"] == "preserved_unsafe"
+    assert wrapper.read_bytes() == successor
+    assert unlink_calls == []
+    assert store.get_projection(operation_id) is None
 
 
 def test_forget_decides_changed_wrapper_before_deleting_failed_receipt(client, tmp_path, monkeypatch):

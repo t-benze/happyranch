@@ -51,7 +51,7 @@ export function retry(operationId: string): Promise<CommitResponse> {
   });
 }
 
-export type ForgetWrapperStatus = 'removed' | 'already_absent' | 'preserved_changed' | 'preserved_unsafe';
+export type ForgetWrapperStatus = 'already_absent' | 'preserved_changed' | 'preserved_unsafe';
 
 export interface ForgetResponse {
   operation_id: string;

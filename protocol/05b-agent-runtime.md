@@ -188,10 +188,14 @@ Slice A's `received_nonlaunchable` receipt:
   ordinary forget atomically deletes that retry-attempt record together with
   the failed operation's durable authority/receipt/projection records, without
   rewriting its append-only direct-connect event/audit history. Before deletion,
-  it compares the failed receipt's persisted wrapper path and SHA-256 with the
-  current regular file: only a matching wrapper is removed; an absent wrapper,
-  changed hash, symlink/unsafe path, or unreadable candidate is reported as
-  absent or preserved, never deleted merely because it is at a canonical path.
+  it opens the failed receipt's persisted wrapper path with no-symlink handling
+  and hashes its regular-file descriptor. Because the supported filesystem APIs
+  provide no compare-and-unlink operation bound to that descriptor, cleanup
+  never unlinks any present wrapper: an absent wrapper is reported absent, a
+  hash mismatch is reported changed, and a matching, symlink, nonregular, or
+  unreadable candidate is reported preserved-unsafe. This fail-closed retention
+  prevents a successor from being silently unlinked or displaced at the
+  canonical path.
   `happyranch custom-cli forget
   <profile>` first reads the status route and refuses to call this cleanup
   route unless the profile state is `failed`.

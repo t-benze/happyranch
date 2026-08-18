@@ -1017,7 +1017,6 @@ export function FailedConnectionClearedBody({
   onReconnect: () => void;
 }): JSX.Element {
   const wrapperMessage = {
-    removed: 'The matching failed wrapper was removed.',
     already_absent: 'The failed wrapper was already absent.',
     preserved_changed: 'The wrapper was preserved because it changed after the failed connection.',
     preserved_unsafe: 'The wrapper was preserved because HappyRanch could not safely prove it matched.',

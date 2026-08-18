@@ -268,8 +268,8 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
       wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
       operation_id: 'op-1', profile_state: 'failed', reason: 'terminal failure',
     }));
-    let resolveForget: (value: { operation_id: string; status: 'forgotten'; wrapper_status: 'removed' }) => void;
-    const pendingForget = new Promise<{ operation_id: string; status: 'forgotten'; wrapper_status: 'removed' }>((resolve) => {
+    let resolveForget: (value: { operation_id: string; status: 'forgotten'; wrapper_status: 'preserved_unsafe' }) => void;
+    const pendingForget = new Promise<{ operation_id: string; status: 'forgotten'; wrapper_status: 'preserved_unsafe' }>((resolve) => {
       resolveForget = resolve;
     });
     const { directConnect: api } = await import('@/lib/api');
@@ -285,12 +285,11 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
 
     expect(screen.getByRole('button', { name: /clearing/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /^retry$/i })).toBeDisabled();
-    resolveForget!({ operation_id: 'op-1', status: 'forgotten', wrapper_status: 'removed' });
-    expect(await screen.findByText(/matching failed wrapper was removed/i)).toBeInTheDocument();
+    resolveForget!({ operation_id: 'op-1', status: 'forgotten', wrapper_status: 'preserved_unsafe' });
+    expect(await screen.findByText(/could not safely prove it matched/i)).toBeInTheDocument();
   }, 15000);
 
   test.each([
-    ['removed', /matching failed wrapper was removed/i],
     ['already_absent', /failed wrapper was already absent/i],
     ['preserved_changed', /preserved because it changed/i],
     ['preserved_unsafe', /could not safely prove it matched/i],

@@ -417,6 +417,28 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     assert tuple(events[-1]) == ("forgotten", "terminal failed operation removed")
 
 
+def test_failed_wrapper_cleanup_reports_absent_and_nonregular_candidates_without_deleting(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import (
+        DirectConnectReceiptArtifacts,
+        _remove_matching_failed_wrapper,
+    )
+
+    absent = DirectConnectReceiptArtifacts(
+        operation_id="absent", wrapper_path=tmp_path / "missing", wrapper_sha256="f" * 64,
+        children=[], intended_profile_name="forget-profile", workspace_adapter_id="codex",
+    )
+    nonregular_path = tmp_path / "wrapper-directory"
+    nonregular_path.mkdir()
+    nonregular = DirectConnectReceiptArtifacts(
+        operation_id="nonregular", wrapper_path=nonregular_path, wrapper_sha256="f" * 64,
+        children=[], intended_profile_name="forget-profile", workspace_adapter_id="codex",
+    )
+
+    assert _remove_matching_failed_wrapper(absent) == "already_absent"
+    assert _remove_matching_failed_wrapper(nonregular) == "preserved_unsafe"
+    assert nonregular_path.is_dir()
+
+
 def test_forget_decides_unsafe_wrapper_before_deleting_failed_operation(tmp_path, monkeypatch) -> None:
     """Wrapper safety is resolved while the failed receipt remains authoritative."""
     from runtime.daemon import direct_connect_store as store_module

@@ -215,7 +215,6 @@ def test_custom_cli_forget_refuses_a_live_committed_profile_without_post(capsys)
 
 
 @pytest.mark.parametrize(("wrapper_status", "expected_detail"), [
-    ("removed", "wrapper file removed"),
     ("already_absent", "wrapper file was already absent"),
     ("preserved_changed", "wrapper file was preserved because it changed"),
     ("preserved_unsafe", "wrapper file was preserved because it could not be safely verified"),
