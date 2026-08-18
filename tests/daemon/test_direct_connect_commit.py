@@ -499,6 +499,22 @@ def test_forget_unknown_operation_returns_404(client):
     assert response.status_code == 404
 
 
+def test_forget_route_module_contract_retains_every_present_wrapper():
+    """Keep the route's normative cleanup claim aligned with the store contract."""
+    from runtime.daemon.routes import direct_connect_commit
+
+    contract = " ".join((direct_connect_commit.__doc__ or "").replace("`", "").split())
+
+    assert "Master-bearer-authed cleanup route for a terminal FAILED custom-CLI operation" in contract
+    assert "deletes eligible failed authority, receipt, and projection rows" in contract
+    assert "retains every present derived wrapper" in contract
+    assert "already_absent, preserved_changed, or preserved_unsafe" in contract
+    assert "missing, planned, or committed" in contract
+    assert "retry validation is running or has succeeded" in contract
+    assert "removes its failed authority records and the derived wrapper file" not in contract
+    assert "deletes every derived wrapper" not in contract
+
+
 def test_forget_requires_master_bearer_not_registration_token(client, tmp_path):
     tc, state = client
     operation_id = _failed_operation(tc, state, tmp_path)

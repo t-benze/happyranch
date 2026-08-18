@@ -32,8 +32,12 @@
 ``POST /runtime/custom-cli/{operation_id}/forget``
     Master-bearer-authed cleanup route for a terminal FAILED custom-CLI
     operation. It is the ONLY route that deletes rows from the direct-connect
-    authority store. It refuses a missing, planned, or committed projection,
-    then removes its failed authority records and the derived wrapper file.
+    authority store: it deletes eligible failed authority, receipt, and
+    projection rows, but retains every present derived wrapper. Its
+    ``wrapper_status`` reports only ``already_absent``, ``preserved_changed``,
+    or ``preserved_unsafe``. It refuses missing, planned, or committed
+    projections, and refuses when retry validation is running or has
+    succeeded, without deletion.
 """
 from __future__ import annotations
 
