@@ -1,6 +1,8 @@
 """THR-080: thread-reachable resolve-escalation route tests."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from runtime.models import (
@@ -13,6 +15,67 @@ from runtime.models import (
     ThreadRecord,
     ThreadStatus,
 )
+
+
+def test_thr166_compatibility_profile_and_evaluator_preserve_frozen_authority():
+    """The extracted kernel accepts only the deployed THR-166 profile."""
+    from runtime.daemon.routes import threads as thread_routes
+
+    profile = thread_routes.THR166_POLICY
+    assert profile.id == "THR-166-genuine-human-blocker"
+    assert profile.version == "1"
+    assert profile.provenance == "founder:THR-166:seq-29"
+    assert profile.continuation_class == "repair_review_reverify_reevaluate_original_gate"
+    presentation = thread_routes.ContinuationPresentation(
+        policy_id="THR-166-genuine-human-blocker",
+        policy_version="1",
+        policy_provenance="founder:THR-166:seq-29",
+        continuation_class="repair_review_reverify_reevaluate_original_gate",
+        attestation_checks=frozenset({
+            "no_schema_or_overloaded_column_change",
+            "no_permission_sandbox_or_allow_rule_change",
+            "no_auth_credentials_security_privacy_or_data_access_change",
+            "no_spend_or_budget_change",
+            "no_destructive_or_irreversible_action",
+            "no_external_contract_or_product_commitment",
+            "no_genuine_ambiguity_or_novel_situation",
+            "evidence_terminal_fresh_and_consistent",
+            "original_protected_gate_not_authorized",
+        }),
+        attestation_count=9,
+        evidence=(thread_routes.ContinuationEvidence(
+            task_id="T-1-REVERIFY", terminal_status="completed",
+            verdict=None, output_summary=None,
+        ),),
+    )
+    facts = thread_routes.ContinuationFacts(
+        descendant_ids=frozenset({"T-1-REVERIFY"}),
+        escalated_at="2026-08-17T00:00:00+00:00",
+        evidence_by_task_id={
+            "T-1-REVERIFY": thread_routes.CanonicalTerminalEvidence(
+                terminal_status="completed",
+                created_at="2026-08-17T00:01:00+00:00",
+                verdict=None,
+                output_summary=None,
+            ),
+        },
+    )
+
+    accepted = thread_routes.evaluate_bounded_continuation(
+        profile, presentation=presentation, facts=facts,
+    )
+    assert accepted.rejection_code is None
+    assert accepted.snapshots == ({
+        "task_id": "T-1-REVERIFY", "terminal_status": "completed",
+        "verdict": None, "output_summary": None,
+    },)
+
+    rejected = thread_routes.evaluate_bounded_continuation(
+        profile,
+        presentation=replace(presentation, policy_id="uninstalled-policy"),
+        facts=facts,
+    )
+    assert rejected.rejection_code == "policy_or_attestation_mismatch"
 
 
 def _mint_authorized_invocation(org, thread_id: str, agent: str) -> str:
@@ -71,7 +134,7 @@ def _autonomous_continue_payload(org, *, thread_id: str, task_id: str, agent: st
 
 @pytest.mark.asyncio
 async def test_thread_resolve_escalation_continue_succeeds(
-    client_with_runtime,
+    client_with_runtime, monkeypatch,
 ):
     """THR-080 Option A: continue from thread surface re-enqueues the task."""
     client, org = client_with_runtime
@@ -85,15 +148,67 @@ async def test_thread_resolve_escalation_continue_succeeds(
     ))
     org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
 
+    from runtime.daemon.routes import threads as thread_routes
+
+    original_evaluator = thread_routes.evaluate_bounded_continuation
+    evaluation_facts = []
+
+    def record_evaluation(*args, **kwargs):
+        evaluation_facts.append(kwargs.get("facts"))
+        return original_evaluator(*args, **kwargs)
+
+    monkeypatch.setattr(thread_routes, "evaluate_bounded_continuation", record_evaluation)
+
+    payload = _autonomous_continue_payload(
+        org, thread_id="THR-1", task_id="T-1", agent="engineering_head",
+    )
     r = client.post(
         "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
-        json=_autonomous_continue_payload(org, thread_id="THR-1", task_id="T-1", agent="engineering_head"),
+        json=payload,
     )
     assert r.status_code == 200, f"got {r.status_code} {r.text}"
     assert r.json()["new_status"] == "pending"
 
     task = org.db.get_task("T-1")
     assert task.status == TaskStatus.PENDING
+    assert evaluation_facts[0] is None
+    assert isinstance(evaluation_facts[1], thread_routes.ContinuationFacts)
+    invocation = org.db.get_invocation_any_status(payload["invocation_token"])
+    assert invocation is not None
+    assert invocation.status == ThreadInvocationStatus.CONSUMED
+    audits = [row for row in org.db.get_audit_logs("T-1")
+              if row["action"] == "escalation_continued_autonomously"]
+    assert len(audits) == 1
+    assert audits[0]["payload"]["policy_id"] == "THR-166-genuine-human-blocker"
+    assert audits[0]["payload"]["queue_intent"] == {"task_id": "T-1", "claimed": False}
+
+
+@pytest.mark.asyncio
+async def test_manual_break_glass_does_not_invoke_autonomous_evaluator(
+    client_with_runtime, monkeypatch,
+):
+    """The direct task route remains the independent manual contract."""
+    from runtime.daemon.routes import threads as thread_routes
+
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="T-MANUAL", brief="test"))
+    org.db.update_task("T-MANUAL", status=TaskStatus.ESCALATED, block_kind=None)
+
+    def autonomous_evaluator_must_not_run(*args, **kwargs):
+        raise AssertionError("manual break-glass invoked autonomous evaluator")
+
+    monkeypatch.setattr(
+        thread_routes, "evaluate_bounded_continuation", autonomous_evaluator_must_not_run,
+    )
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-MANUAL/resolve-escalation",
+        json={"decision": "continue", "rationale": "founder direction"},
+    )
+
+    assert response.status_code == 200
+    audit = [row for row in org.db.get_audit_logs("T-MANUAL")
+             if row["action"] == "escalation_resolved"]
+    assert audit[0]["payload"]["resolution_path"] == "manual_break_glass"
 
 
 @pytest.mark.asyncio

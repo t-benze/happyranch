@@ -4,8 +4,9 @@ from __future__ import annotations
 import json as _json
 import mimetypes
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Mapping
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -1712,15 +1713,96 @@ class TerminalEvidence(BaseModel):
     output_summary: str | None = None
 
 
+@dataclass(frozen=True)
+class ContinuationEvidence:
+    """Caller-presented evidence, compared only with canonical snapshots."""
+
+    task_id: str
+    terminal_status: str
+    verdict: str | None
+    output_summary: str | None
+
+
+@dataclass(frozen=True)
+class ContinuationPresentation:
+    """The non-authoritative continuation fields presented by a caller."""
+
+    policy_id: str
+    policy_version: str
+    policy_provenance: str
+    continuation_class: str
+    attestation_checks: frozenset[str]
+    attestation_count: int
+    evidence: tuple[ContinuationEvidence, ...]
+
+    @classmethod
+    def from_body(cls, body: ThreadResolveEscalationBody) -> "ContinuationPresentation":
+        return cls(
+            policy_id=body.policy_id,
+            policy_version=body.policy_version,
+            policy_provenance=body.policy_provenance,
+            continuation_class=body.continuation_class,
+            attestation_checks=frozenset(body.attestation_checks),
+            attestation_count=len(body.attestation_checks),
+            evidence=tuple(
+                ContinuationEvidence(
+                    task_id=entry.task_id,
+                    terminal_status=entry.terminal_status,
+                    verdict=entry.verdict,
+                    output_summary=entry.output_summary,
+                )
+                for entry in body.evidence
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CanonicalTerminalEvidence:
+    """One server-derived terminal evidence snapshot."""
+
+    terminal_status: str | None
+    created_at: str | None
+    verdict: str | None
+    output_summary: str | None
+
+
+@dataclass(frozen=True)
+class ContinuationFacts:
+    """Durable facts supplied to the pure bounded-continuation evaluator."""
+
+    descendant_ids: frozenset[str]
+    escalated_at: str | None
+    evidence_by_task_id: Mapping[str, CanonicalTerminalEvidence]
+
+
+@dataclass(frozen=True)
+class BoundedContinuationPolicy:
+    """An immutable server-owned compatibility profile, never caller authority."""
+
+    id: str
+    version: str
+    provenance: str
+    continuation_class: str
+    required_checks: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ContinuationEvaluation:
+    """Pure acceptance/rejection result with canonical audit snapshots."""
+
+    rejection_code: str | None
+    snapshots: tuple[dict, ...] = ()
+
+
 # This is the immutable, server-owned founder authority for THR-166.  Body
 # fields must match it exactly; callers cannot supply a manager-authored brief,
 # a KB quote, or a free-form rationale as an alternative authority source.
-THR166_POLICY = {
-    "id": "THR-166-genuine-human-blocker",
-    "version": "1",
-    "provenance": "founder:THR-166:seq-29",
-    "continuation_class": "repair_review_reverify_reevaluate_original_gate",
-    "required_checks": frozenset({
+THR166_POLICY = BoundedContinuationPolicy(
+    id="THR-166-genuine-human-blocker",
+    version="1",
+    provenance="founder:THR-166:seq-29",
+    continuation_class="repair_review_reverify_reevaluate_original_gate",
+    required_checks=frozenset({
         "no_schema_or_overloaded_column_change",
         "no_permission_sandbox_or_allow_rule_change",
         "no_auth_credentials_security_privacy_or_data_access_change",
@@ -1731,14 +1813,70 @@ THR166_POLICY = {
         "evidence_terminal_fresh_and_consistent",
         "original_protected_gate_not_authorized",
     }),
-}
+)
+
+
+def evaluate_bounded_continuation(
+    profile: BoundedContinuationPolicy,
+    *,
+    presentation: ContinuationPresentation,
+    facts: ContinuationFacts | None = None,
+) -> ContinuationEvaluation:
+    """Evaluate one bounded continuation from a profile and durable facts.
+
+    The profile is server-owned and facts are supplied by the route only after
+    durable reads.  Caller text is comparison input, never policy authority.
+    ``facts=None`` performs the exact early policy/attestation gate before
+    any evidence reads, preserving the deployed fail-closed ordering.
+    """
+    if (
+        presentation.policy_id != profile.id
+        or presentation.policy_version != profile.version
+        or presentation.policy_provenance != profile.provenance
+        or presentation.continuation_class != profile.continuation_class
+        or presentation.attestation_checks != profile.required_checks
+        or presentation.attestation_count != len(profile.required_checks)
+    ):
+        return ContinuationEvaluation("policy_or_attestation_mismatch")
+    if facts is None:
+        return ContinuationEvaluation(None)
+
+    evidence_ids = {entry.task_id for entry in presentation.evidence}
+    if (
+        not facts.descendant_ids
+        or evidence_ids != facts.descendant_ids
+        or len(presentation.evidence) != len(evidence_ids)
+    ):
+        return ContinuationEvaluation("evidence_lineage_mismatch")
+    if facts.escalated_at is None:
+        return ContinuationEvaluation("escalation_provenance_missing")
+
+    snapshots: list[dict] = []
+    for entry in presentation.evidence:
+        canonical = facts.evidence_by_task_id.get(entry.task_id)
+        if canonical is None or canonical.terminal_status != entry.terminal_status:
+            return ContinuationEvaluation("evidence_terminal_mismatch")
+        if canonical.created_at is None or canonical.created_at <= facts.escalated_at:
+            return ContinuationEvaluation("evidence_stale")
+        if (
+            entry.verdict != canonical.verdict
+            or entry.output_summary != canonical.output_summary
+        ):
+            return ContinuationEvaluation("evidence_result_mismatch")
+        snapshots.append({
+            "task_id": entry.task_id,
+            "terminal_status": canonical.terminal_status,
+            "verdict": canonical.verdict,
+            "output_summary": canonical.output_summary,
+        })
+    return ContinuationEvaluation(None, tuple(snapshots))
 
 
 def _continuation_reject(org, task_id: str, actor: str, code: str, **context: object) -> None:
     """Audit a fail-closed autonomous attempt without changing task state."""
     AuditLogger(org.db).log_escalation_continuation_rejected(
         task_id, actor=actor,
-        payload={"policy_id": THR166_POLICY["id"], "reason": code, **context},
+        payload={"policy_id": THR166_POLICY.id, "reason": code, **context},
     )
     detail: dict[str, object] = {"code": code}
     if code == "cannot_continue_live_children":
@@ -1748,49 +1886,42 @@ def _continuation_reject(org, task_id: str, actor: str, code: str, **context: ob
 
 def _validate_th166_evidence(org, *, task, body: ThreadResolveEscalationBody) -> list[dict]:
     """Return canonical evidence or fail closed on any stale/conflicting row."""
-    if (
-        body.policy_id != THR166_POLICY["id"]
-        or body.policy_version != THR166_POLICY["version"]
-        or body.policy_provenance != THR166_POLICY["provenance"]
-        or body.continuation_class != THR166_POLICY["continuation_class"]
-        or set(body.attestation_checks) != THR166_POLICY["required_checks"]
-        or len(body.attestation_checks) != len(THR166_POLICY["required_checks"])
-    ):
-        raise ValueError("policy_or_attestation_mismatch")
+    presentation = ContinuationPresentation.from_body(body)
+    early = evaluate_bounded_continuation(THR166_POLICY, presentation=presentation)
+    if early.rejection_code is not None:
+        raise ValueError(early.rejection_code)
 
     # The continuation is allowed only after the bounded repair subtree has
     # reached terminal states.  Evidence must name every descendant exactly;
     # this prevents an unrelated PASS or a stale pre-escalation result from
     # becoming an unpark trigger.
-    descendant_ids = set(org.db.get_descendant_task_ids(task.id))
-    evidence_ids = {entry.task_id for entry in body.evidence}
-    if not descendant_ids or evidence_ids != descendant_ids or len(body.evidence) != len(evidence_ids):
-        raise ValueError("evidence_lineage_mismatch")
+    descendant_ids = frozenset(org.db.get_descendant_task_ids(task.id))
     logs = org.db.get_audit_logs(task.id)
     escalations = [row for row in logs if row["action"] == "escalation"]
-    if not escalations:
-        raise ValueError("escalation_provenance_missing")
-    escalated_at = escalations[-1]["timestamp"]
-    snapshots: list[dict] = []
-    for entry in body.evidence:
+    escalated_at = escalations[-1]["timestamp"] if escalations else None
+    canonical_evidence: dict[str, CanonicalTerminalEvidence] = {}
+    for entry in presentation.evidence:
         evidence_task = org.db.get_task(entry.task_id)
-        if evidence_task is None or evidence_task.status.value != entry.terminal_status:
-            raise ValueError("evidence_terminal_mismatch")
-        if evidence_task.created_at.isoformat() <= escalated_at:
-            raise ValueError("evidence_stale")
-        results = org.db.get_task_results(entry.task_id)
+        results = org.db.get_task_results(entry.task_id) if evidence_task is not None else []
         latest = results[-1] if results else None
-        actual_verdict = latest.get("verdict") if latest else None
-        actual_summary = latest.get("output_summary") if latest else None
-        if entry.verdict != actual_verdict or entry.output_summary != actual_summary:
-            raise ValueError("evidence_result_mismatch")
-        snapshots.append({
-            "task_id": entry.task_id,
-            "terminal_status": entry.terminal_status,
-            "verdict": actual_verdict,
-            "output_summary": actual_summary,
-        })
-    return snapshots
+        canonical_evidence[entry.task_id] = CanonicalTerminalEvidence(
+            terminal_status=evidence_task.status.value if evidence_task is not None else None,
+            created_at=evidence_task.created_at.isoformat() if evidence_task is not None else None,
+            verdict=latest.get("verdict") if latest else None,
+            output_summary=latest.get("output_summary") if latest else None,
+        )
+    evaluation = evaluate_bounded_continuation(
+        THR166_POLICY,
+        presentation=presentation,
+        facts=ContinuationFacts(
+            descendant_ids=descendant_ids,
+            escalated_at=escalated_at,
+            evidence_by_task_id=canonical_evidence,
+        ),
+    )
+    if evaluation.rejection_code is not None:
+        raise ValueError(evaluation.rejection_code)
+    return list(evaluation.snapshots)
 
 
 @router.post("/threads/{thread_id}/resolve-escalation")
@@ -1931,11 +2062,11 @@ async def resolve_escalation_from_thread(
         except ValueError as exc:
             _continuation_reject(org, task.id, dispatcher, str(exc))
         audit_payload = {
-            "policy_id": THR166_POLICY["id"],
-            "policy_version": THR166_POLICY["version"],
-            "policy_provenance": THR166_POLICY["provenance"],
-            "continuation_class": THR166_POLICY["continuation_class"],
-            "attestation_checks": sorted(THR166_POLICY["required_checks"]),
+            "policy_id": THR166_POLICY.id,
+            "policy_version": THR166_POLICY.version,
+            "policy_provenance": THR166_POLICY.provenance,
+            "continuation_class": THR166_POLICY.continuation_class,
+            "attestation_checks": sorted(THR166_POLICY.required_checks),
             "evidence": snapshots,
             "actor": dispatcher,
             "thread_id": thread_id,
