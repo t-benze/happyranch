@@ -499,6 +499,19 @@ def test_forget_unknown_operation_returns_404(client):
     assert response.status_code == 404
 
 
+def test_forget_requires_master_bearer_not_registration_token(client, tmp_path):
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+
+    response = tc.post(
+        f"/api/v1/runtime/custom-cli/{operation_id}/forget",
+        headers={"Authorization": "Bearer hrreg_not-the-master-bearer"},
+    )
+
+    assert response.status_code == 401
+    assert state.direct_connect_authority_store.get_projection(operation_id).state == "failed"
+
+
 @pytest.mark.parametrize("projection_state", ["planned", "committed"])
 def test_forget_refuses_nonfailed_projection(client, tmp_path, projection_state):
     tc, state = client
