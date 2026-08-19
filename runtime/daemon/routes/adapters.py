@@ -835,9 +835,39 @@ def _has_traversal_spelling(raw_path: str) -> bool:
     return ".." in parts
 
 
+def _check_direct_connect_fence(request: Request) -> None:
+    """Reject a known direct-connect authority token before generic validation.
+
+    Direct-connect tokens carry the same ``hrreg_`` prefix and adapter purpose
+    as legacy adapter-submission tokens, but they are admitted exclusively
+    through ``POST /runtime/custom-cli/connect``.  This fence inspects the
+    durable direct authority store (which survives daemon restart and generic
+    token consumption) and rejects the request non-consumingly if the token
+    fingerprint is a known direct authority.  Unknown/non-direct tokens pass
+    through unchanged so the existing generic registration-token validation
+    still governs them.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return
+    token_value = auth.removeprefix("Bearer ").strip()
+    authority_store = getattr(request.app.state.daemon, "direct_connect_authority_store", None)
+    if authority_store is None:
+        return
+    if authority_store.get_for_token(token_value) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This adapter-purpose token was minted for direct-connect "
+                "registration. Use POST /api/v1/runtime/custom-cli/connect "
+                "instead of the legacy adapter submission endpoint."
+            ),
+        )
+
+
 @submit_router.post(
     "/runtime/adapters/submit",
-    dependencies=[require_registration_token()],
+    dependencies=[Depends(_check_direct_connect_fence), require_registration_token()],
 )
 def submit_adapter(
     request: Request,
@@ -851,6 +881,8 @@ def submit_adapter(
 
     Gating checks (exact order, every rejection returns 422 with a
     concrete error detail):
+    0. Token fingerprint is not a known durable direct-connect authority
+       (THR-160: rejected non-consumingly before generic validation)
     1. Request is loopback (127.0.0.1, ::1, localhost)
        (checked by require_registration_token dependency)
     2. Token is a valid ``hrreg_`` runtime registration token

@@ -82,6 +82,25 @@ def project(
     if artifacts is None:
         raise RuntimeError(f"no receipt found for direct-connect operation {operation_id!r}")
 
+    # Only the latest accepted candidate for a parent may be driven forward.
+    # Older candidates are reported as superseded without starting a probe.
+    latest = store.get_latest_candidate_for_profile(artifacts.intended_profile_name)
+    if latest is not None and latest.operation_id != operation_id:
+        return ProjectionOutcome(
+            state="failed", adapter_id=None, profile_name=None,
+            reason="superseded_by_later_candidate",
+        )
+
+    # Enforce exactly one active probe per parent lifecycle.  If another
+    # candidate of the same parent is already planned or being retried, report
+    # this one as in-flight without racing it.
+    active_other = store.active_operation_for_parent(operation_id)
+    if active_other is not None:
+        other_projection = store.get_projection(active_other)
+        if other_projection is not None:
+            return _await_concurrent_outcome(store, active_other)
+        return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
+
     if not store.plan_projection(operation_id, now=now):
         # Another caller won the plan race between our read of `existing`
         # and now. Reconcile its durable state instead of racing the

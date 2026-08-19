@@ -132,9 +132,7 @@ def _accepted_candidate_count(state: DaemonState, token: str) -> int:
     assert hasattr(store, "list_candidates"), (
         "DirectConnectAuthorityStore must expose list_candidates(token_plaintext)"
     )
-    return sum(
-        1 for c in store.list_candidates(token) if c.state == "received_nonlaunchable"
-    )
+    return len(store.list_candidates(token))
 
 
 def _parent_is_retryable(state: DaemonState, token: str) -> bool:
@@ -578,6 +576,120 @@ def test_v1_current_schema_migration_reopens_retaining_exact_columns(tmp_path):
     reopened.close()
 
 
+def test_v0_interrupted_migration_partial_lifecycle_tables(tmp_path):
+    """A v0 database where some THR-160 tables already exist completes additively."""
+    db_path = tmp_path / "direct.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE legacy_runtime_table (id TEXT);
+        INSERT INTO legacy_runtime_table VALUES ('legacy-redacted-reference');
+        CREATE TABLE direct_connect_authorities (
+            token_fingerprint TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            intended_profile_name TEXT NOT NULL,
+            wrapper_destination TEXT NOT NULL,
+            workspace_adapter_id TEXT NOT NULL,
+            issued_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            state TEXT NOT NULL,
+            provenance TEXT NOT NULL
+        );
+        INSERT INTO direct_connect_authorities VALUES (
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'custom-cli', 'profile', '/runtime/adapters/profile-adapter', 'codex',
+            1, 100, 'minted_nonlaunchable', 'runtime-master-mint'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    # Legacy data and the already-present authority row are retained.
+    assert store._conn.execute(
+        "SELECT id FROM legacy_runtime_table"
+    ).fetchone()[0] == "legacy-redacted-reference"
+    assert store._conn.execute(
+        "SELECT token_fingerprint FROM direct_connect_authorities"
+    ).fetchone()[0] == "a" * 64
+
+    # Missing additive lifecycle tables are created without error.
+    required_tables = {
+        "direct_connect_parent_lifecycles",
+        "direct_connect_candidates",
+        "direct_connect_identity_history",
+    }
+    existing = {
+        r[0] for r in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert not (required_tables - existing)
+    store.close()
+
+
+def test_v1_interrupted_migration_partial_identity_tables(tmp_path):
+    """A v1 database missing only the identity-history table completes additively."""
+    db_path = tmp_path / "direct.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE direct_connect_authorities (
+            token_fingerprint TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            intended_profile_name TEXT NOT NULL,
+            wrapper_destination TEXT NOT NULL,
+            workspace_adapter_id TEXT NOT NULL,
+            issued_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            state TEXT NOT NULL,
+            provenance TEXT NOT NULL
+        );
+        CREATE TABLE direct_connect_parent_lifecycles (
+            token_fingerprint TEXT PRIMARY KEY,
+            state TEXT NOT NULL,
+            latest_accepted_candidate_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        );
+        CREATE TABLE direct_connect_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            token_fingerprint TEXT NOT NULL,
+            operation_id TEXT UNIQUE,
+            attempt_ordinal INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            identity_hash TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        INSERT INTO direct_connect_authorities VALUES (
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'custom-cli', 'profile', '/runtime/adapters/profile-adapter', 'codex',
+            1, 100, 'minted_nonlaunchable', 'runtime-master-mint'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    baseline = _table_infos(db_path)
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    after_open = _table_infos(db_path)
+
+    # Existing v1 tables/columns are untouched.
+    for table, columns in baseline.items():
+        assert table in after_open
+        assert after_open[table] == columns
+
+    # The missing identity-history table is added.
+    assert "direct_connect_identity_history" in {
+        r[0] for r in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    store.close()
+
+
 def _table_infos(db_path: Path) -> dict[str, list[tuple]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -637,6 +749,4 @@ def test_reopen_generic_token_unavailable_direct_retry_authority_evaluated(
 
 def _accepted_candidate_count_from_store(store: DirectConnectAuthorityStore, token: str) -> int:
     assert hasattr(store, "list_candidates")
-    return sum(
-        1 for c in store.list_candidates(token) if c.state == "received_nonlaunchable"
-    )
+    return len(store.list_candidates(token))

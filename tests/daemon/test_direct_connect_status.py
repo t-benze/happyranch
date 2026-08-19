@@ -65,6 +65,8 @@ def test_status_before_mint_returns_wrapper_destination_and_no_operation(client)
     assert body["operation_id"] is None
     assert body["profile_state"] is None
     assert body["reason"] is None
+    assert body["state"] is None
+    assert body["retry_eligible"] is False
     assert body["wrapper_destination"].endswith("adapters/status-profile-adapter")
 
 
@@ -99,6 +101,8 @@ def test_status_after_connect_reports_operation_and_null_profile_state(client, t
     body = response.json()
     assert body["operation_id"] == operation_id
     assert body["profile_state"] is None
+    assert body["state"] == "waiting"
+    assert body["retry_eligible"] is False
     assert token not in response.text
 
 
@@ -148,6 +152,8 @@ def test_status_after_commit_reports_committed(client, tmp_path, monkeypatch):
     assert body["operation_id"] == operation_id
     assert body["profile_state"] == "committed"
     assert body["reason"] is None
+    assert body["state"] == "connected"
+    assert body["retry_eligible"] is False
 
 
 def test_status_hides_committed_projection_after_live_profile_is_removed(client, tmp_path, monkeypatch):
@@ -198,6 +204,8 @@ def test_status_hides_committed_projection_after_live_profile_is_removed(client,
         "operation_id": None,
         "profile_state": None,
         "reason": None,
+        "state": None,
+        "retry_eligible": False,
     }
 
 
@@ -235,6 +243,8 @@ def test_status_after_failed_projection_reports_reason(client, tmp_path):
         "operation_id": operation_id,
         "profile_state": "failed",
         "reason": "conformance probe failed",
+        "state": "failed_nonretryable",
+        "retry_eligible": False,
     }
 
 
@@ -285,12 +295,55 @@ def test_status_reports_live_retry_connection_without_rewriting_failed_projectio
         "operation_id": operation_id,
         "profile_state": "committed",
         "reason": None,
+        "state": "connected",
+        "retry_eligible": False,
         "historical_projection_state": "failed",
         "historical_projection_reason": "original failure",
         "retry_state": "succeeded",
     }
     projection = state.direct_connect_authority_store.get_projection(operation_id)
     assert projection is not None and projection.state == "failed" and projection.reason == "original failure"
+
+
+def test_status_after_conformance_probe_failure_is_retryable(client, tmp_path):
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    operation_id = connect.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    assert state.direct_connect_authority_store.mark_failed(
+        operation_id, "conformance_probe_failed: missing terminal canary"
+    )
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "wrapper_destination": str(authority.wrapper_destination),
+        "operation_id": operation_id,
+        "profile_state": "failed",
+        "reason": "conformance_probe_failed: missing terminal canary",
+        "state": "failed_retryable",
+        "retry_eligible": True,
+    }
 
 
 def test_status_requires_master_bearer(client):

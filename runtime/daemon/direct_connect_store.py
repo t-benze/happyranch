@@ -123,6 +123,24 @@ class DirectConnectCandidate:
     identity_hash: str
 
 
+@dataclass(frozen=True)
+class DirectConnectCandidateStatus:
+    """Stable, redacted lifecycle view derived from the accepted-candidate ledger.
+
+    This is the canonical backend state exposed to the browser-facing status
+    route.  It intentionally never includes token plaintext, fingerprint,
+    identity digest, or historical hashes/paths.
+    """
+
+    operation_id: str
+    candidate_id: str
+    attempt_ordinal: int
+    state: Literal["waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired"]
+    retry_eligible: bool
+    reason: str | None
+    expires_at: float
+
+
 _ADMISSION_ADMIT_FIRST = "admit_first"
 _ADMISSION_ADMIT_RETRY = "admit_retry"
 _ADMISSION_DUPLICATE = "duplicate"
@@ -543,20 +561,18 @@ class DirectConnectAuthorityStore:
             if running_probe is not None:
                 raise InProgressAdmissionError("direct retry probe is in progress")
 
+            # Admit only a first candidate or exactly one corrected retry after a
+            # conformance-probe failure. Any other terminal state is closed.
             terminal_count = len([c for c in candidates if c["state"] != "received_nonlaunchable"])
-            if terminal_count >= 2:
-                return None
             received_count = len([c for c in candidates if c["state"] == "received_nonlaunchable"])
-            if terminal_count == 1 or received_count > 1:
+            if terminal_count >= 2 or received_count > 1:
                 return None
             if received_count == 1:
-                candidate = candidates[0]
-                projection = cursor.execute(
-                    "SELECT state FROM direct_connect_projections WHERE operation_id = ?",
-                    (candidate["operation_id"],),
-                ).fetchone()
-                if projection is None or projection["state"] != "failed":
-                    return None
+                # A transient state where projection has failed but the candidate
+                # row has not yet been synchronized to failed. Wait for it.
+                return None
+            if terminal_count == 1 and not self.is_retryable(token_plaintext, now=now):
+                return None
 
             attempt_ordinal = len(candidates) + 1
             operation_id = str(uuid.uuid4())
@@ -647,6 +663,227 @@ class DirectConnectAuthorityStore:
                 for row in rows
             ]
 
+    def get_latest_candidate_for_profile(
+        self, intended_profile_name: str
+    ) -> DirectConnectCandidate | None:
+        """Return the latest accepted candidate for a profile, if any."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT c.candidate_id, c.operation_id, c.attempt_ordinal, c.state, c.identity_hash
+                   FROM direct_connect_candidates c
+                   JOIN direct_connect_authorities a ON a.token_fingerprint = c.token_fingerprint
+                   WHERE a.intended_profile_name = ?
+                   ORDER BY c.attempt_ordinal DESC, c.created_at DESC
+                   LIMIT 1""",
+                (intended_profile_name,),
+            ).fetchone()
+            if row is None:
+                return None
+            return DirectConnectCandidate(
+                candidate_id=row["candidate_id"],
+                operation_id=row["operation_id"],
+                attempt_ordinal=row["attempt_ordinal"],
+                state=row["state"],
+                identity_hash=row["identity_hash"],
+            )
+
+    def latest_candidate_status(
+        self, token_plaintext: str, *, now: float | None = None
+    ) -> DirectConnectCandidateStatus | None:
+        """Stable, redacted lifecycle view derived from the accepted-candidate ledger.
+
+        The returned ``state`` is one of:
+        - ``waiting``: candidate received, not yet projected
+        - ``active``: projection or retry probe is in flight
+        - ``connected``: candidate committed (or retry established a live profile)
+        - ``failed_retryable``: first candidate failed only the conformance probe
+        - ``failed_nonretryable``: terminal non-conformance, retry exhausted, or parent closed
+        - ``expired``: the original 30-minute authority has lapsed
+        """
+        return self._latest_candidate_status_by_fingerprint(
+            fingerprint_registration_token(token_plaintext), now=now
+        )
+
+    def _latest_candidate_status_by_fingerprint(
+        self, fingerprint: str, *, now: float | None = None
+    ) -> DirectConnectCandidateStatus | None:
+        """Core implementation keyed by the already-computed token fingerprint."""
+        now = time.time() if now is None else now
+        with self._lock:
+            cursor = self._conn.cursor()
+            authority = self._read_authority(cursor, fingerprint)
+            if authority is None:
+                return None
+            parent = cursor.execute(
+                "SELECT state, expires_at, latest_accepted_candidate_id FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+            candidate = cursor.execute(
+                """SELECT candidate_id, operation_id, attempt_ordinal, state
+                   FROM direct_connect_candidates
+                   WHERE token_fingerprint = ?
+                   ORDER BY attempt_ordinal DESC, created_at DESC
+                   LIMIT 1""",
+                (fingerprint,),
+            ).fetchone()
+            if candidate is None:
+                return None
+
+            projection = cursor.execute(
+                """SELECT state, reason FROM direct_connect_projections
+                   WHERE operation_id = ?""",
+                (candidate["operation_id"],),
+            ).fetchone()
+            projection_reason: str | None = projection["reason"] if projection else None
+            running_probe = cursor.execute(
+                """SELECT 1 FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'running' LIMIT 1""",
+                (candidate["operation_id"],),
+            ).fetchone() is not None
+            successful_retry = cursor.execute(
+                """SELECT 1 FROM direct_connect_retry_attempts
+                   WHERE operation_id = ? AND state = 'succeeded' LIMIT 1""",
+                (candidate["operation_id"],),
+            ).fetchone() is not None
+
+            # A successful retry validation establishes a live connection even
+            # when the immutable parent/candidate/projection rows remain failed.
+            if successful_retry:
+                return DirectConnectCandidateStatus(
+                    operation_id=candidate["operation_id"],
+                    candidate_id=candidate["candidate_id"],
+                    attempt_ordinal=candidate["attempt_ordinal"],
+                    state="connected",
+                    retry_eligible=False,
+                    reason=None,
+                    expires_at=parent["expires_at"] if parent is not None else authority.expires_at,
+                )
+
+            # Original 30-minute expiry is a hard, nonretryable bound.
+            if parent is not None and parent["expires_at"] < now:
+                return DirectConnectCandidateStatus(
+                    operation_id=candidate["operation_id"],
+                    candidate_id=candidate["candidate_id"],
+                    attempt_ordinal=candidate["attempt_ordinal"],
+                    state="expired",
+                    retry_eligible=False,
+                    reason=projection_reason,
+                    expires_at=parent["expires_at"],
+                )
+
+            if parent is not None and parent["state"] == "committed":
+                return DirectConnectCandidateStatus(
+                    operation_id=candidate["operation_id"],
+                    candidate_id=candidate["candidate_id"],
+                    attempt_ordinal=candidate["attempt_ordinal"],
+                    state="connected",
+                    retry_eligible=False,
+                    reason=None,
+                    expires_at=parent["expires_at"],
+                )
+
+            if parent is not None and parent["state"] == "failed":
+                return DirectConnectCandidateStatus(
+                    operation_id=candidate["operation_id"],
+                    candidate_id=candidate["candidate_id"],
+                    attempt_ordinal=candidate["attempt_ordinal"],
+                    state="failed_nonretryable",
+                    retry_eligible=False,
+                    reason=projection_reason,
+                    expires_at=parent["expires_at"],
+                )
+
+            reason = projection_reason
+            if candidate["state"] == "committed":
+                derived_state: Literal["waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired"] = "connected"
+            elif candidate["state"] == "failed":
+                is_conformance = str(reason or "").startswith("conformance_probe_failed")
+                has_later = cursor.execute(
+                    """SELECT 1 FROM direct_connect_candidates
+                       WHERE token_fingerprint = ? AND attempt_ordinal > ? LIMIT 1""",
+                    (fingerprint, candidate["attempt_ordinal"]),
+                ).fetchone() is not None
+                if is_conformance and candidate["attempt_ordinal"] == 1 and not has_later:
+                    derived_state = "failed_retryable"
+                else:
+                    derived_state = "failed_nonretryable"
+            elif candidate["state"] == "received_nonlaunchable":
+                if running_probe or (projection is not None and projection["state"] == "planned"):
+                    derived_state = "active"
+                elif projection is not None and projection["state"] == "committed":
+                    derived_state = "connected"
+                elif projection is not None and projection["state"] == "failed":
+                    # Candidate state should already be synchronized; fall back
+                    # to the projection reason for a stable nonretryable view.
+                    derived_state = "failed_nonretryable"
+                else:
+                    derived_state = "waiting"
+            else:
+                derived_state = "failed_nonretryable"
+
+            return DirectConnectCandidateStatus(
+                operation_id=candidate["operation_id"],
+                candidate_id=candidate["candidate_id"],
+                attempt_ordinal=candidate["attempt_ordinal"],
+                state=derived_state,
+                retry_eligible=(derived_state == "failed_retryable"),
+                reason=reason,
+                expires_at=parent["expires_at"] if parent is not None else authority.expires_at,
+            )
+
+    def latest_candidate_status_for_profile(
+        self, intended_profile_name: str, *, now: float | None = None
+    ) -> DirectConnectCandidateStatus | None:
+        """Like ``latest_candidate_status`` but keyed by profile name."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT a.token_fingerprint FROM direct_connect_authorities a
+                   WHERE a.intended_profile_name = ?
+                   ORDER BY a.issued_at DESC LIMIT 1""",
+                (intended_profile_name,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._latest_candidate_status_by_fingerprint(row["token_fingerprint"], now=now)
+
+    def active_operation_for_parent(self, operation_id: str) -> str | None:
+        """Return another in-flight operation_id for the same parent, if any.
+
+        An operation is in-flight when its projection is ``planned`` or it has
+        a running retry attempt.  This enforces exactly one active probe per
+        direct-connect parent lifecycle.
+        """
+        with self._lock:
+            cursor = self._conn.cursor()
+            operation = cursor.execute(
+                "SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                return None
+            fingerprint = operation["token_fingerprint"]
+            row = cursor.execute(
+                """SELECT p.operation_id FROM direct_connect_projections p
+                   JOIN direct_connect_operations o ON o.operation_id = p.operation_id
+                   WHERE o.token_fingerprint = ? AND p.state = 'planned'
+                     AND p.operation_id != ?
+                   LIMIT 1""",
+                (fingerprint, operation_id),
+            ).fetchone()
+            if row is not None:
+                return row["operation_id"]
+            row = cursor.execute(
+                """SELECT r.operation_id FROM direct_connect_retry_attempts r
+                   JOIN direct_connect_operations o ON o.operation_id = r.operation_id
+                   WHERE o.token_fingerprint = ? AND r.state = 'running'
+                     AND r.operation_id != ?
+                   LIMIT 1""",
+                (fingerprint, operation_id),
+            ).fetchone()
+            if row is not None:
+                return row["operation_id"]
+            return None
+
     def parent_state(self, token_plaintext: str) -> str | None:
         """Return the durable parent lifecycle state, or None if no parent row."""
         fingerprint = fingerprint_registration_token(token_plaintext)
@@ -678,7 +915,7 @@ class DirectConnectAuthorityStore:
             if committed is not None:
                 return False
             candidates = cursor.execute(
-                """SELECT candidate_id, operation_id, state FROM direct_connect_candidates
+                """SELECT candidate_id, operation_id, state, attempt_ordinal FROM direct_connect_candidates
                    WHERE token_fingerprint = ? ORDER BY attempt_ordinal ASC""",
                 (fingerprint,),
             ).fetchall()
@@ -686,13 +923,15 @@ class DirectConnectAuthorityStore:
                 return False
             if candidates[0]["candidate_id"] != parent["latest_accepted_candidate_id"]:
                 return False
-            if candidates[0]["state"] != "received_nonlaunchable":
+            if candidates[0]["state"] not in {"received_nonlaunchable", "failed"}:
                 return False
             projection = cursor.execute(
-                "SELECT state FROM direct_connect_projections WHERE operation_id = ?",
+                "SELECT state, reason FROM direct_connect_projections WHERE operation_id = ?",
                 (candidates[0]["operation_id"],),
             ).fetchone()
             if projection is None or projection["state"] != "failed":
+                return False
+            if not str(projection["reason"] or "").startswith("conformance_probe_failed"):
                 return False
             running_probe = cursor.execute(
                 """SELECT 1 FROM direct_connect_retry_attempts r
@@ -885,9 +1124,10 @@ class DirectConnectAuthorityStore:
     ) -> bool:
         """Terminalize a reservation when generic-token consumption failed.
 
-        The receipt artifacts are preserved so the failure is attributable to
-        the generic token seam, not the candidate identity. Identity history is
-        retained forever; the parent lifecycle stays open for retry.
+        The receipt, operation, and identity history are preserved so the
+        failure is attributable to the generic token seam, not the candidate
+        identity. The candidate is marked failed and the parent lifecycle is
+        closed nonretryable because the intake itself faulted.
         """
         now = time.time() if now is None else now
         fingerprint = fingerprint_registration_token(token_plaintext)
@@ -905,6 +1145,18 @@ class DirectConnectAuthorityStore:
                    SET state = 'terminalized', reason = ?, updated_at = ?
                    WHERE token_fingerprint = ? AND operation_id = ?""",
                 (reason, now, fingerprint, operation_id),
+            )
+            cursor.execute(
+                """UPDATE direct_connect_candidates
+                   SET state = 'failed'
+                   WHERE operation_id = ? AND state = 'received_nonlaunchable'""",
+                (operation_id,),
+            )
+            cursor.execute(
+                """UPDATE direct_connect_parent_lifecycles
+                   SET state = 'failed', updated_at = ?
+                   WHERE token_fingerprint = ? AND state = 'open'""",
+                (now, fingerprint),
             )
             cursor.execute(
                 """INSERT INTO direct_connect_events
@@ -938,6 +1190,36 @@ class DirectConnectAuthorityStore:
                    LEFT JOIN direct_connect_projections p ON p.operation_id = o.operation_id
                    WHERE p.operation_id IS NULL
                    ORDER BY o.created_at ASC"""
+            ).fetchall()
+            return [row["operation_id"] for row in rows]
+
+    def list_latest_operations_pending_projection(self) -> list[str]:
+        """Only the latest accepted candidate per parent lacking a projection row.
+
+        This prevents the daemon sweep from racing an older, superseded
+        candidate against the newer candidate that is actually eligible to
+        proceed. Legacy operations created before the THR-160 candidate ledger
+        are also included so the sweep continues to drive them to completion.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT operation_id FROM (
+                       SELECT c.operation_id, c.created_at FROM direct_connect_candidates c
+                       JOIN (
+                           SELECT token_fingerprint, MAX(attempt_ordinal) AS max_ordinal
+                           FROM direct_connect_candidates
+                           GROUP BY token_fingerprint
+                       ) latest ON latest.token_fingerprint = c.token_fingerprint
+                              AND latest.max_ordinal = c.attempt_ordinal
+                       LEFT JOIN direct_connect_projections p ON p.operation_id = c.operation_id
+                       WHERE p.operation_id IS NULL
+                     UNION ALL
+                       SELECT o.operation_id, o.created_at FROM direct_connect_operations o
+                       LEFT JOIN direct_connect_candidates c ON c.operation_id = o.operation_id
+                       LEFT JOIN direct_connect_projections p ON p.operation_id = o.operation_id
+                       WHERE c.candidate_id IS NULL AND p.operation_id IS NULL
+                   )
+                 ORDER BY created_at ASC"""
             ).fetchall()
             return [row["operation_id"] for row in rows]
 
@@ -1035,11 +1317,15 @@ class DirectConnectAuthorityStore:
             return self._read_projection(self._conn.cursor(), operation_id)
 
     def forget_operation(self, operation_id: str) -> DirectConnectForgetOutcome | None:
-        """Atomically clean up one terminal failed operation and its wrapper.
+        """Atomically clean up derived state for one terminal failed operation.
 
-        The wrapper's receipt path and SHA are inspected and resolved while
-        the failed receipt remains present and the store lock excludes retry
-        claims. Only after that result is final are authority rows deleted.
+        The immutable parent authority, accepted candidate record, canonical
+        identity history, receipt, operation row, and event trail are retained
+        for the parent lifetime.  Only safe derived artifacts/projections and
+        any retry-attempt row are removed.  This preserves the facts required
+        to reject a duplicate or reordered previous identity forever and to
+        keep a newer candidate (B) intact when an older failed candidate (A)
+        is forgotten.
         """
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -1073,6 +1359,15 @@ class DirectConnectAuthorityStore:
                 return None
             token_fingerprint = operation["token_fingerprint"]
             intended_profile_name = operation["intended_profile_name"]
+            candidate = cursor.execute(
+                """SELECT state FROM direct_connect_candidates
+                   WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+            # Refuse an active/current candidate; only a terminal failed
+            # candidate may have its derived rows removed.
+            if candidate is not None and candidate["state"] == "received_nonlaunchable":
+                return None
             wrapper_status = _remove_matching_failed_wrapper(
                 self._read_receipt_artifacts(cursor, operation_id)
             )
@@ -1080,24 +1375,11 @@ class DirectConnectAuthorityStore:
                 "DELETE FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
             )
             cursor.execute("DELETE FROM direct_connect_artifacts WHERE operation_id = ?", (operation_id,))
-            cursor.execute("DELETE FROM direct_connect_receipts WHERE operation_id = ?", (operation_id,))
-            cursor.execute("DELETE FROM direct_connect_operations WHERE operation_id = ?", (operation_id,))
             cursor.execute("DELETE FROM direct_connect_projections WHERE operation_id = ?", (operation_id,))
-            cursor.execute(
-                """DELETE FROM direct_connect_reservations
-                   WHERE token_fingerprint = ? AND operation_id = ?""",
-                (token_fingerprint, operation_id),
-            )
-            cursor.execute(
-                """UPDATE direct_connect_parent_lifecycles
-                   SET state = 'failed', updated_at = ?
-                   WHERE token_fingerprint = ?""",
-                (time.time(), token_fingerprint),
-            )
             cursor.execute(
                 """INSERT INTO direct_connect_events
                    (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
-                   VALUES (?, ?, ?, 'forgotten', 'terminal failed operation removed', ?)""",
+                   VALUES (?, ?, ?, 'forgotten', 'terminal failed operation derived state removed', ?)""",
                 (str(uuid.uuid4()), operation_id, token_fingerprint, time.time()),
             )
             return DirectConnectForgetOutcome(
@@ -1108,7 +1390,7 @@ class DirectConnectAuthorityStore:
     def mark_committed(
         self, operation_id: str, *, adapter_id: str, profile_name: str, now: float | None = None
     ) -> bool:
-        """Transition planned -> committed. Returns False if not in planned state."""
+        """Transition planned -> committed and record the candidate terminal state."""
         now = time.time() if now is None else now
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -1119,6 +1401,12 @@ class DirectConnectAuthorityStore:
                 (adapter_id, profile_name, now, operation_id),
             ).rowcount
             if updated:
+                cursor.execute(
+                    """UPDATE direct_connect_candidates
+                       SET state = 'committed'
+                       WHERE operation_id = ? AND state = 'received_nonlaunchable'""",
+                    (operation_id,),
+                )
                 cursor.execute(
                     """INSERT INTO direct_connect_events
                        (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
@@ -1137,7 +1425,7 @@ class DirectConnectAuthorityStore:
             return bool(updated)
 
     def mark_failed(self, operation_id: str, reason: str, *, now: float | None = None) -> bool:
-        """Transition planned -> failed. Returns False if not in planned state."""
+        """Transition planned -> failed and record the candidate terminal state."""
         now = time.time() if now is None else now
         with self._lock, self._conn:
             cursor = self._conn.cursor()
@@ -1156,6 +1444,12 @@ class DirectConnectAuthorityStore:
                 (reason, now, operation_id),
             )
             cursor.execute(
+                """UPDATE direct_connect_candidates
+                   SET state = 'failed'
+                   WHERE operation_id = ? AND state = 'received_nonlaunchable'""",
+                (operation_id,),
+            )
+            cursor.execute(
                 """INSERT INTO direct_connect_events
                    (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
                    VALUES (?, ?, ?, 'projection_failed', ?, ?)""",
@@ -1168,17 +1462,28 @@ class DirectConnectAuthorityStore:
             ).fetchone()
             if latest is not None:
                 candidate = cursor.execute(
-                    """SELECT candidate_id FROM direct_connect_candidates
+                    """SELECT candidate_id, attempt_ordinal FROM direct_connect_candidates
                        WHERE operation_id = ? AND candidate_id = ?""",
                     (operation_id, latest["latest_accepted_candidate_id"]),
                 ).fetchone()
-                if candidate is not None and not reason.startswith("conformance_probe_failed"):
-                    cursor.execute(
-                        """UPDATE direct_connect_parent_lifecycles
-                           SET state = 'failed', updated_at = ?
-                           WHERE token_fingerprint = ? AND state = 'open'""",
-                        (now, fingerprint),
-                    )
+                if candidate is not None:
+                    # The first conformance_probe_failed leaves the parent open
+                    # for exactly one corrected retry. Any other terminal reason,
+                    # or a conformance failure on a retry candidate, closes the
+                    # parent permanently.
+                    is_conformance = str(reason).startswith("conformance_probe_failed")
+                    has_later_candidate = cursor.execute(
+                        """SELECT 1 FROM direct_connect_candidates
+                           WHERE token_fingerprint = ? AND attempt_ordinal > ? LIMIT 1""",
+                        (fingerprint, candidate["attempt_ordinal"]),
+                    ).fetchone() is not None
+                    if not is_conformance or has_later_candidate:
+                        cursor.execute(
+                            """UPDATE direct_connect_parent_lifecycles
+                               SET state = 'failed', updated_at = ?
+                               WHERE token_fingerprint = ? AND state = 'open'""",
+                            (now, fingerprint),
+                        )
             return True
 
     def _read_retry_attempt(

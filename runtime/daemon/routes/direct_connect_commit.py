@@ -31,13 +31,14 @@
 
 ``POST /runtime/custom-cli/{operation_id}/forget``
     Master-bearer-authed cleanup route for a terminal FAILED custom-CLI
-    operation. It is the ONLY route that deletes rows from the direct-connect
-    authority store: it deletes eligible failed authority, receipt, and
-    projection rows, but retains every present derived wrapper. Its
-    ``wrapper_status`` reports only ``already_absent``, ``preserved_changed``,
-    or ``preserved_unsafe``. It refuses missing, planned, or committed
-    projections, and refuses when retry validation is running or has
-    succeeded, without deletion.
+    operation. It deletes derived state for one terminal failed operation:
+    only safe derived artifacts/projections and any retry-attempt row are
+    removed. It retains the immutable parent authority, accepted candidate
+    record, canonical identity history, receipt, operation row, and event
+    trail. Its ``wrapper_status`` reports only ``already_absent``,
+    ``preserved_changed``, or ``preserved_unsafe``. It refuses missing,
+    planned, or committed projections, and refuses when retry validation is
+    running or has succeeded, without deletion.
 """
 from __future__ import annotations
 
@@ -111,46 +112,57 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
     wrapper_destination = canonical_wrapper_destination(
         getattr(authority_store, "_runtime_root", None), intended_profile_name
     )
-    operation_id = authority_store.get_latest_operation_for_profile(intended_profile_name)
-    profile_state = None
-    reason = None
-    if operation_id is not None:
-        projection = authority_store.get_projection(operation_id)
-        if projection is not None:
-            profile_state = projection.state
-            reason = projection.reason
-            successful_retry = authority_store.get_successful_retry(operation_id)
-            if projection.state == "failed" and successful_retry is not None:
-                # The retry record is the fact of a live revalidation/bind.
-                # Keep the immutable projection's state and reason available
-                # separately; they are never rewritten to claim it committed.
-                profile_state = "committed"
-                reason = None
-            if profile_state == "committed":
-                # A projection is historical evidence of how a profile was
-                # created, not proof that its profile still exists. The
-                # durable runtime store is authoritative; the registry check
-                # also ensures an immediately removed profile is not reported
-                # as connected before a daemon restart.
-                stored_profiles = load_runtime_profiles()
-                live_profile = get_registry().get_profile(intended_profile_name)
-                if intended_profile_name not in stored_profiles or live_profile is None:
-                    operation_id = None
-                    profile_state = None
-                    reason = None
+    # The canonical view is derived from the accepted-candidate ledger, not
+    # from any deletable operation row, so forgetting a failed candidate never
+    # loses the latest lifecycle state.
+    candidate_status = authority_store.latest_candidate_status_for_profile(intended_profile_name)
+
     result: dict[str, object] = {
         "wrapper_destination": str(wrapper_destination),
-        "operation_id": operation_id,
-        "profile_state": profile_state,
-        "reason": reason,
+        "operation_id": None,
+        "profile_state": None,
+        "reason": None,
+        "state": None,
+        "retry_eligible": False,
     }
-    if operation_id is not None:
-        projection = authority_store.get_projection(operation_id)
-        successful_retry = authority_store.get_successful_retry(operation_id)
-        if projection is not None and projection.state == "failed" and successful_retry is not None:
-            result["historical_projection_state"] = "failed"
-            result["historical_projection_reason"] = projection.reason
-            result["retry_state"] = "succeeded"
+    if candidate_status is None:
+        return result
+
+    result["operation_id"] = candidate_status.operation_id
+    result["reason"] = candidate_status.reason
+    result["state"] = candidate_status.state
+    result["retry_eligible"] = candidate_status.retry_eligible
+
+    # Map the stable candidate-ledger state to the legacy profile_state field
+    # so existing UI consumers continue to work until C updates to the new
+    # ``state``/``retry_eligible`` contract.
+    successful_retry = authority_store.get_successful_retry(candidate_status.operation_id)
+    if successful_retry is not None:
+        # A successful retry validation established a live connection while
+        # preserving the immutable failed projection as historical evidence.
+        result["profile_state"] = "committed"
+        historical_projection = authority_store.get_projection(candidate_status.operation_id)
+        result["historical_projection_state"] = "failed"
+        result["historical_projection_reason"] = (
+            historical_projection.reason if historical_projection is not None else candidate_status.reason
+        )
+        result["retry_state"] = "succeeded"
+    elif candidate_status.state == "connected":
+        stored_profiles = load_runtime_profiles()
+        live_profile = get_registry().get_profile(intended_profile_name)
+        if intended_profile_name in stored_profiles and live_profile is not None:
+            result["profile_state"] = "committed"
+        else:
+            result["operation_id"] = None
+            result["profile_state"] = None
+            result["reason"] = None
+            result["state"] = None
+            result["retry_eligible"] = False
+    elif candidate_status.state == "active":
+        result["profile_state"] = "planned"
+    elif candidate_status.state in {"failed_retryable", "failed_nonretryable", "expired"}:
+        result["profile_state"] = "failed"
+
     return result
 
 

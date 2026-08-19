@@ -506,8 +506,11 @@ def test_forget_route_module_contract_retains_every_present_wrapper():
     contract = " ".join((direct_connect_commit.__doc__ or "").replace("`", "").split())
 
     assert "Master-bearer-authed cleanup route for a terminal FAILED custom-CLI operation" in contract
-    assert "deletes eligible failed authority, receipt, and projection rows" in contract
-    assert "retains every present derived wrapper" in contract
+    assert "deletes eligible failed authority, receipt, and projection rows" not in contract
+    assert "deletes derived state for one terminal failed operation" in contract
+    assert "retains every present derived wrapper" not in contract
+    assert "retains the immutable parent authority, accepted candidate record, canonical identity history, receipt, operation row, and event trail" in contract
+    assert "only safe derived artifacts/projections and any retry-attempt row are removed" in contract
     assert "already_absent, preserved_changed, or preserved_unsafe" in contract
     assert "missing, planned, or committed" in contract
     assert "retry validation is running or has succeeded" in contract
@@ -563,16 +566,17 @@ def test_forget_failed_projection_removes_records_but_preserves_matching_wrapper
         "wrapper_status": "preserved_unsafe",
     }
     assert wrapper.exists()
-    # THR-160: the mint-time authority and durable parent/candidate history are
-    # retained so the same registration token can still be retried or audited.
-    for table in (
-        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations",
-    ):
+    # THR-160: immutable parent/candidate/identity/receipt/audit evidence is
+    # retained; only safe derived artifacts/projections/retry_attempts are removed.
+    for table in ("direct_connect_artifacts", "direct_connect_projections"):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-    assert store._conn.execute(
-        "SELECT COUNT(*) FROM direct_connect_authorities"
-    ).fetchone()[0] == 1
+    for table in (
+        "direct_connect_authorities", "direct_connect_parent_lifecycles",
+        "direct_connect_candidates", "direct_connect_identity_history",
+        "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_reservations",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
@@ -687,16 +691,17 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
-    # THR-160: the mint-time authority survives forget so the token remains
-    # retryable/auditable; only the operation-level rows are removed.
-    for table in (
-        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations",
-    ):
+    # THR-160: immutable parent/candidate/identity/receipt/audit evidence is
+    # retained; only safe derived artifacts/projections/retry_attempts are removed.
+    for table in ("direct_connect_artifacts", "direct_connect_projections"):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-    assert store._conn.execute(
-        "SELECT COUNT(*) FROM direct_connect_authorities"
-    ).fetchone()[0] == 1
+    for table in (
+        "direct_connect_authorities", "direct_connect_parent_lifecycles",
+        "direct_connect_candidates", "direct_connect_identity_history",
+        "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_reservations",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     event_types_after_forget = [row[0] for row in store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
     )]
@@ -706,8 +711,8 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
         "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
     )
     assert status_response.status_code == 200
-    assert status_response.json()["operation_id"] is None
-    assert status_response.json()["profile_state"] is None
+    assert status_response.json()["operation_id"] == operation_id
+    assert status_response.json()["profile_state"] == "failed"
 
 
 def test_forget_refuses_a_durably_running_retry_without_deleting_operation_state(
