@@ -231,7 +231,9 @@ def test_same_token_corrected_candidate_b_is_sole_second_201(
     operation_a = first.json()["operation_id"]
     _drive_to_terminal_failure(tc, state, operation_a, monkeypatch)
 
-    wrapper_b = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v2"
+    # B must install its corrected wrapper at the same server-fixed canonical
+    # destination; the identity hash is computed from the actual file content.
+    wrapper_b = wrapper_a
     wrapper_hash_b = _write_executable(wrapper_b, b"#!/bin/sh\necho v2\n")
     child_b = tmp_path / "bin" / "child-b"
     _write_executable(child_b)
@@ -264,7 +266,7 @@ def test_same_token_changed_candidate_c_is_refused_after_b(
     operation_a = first.json()["operation_id"]
     _drive_to_terminal_failure(tc, state, operation_a, monkeypatch)
 
-    wrapper_b = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v2"
+    wrapper_b = authority.wrapper_destination
     wrapper_hash_b = _write_executable(wrapper_b, b"#!/bin/sh\necho v2\n")
     child_b = tmp_path / "bin" / "child-b"
     _write_executable(child_b)
@@ -272,7 +274,7 @@ def test_same_token_changed_candidate_c_is_refused_after_b(
     second = _connect(tc, token, payload_b)
     assert second.status_code == 201
 
-    wrapper_c = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v3"
+    wrapper_c = authority.wrapper_destination
     wrapper_hash_c = _write_executable(wrapper_c, b"#!/bin/sh\necho v3\n")
     child_c = tmp_path / "bin" / "child-c"
     _write_executable(child_c)
@@ -302,7 +304,7 @@ def test_concurrent_corrected_candidate_b_has_exactly_one_receipt_and_probe(
     operation_a = first.json()["operation_id"]
     _drive_to_terminal_failure(tc, state, operation_a, monkeypatch)
 
-    wrapper_b = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v2"
+    wrapper_b = authority.wrapper_destination
     wrapper_hash_b = _write_executable(wrapper_b, b"#!/bin/sh\necho v2\n")
     child_b = tmp_path / "bin" / "child-b"
     _write_executable(child_b)
@@ -384,7 +386,7 @@ def test_route_exception_classification_duplicate_nonterminal_malformed_terminal
     assert duplicate.status_code == 409
     assert _parent_is_retryable(state, token) is True
 
-    wrapper_b = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v2"
+    wrapper_b = authority.wrapper_destination
     wrapper_hash_b = _write_executable(wrapper_b, b"#!/bin/sh\necho v2\n")
     child_b = tmp_path / "bin" / "child-b"
     _write_executable(child_b)
@@ -402,7 +404,7 @@ def test_route_exception_classification_duplicate_nonterminal_malformed_terminal
     assert _parent_is_retryable(state, token) is False
 
     # Any further corrected candidate is refused because parent is closed.
-    wrapper_c = tmp_path / "daemon" / "adapters" / "custom-profile-adapter-v3"
+    wrapper_c = authority.wrapper_destination
     wrapper_hash_c = _write_executable(wrapper_c, b"#!/bin/sh\necho v3\n")
     child_c = tmp_path / "bin" / "child-c"
     _write_executable(child_c)

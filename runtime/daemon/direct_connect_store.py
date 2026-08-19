@@ -402,15 +402,18 @@ class DirectConnectAuthorityStore:
     def normalize_identity_hash(
         wrapper_path: Path,
         wrapper_sha256: str,
+        wrapper_facts: dict[str, object],
         children: list[dict[str, object]],
         workspace_adapter_id: str,
         manifest_version: int,
     ) -> str:
         """Return a domain-separated, order-independent identity hash.
 
-        The canonical form intentionally excludes client-controlled ordering and
-        runtime-ephemeral facts so that materially identical candidates hash the
-        same even when children are reordered.
+        The canonical form covers the server-fixed wrapper destination, wrapper
+        and child paths/hashes, structural/probe facts, workspace adapter id, and
+        manifest version. It intentionally excludes client-controlled ordering so
+        materially identical candidates hash the same even when children are
+        reordered.
         """
         slots: set[str] = set()
         paths: set[str] = set()
@@ -424,13 +427,22 @@ class DirectConnectAuthorityStore:
             slots.add(slot)
             paths.add(path)
         canonical_children = sorted(
-            [{"path": child["path"]} for child in children],
+            [
+                {
+                    "path": child["path"],
+                    "sha256": child["sha256"],
+                    "facts": child["facts"],
+                    "version_probe_argv": child.get("version_probe_argv", []),
+                }
+                for child in children
+            ],
             key=lambda c: c["path"],
         )
         canonical = {
             "domain": _IDENTITY_DOMAIN,
             "wrapper_path": str(wrapper_path),
             "wrapper_sha256": wrapper_sha256,
+            "wrapper_facts": wrapper_facts,
             "children": canonical_children,
             "workspace_adapter_id": workspace_adapter_id,
             "manifest_version": manifest_version,

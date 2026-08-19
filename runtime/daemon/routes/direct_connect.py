@@ -225,23 +225,54 @@ async def connect(request: Request) -> dict[str, str]:
         raw = await request.json()
         body = DirectConnectRequest.model_validate(raw)
 
+        # Validate the server-fixed wrapper destination first.
+        wrapper_hash, wrapper_facts = _artifact_facts(
+            expected_wrapper, expected_path=expected_wrapper
+        )
+        if wrapper_hash != body.manifest.wrapper_sha256:
+            raise ValueError("wrapper hash does not match immutable manifest")
+
+        # Validate children and gather hashes/facts for identity normalization.
+        validated_children: list[dict[str, object]] = []
         identity_children: list[dict[str, object]] = []
         for child in body.manifest.upgradeable_children:
             child_path = Path(child.executable)
+            child_hash, child_facts = _artifact_facts(child_path)
             if child_path == expected_wrapper:
                 raise ValueError("wrapper cannot be an upgradeable child")
-            identity_children.append({"slot": child.slot, "path": str(child_path)})
+            child_facts["version_probe_argv"] = child.version_probe_argv
+            validated_children.append(
+                {"slot": child.slot, "path": str(child_path), "sha256": child_hash, "facts": child_facts}
+            )
+            identity_children.append(
+                {
+                    "slot": child.slot,
+                    "path": str(child_path),
+                    "sha256": child_hash,
+                    "facts": child_facts,
+                    "version_probe_argv": child.version_probe_argv,
+                }
+            )
 
         identity_hash = authority_store.normalize_identity_hash(
-            expected_wrapper, body.manifest.wrapper_sha256, identity_children,
+            expected_wrapper, wrapper_hash, wrapper_facts, identity_children,
             body.manifest.workspace_adapter_id, body.manifest.manifest_version,
         )
         canonical = {
             "domain": "happyranch/direct-connect/identity/v1",
             "wrapper_path": str(expected_wrapper),
-            "wrapper_sha256": body.manifest.wrapper_sha256,
+            "wrapper_sha256": wrapper_hash,
+            "wrapper_facts": wrapper_facts,
             "children": sorted(
-                [{"path": c["path"]} for c in identity_children],
+                [
+                    {
+                        "path": c["path"],
+                        "sha256": c["sha256"],
+                        "facts": c["facts"],
+                        "version_probe_argv": c["version_probe_argv"],
+                    }
+                    for c in identity_children
+                ],
                 key=lambda c: c["path"],
             ),
             "workspace_adapter_id": body.manifest.workspace_adapter_id,
@@ -289,35 +320,9 @@ async def connect(request: Request) -> dict[str, str]:
             if token_record is not None and not token_record.consumed and not token_record.reserved and token_record.expires_at >= now:
                 reserved_record = token_store.reserve_runtime(token, now=now)
 
-        wrapper_path = expected_wrapper
-        wrapper_hash, wrapper_facts = _artifact_facts(
-            wrapper_path, expected_path=wrapper_path
-        )
-        if wrapper_hash != body.manifest.wrapper_sha256:
-            if is_retryable:
-                retry_wrapper_path = expected_wrapper.with_name(
-                    f"{expected_wrapper.name}-v2"
-                )
-                if retry_wrapper_path.exists():
-                    wrapper_hash, wrapper_facts = _artifact_facts(
-                        retry_wrapper_path, expected_path=None
-                    )
-                    wrapper_path = retry_wrapper_path
-            if wrapper_hash != body.manifest.wrapper_sha256:
-                raise ValueError("wrapper hash does not match immutable manifest")
-
-        validated_children: list[dict[str, object]] = []
-        for child in body.manifest.upgradeable_children:
-            child_path = Path(child.executable)
-            child_hash, child_facts = _artifact_facts(child_path)
-            if child_path == expected_wrapper:
-                raise ValueError("wrapper cannot be an upgradeable child")
-            child_facts["version_probe_argv"] = child.version_probe_argv
-            validated_children.append({"slot": child.slot, "path": str(child_path), "sha256": child_hash, "facts": child_facts})
-
         receipt = authority_store.receive(
             token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts=wrapper_facts,
-            wrapper_path=wrapper_path, children=validated_children,
+            wrapper_path=expected_wrapper, children=validated_children,
             workspace_adapter_id=body.manifest.workspace_adapter_id,
             identity_hash=identity_hash, identity_blob=identity_blob, now=now,
         )
