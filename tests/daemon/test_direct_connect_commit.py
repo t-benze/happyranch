@@ -563,11 +563,16 @@ def test_forget_failed_projection_removes_records_but_preserves_matching_wrapper
         "wrapper_status": "preserved_unsafe",
     }
     assert wrapper.exists()
+    # THR-160: the mint-time authority and durable parent/candidate history are
+    # retained so the same registration token can still be retried or audited.
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+        "direct_connect_projections", "direct_connect_reservations",
     ):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_authorities"
+    ).fetchone()[0] == 1
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
@@ -682,11 +687,16 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
+    # THR-160: the mint-time authority survives forget so the token remains
+    # retryable/auditable; only the operation-level rows are removed.
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+        "direct_connect_projections", "direct_connect_reservations",
     ):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_authorities"
+    ).fetchone()[0] == 1
     event_types_after_forget = [row[0] for row in store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
     )]

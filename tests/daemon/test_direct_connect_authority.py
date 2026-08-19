@@ -405,11 +405,16 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     assert outcome.intended_profile_name == "forget-profile"
     assert outcome.wrapper_status == "preserved_unsafe"
 
+    # THR-160: the authority row is mint intent and is retained after forget;
+    # only the operation-level receipt/projection rows are removed.
     for table in (
         "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
+        "direct_connect_projections", "direct_connect_reservations",
     ):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_authorities"
+    ).fetchone()[0] == 1
     events = store._conn.execute(
         "SELECT event_type, detail FROM direct_connect_events ORDER BY created_at, rowid"
     ).fetchall()

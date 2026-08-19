@@ -78,7 +78,10 @@ def test_valid_direct_ingress_writes_exactly_one_nonlaunchable_receipt(client, t
         "direct_connect_receipts": 1, "direct_connect_events": 1,
     }
     replay = tc.post("/api/v1/runtime/custom-cli/connect", json=_payload(wrapper_hash, child), headers={"Authorization": f"Bearer {token}"})
-    assert replay.status_code == 401
+    # THR-160: the consumed registration token is invisible, but the accepted
+    # candidate identity is durably recorded, so an identical replay is a 409.
+    assert replay.status_code == 409
+    assert replay.json()["detail"].startswith("duplicate")
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 1
 
 
@@ -313,9 +316,11 @@ def test_token_commit_fault_compensates_nonlaunchable_receipt(client, tmp_path, 
     )
 
     assert response.status_code == 500
+    # THR-160: receipt artifacts are retained after token commit failure so the
+    # failure is attributable to the generic token seam, not the candidate identity.
     assert state.direct_connect_authority_store.counts() == {
-        "direct_connect_operations": 0,
-        "direct_connect_artifacts": 0,
-        "direct_connect_receipts": 0,
+        "direct_connect_operations": 1,
+        "direct_connect_artifacts": 2,
+        "direct_connect_receipts": 1,
         "direct_connect_events": 2,
     }
