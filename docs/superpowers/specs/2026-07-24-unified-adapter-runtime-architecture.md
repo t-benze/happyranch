@@ -541,9 +541,13 @@ registration invitation. Two retry paths exist:
 
 Both paths are bounded by: a two-candidate cap per direct-connect lifecycle;
 durable retry after a generic initial consume or daemon restart; append-only
-identity/audit/receipt retention; the legacy submit fence (``/connect`` is
-receipt-only and spawns no subprocess); status redaction; and the canonical
-wrapper destination as the only required prompt value.
+retention of the parent authority, accepted candidates, identity history,
+receipts, operations, and events for the authority lifetime (cleanup via
+``POST /runtime/custom-cli/{operation_id}/forget`` removes only the permitted
+derived artifacts, failed projection row, and any retry-attempt row for that
+operation); the legacy submit fence (``/connect`` is receipt-only and spawns no
+subprocess); status redaction; and the canonical wrapper destination as the only
+required prompt value.
 
 ### 4.4 Registration, Conformance, Provenance
 

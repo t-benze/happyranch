@@ -422,11 +422,32 @@ def test_retry_binding_failure_compensates_adapter_and_preserves_original_failur
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
 
     assert response.status_code == 200
-    assert response.json()["reason"] == "profile_binding_failed"
+    body = response.json()
+    assert body["reason"] == "profile_binding_failed"
+    assert "binding failed" not in str(body).lower()
     assert load_adapters() == {}
     assert get_registry().get_profile("custom-profile") is None
     projection = state.direct_connect_authority_store.get_projection(operation_id)
     assert projection is not None and projection.reason == "original conformance failure"
+
+    # Sentinel check: the raw exception text must not leak into any persisted
+    # status or history field; every surface shows only the fixed category.
+    store = state.direct_connect_authority_store
+    retry_reason = store._conn.execute(
+        "SELECT reason FROM direct_connect_retry_attempts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    assert retry_reason is not None and retry_reason[0] == "profile_binding_failed"
+    event_details = store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? AND event_type = 'retry_validation_failed'",
+        (operation_id,),
+    ).fetchall()
+    assert [row[0] for row in event_details] == ["profile_binding_failed"]
+    for row in store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? OR token_fingerprint = (SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?)",
+        (operation_id, operation_id),
+    ).fetchall():
+        assert "binding failed" not in str(row[0]).lower()
 
 
 @pytest.mark.parametrize("artifact", ["wrapper", "child"])

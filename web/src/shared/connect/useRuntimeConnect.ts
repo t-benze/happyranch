@@ -447,6 +447,10 @@ export function useDirectConnect({
 }) {
   const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
+  // Preserve the originally minted registration token across committing,
+  // failed_retryable polls, and Back so the retryable prompt always reruns
+  // the same existing prompt.
+  const originalTokenRef = useRef('');
   const queryClient = useQueryClient();
   const directCommitPending = useRef(false);
 
@@ -462,6 +466,7 @@ export function useDirectConnect({
       return { ...resp, wrapperDestination: status.wrapper_destination };
     },
     onSuccess: (resp, name) => {
+      originalTokenRef.current = resp.token;
       setExpiresAt(resp.expires_at);
       setState({
         stage: 'waiting',
@@ -530,7 +535,7 @@ export function useDirectConnect({
       setState({
         stage: 'failed_retryable',
         name,
-        token: state.stage === 'waiting' ? state.token : '',
+        token: originalTokenRef.current,
         wrapperDestination,
         operationId: statusData.operation_id,
         reason: statusData.reason ?? 'The connection could not be completed.',

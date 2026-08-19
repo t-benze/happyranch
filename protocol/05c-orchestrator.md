@@ -167,9 +167,14 @@ retry. It neither replays a registration token nor starts a fresh registration,
 and it never rewrites the original failed projection or its append-only
 evidence. Its separate attempt/event facts may establish a live bound profile;
 status then reports that live connection while exposing the retained historical
-failure. The normal Settings/onboarding UI now drives Connect → Connected in
-one flow; the PENDING/approve/reject/bind-profile routes remain as
-operator-only disposition tooling, no longer wired into the normal UI.
+failure. Cleanup via `POST .../{operation_id}/forget` removes only the
+permitted derived artifacts, failed projection row, and any retry-attempt row
+for that operation; the parent authority, accepted candidates, identity
+history, receipts, operations, and events remain append-only and retained for
+the authority lifetime. The normal Settings/onboarding UI now drives
+Connect → Connected in one flow; the PENDING/approve/reject/bind-profile
+routes remain as operator-only disposition tooling, no longer wired into the
+normal UI.
 
 **Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**
 The Slice 1A paragraph above describes `workspace_adapter_id` as a

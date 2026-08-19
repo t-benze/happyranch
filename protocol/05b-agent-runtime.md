@@ -181,21 +181,23 @@ Slice A's `received_nonlaunchable` receipt:
   zero-subprocess receipt boundary.
   `POST /api/v1/runtime/custom-cli/{operation_id}/forget` is the separate
   master-bearer-authenticated Settings → Executors cleanup for a terminal `failed`
-  projection. It is the only direct-connect route that deletes authority-store
-  rows: it refuses missing, `planned`, and `committed` operations, and also
-  refuses while retry validation is `running` or after it `succeeded` (the
-  latter retains the live connected binding). After a terminal failed retry,
-  ordinary forget atomically deletes that retry-attempt record together with
-  the failed operation's durable authority/receipt/projection records, without
-  rewriting its append-only direct-connect event/audit history. Before deletion,
-  it opens the failed receipt's persisted wrapper path with no-symlink handling
-  and hashes its regular-file descriptor. Because the supported filesystem APIs
-  provide no compare-and-unlink operation bound to that descriptor, cleanup
-  never unlinks any present wrapper: an absent wrapper is reported absent, a
-  hash mismatch is reported changed, and a matching, symlink, nonregular, or
-  unreadable candidate is reported preserved-unsafe. This fail-closed retention
-  prevents a successor from being silently unlinked or displaced at the
-  canonical path.
+  projection. It is the only direct-connect route that deletes derived rows.
+  It refuses missing, `planned`, and `committed` operations, and also refuses
+  while retry validation is `running` or after it `succeeded` (the latter
+  retains the live connected binding). Cleanup removes only the permitted
+  derived artifacts for that operation, its failed projection row, and any
+  retry-attempt row. The immutable parent authority, accepted candidate record,
+  canonical identity history, receipt, operation row, and event trail remain
+  append-only and retained for the parent authority lifetime; they are never
+  deleted, rewritten, or truncated. Before removing derived artifacts, the
+  route opens the failed receipt's persisted wrapper path with no-symlink
+  handling and hashes its regular-file descriptor. Because the supported
+  filesystem APIs provide no compare-and-unlink operation bound to that
+  descriptor, cleanup never unlinks any present wrapper: an absent wrapper is
+  reported absent, a hash mismatch is reported changed, and a matching,
+  symlink, nonregular, or unreadable candidate is reported preserved-unsafe.
+  This fail-closed retention prevents a successor from being silently unlinked
+  or displaced at the canonical path.
   `happyranch custom-cli forget
   <profile>` first reads the status route and refuses to call this cleanup
   route unless the profile state is `failed`.

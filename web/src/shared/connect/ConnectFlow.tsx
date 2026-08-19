@@ -294,9 +294,6 @@ export function AdapterConnect({
         reason={s.reason}
         onRerun={flow.rerunExistingPrompt}
         onBack={flow.back}
-        onClear={flow.clearFailed}
-        isClearing={flow.isClearing}
-        clearError={flow.forgetError}
       />
     );
   }
@@ -955,29 +952,19 @@ export function AdapterRetryableBody({
   reason,
   onRerun,
   onBack,
-  onClear,
-  isClearing,
-  clearError,
 }: {
   name: string;
   prompt: string;
   reason: string;
   onRerun: () => void;
   onBack: () => void;
-  onClear: () => void;
-  isClearing: boolean;
-  clearError: unknown;
 }): JSX.Element {
   const [copied, setCopied] = useState(false);
-  const [confirmingClear, setConfirmingClear] = useState(false);
   const copy = (): void => {
     void navigator.clipboard?.writeText(prompt);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
-  const clearErrorMessage = clearError instanceof ApiError
-    ? (typeof clearError.detail === 'string' ? clearError.detail : clearError.message)
-    : clearError instanceof Error ? clearError.message : null;
   return (
     <div className="mt-6 max-w-2xl">
       <div className="border-feedback-warning/30 bg-feedback-warning/5 mb-4 rounded-lg border p-4">
@@ -1034,7 +1021,7 @@ export function AdapterRetryableBody({
             </>
           )}
         </Button>
-        <Button variant="outline" onClick={onRerun} disabled={isClearing}>
+        <Button variant="outline" onClick={onRerun}>
           <RefreshCw aria-hidden="true" size={15} />
           I&apos;ve rerun the prompt — watch for the new attempt
         </Button>
@@ -1049,22 +1036,7 @@ export function AdapterRetryableBody({
           <ArrowLeft aria-hidden="true" size={14} />
           Back to the prompt
         </button>
-        {confirmingClear ? (
-          <>
-            <Button variant="destructive" onClick={onClear} disabled={isClearing}>
-              {isClearing ? 'Clearing…' : 'Confirm clear'}
-            </Button>
-            <Button variant="secondary" onClick={() => setConfirmingClear(false)} disabled={isClearing}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button variant="secondary" onClick={() => setConfirmingClear(true)}>
-            Clear failed connection
-          </Button>
-        )}
       </div>
-      {clearErrorMessage && <p className="text-feedback-danger mt-3 text-sm" role="alert">{clearErrorMessage}</p>}
     </div>
   );
 }

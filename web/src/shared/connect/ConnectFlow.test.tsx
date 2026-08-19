@@ -235,6 +235,8 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(screen.getByRole('button', { name: /i've rerun the prompt/i })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /validate immutable snapshot/i })).not.toBeInTheDocument();
+    // No visible Clear/forget path in the corrected-artifact retryable state.
+    expect(screen.queryByRole('button', { name: /clear failed connection/i })).not.toBeInTheDocument();
 
     // The existing prompt (with the originally minted token and wrapper path) is still rendered.
     const promptText = document.querySelector('pre')?.textContent ?? '';
@@ -243,6 +245,68 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
 
     expect(retrySpy).not.toHaveBeenCalled();
     expect(forgetSpy).not.toHaveBeenCalled();
+  }, 15000);
+
+  test('the original token is preserved through committing and an intervening failed_retryable poll', async () => {
+    const user = userEvent.setup();
+    const ORIGINAL_TOKEN = 'hrreg_original_token_12345';
+    await mockMint(ORIGINAL_TOKEN);
+    let serverState: 'active' | 'failed_retryable' = 'active';
+    await mockStatus(() => status({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1',
+      state: serverState,
+      retry_eligible: serverState === 'failed_retryable',
+      reason: serverState === 'failed_retryable' ? 'conformance_probe_failed: missing terminal canary' : null,
+    }));
+    const { settings: settingsApi } = await import('@/lib/api');
+    const mintSpy = vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken');
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByText(/finishing connection/i, {}, { timeout: 10000 });
+
+    serverState = 'failed_retryable';
+    await screen.findByText(/retry with changed artifacts/i, {}, { timeout: 10000 });
+
+    const promptText = document.querySelector('pre')?.textContent ?? '';
+    expect(promptText).toContain(ORIGINAL_TOKEN);
+    expect(promptText).toContain('/tmp/happyranch-daemon/adapters/my-cli-adapter');
+
+    expect(mintSpy).toHaveBeenCalledTimes(1);
+  }, 15000);
+
+  test('retryable Back returns to the form without minting, forgetting, or calling /retry', async () => {
+    const user = userEvent.setup();
+    await mockMint();
+    await mockStatus(() => status({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/my-cli-adapter',
+      operation_id: 'op-1',
+      state: 'failed_retryable',
+      retry_eligible: true,
+      reason: 'conformance_probe_failed: missing terminal canary',
+    }));
+    const { directConnect: api, settings: settingsApi } = await import('@/lib/api');
+    const retrySpy = vi.spyOn(api, 'retry');
+    const forgetSpy = vi.spyOn(api, 'forget');
+    const mintSpy = vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken');
+
+    renderConnect();
+    await goCustomAdapter(user);
+    await user.type(screen.getByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByText(/retry with changed artifacts/i, {}, { timeout: 10000 });
+    await user.click(screen.getByRole('button', { name: /back to the prompt/i }));
+
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+    expect(forgetSpy).not.toHaveBeenCalled();
+    expect(mintSpy).toHaveBeenCalledTimes(1);
   }, 15000);
 
   test('a failed_retryable rerun returns to polling without minting, forgetting, or calling /retry', async () => {

@@ -360,7 +360,10 @@ def test_concurrent_corrected_candidate_b_has_exactly_one_receipt_and_probe(
     rejected = [r for r in results if r[0] == "rejected"]
     if rejected:
         assert rejected[0][1] == 409
-        assert "in-progress" in rejected[0][2].get("detail", "").lower()
+        detail = rejected[0][2].get("detail", "").lower()
+        # A racing second B submission is refused as either a duplicate identity
+        # (once the first receipt is visible) or an in-progress admission/probe.
+        assert "duplicate" in detail or "in-progress" in detail, f"unexpected 409 detail: {detail!r}"
     assert _accepted_candidate_count(state, token) == 2
 
 
