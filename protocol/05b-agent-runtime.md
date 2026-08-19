@@ -199,26 +199,54 @@ Slice A's `received_nonlaunchable` receipt:
   `happyranch custom-cli forget
   <profile>` first reads the status route and refuses to call this cleanup
   route unless the profile state is `failed`.
-  **THR-160 retry validation.** A distinct master-bearer
-  `POST /api/v1/runtime/custom-cli/{operation_id}/retry` action is eligible
-  only for a terminal `failed` projection. It never updates, replaces, or
-  deletes that projection or its failure reason, and `/commit` remains
-  idempotent for the historical failure. A separate durable retry-attempt
-  lifecycle supplies the atomic single-probe winner, terminal outcome, and
-  append-only category-only events. Before any probe it reads only the
-  receipt's persisted wrapper path/SHA and every persisted child path/SHA,
-  then independently rechecks each artifact with the intake/launch regular
-  file, executable, no-symlink, exact-path, and SHA-256 checks. Missing,
-  duplicate, unusable, or changed snapshot data fails closed before invocation;
-  the retry never accepts user artifact fields, a mutable adapter record,
-  ambient PATH, a new manifest, or a token replay. A successful bounded
-  conformance probe writes/binds through the same adapter/profile persistence
-  primitives and compensation rules as projection, then records a distinct
-  retry-success fact. Status may report the resulting *live* connection as
-  `committed` for existing consumers, but includes the retained historical
-  failed projection state/reason whenever retry success is the source; it never
-  claims the original projection row changed. Failed retries retain both the
-  original projection/evidence and no adapter/profile/registry residue.
+  **THR-160 corrected-artifact retry and immutable-snapshot validation.**
+  The normal direct-connect flow has two separate retry paths.
+
+  1. **Corrected-artifact retry (same-token).** When a first candidate fails
+     only the conformance probe, the canonical candidate-ledger state is
+     `failed_retryable` with `retry_eligible: true`. The founder modifies the
+     wrapper or child artifacts and reruns the *existing* generated prompt
+     before the original 30-minute expiry. The candidate CLI's `/connect`
+     admits exactly one genuinely changed candidate; unchanged or merely
+     reordered artifacts receive an indefinite, non-consuming `409 Duplicate`
+     and are refused. There is no cooldown. A second terminal failure moves
+     the ledger to `exhausted` (no further candidates allowed), while expiry
+     moves it to `expired`; both are nonretryable. Success at any point
+     closes the lifecycle as `connected`. This path never calls
+     `/{operation_id}/retry`, never replays a generic token, and never
+     requires `/forget` first.
+
+  2. **Immutable-snapshot validation.** A distinct master-bearer
+     `POST /api/v1/runtime/custom-cli/{operation_id}/retry` action is
+     eligible only for a terminal `failed` projection. It re-checks the
+     *unchanged* persisted wrapper/child snapshot; it is not an artifact
+     retry. It never updates, replaces, or deletes that projection or its
+     failure reason, and `/commit` remains idempotent for the historical
+     failure. A separate durable retry-attempt lifecycle supplies the atomic
+     single-probe winner, terminal outcome, and append-only category-only
+     events. Before any probe it reads only the receipt's persisted wrapper
+     path/SHA and every persisted child path/SHA, then independently rechecks
+     each artifact with the intake/launch regular file, executable,
+     no-symlink, exact-path, and SHA-256 checks. Missing, duplicate, unusable,
+     or changed snapshot data fails closed before invocation; the retry never
+     accepts user artifact fields, a mutable adapter record, ambient PATH, a
+     new manifest, or a token replay. A successful bounded conformance probe
+     writes/binds through the same adapter/profile persistence primitives and
+     compensation rules as projection, then records a distinct retry-success
+     fact. Status may report the resulting *live* connection as `committed`
+     for existing consumers, but includes the retained historical failed
+     projection state/reason whenever retry success is the source; it never
+     claims the original projection row changed. Failed retries retain both
+     the original projection/evidence and no adapter/profile/registry residue.
+
+  Both paths are bounded by: a two-candidate cap per direct-connect lifecycle;
+  durable retry after a generic initial consume or daemon restart; append-only
+  identity/audit/receipt retention (forget only removes derived projection and
+  retry-attempt rows); the legacy submit fence (`/connect` is receipt-only and
+  spawns no subprocess); status redaction (no token plaintext, fingerprint,
+  identity digest, candidate/artifact history, hash, probe output, or error
+  output in `GET /runtime/custom-cli/status`); and the canonical wrapper
+  destination as the only required prompt value.
 - **Slice 2 (launch fence — proof, not new gating).** `build_executor()` /
   `ExecutorRegistry._resolve_custom_adapter_eligibility()` /
   `CustomAdapterExecutor._launch()` already refuse to construct or launch
@@ -238,9 +266,13 @@ Slice A's `received_nonlaunchable` receipt:
 - **Slice 3 (UI cutover).** The normal Settings ▸ Executors and onboarding
   custom-CLI flow drives `POST /connect`, then derives connection state by
   polling `GET /runtime/custom-cli/status`. Its receipt-landing handler is
-  observation-only: it polls status, never auto-fires `/commit`, and manual
-  Retry calls the dedicated `/retry` validation action only for a failed
-  operation (never fresh registration or token replay). The daemon-owned projection
+  observation-only: it polls status, never auto-fires `/commit`. A
+  `failed_retryable` status instructs the founder to modify artifacts and
+  rerun the existing generated prompt; the UI does not call
+  `/{operation_id}/retry`, mint a new token, or call `/forget` first. The
+  dedicated `/retry` action is exposed only as the historical
+  immutable-snapshot validation path for terminal nonretryable failures,
+  textually distinct from artifact retry. The daemon-owned projection
   sweep actually completes receipts to `committed`/`failed`, including when no
   browser is present or the tab closes — Connect → Connected in one perceived
   action, no founder-approval wait and no separate conformance-checkin round

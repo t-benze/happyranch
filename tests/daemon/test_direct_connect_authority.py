@@ -717,33 +717,33 @@ def test_latest_candidate_status_first_conformance_failure_is_retryable(tmp_path
     assert status.reason == "conformance_probe_failed: missing canary"
 
 
-def test_latest_candidate_status_second_conformance_failure_is_nonretryable(tmp_path) -> None:
+def test_latest_candidate_status_second_conformance_failure_is_exhausted(tmp_path) -> None:
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 
     store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
     op_a = _seed_candidate(
-        store, token="hrreg_nonretry", profile="nonretry-profile",
+        store, token="hrreg_exhausted", profile="exhausted-profile",
         identity_hash="hash-a", identity_blob="blob-a",
     )
     store.plan_projection(op_a, now=3)
     store.mark_failed(op_a, "conformance_probe_failed: missing canary", now=4)
 
     op_b = store.reserve(
-        "hrreg_nonretry", identity_hash="hash-b", identity_blob="blob-b", now=5,
+        "hrreg_exhausted", identity_hash="hash-b", identity_blob="hash-b", now=5,
     )
     assert op_b is not None
     store.receive(
-        "hrreg_nonretry", op_b, wrapper_sha256="e" * 64, wrapper_facts={}, children=[],
+        "hrreg_exhausted", op_b, wrapper_sha256="e" * 64, wrapper_facts={}, children=[],
         workspace_adapter_id="codex",
         identity_hash="hash-b", identity_blob="blob-b", now=5,
     )
     store.plan_projection(op_b, now=6)
     store.mark_failed(op_b, "conformance_probe_failed: still missing canary", now=7)
 
-    status = store.latest_candidate_status("hrreg_nonretry", now=8)
+    status = store.latest_candidate_status("hrreg_exhausted", now=8)
 
     assert status is not None
-    assert status.state == "failed_nonretryable"
+    assert status.state == "exhausted"
     assert status.retry_eligible is False
 
 

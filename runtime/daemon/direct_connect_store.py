@@ -135,7 +135,7 @@ class DirectConnectCandidateStatus:
     operation_id: str
     candidate_id: str
     attempt_ordinal: int
-    state: Literal["waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired"]
+    state: Literal["waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired", "exhausted"]
     retry_eligible: bool
     reason: str | None
     expires_at: float
@@ -697,8 +697,9 @@ class DirectConnectAuthorityStore:
         - ``active``: projection or retry probe is in flight
         - ``connected``: candidate committed (or retry established a live profile)
         - ``failed_retryable``: first candidate failed only the conformance probe
-        - ``failed_nonretryable``: terminal non-conformance, retry exhausted, or parent closed
+        - ``failed_nonretryable``: terminal non-conformance or parent closed
         - ``expired``: the original 30-minute authority has lapsed
+        - ``exhausted``: the second (corrected) candidate also terminal-failed; no retry remains
         """
         return self._latest_candidate_status_by_fingerprint(
             fingerprint_registration_token(token_plaintext), now=now
@@ -795,15 +796,16 @@ class DirectConnectAuthorityStore:
 
             reason = projection_reason
             if candidate["state"] == "committed":
-                derived_state: Literal["waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired"] = "connected"
+                derived_state: Literal[
+                    "waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired", "exhausted"
+                ] = "connected"
             elif candidate["state"] == "failed":
                 is_conformance = str(reason or "").startswith("conformance_probe_failed")
-                has_later = cursor.execute(
-                    """SELECT 1 FROM direct_connect_candidates
-                       WHERE token_fingerprint = ? AND attempt_ordinal > ? LIMIT 1""",
-                    (fingerprint, candidate["attempt_ordinal"]),
-                ).fetchone() is not None
-                if is_conformance and candidate["attempt_ordinal"] == 1 and not has_later:
+                if candidate["attempt_ordinal"] >= 2:
+                    # The second (corrected) candidate also terminal-failed;
+                    # the two-candidate retry cap is exhausted.
+                    derived_state = "exhausted"
+                elif is_conformance:
                     derived_state = "failed_retryable"
                 else:
                     derived_state = "failed_nonretryable"

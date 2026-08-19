@@ -206,6 +206,9 @@ def test_status_hides_committed_projection_after_live_profile_is_removed(client,
         "reason": None,
         "state": None,
         "retry_eligible": False,
+        "historical_projection_state": None,
+        "historical_projection_reason": None,
+        "retry_state": None,
     }
 
 
@@ -245,6 +248,9 @@ def test_status_after_failed_projection_reports_reason(client, tmp_path):
         "reason": "conformance probe failed",
         "state": "failed_nonretryable",
         "retry_eligible": False,
+        "historical_projection_state": None,
+        "historical_projection_reason": None,
+        "retry_state": None,
     }
 
 
@@ -343,6 +349,9 @@ def test_status_after_conformance_probe_failure_is_retryable(client, tmp_path):
         "reason": "conformance_probe_failed: missing terminal canary",
         "state": "failed_retryable",
         "retry_eligible": True,
+        "historical_projection_state": None,
+        "historical_projection_reason": None,
+        "retry_state": None,
     }
 
 
@@ -356,3 +365,108 @@ def test_status_requires_master_bearer(client):
     )
 
     assert response.status_code == 401
+
+
+def test_status_after_expiry_reports_expired(client, tmp_path, monkeypatch):
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    operation_id = connect.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(operation_id)
+    assert state.direct_connect_authority_store.mark_failed(
+        operation_id, "conformance_probe_failed: missing terminal canary"
+    )
+
+    # Advance time past the authority expiry; the canonical ledger state becomes expired.
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    monkeypatch.setattr("time.time", lambda: authority.expires_at + 1)
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operation_id"] == operation_id
+    assert body["profile_state"] == "failed"
+    assert body["state"] == "expired"
+    assert body["retry_eligible"] is False
+
+
+def test_status_after_second_failed_candidate_reports_exhausted(client, tmp_path):
+    tc, state = client
+    mint = tc.post("/api/v1/auth/registration-token/runtime", json={
+        "name": "status-cli", "purpose": "adapter", "intended_profile_name": "status-profile",
+        "workspace_adapter_id": "codex",
+    })
+    token = mint.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+
+    # First candidate — identical wrapper and child, but a different child path would
+    # change the identity; vary the wrapper body instead.
+    wrapper_body_1 = b"#!/bin/sh\necho first\n"
+    wrapper_hash_1 = _write_executable(authority.wrapper_destination, wrapper_body_1)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    connect1 = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash_1,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert connect1.status_code == 201
+    op_1 = connect1.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(op_1)
+    assert state.direct_connect_authority_store.mark_failed(
+        op_1, "conformance_probe_failed: missing terminal canary"
+    )
+
+    # Second candidate with genuinely changed wrapper identity.
+    wrapper_body_2 = b"#!/bin/sh\necho second\n"
+    wrapper_hash_2 = _write_executable(authority.wrapper_destination, wrapper_body_2)
+    connect2 = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json={"metadata": {}, "manifest": {
+            "manifest_version": 2, "wrapper_sha256": wrapper_hash_2,
+            "upgradeable_children": [{"slot": "cli", "executable": str(child), "version_probe_argv": [str(child), "--version"]}],
+            "workspace_adapter_id": "codex",
+        }},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert connect2.status_code == 201
+    op_2 = connect2.json()["operation_id"]
+    assert state.direct_connect_authority_store.plan_projection(op_2)
+    assert state.direct_connect_authority_store.mark_failed(
+        op_2, "conformance_probe_failed: still missing canary"
+    )
+
+    response = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "status-profile"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operation_id"] == op_2
+    assert body["profile_state"] == "failed"
+    assert body["reason"] == "conformance_probe_failed: still missing canary"
+    assert body["state"] == "exhausted"
+    assert body["retry_eligible"] is False

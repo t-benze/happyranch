@@ -42,7 +42,10 @@
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
@@ -52,6 +55,43 @@ from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
 router = APIRouter()
+
+
+class DirectConnectStatusResponse(BaseModel):
+    """Redacted, ledger-derived status for the browser-facing status route.
+
+    Never includes token plaintext, fingerprint, identity digest/blob,
+    candidate/artifact history, hashes, probe output, or error output.
+    ``wrapper_destination`` remains the only required prompt value.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    wrapper_destination: str = Field(
+        ..., description="Daemon-owned canonical path the wrapper must be created at."
+    )
+    operation_id: str | None = Field(
+        None, description="Latest accepted candidate operation id, if any."
+    )
+    profile_state: Literal["planned", "committed", "failed"] | None = Field(
+        None, description="Legacy compatibility mapping from the canonical candidate state."
+    )
+    reason: str | None = Field(None, description="Terminal or failure reason, category only.")
+    state: Literal[
+        "waiting", "active", "connected", "failed_retryable", "failed_nonretryable", "expired", "exhausted"
+    ] | None = Field(None, description="Canonical candidate-ledger state.")
+    retry_eligible: bool = Field(
+        False, description="Server-authoritative retry eligibility for corrected-artifact retry."
+    )
+    historical_projection_state: Literal["failed"] | None = Field(
+        None, description="Present when a retry validation established a live connection."
+    )
+    historical_projection_reason: str | None = Field(
+        None, description="Immutable historical projection failure reason."
+    )
+    retry_state: Literal["succeeded"] | None = Field(
+        None, description="Present when a retry validation succeeded."
+    )
 
 
 @router.post("/runtime/custom-cli/{operation_id}/commit", dependencies=[require_token()])
@@ -101,8 +141,8 @@ async def retry(operation_id: str, request: Request) -> dict[str, str]:
     return result
 
 
-@router.get("/runtime/custom-cli/status", dependencies=[require_token()])
-async def status_for_profile(intended_profile_name: str, request: Request) -> dict[str, object]:
+@router.get("/runtime/custom-cli/status", dependencies=[require_token()], response_model=DirectConnectStatusResponse)
+async def status_for_profile(intended_profile_name: str, request: Request) -> DirectConnectStatusResponse:
     daemon = request.app.state.daemon
     authority_store = daemon.direct_connect_authority_store
     if authority_store is None:
@@ -126,7 +166,7 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
         "retry_eligible": False,
     }
     if candidate_status is None:
-        return result
+        return DirectConnectStatusResponse.model_validate(result)
 
     result["operation_id"] = candidate_status.operation_id
     result["reason"] = candidate_status.reason
@@ -134,8 +174,7 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
     result["retry_eligible"] = candidate_status.retry_eligible
 
     # Map the stable candidate-ledger state to the legacy profile_state field
-    # so existing UI consumers continue to work until C updates to the new
-    # ``state``/``retry_eligible`` contract.
+    # for backward-compatible consumers.
     successful_retry = authority_store.get_successful_retry(candidate_status.operation_id)
     if successful_retry is not None:
         # A successful retry validation established a live connection while
@@ -160,10 +199,10 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> di
             result["retry_eligible"] = False
     elif candidate_status.state == "active":
         result["profile_state"] = "planned"
-    elif candidate_status.state in {"failed_retryable", "failed_nonretryable", "expired"}:
+    elif candidate_status.state in {"failed_retryable", "failed_nonretryable", "expired", "exhausted"}:
         result["profile_state"] = "failed"
 
-    return result
+    return DirectConnectStatusResponse.model_validate(result)
 
 
 @router.post("/runtime/custom-cli/{operation_id}/forget", dependencies=[require_token()])

@@ -151,15 +151,24 @@ registration stricter. Token usage remains optional here: it is required only
 when a candidate declares the established ``token_metering`` capability and
 supplies trustworthy canonical ``token_usage``; direct candidates are not
 rejected merely for omitting optional usage fields.
-For a terminal failed direct projection, the separate master-bearer
-``POST .../{operation_id}/retry`` lifecycle revalidates the exact persisted
-wrapper/child path-and-hash snapshot before its bounded probe. It neither
-replays a registration token nor starts a fresh registration, and it never
-rewrites the original failed projection or its append-only evidence. Its
-separate attempt/event facts may establish a live bound profile; status then
-reports that live connection while exposing the retained historical failure.
-The normal Settings/onboarding UI now drives Connect → Connected in one flow;
-the PENDING/approve/reject/bind-profile routes remain as
+For a first conformance-probe failure the canonical ledger state is
+``failed_retryable`` with ``retry_eligible: true``. The normal flow retry is a
+same-token corrected-artifact retry: the founder modifies the wrapper/child
+artifacts and reruns the existing generated prompt before the original
+30-minute expiry. ``/connect`` admits exactly one genuinely changed candidate;
+unchanged or merely reordered artifacts receive an indefinite, non-consuming
+``409 Duplicate``. A second terminal failure closes the lifecycle as
+``exhausted``; expiry closes it as ``expired``; both are nonretryable. The
+separate master-bearer ``POST .../{operation_id}/retry`` lifecycle is the
+historical immutable-snapshot validation path: it revalidates the exact
+persisted wrapper/child path-and-hash snapshot before its bounded probe, but
+only for terminal ``failed`` projections and never as a corrected-artifact
+retry. It neither replays a registration token nor starts a fresh registration,
+and it never rewrites the original failed projection or its append-only
+evidence. Its separate attempt/event facts may establish a live bound profile;
+status then reports that live connection while exposing the retained historical
+failure. The normal Settings/onboarding UI now drives Connect → Connected in
+one flow; the PENDING/approve/reject/bind-profile routes remain as
 operator-only disposition tooling, no longer wired into the normal UI.
 
 **Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**

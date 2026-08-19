@@ -3,12 +3,17 @@ import * as clientModule from './client';
 import { forget, getStatus, retry } from './directConnect';
 
 describe('directConnect.getStatus', () => {
-  it('round-trips the additive terminal reason field', async () => {
+  it('round-trips the canonical lifecycle state and retry eligibility', async () => {
     const response = {
       wrapper_destination: '/runtime/adapters/my-cli-adapter',
       operation_id: 'op-123',
       profile_state: 'failed' as const,
       reason: 'conformance probe failed',
+      state: 'failed_retryable' as const,
+      retry_eligible: true,
+      historical_projection_state: null,
+      historical_projection_reason: null,
+      retry_state: null,
     };
     const request = vi.spyOn(clientModule, 'request').mockResolvedValue(response);
 
