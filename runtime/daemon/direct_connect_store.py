@@ -26,6 +26,10 @@ class DirectConnectRetryInProgress(RuntimeError):
     """Raised when an atomic forget would race a claimed retry validation."""
 
 
+class DirectConnectRetryArtifactUnchanged(ValueError):
+    """The temporary retry reservation repeats the prior canonical artifact set."""
+
+
 def fingerprint_registration_token(token_plaintext: str) -> str:
     """Return a domain-separated, non-reversible stable token identity."""
     return hashlib.sha256(_FINGERPRINT_DOMAIN + token_plaintext.encode("utf-8")).hexdigest()
@@ -431,26 +435,35 @@ class DirectConnectAuthorityStore:
                 """SELECT a.operation_id FROM direct_connect_attempts a
                    LEFT JOIN direct_connect_projections p ON p.operation_id = a.operation_id
                    WHERE a.token_fingerprint = ?
-                     AND (a.state = 'reserved' OR p.state IS NULL OR p.state = 'planned')
+                     AND (
+                         a.state = 'reserved'
+                         OR (a.state = 'received' AND (p.state IS NULL OR p.state = 'planned'))
+                     )
                    ORDER BY a.attempt_number DESC LIMIT 1""",
                 (fingerprint,),
             ).fetchone()
             if active is not None:
                 return active["operation_id"], False
-            attempt_count = int(cursor.execute(
-                "SELECT COUNT(*) FROM direct_connect_attempts WHERE token_fingerprint = ?", (fingerprint,)
+            receipt_count = int(cursor.execute(
+                """SELECT COUNT(*) FROM direct_connect_attempts
+                   WHERE token_fingerprint = ? AND state = 'received'""", (fingerprint,)
             ).fetchone()[0])
-            if attempt_count >= MAX_DIRECT_CONNECT_ATTEMPTS:
+            if receipt_count >= MAX_DIRECT_CONNECT_ATTEMPTS:
                 return None, False
-            if attempt_count:
+            if receipt_count:
                 previous = cursor.execute(
                     """SELECT p.state, p.reason FROM direct_connect_attempts a
                        JOIN direct_connect_projections p ON p.operation_id = a.operation_id
-                       WHERE a.token_fingerprint = ? ORDER BY a.attempt_number DESC LIMIT 1""",
+                       WHERE a.token_fingerprint = ? AND a.state = 'received'
+                       ORDER BY a.attempt_number DESC LIMIT 1""",
                     (fingerprint,),
                 ).fetchone()
                 if previous is None or previous["state"] != "failed" or not str(previous["reason"] or "").startswith("conformance_probe_failed:"):
                     return None, False
+            next_attempt_number = int(cursor.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM direct_connect_attempts WHERE token_fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()[0])
             operation_id = str(uuid.uuid4())
             cursor.execute(
                 """INSERT INTO direct_connect_reservations
@@ -464,13 +477,13 @@ class DirectConnectAuthorityStore:
                 """INSERT INTO direct_connect_attempts
                    (operation_id, token_fingerprint, attempt_number, state, created_at, updated_at)
                    VALUES (?, ?, ?, 'reserved', ?, ?)""",
-                (operation_id, fingerprint, attempt_count + 1, now, now),
+                (operation_id, fingerprint, next_attempt_number, now, now),
             )
             cursor.execute(
                 """INSERT INTO direct_connect_events
                    (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
                    VALUES (?, ?, ?, 'attempt_reserved', ?, ?)""",
-                (str(uuid.uuid4()), operation_id, fingerprint, f"attempt={attempt_count + 1}", now),
+                (str(uuid.uuid4()), operation_id, fingerprint, f"attempt={next_attempt_number}", now),
             )
             return operation_id, True
 
@@ -584,7 +597,7 @@ class DirectConnectAuthorityStore:
                     sorted(("upgradeable_child", str(child["slot"]), str(child["sha256"])) for child in children)
                 )
                 if [(row["kind"], row["slot"], row["sha256"]) for row in prior] == proposed:
-                    raise ValueError("retry requires changed artifact integrity")
+                    raise DirectConnectRetryArtifactUnchanged("retry requires changed artifact integrity")
             cursor.execute(
                 """INSERT INTO direct_connect_operations
                    (operation_id, token_fingerprint, state, intended_profile_name, workspace_adapter_id, created_at)
@@ -636,6 +649,55 @@ class DirectConnectAuthorityStore:
                 operation_id=receipt["operation_id"], token_fingerprint=receipt["token_fingerprint"],
                 state=receipt["state"], wrapper_sha256=wrapper_sha256,
             )
+
+    def release_unchanged_retry_artifact(
+        self, token_plaintext: str, operation_id: str, *, now: float | None = None
+    ) -> bool:
+        """Release a duplicate retry's temporary slot without terminalizing its parent."""
+        now = time.time() if now is None else now
+        fingerprint = fingerprint_registration_token(token_plaintext)
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            attempt = cursor.execute(
+                """SELECT attempt_number, state FROM direct_connect_attempts
+                   WHERE operation_id = ? AND token_fingerprint = ?""",
+                (operation_id, fingerprint),
+            ).fetchone()
+            reservation = cursor.execute(
+                """SELECT state FROM direct_connect_reservations
+                   WHERE token_fingerprint = ? AND operation_id = ?""",
+                (fingerprint, operation_id),
+            ).fetchone()
+            if (
+                attempt is None
+                or attempt["attempt_number"] <= 1
+                or attempt["state"] != "reserved"
+                or reservation is None
+                or reservation["state"] != "reserved"
+            ):
+                return False
+            cursor.execute(
+                """UPDATE direct_connect_reservations
+                   SET state = 'terminalized', reason = 'retry_artifact_unchanged', updated_at = ?
+                   WHERE token_fingerprint = ? AND operation_id = ? AND state = 'reserved'""",
+                (now, fingerprint, operation_id),
+            )
+            if not cursor.rowcount:
+                return False
+            cursor.execute(
+                """UPDATE direct_connect_attempts SET state = 'terminalized', updated_at = ?
+                   WHERE operation_id = ? AND token_fingerprint = ? AND state = 'reserved'""",
+                (now, operation_id, fingerprint),
+            )
+            if not cursor.rowcount:
+                raise RuntimeError("direct retry reservation compensation lost its attempt")
+            cursor.execute(
+                """INSERT INTO direct_connect_events
+                   (event_id, operation_id, token_fingerprint, event_type, detail, created_at)
+                   VALUES (?, ?, ?, 'retry_artifact_unchanged', 'retry artifact unchanged', ?)""",
+                (str(uuid.uuid4()), operation_id, fingerprint, now),
+            )
+            return True
 
     def compensate_received(
         self, token_plaintext: str, operation_id: str, reason: str, *, now: float | None = None
@@ -697,7 +759,7 @@ class DirectConnectAuthorityStore:
         with self._lock:
             row = self._conn.execute(
                 """SELECT o.operation_id, o.token_fingerprint, a.expires_at, l.state,
-                          COUNT(t.operation_id) AS attempt_count
+                          SUM(CASE WHEN t.state = 'received' THEN 1 ELSE 0 END) AS attempt_count
                    FROM direct_connect_operations o
                    JOIN direct_connect_authorities a ON a.token_fingerprint = o.token_fingerprint
                    JOIN direct_connect_lifecycles l ON l.token_fingerprint = o.token_fingerprint

@@ -143,7 +143,10 @@ transaction; on reopen, a deterministic stale replacement table is either
 discarded while its legacy source remains authoritative or renamed only when
 the source was already dropped and the replacement has the expected target
 shape. Candidate artifact identity is keyed by wrapper plus stable child slot,
-not manifest list order. The migration is idempotent and v0/v1 startup remains
+not manifest list order. An unchanged or merely reordered second submission
+returns a nonterminal conflict after releasing only its temporary reservation;
+the unexpired parent and first-candidate evidence remain available for one
+genuinely changed candidate. The migration is idempotent and v0/v1 startup remains
 valid. Only a terminal candidate conformance-probe failure with no bound
 profile enables attempt two; malformed, integrity, target/scope, expiry, and
 all other failures terminalize the parent. A live reservation is joined by

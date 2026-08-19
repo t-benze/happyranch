@@ -83,6 +83,90 @@ def test_valid_direct_ingress_writes_exactly_one_nonlaunchable_receipt(client, t
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 1
 
 
+@pytest.mark.parametrize("reorder_children", [False, True], ids=["identical", "reordered"])
+def test_failed_candidate_unchanged_retry_is_nonterminal_conflict_and_changed_retry_succeeds(
+    client, tmp_path, reorder_children,
+):
+    """An unchanged retry releases only its temporary reservation and receipt slot."""
+    tc, state = client
+    token = _mint(tc)
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child_a = tmp_path / "bin" / "child-a"
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_a, b"#!/bin/sh\necho a\n")
+    _write_executable(child_b, b"#!/bin/sh\necho b\n")
+    initial_payload = _payload(wrapper_hash, child_a)
+    initial_payload["manifest"]["upgradeable_children"].append({
+        "slot": "other", "executable": str(child_b), "version_probe_argv": [str(child_b), "--version"],
+    })
+
+    first = tc.post(
+        "/api/v1/runtime/custom-cli/connect", json=initial_payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert first.status_code == 201
+    first_operation = first.json()["operation_id"]
+    store = state.direct_connect_authority_store
+    assert store.plan_projection(first_operation)
+    assert store.mark_failed(first_operation, "conformance_probe_failed: deterministic test")
+    assert state.registration_token_store.validate_runtime(token) is not None
+
+    unchanged_payload = _payload(wrapper_hash, child_a)
+    unchanged_payload["manifest"]["upgradeable_children"].append({
+        "slot": "other", "executable": str(child_b), "version_probe_argv": [str(child_b), "--version"],
+    })
+    if reorder_children:
+        unchanged_payload["manifest"]["upgradeable_children"].reverse()
+    unchanged = tc.post(
+        "/api/v1/runtime/custom-cli/connect", json=unchanged_payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert unchanged.status_code == 409
+    assert unchanged.json()["detail"] == "direct retry requires changed artifact"
+    assert token not in unchanged.text
+    assert state.registration_token_store.validate_runtime(token) is not None
+    assert store.counts()["direct_connect_operations"] == 1
+    lifecycle = store._conn.execute(
+        "SELECT state, reason FROM direct_connect_lifecycles WHERE token_fingerprint = ?",
+        (authority.token_fingerprint,),
+    ).fetchone()
+    assert tuple(lifecycle) == ("open", None)
+    assert tuple(store._conn.execute(
+        "SELECT state, reason FROM direct_connect_reservations WHERE token_fingerprint = ?",
+        (authority.token_fingerprint,),
+    ).fetchone()) == ("terminalized", "retry_artifact_unchanged")
+    assert [tuple(row) for row in store._conn.execute(
+        "SELECT attempt_number, state FROM direct_connect_attempts WHERE token_fingerprint = ? ORDER BY attempt_number",
+        (authority.token_fingerprint,),
+    )] == [(1, "received"), (2, "terminalized")]
+    assert [tuple(row) for row in store._conn.execute(
+        "SELECT event_type, detail FROM direct_connect_events WHERE token_fingerprint = ? ORDER BY rowid",
+        (authority.token_fingerprint,),
+    )] == [
+        ("attempt_reserved", "attempt=1"),
+        ("received_nonlaunchable", "validated receipt"),
+        ("projection_failed", "conformance_probe_failed: deterministic test"),
+        ("attempt_reserved", "attempt=2"),
+        ("retry_artifact_unchanged", "retry artifact unchanged"),
+    ]
+
+    changed_wrapper_hash = _write_executable(authority.wrapper_destination, b"#!/bin/sh\necho changed\n")
+    changed = tc.post(
+        "/api/v1/runtime/custom-cli/connect", json=_payload(changed_wrapper_hash, child_a),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert changed.status_code == 201
+    assert changed.json()["operation_id"] != first_operation
+    assert store.counts()["direct_connect_operations"] == 2
+    assert [tuple(row) for row in store._conn.execute(
+        "SELECT attempt_number, state FROM direct_connect_attempts WHERE token_fingerprint = ? ORDER BY attempt_number",
+        (authority.token_fingerprint,),
+    )] == [(1, "received"), (2, "terminalized"), (3, "received")]
+
+
 def test_manifest_declared_workspace_adapter_id_wins_over_mint_time_value(client, tmp_path):
     """The wrapper's own /connect declaration is authoritative — the
     founder's mint-time value (an unrelated activation trigger) never

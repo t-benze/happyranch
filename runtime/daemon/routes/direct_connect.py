@@ -14,7 +14,10 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from runtime.daemon import paths
-from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.daemon.direct_connect_store import (
+    DirectConnectRetryArtifactUnchanged,
+    canonical_wrapper_destination,
+)
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX, _RUNTIME_ORG
 
 router = APIRouter()
@@ -262,6 +265,20 @@ async def connect(request: Request) -> dict[str, str]:
         authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
         token_store.commit_runtime(token)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
+    except DirectConnectRetryArtifactUnchanged:
+        released = authority_store.release_unchanged_retry_artifact(token, operation_id, now=now)
+        token_released = token_store.release_runtime(token, now=now)
+        if not released or not token_released:
+            logger.error("Direct retry artifact rejection compensation failed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="direct intake failed",
+            ) from None
+        logger.warning("Direct retry rejected: canonical artifact set unchanged")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="direct retry requires changed artifact",
+        ) from None
     except (ValueError, TypeError) as error:
         logger.warning("Direct manifest rejected (%s): invalid artifact or manifest integrity", type(error).__name__)
         authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
