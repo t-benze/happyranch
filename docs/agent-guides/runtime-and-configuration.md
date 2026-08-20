@@ -325,13 +325,17 @@ Contract (founder-approved in THR-028, refined in THR-078):
    `revisit_of_task_id` ancestor (a FAILED child of the same parent) failed
    again exhausts the ceiling. The ceiling is evaluated per-slice via
    `_is_slice_retry_exhausted` from the failing child's `revisit_of_task_id`
-   lineage (no schema migration).
+   lineage (no schema migration). A later COMPLETED or SUPERSEDED descendant
+   in the same lineage retires earlier FAILED ancestors for ceiling evaluation
+   (THR-183).
 
 3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
    (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`; a non-root parent fails and recurses upward (THR-033
-   root-only escalation). The parent does NOT cascade-fail — the founder or
-   upstream manager resolves the termination per existing routes.
+   `try_escalate()`, carrying the causal terminal event (the current
+   unresolved FAILED leaf) in the escalation reason; a completed-child wake
+   cannot select a stale sibling reason. A non-root parent fails and recurses
+   upward (THR-033 root-only escalation). The parent does NOT cascade-fail —
+   the founder or upstream manager resolves the termination per existing routes.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its

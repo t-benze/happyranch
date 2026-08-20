@@ -1805,12 +1805,12 @@ def _is_slice_retry_exhausted(
     previously COMPLETED (successful) slice must NOT escalate on its first
     failure — the ceiling only fires after a predecessor FAILED.
 
-    Derivation: follow the child's ``revisit_of_task_id`` chain.  If any
-    FAILED ancestor in that chain (excluding the child itself) has
-    ``parent_task_id == parent.id``, the child is a retry — the ancestor was
-    the original FAILED slice, and we are now looking at its 2nd failure.
-    This uses ONLY the existing ``revisit_of_task_id`` column on TaskRecord
-    (no schema migration).
+    Derivation: follow the child's ``revisit_of_task_id`` chain.  A FAILED
+    ancestor under the same parent counts toward the ceiling, but a COMPLETED
+    or SUPERSEDED ancestor retires earlier failures in that lineage (THR-183),
+    so the scan stops at the nearest COMPLETED/SUPERSEDED ancestor.  This uses
+    ONLY the existing ``revisit_of_task_id`` column on TaskRecord (no schema
+    migration).
     """
     if child.revisit_of_task_id is None:
         return False
@@ -1823,13 +1823,100 @@ def _is_slice_retry_exhausted(
     except LineageTooDeep:
         chain = []
     # Skip the first entry (the child itself); check each ancestor for
-    # same-parent membership AND FAILED status.  Only a FAILED predecessor
-    # counts toward the ceiling — a retry of a COMPLETED slice is a fresh
-    # dispatch, not an escalation trigger.
+    # same-parent membership.  A FAILED predecessor counts toward the ceiling;
+    # a COMPLETED/SUPERSEDED predecessor resets the lineage (retires earlier
+    # failures); anything else is ignored.
     for ancestor in chain[1:]:
-        if ancestor.parent_task_id == parent.id and ancestor.status == TaskStatus.FAILED:
+        if ancestor.parent_task_id != parent.id:
+            continue
+        if ancestor.status in (TaskStatus.COMPLETED, TaskStatus.SUPERSEDED):
+            return False
+        if ancestor.status == TaskStatus.FAILED:
             return True
     return False
+
+
+def _current_unresolved_failed_leaves(
+    orch: "Orchestrator",
+    failed_siblings: list["TaskRecord"],
+    parent: "TaskRecord",
+) -> list["TaskRecord"]:
+    """Return the current unresolved FAILED leaf of each logical retry lineage.
+
+    A FAILED child that has a later COMPLETED or SUPERSEDED descendant in the
+    same ``revisit_of_task_id`` lineage is retired and must not contribute to
+    ceiling evaluation.  A FAILED child with a later FAILED descendant is not
+    the leaf — the descendant is.  Only terminal FAILED leaves of non-retired
+    lineages are returned.
+    """
+    # Map every sibling by id so we can follow revisit links forward.
+    all_siblings = [
+        orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)
+    ]
+    sibling_by_id = {s.id: s for s in all_siblings if s is not None}
+
+    predecessor_to_successors: dict[str, list["TaskRecord"]] = {}
+    for s in sibling_by_id.values():
+        pred = s.revisit_of_task_id
+        if pred is not None and pred in sibling_by_id:
+            predecessor_to_successors.setdefault(pred, []).append(s)
+
+    leaves: list["TaskRecord"] = []
+    seen: set[str] = set()
+
+    def _is_retired(task_id: str, visited: set[str]) -> bool:
+        """True if any descendant in the same lineage is COMPLETED/SUPERSEDED."""
+        for succ in predecessor_to_successors.get(task_id, []):
+            if succ.id in visited:
+                continue
+            visited.add(succ.id)
+            if succ.status in (TaskStatus.COMPLETED, TaskStatus.SUPERSEDED):
+                return True
+            if _is_retired(succ.id, visited):
+                return True
+        return False
+
+    def _collect_leaf(task_id: str, visited: set[str]) -> "TaskRecord" | None:
+        """Return the terminal FAILED leaf reachable forward, if any."""
+        successors = predecessor_to_successors.get(task_id, [])
+        if not successors:
+            task = sibling_by_id.get(task_id)
+            if task is not None and task.status == TaskStatus.FAILED:
+                return task
+            return None
+        for succ in successors:
+            if succ.id in visited:
+                continue
+            visited.add(succ.id)
+            leaf = _collect_leaf(succ.id, visited)
+            if leaf is not None:
+                return leaf
+        return None
+
+    for failed in failed_siblings:
+        if failed.id in seen:
+            continue
+        if _is_retired(failed.id, {failed.id}):
+            continue
+        leaf = _collect_leaf(failed.id, {failed.id})
+        if leaf is not None and leaf.id not in seen:
+            seen.add(leaf.id)
+            leaves.append(leaf)
+    return leaves
+
+
+def _format_slice_retry_exhausted_reason(
+    orch: "Orchestrator", leaf: "TaskRecord",
+) -> str:
+    """Build an escalation reason that names the causal terminal event."""
+    results = orch._db.get_task_results(leaf.id)
+    latest = results[-1] if results else {}
+    verdict = latest.get("verdict") or "n/a"
+    return (
+        f"per-slice retry ceiling ({_SLICE_RETRY_CEILING}) exhausted: "
+        f"causal terminal event {leaf.id} status={leaf.status.value} "
+        f"verdict={verdict}: {leaf.note or '(no note)'}"
+    )
 
 
 def _enqueue_parent_if_waiting(
@@ -1929,22 +2016,19 @@ def _enqueue_parent_if_waiting(
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
         # THR-078: per-slice retry ceiling (replaces old count-based
-        # _FAILURE_ROUND_BOUND).  Each failed child is checked for
-        # revisit lineage within the same parent — a child whose
-        # revisit_of_task_id ancestor lived under this parent is a
-        # retry.  If ANY child has exhausted the ceiling (_SLICE_RETRY_CEILING
-        # = 1, i.e. this is its 2nd failure), escalate.  Otherwise,
-        # wake the root owner to adjudicate (pack per-slice terminal
-        # context via _inject_fanout_join_context on fan-out parents).
+        # _FAILURE_ROUND_BOUND).  THR-183: ceiling evaluation MUST use the
+        # current unresolved FAILED leaf of each logical retry lineage, not
+        # every historical FAILED sibling.  A later COMPLETED/SUPERSEDED
+        # descendant retires earlier failures in the same lineage, so a normal
+        # parent wake initiated by a completed child cannot select a stale
+        # failed sibling.
 
-        # Per-slice ceiling check: escalate if any failed child is a retry.
-        for s in failed:
-            if _is_slice_retry_exhausted(orch, s, parent):
-                reason = (
-                    f"per-slice retry ceiling ({_SLICE_RETRY_CEILING}) exhausted: "
-                    f"slice {s.id} (revisit of {s.revisit_of_task_id}) "
-                    f"failed: {s.note or '(no note)'}"
-                )
+        # Per-slice ceiling check: escalate if any unresolved failed leaf has
+        # exhausted its retry ceiling.
+        unresolved_leaves = _current_unresolved_failed_leaves(orch, failed, parent)
+        for leaf in unresolved_leaves:
+            if _is_slice_retry_exhausted(orch, leaf, parent):
+                reason = _format_slice_retry_exhausted_reason(orch, leaf)
                 if parent.active_chain is not None:
                     orch._db.update_task_active_chain(parent.id, None)
                 if parent.active_fanout is not None:
