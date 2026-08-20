@@ -220,9 +220,12 @@ Slice A's `received_nonlaunchable` receipt:
 
   2. **Immutable-snapshot validation.** A distinct master-bearer
      `POST /api/v1/runtime/custom-cli/{operation_id}/retry` action is
-     eligible only for a terminal `failed` projection. It re-checks the
-     *unchanged* persisted wrapper/child snapshot; it is not an artifact
-     retry. It never updates, replaces, or deletes that projection or its
+     eligible only for a terminal `failed` projection that is also the
+     latest accepted candidate for its parent token fingerprint. Once a
+     newer candidate has been accepted under the same parent, the older
+     candidate is stale and retry claims are refused without consuming a
+     retry attempt or running a probe. It re-checks the *unchanged*
+     persisted wrapper/child snapshot; it is not an artifact retry. It never updates, replaces, or deletes that projection or its
      failure reason, and `/commit` remains idempotent for the historical
      failure. A separate durable retry-attempt lifecycle supplies the atomic
      single-probe winner, terminal outcome, and append-only category-only
