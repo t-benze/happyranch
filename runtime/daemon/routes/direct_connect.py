@@ -360,8 +360,8 @@ async def connect(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid direct manifest") from None
     except HTTPException:
         raise
-    except Exception as exc:
-        logger.exception("Direct intake failed: %s", exc)
+    except Exception:
+        logger.exception("Direct intake failed")
         if reserved_record is not None:
             token_store.commit_runtime(token)
         if identity_evaluated and operation_id is not None:
@@ -369,7 +369,7 @@ async def connect(request: Request) -> dict[str, str]:
         else:
             token_store.consume_runtime(token, now=now)
             authority_store.terminalize_known(token, "intake_fault", now=now)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"direct intake failed: {exc}") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake failed") from None
     if reserved_record is not None and not token_store.commit_runtime(token):
         authority_store.compensate_received(token, operation_id, "registration_token_commit_failed", now=now)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake receipt unavailable")
