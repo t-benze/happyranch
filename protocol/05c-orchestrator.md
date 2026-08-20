@@ -396,13 +396,18 @@ cascade-failed. Instead:
    omits this field is HARD-REJECTED (feedback, no child spawned), even on
    the first retry.  Only FAILED ancestors count toward the ceiling; a retry
    of a COMPLETED predecessor does not trigger escalation on its first failure.
+   A later COMPLETED or SUPERSEDED descendant in the same `revisit_of_task_id`
+   lineage retires earlier FAILED ancestors for ceiling evaluation (THR-183).
 
 4. **Exhaustion escalation.** When the per-slice ceiling is exhausted (a slice's
    2nd failure), the parent transitions to `escalated` via
-   `db.try_escalate()`, carrying the last failure reason. The parent does NOT
-   cascade-fail — the founder can resolve the escalation per existing routes.
-   non-root tasks never escalate directly — they fail and hand back to their
-   parent; only the (root) parent escalates on exhaustion.
+   `db.try_escalate()`, carrying the causal terminal event — the current
+   unresolved FAILED leaf of the slice's lineage — in the escalation reason.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED siblings
+   so a completed-child wake cannot select a stale failure reason. The parent
+   does NOT cascade-fail — the founder can resolve the escalation per existing
+   routes. non-root tasks never escalate directly — they fail and hand back to
+   their parent; only the (root) parent escalates on exhaustion.
 
 5. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
    COMPLETED), the chain does NOT cascade-fail the parent. Instead, the

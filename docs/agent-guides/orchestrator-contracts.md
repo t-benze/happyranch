@@ -107,12 +107,16 @@ Contract (founder-approved in THR-028, refined in THR-078):
    FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
    lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
    the ceiling. Retry of a COMPLETED predecessor does not count toward the
-   ceiling.
+   ceiling, and a later COMPLETED or SUPERSEDED descendant in the same lineage
+   retires earlier FAILED ancestors for ceiling evaluation (THR-183).
 
 3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
    (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`; a non-root parent fails and recurses upward (THR-033
-   root-only escalation). The parent does NOT cascade-fail.
+   `try_escalate()`, carrying the causal terminal event — the current
+   unresolved FAILED leaf of the slice's lineage — in the escalation reason;
+   a completed-child wake cannot select a stale sibling reason. A non-root
+   parent fails and recurses upward (THR-033 root-only escalation). The parent
+   does NOT cascade-fail.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its
@@ -130,11 +134,13 @@ Traps:
 
 - Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
   child's `revisit_of_task_id` chain; only a FAILED predecessor under the
-  same parent triggers escalation. COMPLETED predecessors do not count.
+  same parent triggers escalation. COMPLETED/SUPERSEDED predecessors retire
+  earlier FAILED ancestors for ceiling evaluation (THR-183).
 - Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
   first failure).
 - The exhaustion escalation uses `try_escalate` (atomic CAS under Database
-  RLock) for roots; non-root parents fail and hand upward.
+  RLock) for roots and names the current unresolved FAILED leaf, not a stale
+  sibling reason; non-root parents fail and hand upward.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed

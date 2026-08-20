@@ -2947,3 +2947,329 @@ def test_delegate_with_revisit_of_task_id_e2e_ceiling_fires(runtime, db, monkeyp
         f"second failure should escalate; got status {parent.status}"
     )
     assert parent.block_kind is None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-183 / TASK-5235 — retry-ceiling escalation attribution fix
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _escalation_audit_rows(db: Database, task_id: str) -> list[dict]:
+    return [a for a in db.get_audit_logs(task_id) if a["action"] == "escalation"]
+
+
+def test_thr183_completed_child_after_retired_failed_lineage_does_not_escalate(
+    runtime, db,
+):
+    """A later COMPLETED descendant retires earlier FAILED retry attempts.
+    A normal parent wake initiated by the completed child MUST NOT scan the
+    stale failed siblings and escalate using their notes, and must not mutate
+    the parent's active fan-out state."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.fanout import FanoutState
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-RET1", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task(
+        "T-RET1", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED, note="waiting",
+    )
+
+    # Seed a meaningful active_fanout so the no-state-change contract is
+    # actually exercised (active_chain stays None for this completed-child
+    # signature; the chain branch is not entered).
+    fanout = FanoutState(
+        children_ids=["T-RET1-C"],
+        children_details=[{"agent": "qa_engineer", "prompt": "other slice"}],
+        width=1,
+        manager_agent="engineering_head",
+    )
+    db.update_task_active_fanout("T-RET1", fanout.serialize())
+
+    # Original quota failure.
+    db.insert_task(TaskRecord(
+        id="T-RET1-A", brief="slice A", assigned_agent="dev_agent",
+        parent_task_id="T-RET1", task_type="subtask",
+    ))
+    db.update_task("T-RET1-A", status=TaskStatus.FAILED, note="quota exceeded")
+
+    # Retry also failed (ceiling exhausted at this point in real life).
+    db.insert_task(TaskRecord(
+        id="T-RET1-A-R", brief="retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-RET1", revisit_of_task_id="T-RET1-A",
+        task_type="subtask",
+    ))
+    db.update_task(
+        "T-RET1-A-R", status=TaskStatus.FAILED,
+        note="second failure — review rejected",
+    )
+
+    # Owner resolved and a later retry completed, retiring the lineage.
+    db.insert_task(TaskRecord(
+        id="T-RET1-A-R2", brief="final retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-RET1", revisit_of_task_id="T-RET1-A-R",
+        task_type="subtask",
+    ))
+    db.update_task("T-RET1-A-R2", status=TaskStatus.COMPLETED, note="done")
+
+    # Another completed child triggers the parent wake.
+    db.insert_task(TaskRecord(
+        id="T-RET1-C", brief="other slice", assigned_agent="qa_engineer",
+        parent_task_id="T-RET1", task_type="subtask",
+    ))
+    db.update_task("T-RET1-C", status=TaskStatus.COMPLETED)
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    parent_before = db.get_task("T-RET1")
+    _enqueue_parent_if_waiting(orch, "T-RET1-C")
+
+    parent = db.get_task("T-RET1")
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"completed-child wake with retired lineage must not escalate; got {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert parent.note == parent_before.note
+    assert parent.active_fanout == parent_before.active_fanout
+    assert _escalation_audit_rows(db, "T-RET1") == []
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-RET1")
+
+
+def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor_wake(
+    runtime, db,
+):
+    """Startup/recovery or any caller may invoke _enqueue_parent_if_waiting with
+    a recovered FAILED ancestor. A later SUPERSEDED descendant in the same
+    revisit_of_task_id lineage must retire the earlier failures, prevent re-
+    escalation, and must not mutate parent state — including meaningful non-null
+    active_chain and active_fanout metadata."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.fanout import FanoutState
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-REC2", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task(
+        "T-REC2", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED, note="waiting",
+    )
+
+    # Seed meaningful, valid active_chain and active_fanout metadata. The bug
+    # is that the FAILED-chain branch used to clear active_chain before the
+    # retired-lineage check could prove the lineage was resolved.
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict="PASS",
+        legs=[],
+        step_audit_id=1,
+    )
+    fanout = FanoutState(
+        children_ids=["T-REC2-C"],
+        children_details=[{"agent": "qa_engineer", "prompt": "other slice"}],
+        width=1,
+        manager_agent="engineering_head",
+    )
+    db.update_task_active_chain("T-REC2", chain.serialize())
+    db.update_task_active_fanout("T-REC2", fanout.serialize())
+
+    # Exhausted historical FAILED lineage.
+    db.insert_task(TaskRecord(
+        id="T-REC2-A", brief="slice A", assigned_agent="dev_agent",
+        parent_task_id="T-REC2", task_type="subtask",
+    ))
+    db.update_task("T-REC2-A", status=TaskStatus.FAILED, note="quota exceeded")
+
+    db.insert_task(TaskRecord(
+        id="T-REC2-A-R", brief="retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-REC2", revisit_of_task_id="T-REC2-A",
+        task_type="subtask",
+    ))
+    db.update_task(
+        "T-REC2-A-R", status=TaskStatus.FAILED,
+        note="second failure — review rejected",
+    )
+
+    # Later descendant SUPERSEDED via revisit_of_task_id → lineage retired.
+    db.insert_task(TaskRecord(
+        id="T-REC2-A-R2", brief="superseded retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-REC2", revisit_of_task_id="T-REC2-A-R",
+        task_type="subtask",
+    ))
+    db.update_task("T-REC2-A-R2", status=TaskStatus.SUPERSEDED, note="replaced by owner")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    parent_before = db.get_task("T-REC2")
+    # Simulate a startup/recovery path invoking on the stale ancestor.
+    _enqueue_parent_if_waiting(orch, "T-REC2-A")
+
+    parent = db.get_task("T-REC2")
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"recovered-ancestor wake with SUPERSEDED descendant must not escalate; got {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert parent.note == parent_before.note
+    assert parent.active_chain == parent_before.active_chain
+    assert parent.active_fanout == parent_before.active_fanout
+    assert _escalation_audit_rows(db, "T-REC2") == []
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-REC2")
+
+    # A second recovery-style call on the same retired ancestor must remain a
+    # bounded no-op: parent state unchanged, another normal wake queued.
+    _enqueue_parent_if_waiting(orch, "T-REC2-A")
+    parent_after = db.get_task("T-REC2")
+    assert parent_after.status == TaskStatus.IN_PROGRESS
+    assert parent_after.active_chain == parent_before.active_chain
+    assert parent_after.active_fanout == parent_before.active_fanout
+    assert _escalation_audit_rows(db, "T-REC2") == []
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-REC2")
+
+
+def test_thr183_genuine_unresolved_second_failure_escalates_once_using_leaf(
+    runtime, db,
+):
+    """A true unresolved second failure escalates exactly once and the reason
+    identifies the causal leaf task (not a stale ancestor note)."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-GENU", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task(
+        "T-GENU", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED, note="waiting",
+    )
+
+    db.insert_task(TaskRecord(
+        id="T-GENU-A", brief="slice A", assigned_agent="dev_agent",
+        parent_task_id="T-GENU", task_type="subtask",
+    ))
+    db.update_task("T-GENU-A", status=TaskStatus.FAILED, note="quota exceeded")
+
+    db.insert_task(TaskRecord(
+        id="T-GENU-A-R", brief="retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-GENU", revisit_of_task_id="T-GENU-A",
+        task_type="subtask",
+    ))
+    db.update_task(
+        "T-GENU-A-R", status=TaskStatus.FAILED,
+        note="review rejected",
+    )
+    db.insert_task_result(
+        task_id="T-GENU-A-R", agent="dev_agent", session_id="s",
+        status="failed", confidence_score=0, output_summary="review rejected",
+        verdict="FAIL",
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    _enqueue_parent_if_waiting(orch, "T-GENU-A-R")
+
+    parent = db.get_task("T-GENU")
+    assert parent.status == TaskStatus.ESCALATED
+    assert parent.block_kind is None
+    assert "T-GENU-A-R" in (parent.note or "")
+    assert "review rejected" in (parent.note or "")
+    assert "quota exceeded" not in (parent.note or "")
+    assert "T-GENU-A" not in (parent.note or "") or "T-GENU-A-R" in (parent.note or "")
+
+    audits = _escalation_audit_rows(db, "T-GENU")
+    assert len(audits) == 1
+    reason = audits[0]["payload"].get("reason", "")
+    assert "T-GENU-A-R" in reason
+    assert "review rejected" in reason
+    assert "quota exceeded" not in reason
+    assert orch._queue.qsize() == 0
+
+    # Duplicate evaluation must be a no-op (try_escalate CAS).
+    _enqueue_parent_if_waiting(orch, "T-GENU-A-R")
+    assert len(_escalation_audit_rows(db, "T-GENU")) == 1
+    assert db.get_task("T-GENU").note == parent.note
+
+
+def test_thr183_stale_lineage_does_not_escalate_a_fresh_failure(
+    runtime, db,
+):
+    """A fresh failure of a recovered/replaced slice must be evaluated on its
+    own merits; stale FAILED ancestors retired by a COMPLETED descendant must
+    not force escalation and must not leak into the reason."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-FRESH", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task(
+        "T-FRESH", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED, note="waiting",
+    )
+
+    # Old exhausted lineage retired by a completed descendant.
+    db.insert_task(TaskRecord(
+        id="T-FRESH-A", brief="slice A", assigned_agent="dev_agent",
+        parent_task_id="T-FRESH", task_type="subtask",
+    ))
+    db.update_task("T-FRESH-A", status=TaskStatus.FAILED, note="quota exceeded")
+
+    db.insert_task(TaskRecord(
+        id="T-FRESH-A-R", brief="retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-FRESH", revisit_of_task_id="T-FRESH-A",
+        task_type="subtask",
+    ))
+    db.update_task(
+        "T-FRESH-A-R", status=TaskStatus.FAILED,
+        note="second failure — review rejected",
+    )
+
+    db.insert_task(TaskRecord(
+        id="T-FRESH-A-R2", brief="final retry slice A", assigned_agent="dev_agent",
+        parent_task_id="T-FRESH", revisit_of_task_id="T-FRESH-A-R",
+        task_type="subtask",
+    ))
+    db.update_task("T-FRESH-A-R2", status=TaskStatus.COMPLETED, note="done")
+
+    # A fresh retry of the now-completed slice fails for the first time.
+    db.insert_task(TaskRecord(
+        id="T-FRESH-B", brief="retry after completion", assigned_agent="dev_agent",
+        parent_task_id="T-FRESH", revisit_of_task_id="T-FRESH-A-R2",
+        task_type="subtask",
+    ))
+    db.update_task(
+        "T-FRESH-B", status=TaskStatus.FAILED,
+        note="review rejected on fresh retry",
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    parent_before = db.get_task("T-FRESH")
+    _enqueue_parent_if_waiting(orch, "T-FRESH-B")
+
+    parent = db.get_task("T-FRESH")
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"fresh first failure after completed predecessor must wake, not escalate; got {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert parent.note == parent_before.note
+    assert _escalation_audit_rows(db, "T-FRESH") == []
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-FRESH")
