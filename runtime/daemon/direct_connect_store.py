@@ -27,6 +27,10 @@ class DirectConnectRetryInProgress(RuntimeError):
     """Raised when an atomic forget would race a claimed retry validation."""
 
 
+class DirectConnectRetryStaleCandidateError(RuntimeError):
+    """Raised when a retry is requested for a candidate superseded by a later accepted candidate."""
+
+
 class DuplicateCandidateError(ValueError):
     """Raised when a candidate identity matches one already accepted for this token."""
 
@@ -1511,6 +1515,11 @@ class DirectConnectAuthorityStore:
 
         A successful retry is idempotent. A failed retry permits a later fresh
         retry, while concurrent callers share the one running attempt.
+
+        A retry is authorized only while this operation remains the latest
+        accepted candidate for its own parent token fingerprint. Once a newer
+        candidate has been accepted, the original candidate is stale and retry
+        claims are refused without consuming a retry attempt or running a probe.
         """
         now = time.time() if now is None else now
         with self._lock, self._conn:
@@ -1520,6 +1529,9 @@ class DirectConnectAuthorityStore:
                 raise RuntimeError("direct operation not found")
             if projection.state != "failed":
                 raise ValueError(f"projection state is '{projection.state}', not 'failed'")
+            latest = self.get_latest_candidate_for_token_fingerprint(projection.token_fingerprint)
+            if latest is not None and latest.operation_id != operation_id:
+                raise DirectConnectRetryStaleCandidateError("stale_candidate_superseded")
             succeeded = cursor.execute(
                 """SELECT attempt_id FROM direct_connect_retry_attempts
                    WHERE operation_id = ? AND state = 'succeeded' ORDER BY created_at DESC LIMIT 1""",

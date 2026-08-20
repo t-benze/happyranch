@@ -50,7 +50,11 @@ from pydantic import BaseModel, Field
 from runtime.daemon.auth import require_token
 from runtime.daemon.direct_connect_projection import project
 from runtime.daemon.direct_connect_retry import retry_validate
-from runtime.daemon.direct_connect_store import DirectConnectRetryInProgress, canonical_wrapper_destination
+from runtime.daemon.direct_connect_store import (
+    DirectConnectRetryInProgress,
+    DirectConnectRetryStaleCandidateError,
+    canonical_wrapper_destination,
+)
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
@@ -132,7 +136,13 @@ async def retry(operation_id: str, request: Request) -> dict[str, str]:
             status_code=status.HTTP_409_CONFLICT,
             detail=f"refused: projection state is '{projection.state}', not 'failed'",
         )
-    outcome = retry_validate(authority_store, operation_id)
+    try:
+        outcome = retry_validate(authority_store, operation_id)
+    except DirectConnectRetryStaleCandidateError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="refused: stale candidate superseded by later candidate",
+        ) from None
     result = {"operation_id": operation_id, "profile_state": outcome.state}
     if outcome.state == "committed":
         result["profile_name"] = outcome.profile_name
