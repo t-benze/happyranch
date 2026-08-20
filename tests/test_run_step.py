@@ -2963,8 +2963,10 @@ def test_thr183_completed_child_after_retired_failed_lineage_does_not_escalate(
 ):
     """A later COMPLETED descendant retires earlier FAILED retry attempts.
     A normal parent wake initiated by the completed child MUST NOT scan the
-    stale failed siblings and escalate using their notes."""
+    stale failed siblings and escalate using their notes, and must not mutate
+    the parent's active fan-out state."""
     from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.fanout import FanoutState
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(
@@ -2975,6 +2977,17 @@ def test_thr183_completed_child_after_retired_failed_lineage_does_not_escalate(
         "T-RET1", status=TaskStatus.IN_PROGRESS,
         block_kind=BlockKind.DELEGATED, note="waiting",
     )
+
+    # Seed a meaningful active_fanout so the no-state-change contract is
+    # actually exercised (active_chain stays None for this completed-child
+    # signature; the chain branch is not entered).
+    fanout = FanoutState(
+        children_ids=["T-RET1-C"],
+        children_details=[{"agent": "qa_engineer", "prompt": "other slice"}],
+        width=1,
+        manager_agent="engineering_head",
+    )
+    db.update_task_active_fanout("T-RET1", fanout.serialize())
 
     # Original quota failure.
     db.insert_task(TaskRecord(
@@ -3022,6 +3035,7 @@ def test_thr183_completed_child_after_retired_failed_lineage_does_not_escalate(
     )
     assert parent.block_kind == BlockKind.DELEGATED
     assert parent.note == parent_before.note
+    assert parent.active_fanout == parent_before.active_fanout
     assert _escalation_audit_rows(db, "T-RET1") == []
     assert orch._queue.qsize() == 1
     assert orch._queue.get_nowait() == ("test", "T-RET1")
@@ -3033,8 +3047,11 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
     """Startup/recovery or any caller may invoke _enqueue_parent_if_waiting with
     a recovered FAILED ancestor. A later SUPERSEDED descendant in the same
     revisit_of_task_id lineage must retire the earlier failures, prevent re-
-    escalation, and must not mutate parent state."""
+    escalation, and must not mutate parent state — including meaningful non-null
+    active_chain and active_fanout metadata."""
     from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.fanout import FanoutState
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(
@@ -3045,6 +3062,24 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
         "T-REC2", status=TaskStatus.IN_PROGRESS,
         block_kind=BlockKind.DELEGATED, note="waiting",
     )
+
+    # Seed meaningful, valid active_chain and active_fanout metadata. The bug
+    # is that the FAILED-chain branch used to clear active_chain before the
+    # retired-lineage check could prove the lineage was resolved.
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict="PASS",
+        legs=[],
+        step_audit_id=1,
+    )
+    fanout = FanoutState(
+        children_ids=["T-REC2-C"],
+        children_details=[{"agent": "qa_engineer", "prompt": "other slice"}],
+        width=1,
+        manager_agent="engineering_head",
+    )
+    db.update_task_active_chain("T-REC2", chain.serialize())
+    db.update_task_active_fanout("T-REC2", fanout.serialize())
 
     # Exhausted historical FAILED lineage.
     db.insert_task(TaskRecord(
@@ -3087,6 +3122,17 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
     assert parent.note == parent_before.note
     assert parent.active_chain == parent_before.active_chain
     assert parent.active_fanout == parent_before.active_fanout
+    assert _escalation_audit_rows(db, "T-REC2") == []
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-REC2")
+
+    # A second recovery-style call on the same retired ancestor must remain a
+    # bounded no-op: parent state unchanged, another normal wake queued.
+    _enqueue_parent_if_waiting(orch, "T-REC2-A")
+    parent_after = db.get_task("T-REC2")
+    assert parent_after.status == TaskStatus.IN_PROGRESS
+    assert parent_after.active_chain == parent_before.active_chain
+    assert parent_after.active_fanout == parent_before.active_fanout
     assert _escalation_audit_rows(db, "T-REC2") == []
     assert orch._queue.qsize() == 1
     assert orch._queue.get_nowait() == ("test", "T-REC2")

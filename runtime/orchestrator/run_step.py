@@ -2004,12 +2004,15 @@ def _enqueue_parent_if_waiting(
                 return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Non-carrier: fall through to sibling-check + parent-wake path below.
         else:
-            # FAILED chain leg: clear the chain so the parent's next decision
-            # step doesn't see a stale chain. Carrier: fail-closed.
-            orch._db.update_task_active_chain(parent.id, None)
-            if _carrier_fail_immediate(orch, parent, task_id):
-                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-            # fall through to sibling-check + bounded-wake below.
+            # FAILED chain leg: do NOT clear active_chain here. A recovery or
+            # startup-style caller may invoke this on a historical FAILED
+            # ancestor whose retry lineage was later retired by a COMPLETED or
+            # SUPERSEDED descendant. Clearing the chain before the retired-
+            # lineage check would mutate parent state for no reason. The chain
+            # is cleared only after the sibling evaluation below proves there
+            # is a genuine unresolved failure (or a carrier fail-closed case).
+            # Carrier fail-closed is applied at that point, not here.
+            pass
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
@@ -2025,37 +2028,52 @@ def _enqueue_parent_if_waiting(
         # parent wake initiated by a completed child cannot select a stale
         # failed sibling.
 
-        # Per-slice ceiling check: escalate if any unresolved failed leaf has
-        # exhausted its retry ceiling.
         unresolved_leaves = _current_unresolved_failed_leaves(orch, failed, parent)
-        for leaf in unresolved_leaves:
-            if _is_slice_retry_exhausted(orch, leaf, parent):
-                reason = _format_slice_retry_exhausted_reason(orch, leaf)
-                if parent.active_chain is not None:
-                    orch._db.update_task_active_chain(parent.id, None)
-                if parent.active_fanout is not None:
-                    orch._db.update_task_active_fanout(parent.id, None)
-                if is_root(parent):
-                    if orch._db.try_escalate(parent.id, reason=reason):
-                        orch._audit.log_escalation(parent.id, "orchestrator", reason)
-                        _maybe_post_thread_escalation(
-                            orch, parent.id, reason=reason,
-                        )
-                else:
-                    # THR-033 Change A lock-in: a non-root parent never
-                    # escalates directly.  Fail it and recurse upward.
-                    _fail(orch, parent.id, note=reason)
-                    _enqueue_parent_if_waiting(orch, parent.id)
-                return
+        if unresolved_leaves:
+            # Genuine unresolved failure: clear active_chain now. For a carrier
+            # (its own parent has active_fanout), fail the whole carrier
+            # immediately — no partial-chain completion.
+            if parent.active_chain is not None:
+                orch._db.update_task_active_chain(parent.id, None)
+            if _is_carrier(orch, parent):
+                _carrier_fail_immediate(orch, parent, task_id)
+                return  # carrier failure feeds the fan-out parent's barrier
 
-        # No per-slice ceiling hit: clear chain, enqueue parent for a fresh
-        # manager decision step.  Do NOT cascade-fail.
-        # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
-        # it to inject structured join context (child verdict, confidence,
-        # output_dir, failure note) via _inject_fanout_join_context.  The
-        # CAS-winner clears active_fanout after injecting join context.
-        if parent.active_chain is not None:
-            orch._db.update_task_active_chain(parent.id, None)
+            # Per-slice ceiling check: escalate if any unresolved leaf has
+            # exhausted its retry ceiling.
+            for leaf in unresolved_leaves:
+                if _is_slice_retry_exhausted(orch, leaf, parent):
+                    reason = _format_slice_retry_exhausted_reason(orch, leaf)
+                    if parent.active_fanout is not None:
+                        orch._db.update_task_active_fanout(parent.id, None)
+                    if is_root(parent):
+                        if orch._db.try_escalate(parent.id, reason=reason):
+                            orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                            _maybe_post_thread_escalation(
+                                orch, parent.id, reason=reason,
+                            )
+                    else:
+                        # THR-033 Change A lock-in: a non-root parent never
+                        # escalates directly.  Fail it and recurse upward.
+                        _fail(orch, parent.id, note=reason)
+                        _enqueue_parent_if_waiting(orch, parent.id)
+                    return
+
+            # No per-slice ceiling hit: enqueue parent for a fresh manager
+            # decision step.  Do NOT cascade-fail.
+            # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
+            # it to inject structured join context (child verdict, confidence,
+            # output_dir, failure note) via _inject_fanout_join_context.  The
+            # CAS-winner clears active_fanout after injecting join context.
+            queue = getattr(orch, "_queue", None)
+            if queue is not None:
+                queue.put_nowait(orch._slug, parent.id)
+            return
+
+        # All failures are retired (lineage has a later COMPLETED/SUPERSEDED
+        # descendant). Treat this as a normal bounded parent wake: queue the
+        # parent once, leaving active_chain, active_fanout, status, block_kind,
+        # and note completely untouched. No escalation, no audit side effect.
         queue = getattr(orch, "_queue", None)
         if queue is not None:
             queue.put_nowait(orch._slug, parent.id)
