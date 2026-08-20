@@ -214,7 +214,11 @@ Slice A's `received_nonlaunchable` receipt:
      and are refused. There is no cooldown. A second terminal failure moves
      the ledger to `exhausted` (no further candidates allowed), while expiry
      moves it to `expired`; both are nonretryable. Success at any point
-     closes the lifecycle as `connected`. This path never calls
+     closes the lifecycle as `connected`. Terminal legacy v0 operations that
+     predate the THR-160 candidate ledger are atomically backfilled into the
+     immutable parent authority as a failed ordinal-1 candidate on store open,
+     so a corrected candidate is admitted as ordinal 2 and the two-candidate
+     cap still refuses a third candidate. This path never calls
      `/{operation_id}/retry`, never replays a generic token, and never
      requires `/forget` first.
 

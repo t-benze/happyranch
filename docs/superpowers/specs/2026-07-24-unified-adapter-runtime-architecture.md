@@ -518,7 +518,10 @@ registration invitation. Two retry paths exist:
    refused with an indefinite, non-consuming ``409 Duplicate``. There is no
    cooldown. A second terminal failure closes the lifecycle as ``exhausted``
    (no further candidates); expiry closes it as ``expired``; both are
-   nonretryable. This path never calls
+   nonretryable. Terminal legacy v0 operations that predate the THR-160
+   candidate ledger are atomically backfilled as a failed ordinal-1 candidate
+   on store open, so a corrected candidate is admitted as ordinal 2 and the
+   two-candidate cap still refuses a third candidate. This path never calls
    ``POST /runtime/custom-cli/{operation_id}/retry``, never replays a generic
    token, and never requires ``/forget`` first.
 

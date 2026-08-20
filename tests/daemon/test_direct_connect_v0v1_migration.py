@@ -327,6 +327,8 @@ def _seed_legacy_v0_database(
     token: str,
     profile: str,
     wrapper_path: Path,
+    *,
+    expires_at: float = 100.0,
 ) -> str:
     """Create a v0 legacy DB with a terminal-failed operation A."""
     fingerprint = fingerprint_registration_token(token)
@@ -339,7 +341,7 @@ def _seed_legacy_v0_database(
            (token_fingerprint, name, intended_profile_name, wrapper_destination,
             workspace_adapter_id, issued_at, expires_at, state, provenance)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (fingerprint, "custom-cli", profile, str(wrapper_path), "codex", 1.0, 100.0, "minted_nonlaunchable", "runtime-master-mint"),
+        (fingerprint, "custom-cli", profile, str(wrapper_path), "codex", 1.0, expires_at, "minted_nonlaunchable", "runtime-master-mint"),
     )
     conn.execute(
         """INSERT INTO direct_connect_reservations
@@ -417,13 +419,17 @@ def _assert_coupled_facts_retained(
     token: str,
     operation_a: str,
     profile: str,
-    has_candidate: bool,
 ) -> None:
-    """Post-migration adversarial regression: A and all coupled facts survive."""
+    """Post-migration adversarial regression: A and all coupled facts survive.
+
+    After the terminal-v0 bridge, both v1 (pre-existing candidate row) and v0
+    (backfilled candidate row) legacy databases present A as attempt ordinal 1
+    and a corrected B as attempt ordinal 2.
+    """
     fingerprint = fingerprint_registration_token(token)
     cursor = store._conn.cursor()
 
-    # Operation A and its artifacts/receipt/event remain.
+    # Operation A and its artifacts/receipt/event/projection remain.
     assert cursor.execute(
         "SELECT operation_id FROM direct_connect_operations WHERE operation_id = ?",
         (operation_a,),
@@ -452,31 +458,24 @@ def _assert_coupled_facts_retained(
         "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
         (fingerprint,),
     ).fetchone()
-    if has_candidate:
-        assert parent is not None and parent["state"] == "open"
-        assert cursor.execute(
-            "SELECT identity_hash FROM direct_connect_identity_history WHERE candidate_id = ?",
-            ("cand-a-0000-0000-0000-000000000001",),
-        ).fetchone()["identity_hash"] == "hash-a" * 16
-    else:
-        # v0 has no pre-existing parent/candidate/identity rows; the store
-        # creates them on first identity-aware reservation.
-        assert parent is None or parent["state"] == "open"
+    assert parent is not None and parent["state"] == "open"
 
-    # A second candidate B was accepted.
+    # A and B are both accepted candidates (A backfilled for v0, pre-existing for v1).
     candidates = cursor.execute(
-        "SELECT operation_id, attempt_ordinal FROM direct_connect_candidates WHERE token_fingerprint = ? ORDER BY attempt_ordinal",
+        "SELECT candidate_id, operation_id, attempt_ordinal FROM direct_connect_candidates WHERE token_fingerprint = ? ORDER BY attempt_ordinal",
         (fingerprint,),
     ).fetchall()
-    if has_candidate:
-        # v1: A already had a candidate row, so B is the second candidate.
-        assert len(candidates) == 2
-        assert candidates[0]["operation_id"] == operation_a
-        assert candidates[1]["operation_id"] != operation_a
-    else:
-        # v0: A had no candidate row; B is the first accepted candidate.
-        assert len(candidates) == 1
-        assert candidates[0]["operation_id"] != operation_a
+    assert len(candidates) == 2
+    assert candidates[0]["operation_id"] == operation_a
+    assert candidates[0]["attempt_ordinal"] == 1
+    assert candidates[1]["operation_id"] != operation_a
+    assert candidates[1]["attempt_ordinal"] == 2
+
+    # A's identity is retained in history.
+    assert cursor.execute(
+        "SELECT 1 FROM direct_connect_identity_history WHERE candidate_id = ?",
+        (candidates[0]["candidate_id"],),
+    ).fetchone() is not None
 
     # Latest operation for the profile is B.
     assert store.get_latest_operation_for_profile(profile) != operation_a
@@ -518,12 +517,12 @@ def test_v1_migration_removes_unique_and_allows_corrected_candidate_b(tmp_path: 
         identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
     )
 
-    _assert_coupled_facts_retained(store, "hrreg_v1", operation_a, "v1-profile", has_candidate=True)
+    _assert_coupled_facts_retained(store, "hrreg_v1", operation_a, "v1-profile")
     store.close()
 
     # Second reopen is idempotent and still sound.
     reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
-    _assert_coupled_facts_retained(reopened, "hrreg_v1", operation_a, "v1-profile", has_candidate=True)
+    _assert_coupled_facts_retained(reopened, "hrreg_v1", operation_a, "v1-profile")
     reopened.close()
 
 
@@ -546,12 +545,278 @@ def test_v0_migration_removes_unique_and_allows_corrected_candidate_b(tmp_path: 
         identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
     )
 
-    _assert_coupled_facts_retained(store, "hrreg_v0", operation_a, "v0-profile", has_candidate=False)
+    _assert_coupled_facts_retained(store, "hrreg_v0", operation_a, "v0-profile")
     store.close()
 
     reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
-    _assert_coupled_facts_retained(reopened, "hrreg_v0", operation_a, "v0-profile", has_candidate=False)
+    _assert_coupled_facts_retained(reopened, "hrreg_v0", operation_a, "v0-profile")
     reopened.close()
+
+
+def test_v0_terminal_a_consumes_first_slot_so_b_is_ordinal_2(tmp_path: Path) -> None:
+    """A migrated terminal v0 operation occupies candidate ordinal 1."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    operation_a = _seed_legacy_v0_database(db_path, "hrreg_v0_slot", "v0-slot", wrapper_path)
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    candidates_before_b = store.list_candidates("hrreg_v0_slot")
+    assert len(candidates_before_b) == 1
+    assert candidates_before_b[0].operation_id == operation_a
+    assert candidates_before_b[0].attempt_ordinal == 1
+    assert candidates_before_b[0].state == "failed"
+
+    operation_b = store.reserve(
+        "hrreg_v0_slot", identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is not None
+    store.receive(
+        "hrreg_v0_slot", operation_b, wrapper_sha256="c" * 64, wrapper_facts={},
+        children=[], workspace_adapter_id="codex",
+        identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+
+    candidates = store.list_candidates("hrreg_v0_slot")
+    assert len(candidates) == 2
+    assert candidates[0].operation_id == operation_a
+    assert candidates[0].attempt_ordinal == 1
+    assert candidates[1].operation_id == operation_b
+    assert candidates[1].attempt_ordinal == 2
+    store.close()
+
+
+def test_v0_terminal_a_then_b_terminal_refuses_c(tmp_path: Path) -> None:
+    """A terminal -> changed B once -> B terminal -> C is refused non-consumingly."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    operation_a = _seed_legacy_v0_database(db_path, "hrreg_v0_abc", "v0-abc", wrapper_path)
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    # Admit changed B as ordinal 2.
+    operation_b = store.reserve(
+        "hrreg_v0_abc", identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is not None
+    store.receive(
+        "hrreg_v0_abc", operation_b, wrapper_sha256="c" * 64, wrapper_facts={},
+        children=[], workspace_adapter_id="codex",
+        identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+
+    # B terminal-fails for a non-conformance reason.
+    assert store.plan_projection(operation_b, now=6.0)
+    assert store.mark_failed(operation_b, "profile_binding_failed", now=7.0)
+
+    # C is refused: parent is closed/exhausted.
+    operation_c = store.reserve(
+        "hrreg_v0_abc", identity_hash="hash-c" * 16, identity_blob="blob-c", now=8.0,
+    )
+    assert operation_c is None
+    assert store.parent_state("hrreg_v0_abc") == "failed"
+
+    # Exactly two candidate facts exist; no third receipt/probe was created.
+    fingerprint = fingerprint_registration_token("hrreg_v0_abc")
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 2
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 2
+    store.close()
+
+
+def test_v0_backfilled_identity_fences_identical_and_reordered_replay(tmp_path: Path) -> None:
+    """Retained A and B identities reject identical/reordered replay with 409."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    operation_a = _seed_legacy_v0_database(db_path, "hrreg_v0_fence", "v0-fence", wrapper_path)
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    # Capture the backfilled A identity.
+    candidate_a = store.list_candidates("hrreg_v0_fence")[0]
+    identity_a = store._conn.execute(
+        "SELECT identity_hash, identity_blob FROM direct_connect_identity_history WHERE candidate_id = ?",
+        (candidate_a.candidate_id,),
+    ).fetchone()
+
+    # Identical A replay is rejected as a duplicate.
+    verdict, _ = store.evaluate_admission(
+        "hrreg_v0_fence",
+        identity_hash=identity_a["identity_hash"],
+        identity_blob=identity_a["identity_blob"],
+        now=5.0,
+    )
+    assert verdict == "duplicate"
+
+    # Admit changed B.
+    operation_b = store.reserve(
+        "hrreg_v0_fence", identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is not None
+    store.receive(
+        "hrreg_v0_fence", operation_b, wrapper_sha256="c" * 64, wrapper_facts={},
+        children=[], workspace_adapter_id="codex",
+        identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+
+    # Identical B replay is rejected.
+    verdict, _ = store.evaluate_admission(
+        "hrreg_v0_fence",
+        identity_hash="hash-b" * 16,
+        identity_blob="blob-b",
+        now=5.0,
+    )
+    assert verdict == "duplicate"
+
+    # Reordered A replay (after B) is still rejected.
+    verdict, _ = store.evaluate_admission(
+        "hrreg_v0_fence",
+        identity_hash=identity_a["identity_hash"],
+        identity_blob=identity_a["identity_blob"],
+        now=5.0,
+    )
+    assert verdict == "duplicate"
+
+    # No extra candidate or receipt was created.
+    fingerprint = fingerprint_registration_token("hrreg_v0_fence")
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 2
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 2
+    store.close()
+
+
+def test_v0_backfill_is_idempotent_across_reopen(tmp_path: Path) -> None:
+    """Reopening a migrated v0 database does not duplicate backfill facts."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    _seed_legacy_v0_database(db_path, "hrreg_v0_reopen", "v0-reopen", wrapper_path)
+
+    first = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    first_candidates = first.list_candidates("hrreg_v0_reopen")
+    assert len(first_candidates) == 1
+    first.close()
+
+    second = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    second_candidates = second.list_candidates("hrreg_v0_reopen")
+    assert len(second_candidates) == 1
+    assert second_candidates[0].operation_id == first_candidates[0].operation_id
+    assert second_candidates[0].candidate_id == first_candidates[0].candidate_id
+    second.close()
+
+    # Two reopens: still exactly one backfilled candidate.
+    third = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert len(third.list_candidates("hrreg_v0_reopen")) == 1
+    third.close()
+
+
+def test_v0_nonterminal_legacy_operation_is_not_backfilled(tmp_path: Path) -> None:
+    """A v0 operation without a terminal failed projection stays conservative."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_nonterminal"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-nonterminal", wrapper_path)
+
+    # Remove the terminal projection, leaving the operation nonterminal.
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM direct_connect_projections WHERE operation_id = ?", (operation_a,))
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    # No parent/candidate backfill because the operation is not terminal.
+    assert store.parent_state(token) is None
+    assert store.list_candidates(token) == []
+
+    # B would be admitted as ordinal 1 if it were submitted (not tested here);
+    # the key invariant is that the nonterminal legacy row is not synthesized.
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_v0_committed_legacy_operation_is_not_backfilled(tmp_path: Path) -> None:
+    """An approved (committed) v0 operation is not bridged into retry lifecycle."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_committed"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-committed", wrapper_path)
+
+    # Change the projection to committed (approved), not terminal failed.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_projections SET state = 'committed', reason = NULL WHERE operation_id = ?",
+        (operation_a,),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert store.parent_state(token) is None
+    assert store.list_candidates(token) == []
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_v0_malformed_artifacts_are_not_backfilled(tmp_path: Path) -> None:
+    """A terminal v0 operation with unusable artifact facts is left fail-closed."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_malformed"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-malformed", wrapper_path)
+
+    # Corrupt the wrapper structural facts so identity cannot be normalized.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET structural_facts = 'not-json' WHERE operation_id = ? AND slot = 'wrapper'",
+        (operation_a,),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert store.parent_state(token) is None
+    assert store.list_candidates(token) == []
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    store.close()
 
 
 def test_migration_is_idempotent_for_already_modern_database(tmp_path: Path) -> None:
@@ -675,12 +940,12 @@ def test_migration_recovers_from_every_interruption_stage(tmp_path: Path, stage:
         identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
     )
 
-    _assert_coupled_facts_retained(store, "hrreg_recover", operation_a, "recover-profile", has_candidate=True)
+    _assert_coupled_facts_retained(store, "hrreg_recover", operation_a, "recover-profile")
     store.close()
 
     # Reopen again to prove recovery state is stable.
     reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
-    _assert_coupled_facts_retained(reopened, "hrreg_recover", operation_a, "recover-profile", has_candidate=True)
+    _assert_coupled_facts_retained(reopened, "hrreg_recover", operation_a, "recover-profile")
     assert reopened._unique_token_fingerprint_index("direct_connect_operations") is None
     assert reopened._unique_token_fingerprint_index("direct_connect_receipts") is None
     reopened.close()
@@ -791,6 +1056,100 @@ def test_v1_migration_allows_corrected_candidate_b_via_http_ingress(tmp_path: Pa
     assert cursor.execute(
         "SELECT 1 FROM direct_connect_identity_history WHERE candidate_id = ?",
         (candidate_a,),
+    ).fetchone() is not None
+
+    # B is recorded as a second accepted candidate.
+    candidates = cursor.execute(
+        "SELECT operation_id, attempt_ordinal FROM direct_connect_candidates WHERE token_fingerprint = ? ORDER BY attempt_ordinal",
+        (fingerprint_registration_token(token),),
+    ).fetchall()
+    assert len(candidates) == 2
+    assert candidates[0]["operation_id"] == operation_a
+    assert candidates[1]["operation_id"] == operation_b
+
+    # Replaying the identical B identity is rejected as a duplicate.
+    replay = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_connect_payload(wrapper_hash_b, child_b),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"].startswith("duplicate")
+
+
+def test_v0_migration_allows_corrected_candidate_b_via_http_ingress(tmp_path: Path, monkeypatch) -> None:
+    """HTTP ingress proof: legacy v0 DB with failed A accepts corrected B after migration."""
+    import time
+
+    db_path = tmp_path / "direct.db"
+    runtime_root = tmp_path / "daemon"
+    wrapper_path = runtime_root / "adapters" / "recover-profile-adapter"
+    token = "hrreg_http_v0"
+    future = time.time() + 1000.0
+    operation_a = _seed_legacy_v0_database(
+        db_path, token, "recover-profile", wrapper_path, expires_at=future
+    )
+
+    # Build daemon state around the legacy DB so opening the store triggers migration.
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(runtime_root))
+    paths.ensure_daemon_home()
+    paths.ensure_token()
+    state = DaemonState.idle(Settings())
+    state.direct_connect_authority_store.close()
+    state.direct_connect_authority_store = DirectConnectAuthorityStore(db_path, runtime_root=runtime_root)
+
+    # The legacy DB already received A; mark the registration token consumed.
+    record = state.registration_token_store._validate_raw(token, now=future - 1.0)
+    if record is not None:
+        record.consumed = True
+        record.reserved = False
+
+    from runtime.daemon.routes import auth, direct_connect
+
+    monkeypatch.setattr(auth, "_LOCAL_HOSTS", auth._LOCAL_HOSTS | {"testclient"})
+    monkeypatch.setattr(direct_connect, "_LOCAL_HOSTS", direct_connect._LOCAL_HOSTS | {"testclient"})
+
+    tc = TestClient(create_app(state))
+    tc.headers.update({"Authorization": f"Bearer {paths.read_token()}"})
+
+    # Create genuinely changed candidate B artifacts.
+    child_a = tmp_path / "bin" / "child-a"
+    _write_executable(child_a, b"#!/bin/sh\necho a\n")
+    _write_executable(wrapper_path, b"#!/bin/sh\necho wrapper-a\n")
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_b, b"#!/bin/sh\necho b\n")
+    wrapper_hash_b = _write_executable(wrapper_path, b"#!/bin/sh\necho wrapper-b\n")
+
+    # The corrected B /connect call must succeed (201) and create a second operation.
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_connect_payload(wrapper_hash_b, child_b),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["state"] == "received_nonlaunchable"
+    operation_b = body["operation_id"]
+    assert operation_b != operation_a
+
+    # A remains intact: operation, receipt, projection, event, candidate, identity history.
+    store = state.direct_connect_authority_store
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT 1 FROM direct_connect_operations WHERE operation_id = ?",
+        (operation_a,),
+    ).fetchone() is not None
+    assert cursor.execute(
+        "SELECT 1 FROM direct_connect_receipts WHERE operation_id = ?",
+        (operation_a,),
+    ).fetchone() is not None
+    assert cursor.execute(
+        "SELECT state FROM direct_connect_projections WHERE operation_id = ?",
+        (operation_a,),
+    ).fetchone()["state"] == "failed"
+    assert cursor.execute(
+        "SELECT 1 FROM direct_connect_candidates WHERE operation_id = ?",
+        (operation_a,),
     ).fetchone() is not None
 
     # B is recorded as a second accepted candidate.

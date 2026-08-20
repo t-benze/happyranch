@@ -437,7 +437,183 @@ class DirectConnectAuthorityStore:
             """CREATE INDEX IF NOT EXISTS idx_direct_connect_identity_history_token
                ON direct_connect_identity_history(token_fingerprint)"""
         )
+        self._backfill_terminal_v0_candidates()
         self._conn.commit()
+
+    def _identity_from_operation_artifacts(
+        self,
+        cursor: sqlite3.Cursor,
+        operation_id: str,
+        wrapper_destination: Path,
+        workspace_adapter_id: str,
+    ) -> tuple[str, str] | tuple[None, None]:
+        """Reconstruct a normalized identity hash/blob from durable receipt artifacts.
+
+        Returns ``(None, None)`` when artifacts are missing, malformed, or do not
+        match the server-issued wrapper destination. The canonical form uses the
+        current manifest version (2) because that is the only version the intake
+        route accepts; this lets a later genuinely identical submission collide
+        with the migrated identity.
+        """
+        wrapper_rows = cursor.execute(
+            """SELECT slot, kind, declared_path, sha256, structural_facts
+               FROM direct_connect_artifacts
+               WHERE operation_id = ? AND kind = 'immutable_wrapper'""",
+            (operation_id,),
+        ).fetchall()
+        if len(wrapper_rows) != 1:
+            return None, None
+        wrapper_row = wrapper_rows[0]
+        if wrapper_row["slot"] != "wrapper":
+            return None, None
+        wrapper_path = Path(wrapper_row["declared_path"])
+        if wrapper_path != wrapper_destination:
+            return None, None
+        try:
+            wrapper_facts = json.loads(wrapper_row["structural_facts"])
+        except json.JSONDecodeError:
+            return None, None
+
+        child_rows = cursor.execute(
+            """SELECT slot, kind, declared_path, sha256, structural_facts
+               FROM direct_connect_artifacts
+               WHERE operation_id = ? AND kind = 'upgradeable_child'
+               ORDER BY declared_path""",
+            (operation_id,),
+        ).fetchall()
+        if not child_rows:
+            return None, None
+
+        identity_children: list[dict[str, object]] = []
+        for child_row in child_rows:
+            try:
+                child_facts = json.loads(child_row["structural_facts"])
+            except json.JSONDecodeError:
+                return None, None
+            version_probe_argv: list[str] = []
+            if isinstance(child_facts, dict):
+                probe = child_facts.get("version_probe_argv")
+                if isinstance(probe, list):
+                    version_probe_argv = [str(v) for v in probe]
+            identity_children.append(
+                {
+                    "slot": child_row["slot"],
+                    "path": child_row["declared_path"],
+                    "sha256": child_row["sha256"],
+                    "facts": child_facts,
+                    "version_probe_argv": version_probe_argv,
+                }
+            )
+
+        try:
+            identity_hash = self.normalize_identity_hash(
+                wrapper_path,
+                wrapper_row["sha256"],
+                wrapper_facts,
+                identity_children,
+                workspace_adapter_id,
+                2,
+            )
+        except (ValueError, TypeError):
+            return None, None
+
+        canonical_children = sorted(
+            [
+                {
+                    "path": c["path"],
+                    "sha256": c["sha256"],
+                    "facts": c["facts"],
+                    "version_probe_argv": c["version_probe_argv"],
+                }
+                for c in identity_children
+            ],
+            key=lambda c: c["path"],
+        )
+        canonical = {
+            "domain": _IDENTITY_DOMAIN,
+            "wrapper_path": str(wrapper_path),
+            "wrapper_sha256": wrapper_row["sha256"],
+            "wrapper_facts": wrapper_facts,
+            "children": canonical_children,
+            "workspace_adapter_id": workspace_adapter_id,
+            "manifest_version": 2,
+        }
+        identity_blob = json.dumps(canonical, sort_keys=True)
+        return identity_hash, identity_blob
+
+    def _backfill_terminal_v0_candidates(self, now: float | None = None) -> None:
+        """Bridge terminal legacy v0 operations into the candidate ledger.
+
+        A legacy v0 operation has no parent/candidate/identity rows because those
+        tables were added in THR-160. When its projection has already reached a
+        terminal ``failed`` state, atomically materialize the immutable parent
+        lifecycle, failed candidate attempt ordinal 1, and normalized identity
+        history from the durable receipt artifacts. This consumes the first
+        candidate slot so a later corrected candidate B is admitted as ordinal 2
+        and the two-candidate cap correctly refuses candidate C after B
+        terminal-fails.
+
+        Only operations with a failed projection, a matching receipt, no existing
+        candidate row, and no parent lifecycle row are bridged. Nonterminal,
+        committed, malformed, or already-v1 rows are left conservative/
+        fail-closed. The backfill is idempotent: on reopen the candidate row
+        already exists, so the operation is skipped.
+        """
+        now = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.cursor()
+            rows = cursor.execute(
+                """SELECT o.operation_id, o.token_fingerprint, o.workspace_adapter_id,
+                          p.reason
+                   FROM direct_connect_operations o
+                   JOIN direct_connect_receipts r ON r.operation_id = o.operation_id
+                   JOIN direct_connect_projections p ON p.operation_id = o.operation_id
+                   LEFT JOIN direct_connect_candidates c ON c.operation_id = o.operation_id
+                   LEFT JOIN direct_connect_parent_lifecycles parent
+                         ON parent.token_fingerprint = o.token_fingerprint
+                   WHERE p.state = 'failed'
+                     AND c.candidate_id IS NULL
+                     AND parent.token_fingerprint IS NULL"""
+            ).fetchall()
+            for row in rows:
+                fingerprint = row["token_fingerprint"]
+                operation_id = row["operation_id"]
+                workspace_adapter_id = row["workspace_adapter_id"]
+                authority = self._read_authority(cursor, fingerprint)
+                if authority is None:
+                    continue
+                identity_pair = self._identity_from_operation_artifacts(
+                    cursor,
+                    operation_id,
+                    authority.wrapper_destination,
+                    workspace_adapter_id,
+                )
+                if identity_pair == (None, None):
+                    continue
+                identity_hash, identity_blob = identity_pair
+                candidate_id = str(uuid.uuid4())
+                created_at = cursor.execute(
+                    "SELECT created_at FROM direct_connect_operations WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()["created_at"]
+                cursor.execute(
+                    """INSERT INTO direct_connect_parent_lifecycles
+                       (token_fingerprint, state, latest_accepted_candidate_id, created_at, updated_at, expires_at)
+                       VALUES (?, 'open', ?, ?, ?, ?)""",
+                    (fingerprint, candidate_id, created_at, now, authority.expires_at),
+                )
+                cursor.execute(
+                    """INSERT INTO direct_connect_candidates
+                       (candidate_id, token_fingerprint, operation_id, attempt_ordinal, state, identity_hash, created_at)
+                       VALUES (?, ?, ?, 1, 'failed', ?, ?)""",
+                    (candidate_id, fingerprint, operation_id, identity_hash, created_at),
+                )
+                cursor.execute(
+                    """INSERT INTO direct_connect_identity_history
+                       (history_id, token_fingerprint, candidate_id, identity_hash, identity_blob, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (str(uuid.uuid4()), fingerprint, candidate_id, identity_hash, identity_blob, created_at),
+                )
 
     def _read_authority(
         self, cursor: sqlite3.Cursor, token_fingerprint: str
