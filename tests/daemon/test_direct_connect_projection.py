@@ -87,6 +87,50 @@ def _fake_probe_output(adapter_id: str):
     return AdapterOutput.model_validate(payload)
 
 
+def _receive_identity_candidate(
+    store, tmp_path, *, token: str, operation_id: str,
+    wrapper_body: bytes = b"#!/bin/sh\ncat\n", child_name: str = "child",
+    identity_hash: str, identity_blob: str, now: float = 2,
+) -> None:
+    authority = store.get_for_token(token)
+    wrapper = authority.wrapper_destination
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_bytes(wrapper_body)
+    wrapper.chmod(0o700)
+    wrapper_hash = hashlib.sha256(wrapper_body).hexdigest()
+    child = tmp_path / "bin" / child_name
+    child.parent.mkdir(parents=True, exist_ok=True)
+    child.write_bytes(b"#!/bin/sh\nexit 0\n")
+    child.chmod(0o700)
+    child_hash = hashlib.sha256(child.read_bytes()).hexdigest()
+    store.receive(
+        token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts={},
+        children=[{"slot": "cli", "path": str(child), "sha256": child_hash, "facts": {}}],
+        workspace_adapter_id="codex",
+        identity_hash=identity_hash, identity_blob=identity_blob, now=now,
+    )
+
+
+def _mint_and_receive_identity(
+    store, tmp_path, *, token: str, profile_name: str,
+    wrapper_body: bytes = b"#!/bin/sh\ncat\n",
+    identity_hash: str, identity_blob: str,
+) -> str:
+    store.mint_authority(
+        token_plaintext=token, name="custom-cli", intended_profile_name=profile_name,
+        workspace_adapter_id="codex", issued_at=1, expires_at=1000,
+    )
+    operation_id = store.reserve(
+        token, identity_hash=identity_hash, identity_blob=identity_blob, now=2,
+    )
+    assert operation_id is not None
+    _receive_identity_candidate(
+        store, tmp_path, token=token, operation_id=operation_id,
+        wrapper_body=wrapper_body, identity_hash=identity_hash, identity_blob=identity_blob, now=2,
+    )
+    return operation_id
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
@@ -354,3 +398,88 @@ def test_projection_state_survives_store_reopen(tmp_path, monkeypatch):
     assert projection.state == "committed"
     assert projection.adapter_id == committed.adapter_id
     reopened.close()
+
+
+def test_same_parent_later_candidate_b_supersedes_earlier_candidate_a(store, tmp_path, monkeypatch):
+    """Parent-local ordering: terminal failed candidate A is not re-driven once corrected candidate B exists."""
+    from runtime.daemon.direct_connect_projection import project
+    from runtime.orchestrator import custom_adapter_registry
+
+    op_a = _mint_and_receive_identity(
+        store, tmp_path, token="hrreg_same_parent", profile_name="same-parent-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+    )
+    assert store.plan_projection(op_a, now=3)
+    assert store.mark_failed(op_a, "conformance_probe_failed: missing canary", now=4)
+
+    op_b = store.reserve(
+        "hrreg_same_parent", identity_hash="hash-b", identity_blob="blob-b", now=5,
+    )
+    assert op_b is not None
+    _receive_identity_candidate(
+        store, tmp_path, token="hrreg_same_parent", operation_id=op_b,
+        wrapper_body=b"#!/bin/sh\necho v2\n", child_name="child-b",
+        identity_hash="hash-b", identity_blob="blob-b", now=5,
+    )
+
+    # A already has a failed projection; driving it again returns the existing
+    # terminal outcome without starting a second probe. B is the sole candidate
+    # that may proceed.
+    outcome_a = project(store, op_a)
+    assert outcome_a.state == "failed"
+    assert "conformance_probe_failed" in outcome_a.reason
+
+    monkeypatch.setattr(
+        custom_adapter_registry, "run_conformance_probe",
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
+    )
+    outcome_b = project(store, op_b)
+
+    assert outcome_b.state == "committed"
+    assert outcome_b.profile_name == "same-parent-profile"
+
+
+def test_cross_parent_terminal_b_does_not_suppress_new_authority_a(store, tmp_path, monkeypatch):
+    """A newer authority's first candidate A must not be superseded by an older authority's terminal candidate B."""
+    from runtime.daemon.direct_connect_projection import project
+    from runtime.orchestrator import custom_adapter_registry
+
+    # Authority 1: accepted candidate A, then terminal corrected candidate B.
+    op_a1 = _mint_and_receive_identity(
+        store, tmp_path, token="hrreg_old_parent", profile_name="shared-profile",
+        identity_hash="hash-a1", identity_blob="blob-a1",
+    )
+    assert store.plan_projection(op_a1, now=3)
+    assert store.mark_failed(op_a1, "conformance_probe_failed: missing canary", now=4)
+
+    op_b1 = store.reserve(
+        "hrreg_old_parent", identity_hash="hash-b1", identity_blob="blob-b1", now=5,
+    )
+    assert op_b1 is not None
+    _receive_identity_candidate(
+        store, tmp_path, token="hrreg_old_parent", operation_id=op_b1,
+        wrapper_body=b"#!/bin/sh\necho v2\n", child_name="child-b1",
+        identity_hash="hash-b1", identity_blob="blob-b1", now=5,
+    )
+    assert store.plan_projection(op_b1, now=6)
+    assert store.mark_failed(op_b1, "integrity_probe_failed: bad signature", now=7)
+
+    # Authority 2: distinct token fingerprint, same profile, first candidate A.
+    op_a2 = _mint_and_receive_identity(
+        store, tmp_path, token="hrreg_new_parent", profile_name="shared-profile",
+        identity_hash="hash-a2", identity_blob="blob-a2",
+    )
+
+    monkeypatch.setattr(
+        custom_adapter_registry, "run_conformance_probe",
+        lambda executable, name, **_kwargs: _fake_probe_output(name),
+    )
+
+    outcome = project(store, op_a2)
+
+    assert outcome.state == "committed", outcome.reason
+    assert outcome.profile_name == "shared-profile"
+
+    # Old authority's retained history is untouched.
+    assert len(store.list_candidates("hrreg_old_parent")) == 2
+    assert len(store.list_candidates("hrreg_new_parent")) == 1

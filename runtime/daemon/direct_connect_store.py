@@ -102,6 +102,7 @@ class DirectConnectReceiptArtifacts:
     children: list[dict[str, str]]
     intended_profile_name: str
     workspace_adapter_id: str
+    token_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -663,19 +664,18 @@ class DirectConnectAuthorityStore:
                 for row in rows
             ]
 
-    def get_latest_candidate_for_profile(
-        self, intended_profile_name: str
+    def get_latest_candidate_for_token_fingerprint(
+        self, token_fingerprint: str
     ) -> DirectConnectCandidate | None:
-        """Return the latest accepted candidate for a profile, if any."""
+        """Return the latest accepted candidate for one parent authority, if any."""
         with self._lock:
             row = self._conn.execute(
-                """SELECT c.candidate_id, c.operation_id, c.attempt_ordinal, c.state, c.identity_hash
-                   FROM direct_connect_candidates c
-                   JOIN direct_connect_authorities a ON a.token_fingerprint = c.token_fingerprint
-                   WHERE a.intended_profile_name = ?
-                   ORDER BY c.attempt_ordinal DESC, c.created_at DESC
+                """SELECT candidate_id, operation_id, attempt_ordinal, state, identity_hash
+                   FROM direct_connect_candidates
+                   WHERE token_fingerprint = ?
+                   ORDER BY attempt_ordinal DESC, created_at DESC
                    LIMIT 1""",
-                (intended_profile_name,),
+                (token_fingerprint,),
             ).fetchone()
             if row is None:
                 return None
@@ -1261,6 +1261,7 @@ class DirectConnectAuthorityStore:
             return None
         return DirectConnectReceiptArtifacts(
             operation_id=operation_id,
+            token_fingerprint=operation["token_fingerprint"],
             wrapper_path=wrapper_path,
             wrapper_sha256=wrapper_sha256,
             children=children,

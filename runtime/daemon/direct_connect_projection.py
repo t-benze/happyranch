@@ -82,9 +82,11 @@ def project(
     if artifacts is None:
         raise RuntimeError(f"no receipt found for direct-connect operation {operation_id!r}")
 
-    # Only the latest accepted candidate for a parent may be driven forward.
-    # Older candidates are reported as superseded without starting a probe.
-    latest = store.get_latest_candidate_for_profile(artifacts.intended_profile_name)
+    # Only the latest accepted candidate for this operation's parent authority
+    # may be driven forward. Older candidates of the same parent are reported as
+    # superseded without starting a probe; candidates of other authorities for
+    # the same profile name are ignored.
+    latest = store.get_latest_candidate_for_token_fingerprint(artifacts.token_fingerprint)
     if latest is not None and latest.operation_id != operation_id:
         return ProjectionOutcome(
             state="failed", adapter_id=None, profile_name=None,
