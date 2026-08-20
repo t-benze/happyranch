@@ -1939,9 +1939,11 @@ def _enqueue_parent_if_waiting(
       - a subtask FAILED and its per-slice retry ceiling is exhausted
         (this slice was already retried once — its ``revisit_of_task_id``
         ancestor is a FAILED child of this same parent) → escalate a root
-        parent to ``escalated`` via ``try_escalate``, carrying the last
-        failure reason; or, for a non-root parent, fail it and recurse
-        upward (THR-033 root-only escalation). The parent does NOT
+        parent to ``escalated`` via ``try_escalate``, using the causal
+        terminal event: the current unresolved FAILED leaf of the logical
+        retry lineage, naming its task id, terminal status, verdict, and
+        note; or, for a non-root parent, fail it and recurse upward
+        (THR-033 root-only escalation). The parent does NOT
         cascade-fail — the founder or upstream manager resolves the
         termination per existing routes. The ceiling is
         ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's

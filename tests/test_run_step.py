@@ -3031,8 +3031,9 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
     runtime, db,
 ):
     """Startup/recovery or any caller may invoke _enqueue_parent_if_waiting with
-    a recovered FAILED ancestor. A later COMPLETED/SUPERSEDED descendant in the
-    same lineage must prevent re-escalation and must not mutate parent state."""
+    a recovered FAILED ancestor. A later SUPERSEDED descendant in the same
+    revisit_of_task_id lineage must retire the earlier failures, prevent re-
+    escalation, and must not mutate parent state."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
@@ -3045,6 +3046,7 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
         block_kind=BlockKind.DELEGATED, note="waiting",
     )
 
+    # Exhausted historical FAILED lineage.
     db.insert_task(TaskRecord(
         id="T-REC2-A", brief="slice A", assigned_agent="dev_agent",
         parent_task_id="T-REC2", task_type="subtask",
@@ -3061,13 +3063,13 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
         note="second failure — review rejected",
     )
 
-    # Later descendant completed → lineage recovered/retired.
+    # Later descendant SUPERSEDED via revisit_of_task_id → lineage retired.
     db.insert_task(TaskRecord(
-        id="T-REC2-A-R2", brief="final retry slice A", assigned_agent="dev_agent",
+        id="T-REC2-A-R2", brief="superseded retry slice A", assigned_agent="dev_agent",
         parent_task_id="T-REC2", revisit_of_task_id="T-REC2-A-R",
         task_type="subtask",
     ))
-    db.update_task("T-REC2-A-R2", status=TaskStatus.COMPLETED, note="done")
+    db.update_task("T-REC2-A-R2", status=TaskStatus.SUPERSEDED, note="replaced by owner")
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -3079,7 +3081,7 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
 
     parent = db.get_task("T-REC2")
     assert parent.status == TaskStatus.IN_PROGRESS, (
-        f"recovered-ancestor wake must not escalate; got {parent.status}"
+        f"recovered-ancestor wake with SUPERSEDED descendant must not escalate; got {parent.status}"
     )
     assert parent.block_kind == BlockKind.DELEGATED
     assert parent.note == parent_before.note
