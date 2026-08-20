@@ -198,7 +198,112 @@ class DirectConnectAuthorityStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
 
+    def _table_exists(self, table_name: str) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            ).fetchone()
+            is not None
+        )
+
+    def _unique_token_fingerprint_index(self, table_name: str) -> str | None:
+        """Return the name of a unique index on token_fingerprint, if any."""
+        for row in self._conn.execute(f"PRAGMA index_list({table_name})").fetchall():
+            if not row["unique"]:
+                continue
+            columns = [
+                info["name"]
+                for info in self._conn.execute(f"PRAGMA index_info({row['name']})").fetchall()
+            ]
+            if columns == ["token_fingerprint"]:
+                return row["name"]
+        return None
+
+    def _column_names(self, table_name: str) -> list[str]:
+        return [
+            row["name"]
+            for row in self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        ]
+
+    def _migrate_remove_token_fingerprint_uniqueness(
+        self, table_name: str, create_sql: str
+    ) -> None:
+        """Rebuild a legacy table so duplicate token_fingerprint rows are allowed.
+
+        The v0/v1 direct-connect schema enforced ``UNIQUE(token_fingerprint)`` on
+        ``direct_connect_operations`` and ``direct_connect_receipts``. That
+        constraint blocks the approved parent-authority/append-only candidate
+        retry model (candidate A and corrected candidate B share the same parent
+        token fingerprint). This migration removes only that uniqueness
+        enforcement, preserving every row, column, operation_id, receipt_id, and
+        coupled fact. It is idempotent and restart-safe across every durable
+        interruption boundary.
+        """
+        new_name = f"{table_name}_migration_new"
+
+        # Recovery: old table was dropped but the rename had not happened yet.
+        if not self._table_exists(table_name) and self._table_exists(new_name):
+            self._conn.execute(f"ALTER TABLE {new_name} RENAME TO {table_name}")
+            return
+
+        # Nothing to do for a fresh database.
+        if not self._table_exists(table_name):
+            return
+
+        # Recovery: a prior run was interrupted after copy. The new table may be
+        # partial, so discard it and repeat the whole rebuild atomically.
+        if self._table_exists(new_name):
+            self._conn.execute(f"DROP TABLE {new_name}")
+
+        # Already migrated (no unique index on token_fingerprint).
+        if self._unique_token_fingerprint_index(table_name) is None:
+            return
+
+        # Create the replacement table using the modern DDL (no UNIQUE).
+        new_create_sql = create_sql.replace(
+            f"CREATE TABLE IF NOT EXISTS {table_name}",
+            f"CREATE TABLE {new_name}",
+            1,
+        )
+        self._conn.execute(new_create_sql)
+
+        # Copy all existing rows preserving column order and every value.
+        columns = self._column_names(table_name)
+        column_list = ", ".join(columns)
+        self._conn.execute(
+            f"INSERT INTO {new_name} ({column_list}) SELECT {column_list} FROM {table_name}"
+        )
+
+        # Atomically replace the old table with the rebuilt one.
+        self._conn.execute(f"DROP TABLE {table_name}")
+        self._conn.execute(f"ALTER TABLE {new_name} RENAME TO {table_name}")
+
     def _init_schema(self) -> None:
+        # Before generic CREATE TABLE IF NOT EXISTS can hide a legacy schema,
+        # rebuild any existing operations/receipts tables that still enforce
+        # the v0/v1 token_fingerprint uniqueness constraint.
+        operations_create_sql = """CREATE TABLE IF NOT EXISTS direct_connect_operations (
+            operation_id TEXT PRIMARY KEY,
+            token_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+            intended_profile_name TEXT NOT NULL,
+            workspace_adapter_id TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )"""
+        receipts_create_sql = """CREATE TABLE IF NOT EXISTS direct_connect_receipts (
+            operation_id TEXT PRIMARY KEY,
+            token_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
+            created_at REAL NOT NULL
+        )"""
+        self._migrate_remove_token_fingerprint_uniqueness(
+            "direct_connect_operations", operations_create_sql
+        )
+        self._migrate_remove_token_fingerprint_uniqueness(
+            "direct_connect_receipts", receipts_create_sql
+        )
+
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS direct_connect_authorities (
                 token_fingerprint TEXT PRIMARY KEY,
@@ -229,16 +334,7 @@ class DirectConnectAuthorityStore:
                 updated_at REAL NOT NULL
             )"""
         )
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS direct_connect_operations (
-                operation_id TEXT PRIMARY KEY,
-                token_fingerprint TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
-                intended_profile_name TEXT NOT NULL,
-                workspace_adapter_id TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )"""
-        )
+        self._conn.execute(operations_create_sql)
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS direct_connect_artifacts (
                 operation_id TEXT NOT NULL,
@@ -250,14 +346,7 @@ class DirectConnectAuthorityStore:
                 PRIMARY KEY (operation_id, slot)
             )"""
         )
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS direct_connect_receipts (
-                operation_id TEXT PRIMARY KEY,
-                token_fingerprint TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state = 'received_nonlaunchable'),
-                created_at REAL NOT NULL
-            )"""
-        )
+        self._conn.execute(receipts_create_sql)
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS direct_connect_events (
                 event_id TEXT PRIMARY KEY,
