@@ -450,6 +450,71 @@ def test_retry_binding_failure_compensates_adapter_and_preserves_original_failur
         assert "binding failed" not in str(row[0]).lower()
 
 
+def test_initial_commit_binding_failure_normalizes_to_category_and_never_leaks_sentinel(
+    client, tmp_path, monkeypatch,
+):
+    """Initial projection profile-binding exceptions emit only the fixed category.
+
+    Every durable surface (HTTP commit response, status current view,
+    projection row, event trail) must show ``profile_binding_failed`` and never
+    the unique sentinel exception text, candidate output, or path material.
+    """
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    _fake_probe(monkeypatch)
+    sentinel = "SENTINEL-INITIAL-BIND-LEAK-TASK-5249"
+    monkeypatch.setattr(
+        custom_adapter_registry, "_perform_adapter_profile_binding",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profile_state"] == "failed"
+    assert body["reason"] == "profile_binding_failed"
+    assert sentinel.lower() not in str(body).lower()
+
+    # Status route (current) also redacts.
+    status = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
+    )
+    assert status.status_code == 200
+    status_body = status.json()
+    assert status_body["state"] == "failed_nonretryable"
+    assert status_body["reason"] == "profile_binding_failed"
+    assert status_body["profile_state"] == "failed"
+    assert sentinel.lower() not in str(status_body).lower()
+
+    # No live adapter/profile/registry residue.
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+
+    # Durable projection and event rows contain only the category.
+    store = state.direct_connect_authority_store
+    projection = store.get_projection(operation_id)
+    assert projection is not None
+    assert projection.state == "failed"
+    assert projection.reason == "profile_binding_failed"
+    assert sentinel.lower() not in str(projection.reason).lower()
+
+    event_details = store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? AND event_type = 'projection_failed'",
+        (operation_id,),
+    ).fetchall()
+    assert [row[0] for row in event_details] == ["profile_binding_failed"]
+    for row in store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? OR token_fingerprint = (SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?)",
+        (operation_id, operation_id),
+    ).fetchall():
+        assert sentinel.lower() not in str(row[0]).lower()
+
+
 @pytest.mark.parametrize("artifact", ["wrapper", "child"])
 def test_retry_rejects_tampered_persisted_snapshot_before_probe(client, tmp_path, monkeypatch, artifact):
     from runtime.orchestrator import custom_adapter_registry

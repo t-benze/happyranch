@@ -158,13 +158,18 @@ def project(
                 profile_name=artifacts.intended_profile_name,
                 workspace_adapter=artifacts.workspace_adapter_id,
             )
-        except Exception as exc:
+        except Exception:
             if adapter_created:
                 remove_adapter(adapter_id)
             elif replaced_adapter is not None:
                 save_adapter(replaced_adapter)
-            store.mark_failed(operation_id, f"profile_binding_failed: {exc}", now=now)
-            return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
+            # The direct gate persists only a fixed category; arbitrary
+            # exception text, paths, hashes, or candidate output must never
+            # reach durable rows or the HTTP response.
+            store.mark_failed(operation_id, "profile_binding_failed", now=now)
+            return ProjectionOutcome(
+                state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
+            )
     finally:
         release_store_lock()
 
