@@ -838,6 +838,203 @@ def _validate_executor(executor: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# THR-190: bounded bootstrap rollback journal.
+#
+# The executor-switch bootstrap write surface is explicit and bounded. The
+# adapters (PersistentWorkspaceSetup + Claude/Codex/Opencode/Pi) write only:
+#   CLAUDE.md, AGENTS.md, .claude/settings.json, opencode.json,
+#   task_history.md (+ the legacy recent_tasks.md rename source), and the
+#   memory/ structural transition (_index.md).
+# Bootstrap never writes into repos/, output/, artifacts/, or any other
+# workspace subtree. The prior full-workspace os.walk snapshot read every
+# regular file in a 29 GB workspace solely to compensate a bootstrap failure
+# — that traversal was the THR-190 latency root cause. This journal captures
+# only the owned paths above and never reads/touches repos/ or other broad
+# workspace content.
+#
+# One bootstrap write is NOT bounded: the legacy learnings/ -> memory/
+# structural migration (migrate_workspace) rewrites/copies an arbitrary
+# legacy learnings/ directory and rmtree()s it. A bounded journal cannot
+# reverse that migration losslessly, so that one case retains the
+# conservative full-workspace snapshot (see _bootstrap_runs_legacy_migration
+# and _capture_full_workspace_snapshot below).
+# ---------------------------------------------------------------------------
+
+# Bootstrap-owned regular-file paths (relative to the workspace root).
+_BOOTSTRAP_OWNED_FILES: tuple[str, ...] = (
+    "CLAUDE.md",
+    "AGENTS.md",
+    "opencode.json",
+    "task_history.md",
+    "recent_tasks.md",  # legacy rename source (recent_tasks.md -> task_history.md)
+    ".claude/settings.json",
+    "memory/_index.md",
+)
+
+# Directories bootstrap may create (removed only if empty and newly created).
+_BOOTSTRAP_OWNED_DIRS: tuple[str, ...] = (".claude", "memory")
+
+
+def _bootstrap_runs_legacy_migration(workspace: Path) -> bool:
+    """True when bootstrap will run the legacy learnings/ -> memory/ migration.
+
+    ``migrate_workspace`` performs its (unbounded) structural move only when
+    ``memory/`` is absent AND ``learnings/`` is present; in every other case it
+    is a no-op and the bounded journal is sufficient. This gate mirrors that
+    exact condition so the conservative full-workspace snapshot is retained
+    only for the one case a bounded journal cannot reverse losslessly.
+    """
+    return (workspace / "learnings").exists() and not (workspace / "memory").exists()
+
+
+class _BootstrapRollbackJournal:
+    """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
+
+    Records only ``_BOOTSTRAP_OWNED_FILES``/``_BOOTSTRAP_OWNED_DIRS``. ``restore``
+    returns a list of compensation error strings (empty when clean). Files that
+    did not exist before bootstrap are removed; files that existed are restored
+    to their original bytes; newly-created owned directories are removed when
+    empty. Canonical skill links (materialized by the union before capture) and
+    all other workspace content are never touched.
+    """
+
+    __slots__ = ("_files", "_dirs")
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes | None] = {}
+        self._dirs: set[str] = set()
+
+    @classmethod
+    def capture(cls, workspace: Path) -> "_BootstrapRollbackJournal":
+        journal = cls()
+        for rel in _BOOTSTRAP_OWNED_FILES:
+            fp = workspace / rel
+            original: bytes | None = None
+            if fp.is_file() and not fp.is_symlink():
+                try:
+                    original = fp.read_bytes()
+                except OSError:
+                    original = None  # unreadable owned file — treat as absent
+            journal._files[rel] = original
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if d.is_dir() and not d.is_symlink():
+                journal._dirs.add(dirname)
+        return journal
+
+    def restore(self, workspace: Path) -> list[str]:
+        errors: list[str] = []
+        for rel, original in self._files.items():
+            fp = workspace / rel
+            if original is None:
+                # Absent before bootstrap — remove anything bootstrap created.
+                if fp.is_symlink() or fp.is_file():
+                    try:
+                        fp.unlink()
+                    except OSError as exc:
+                        errors.append(f"Failed to remove new file {rel}: {exc}")
+            elif fp.is_symlink() or not fp.is_file():
+                # Existed before but bootstrap replaced it with a link or
+                # deleted it — restore the original bytes.
+                try:
+                    if fp.is_symlink() or fp.exists():
+                        fp.unlink()
+                    fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+            else:
+                try:
+                    if fp.read_bytes() != original:
+                        fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+        # Remove newly-created owned directories (only when empty).
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if dirname not in self._dirs and d.is_dir() and not d.is_symlink():
+                try:
+                    if not any(d.iterdir()):
+                        d.rmdir()
+                except OSError as exc:
+                    errors.append(
+                        f"Failed to remove new directory {dirname}: {exc}"
+                    )
+        return errors
+
+
+def _capture_full_workspace_snapshot(
+    workspace: Path,
+) -> tuple[set[str], dict[str, bytes]]:
+    """Conservative full-workspace snapshot for the legacy migration case only.
+
+    Retained solely because the learnings/ -> memory/ structural migration can
+    rewrite an arbitrary legacy directory, which the bounded journal cannot
+    reverse. Returns (snapshot_paths, contents) matching the historical shape.
+    """
+    pre_bootstrap_snapshot: set[str] = set()
+    pre_bootstrap_contents: dict[str, bytes] = {}
+    for root_dir, dirnames, filenames in os.walk(str(workspace)):
+        root_path = Path(root_dir)
+        rel_root = root_path.relative_to(workspace)
+        pre_bootstrap_snapshot.add(str(rel_root))
+        for name in filenames:
+            rel = str(rel_root / name) if str(rel_root) != "." else name
+            pre_bootstrap_snapshot.add(rel)
+            fp = root_path / name
+            if fp.is_file() and not fp.is_symlink():
+                try:
+                    pre_bootstrap_contents[rel] = fp.read_bytes()
+                except OSError:
+                    pass  # unreadable file — skip content snapshot
+        for name in dirnames:
+            pre_bootstrap_snapshot.add(
+                str(rel_root / name) if str(rel_root) != "." else name
+            )
+    return pre_bootstrap_snapshot, pre_bootstrap_contents
+
+
+def _restore_full_workspace(
+    workspace: Path,
+    pre_bootstrap_snapshot: set[str],
+    pre_bootstrap_contents: dict[str, bytes],
+) -> list[str]:
+    """Compensation for the legacy migration case (see ``_capture_full_workspace_snapshot``)."""
+    errors: list[str] = []
+    for rel, original_bytes in pre_bootstrap_contents.items():
+        fp = workspace / rel
+        if fp.is_file() and not fp.is_symlink():
+            try:
+                current = fp.read_bytes()
+                if current != original_bytes:
+                    fp.write_bytes(original_bytes)
+            except OSError as exc:
+                errors.append(f"Failed to restore file {rel}: {exc}")
+    for root_dir, _dirnames, filenames in os.walk(
+        str(workspace), topdown=False,
+    ):
+        root_path = Path(root_dir)
+        for name in filenames:
+            fp = root_path / name
+            rel = fp.relative_to(workspace)
+            if str(rel) not in pre_bootstrap_snapshot:
+                try:
+                    fp.unlink()
+                except OSError as exc:
+                    errors.append(f"Failed to remove new file {fp}: {exc}")
+        if str(root_path) != str(workspace):
+            rel_dir = root_path.relative_to(workspace)
+            if str(rel_dir) not in pre_bootstrap_snapshot:
+                try:
+                    if not any(root_path.iterdir()):
+                        root_path.rmdir()
+                except OSError as exc:
+                    errors.append(
+                        f"Failed to remove new directory {root_path}: {exc}"
+                    )
+    return errors
+
+
 @router.put("/agents/{agent_name}/executor")
 async def set_agent_executor(
     slug: str, agent_name: str, body: SetExecutorBody, org: OrgDep,
@@ -912,30 +1109,18 @@ async def set_agent_executor(
     # the switch become durable.
     if has_workspace:
         # ── Snapshot pre-bootstrap workspace state ──
-        # Every file, directory, link, and their contents that existed
-        # before bootstrap must survive a subsequent bootstrap failure
-        # exactly. Only artifacts newly created by the failed attempt
-        # will be removed.
-        pre_bootstrap_snapshot: set[str] = set()
-        pre_bootstrap_contents: dict[str, bytes] = {}
-        for root_dir, dirnames, filenames in os.walk(str(workspace)):
-            root_path = Path(root_dir)
-            rel_root = root_path.relative_to(workspace)
-            pre_bootstrap_snapshot.add(str(rel_root))
-            for name in filenames:
-                rel = str(rel_root / name) if str(rel_root) != "." else name
-                pre_bootstrap_snapshot.add(rel)
-                # Snapshot contents for restoration if modified
-                fp = root_path / name
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        pre_bootstrap_contents[rel] = fp.read_bytes()
-                    except OSError:
-                        pass  # unreadable file — skip content snapshot
-            for name in dirnames:
-                pre_bootstrap_snapshot.add(
-                    str(rel_root / name) if str(rel_root) != "." else name
-                )
+        # THR-190: the modern bootstrap write surface is bounded to a small,
+        # explicit set of owned files. Capture only those; never traverse or
+        # read repos/ or other broad workspace content. The legacy
+        # learnings/ -> memory/ migration is the one unbounded write, so it
+        # alone retains the conservative full-workspace snapshot.
+        legacy_migration = _bootstrap_runs_legacy_migration(workspace)
+        if legacy_migration:
+            pre_bootstrap_snapshot, pre_bootstrap_contents = (
+                _capture_full_workspace_snapshot(workspace)
+            )
+        else:
+            rollback_journal = _BootstrapRollbackJournal.capture(workspace)
 
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         try:
@@ -954,47 +1139,18 @@ async def set_agent_executor(
             )
             # ── Snapshot-and-restore compensation ──
             # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
-            # 2. Restore any pre-existing files whose contents were modified.
-            # Every pre-existing workspace file/directory/link is preserved
-            # exactly. Errors during cleanup are surfaced, not suppressed.
-            errors: list[str] = []
-            # Restore modified pre-existing files to original contents
-            for rel, original_bytes in pre_bootstrap_contents.items():
-                fp = workspace / rel
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        current = fp.read_bytes()
-                        if current != original_bytes:
-                            fp.write_bytes(original_bytes)
-                    except OSError as exc:
-                        errors.append(
-                            f"Failed to restore file {rel}: {exc}"
-                        )
-            for root_dir, _dirnames, filenames in os.walk(
-                str(workspace), topdown=False,
-            ):
-                root_path = Path(root_dir)
-                for name in filenames:
-                    fp = root_path / name
-                    rel = fp.relative_to(workspace)
-                    if str(rel) not in pre_bootstrap_snapshot:
-                        try:
-                            fp.unlink()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new file {fp}: {exc}"
-                            )
-                # Remove empty directories that were newly created
-                if str(root_path) != str(workspace):
-                    rel_dir = root_path.relative_to(workspace)
-                    if str(rel_dir) not in pre_bootstrap_snapshot:
-                        try:
-                            if not any(root_path.iterdir()):
-                                root_path.rmdir()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new directory {root_path}: {exc}"
-                            )
+            # 2. Restore any pre-existing owned files whose contents changed.
+            # Canonical skill links and all non-owned workspace content are
+            # preserved exactly. Errors during cleanup are surfaced, not
+            # suppressed.
+            if legacy_migration:
+                errors = _restore_full_workspace(
+                    workspace,
+                    pre_bootstrap_snapshot,
+                    pre_bootstrap_contents,
+                )
+            else:
+                errors = rollback_journal.restore(workspace)
             if errors:
                 _logger.error(
                     "Executor switch bootstrap cleanup errors: %s",

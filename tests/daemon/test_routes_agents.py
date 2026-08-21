@@ -2236,23 +2236,24 @@ def test_set_executor_materialization_failure_fail_closed(
 
 
 def test_set_executor_bootstrap_failure_after_successful_union(
-    tmp_home, app, org_state, auth_headers,
+    tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """Real-union adversarial regression: the six-context union must succeed
-    before any persistent mutation, and post-union bootstrap failure must
-    not change pre-existing workspace state, frontmatter, audit, or launch.
+    """THR-190 bounded-rollback regression: the six-context union must succeed
+    before any persistent mutation, and a post-union bootstrap failure must
+    restore only the bootstrap-owned files — never touching canonical skill
+    links, non-owned workspace content, frontmatter, or audit state.
 
-    Exercises the REAL union (not mocked), seeds pre-existing CLAUDE.md,
-    AGENTS.md, .claude/ .agents/ canonical links, and other bootstrap state,
-    forces ensure_workspace_ready to write then raise, and asserts:
-    - HTTP 400 with named error executor_bootstrap_failed
-    - agent.yaml unchanged (still old executor)
-    - agent .md frontmatter unchanged
-    - Pre-existing file byte contents unchanged (CLAUDE.md, AGENTS.md)
-    - Pre-existing .claude/ and .agents/ symlinks preserved
-    - No new executor bootstrap artifacts survive
-    - No audit row produced"""
-    import os as _os
+    Uses a REAL adapter writer seam (CodexWorkspaceAdapter.write_agents_md)
+    rather than a broad ContextBuilder mock: the real bootstrap writes its
+    owned files, the seam writes AGENTS.md then raises, and the bounded
+    rollback journal must:
+    - restore pre-existing AGENTS.md byte contents
+    - remove the newly-created memory/_index.md index and memory/ directory
+    - retain canonical .agents/skills/ links materialized by the union
+    - leave agent frontmatter and audit state unchanged
+    - return HTTP 400 executor_bootstrap_failed"""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2261,75 +2262,42 @@ def test_set_executor_bootstrap_failure_after_successful_union(
     (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
     # ── Seed pre-existing bootstrap state ──
-    # Regular files with known content
     (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
     (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
-    # .claude/ directory with non-skills content (union only manages skills/)
-    (workspace / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     (workspace / ".claude" / "settings.json").write_text('{"old": true}')
-    # .claude/ symlink outside skills/ (union won't touch)
     link_a = workspace / ".claude" / "old-link-a"
     link_a.symlink_to(workspace / ".claude" / "old-link-a-target")
-    # .agents/ directory with non-skills content
-    (workspace / ".agents" / "config.json").parent.mkdir(parents=True, exist_ok=True)
-    (workspace / ".agents" / "config.json").write_text('{"old": true}')
-    # .agents/ symlink outside skills/ (union won't touch)
+    (workspace / ".agents").mkdir(parents=True, exist_ok=True)
     link_b = workspace / ".agents" / "old-link-b"
     link_b.symlink_to(workspace / ".agents" / "old-link-b-target")
-    # Other bootstrap files
     (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
 
-    # ── Snapshot pre-request state ──
-    from pathlib import Path as _Path
-    agent_yaml_before = (workspace / "agent.yaml").read_text()
-    agent_md_path = org_state.root / "agents" / "dev_agent.md"
-    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+    agent_md_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
 
-    def _snapshot_files() -> dict[str, bytes]:
-        snap: dict[str, bytes] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                rel = str(fp.relative_to(workspace))
-                if fp.is_file() and not fp.is_symlink():
-                    snap[rel] = fp.read_bytes()
-        return snap
+    # ── Force bootstrap failure at a real adapter writer seam ──
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
 
-    def _snapshot_symlinks() -> dict[str, str]:
-        snap: dict[str, str] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                if fp.is_symlink():
-                    rel = str(fp.relative_to(workspace))
-                    snap[rel] = str(fp.readlink())
-        return snap
-
-    byte_snapshot_before = _snapshot_files()
-    link_snapshot_before = _snapshot_symlinks()
-
-    # ── Execute failing switch ──
-    # Union must NOT be mocked — REAL union runs.
-    # Bootstrap is mocked to write then raise.
-    with patch(
-        "runtime.daemon.routes.agents.ContextBuilder"
-    ) as MockCB:
-        def _failing_bootstrap(ws, agent_name, system_prompt, *, provider):
-            (ws / "AGENTS.md").write_text("# Partial bootstrap — new executor")
-            (ws / ".agents").mkdir(parents=True, exist_ok=True)
-            (ws / ".agents" / "settings.json").write_text('{"new": true}')
-            raise RuntimeError("Bootstrap failed — simulated failure")
-
-        MockCB.return_value.ensure_workspace_ready.side_effect = (
-            _failing_bootstrap
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
         )
-        r = TestClient(app).put(
-            "/api/v1/orgs/alpha/agents/dev_agent/executor",
-            json={"executor": "codex"},
-            headers=auth_headers,
-        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
 
     # ── FAIL-CLOSED assertions ──
     assert r.status_code == 400, (
@@ -2343,43 +2311,158 @@ def test_set_executor_bootstrap_failure_after_successful_union(
         f"Expected bootstrap error message, got {body['detail']['error']}"
     )
 
-    # ── agent.yaml unchanged ──
-    agent_yaml_after = (workspace / "agent.yaml").read_text()
-    assert agent_yaml_after == agent_yaml_before, (
-        f"agent.yaml mutated: before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+    # ── Owned files restored / unchanged ──
+    assert (workspace / "AGENTS.md").read_bytes() == b"# AGENTS.md: old executor\n", (
+        "Pre-existing AGENTS.md was not restored to original bytes"
+    )
+    assert (workspace / "CLAUDE.md").read_bytes() == b"# CLAUDE.md: old executor\n"
+    assert (workspace / ".claude" / "settings.json").read_text() == '{"old": true}'
+    assert (workspace / "task_history.md").read_text() == "# Task History: dev_agent\n"
+
+    # ── New owned artifacts removed (new memory/ index tracked reversibly) ──
+    assert not (workspace / "memory").exists(), (
+        "Newly-created memory/ index survived bootstrap failure"
     )
 
-    # ── Agent frontmatter unchanged ──
-    if frontmatter_before is not None:
-        frontmatter_after = agent_md_path.read_text()
-        assert frontmatter_after == frontmatter_before, (
-            "Agent frontmatter was mutated on bootstrap failure"
+    # ── Non-owned workspace content and links preserved ──
+    assert link_a.is_symlink(), "Pre-existing .claude link was removed"
+    assert link_b.is_symlink(), "Pre-existing .agents link was removed"
+
+    # ── Canonical skill links materialized by the union survive ──
+    all_contracts: set[str] = set()
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        all_contracts |= _system_contract_ids_for_context(ctx, workspace)
+    assert len(all_contracts) >= 1, "no system contracts materialized"
+    for sid in all_contracts:
+        marker = workspace / ".agents" / "skills" / sid / "SKILL.md"
+        assert marker.is_file(), (
+            f"Canonical skill link {marker} was removed by rollback"
         )
 
-    # ── Byte contents of pre-existing files unchanged ──
-    byte_snapshot_after = _snapshot_files()
-    for rel, before_bytes in byte_snapshot_before.items():
-        assert rel in byte_snapshot_after, (
-            f"Pre-existing file {rel} was DELETED by bootstrap failure"
-        )
-        assert byte_snapshot_after[rel] == before_bytes, (
-            f"Pre-existing file {rel} byte contents CHANGED"
-        )
+    # ── Frontmatter + audit unchanged ──
+    assert agent_md_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on bootstrap failure"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite bootstrap failure: before={audit_before}, "
+        f"after={audit_after}"
+    )
 
-    # ── Symlinks preserved ──
-    link_snapshot_after = _snapshot_symlinks()
-    for rel, before_target in link_snapshot_before.items():
-        assert rel in link_snapshot_after, (
-            f"Pre-existing symlink {rel} was REMOVED by bootstrap failure"
-        )
-        assert link_snapshot_after[rel] == before_target, (
-            f"Pre-existing symlink {rel} target CHANGED"
-        )
 
-    # ── New bootstrap artifacts cleaned up ──
-    new_file = workspace / ".agents" / "settings.json"
-    assert not new_file.exists(), (
-        "New bootstrap file .agents/settings.json survived after failure"
+def test_set_executor_bootstrap_journal_ignores_repos_sentinel(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190: the bounded rollback journal must never read (or retain) a
+    large regular file under repos/. The prior os.walk snapshot read every
+    file in the workspace; the new journal captures only bootstrap-owned paths.
+
+    Seeds a multi-MB sentinel under repos/, spies on Path.read_bytes for that
+    exact path, forces a bootstrap failure, and asserts the sentinel is never
+    read and remains byte-identical after rollback."""
+    import os as _os
+    from pathlib import Path as _Path
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    big_blob = _os.urandom(2 * 1024 * 1024)  # 2 MB
+    sentinel.write_bytes(big_blob)
+    sentinel_abs = _os.path.abspath(_os.fspath(sentinel))
+
+    # Spy on read_bytes for the sentinel path only.
+    real_read_bytes = _Path.read_bytes
+    read_calls: list = []
+
+    def _spy_read_bytes(self):
+        if _os.path.abspath(_os.fspath(self)) == sentinel_abs:
+            read_calls.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+
+    assert read_calls == [], (
+        f"rollback journal read the repos/ sentinel {len(read_calls)} time(s)"
+    )
+    assert real_read_bytes(sentinel) == big_blob, "sentinel bytes changed"
+
+
+def test_set_executor_materializes_and_validates_before_bootstrap(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 ordering: six-context materialization and integrity validation
+    must both complete before any bootstrap write runs. A bootstrap failure
+    must never skip or reorder the materialize/validate phase."""
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    order: list[str] = []
+
+    def _materialize(*args, **kwargs):
+        order.append("materialize")
+        return []
+
+    def _validate(*args, **kwargs):
+        order.append("validate")
+        return None
+
+    def _bootstrap(*args, **kwargs):
+        order.append("bootstrap")
+        raise RuntimeError("stop after bootstrap")
+
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize)
+    # validate_workspace_skills_integrity is imported at agents.py module top,
+    # so patch the agents module binding.
+    monkeypatch.setattr(agents_mod, "validate_workspace_skills_integrity", _validate)
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _bootstrap,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert order == ["materialize", "validate", "bootstrap"], (
+        f"phase order wrong: {order}"
     )
 
 
