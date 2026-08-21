@@ -3309,6 +3309,105 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
+def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A fault injected into the first audit write — AFTER the schedule
+    cancellation has already been persisted in-transaction — must roll back the
+    complete cleanup transaction BEFORE the route's archive compensation runs.
+    AgentDef, workspace, team membership, and all four future-work rows stay
+    exactly as they were, with no cleanup audit residue and no open DB
+    transaction left behind.
+    """
+    from runtime.infrastructure import database as db_module
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    transiently_cancelled = {"seen": False}
+
+    def _failing_audit(self, task_id, agent, action, payload=None):
+        # The first audit write is the armed schedule's and runs only AFTER its
+        # UPDATE has already executed inside the open transaction. Prove that
+        # mutation happened (transiently) before raising, so this test genuinely
+        # exercises "failure after the first persisted mutation" rather than a
+        # no-op error path.
+        row = self._conn.execute(
+            "SELECT status, active FROM schedules WHERE id = 'SCHED-ARMED'"
+        ).fetchone()
+        transiently_cancelled["seen"] = (
+            row is not None
+            and row["status"] == ScheduleStatus.CANCELLED.value
+            and row["active"] == 0
+        )
+        raise RuntimeError("injected audit insertion failure")
+
+    with patch.object(
+        db_module.Database, "insert_audit_log_uncommitted", new=_failing_audit,
+    ):
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "terminate_cleanup_failed"
+
+    # The fault landed after the first persisted mutation, proving the rollback
+    # reversed an in-flight write rather than trivially doing nothing.
+    assert transiently_cancelled["seen"] is True
+
+    # Every future-work record is exactly its pre-call value.
+    sched = org_state.db.schedules.get("SCHED-ARMED")
+    assert sched.status == ScheduleStatus.ARMED
+    assert sched.active == 1
+    wake = org_state.db.work_hours.get("WORKHOUR-PEND")
+    assert wake.status == WorkHourStatus.PENDING
+    assert wake.ended_at is None
+    assert wake.error is None
+    dream = org_state.db.get_dream("DREAM-PEND")
+    assert dream.status == DreamStatus.PENDING
+    assert dream.ended_at is None
+    assert dream.error is None
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+    assert inv.consumed_at is None
+
+    # Active identity, workspace, and team membership remain intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+    # No cleanup audit residue from any cancelled/skipped/declined row.
+    cleanup_actions = {"schedule_cancelled", "work_hour_skipped", "dream_skipped"}
+    audit_rows, _ = org_state.db.query_audit_logs(agent="dev_agent", limit=1000)
+    assert all(row["action"] not in cleanup_actions for row in audit_rows)
+
+    # The database connection has no open transaction left behind.
+    assert org_state.db._conn.in_transaction is False
+
+
 def test_run_step_fails_terminated_agent_without_executor(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

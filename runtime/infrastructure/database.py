@@ -5657,85 +5657,92 @@ class Database:
     def terminate_agent_cleanups(self, agent_name: str) -> None:
         """Atomically cancel/skip/decline all future work for ``agent_name``.
 
-        Runs inside a single database transaction so that a failure leaves no
-        partial cancellation behind. The caller is responsible for archiving
-        the AgentDef/workspace and removing team membership first (or rolling
-        them back if this method raises).
+        Runs every cleanup DML statement and each audit write inside ONE
+        explicit SQLite transaction (``BEGIN IMMEDIATE`` / ``COMMIT``). On any
+        exception the COMPLETE transaction is rolled back BEFORE the exception
+        propagates, so control returns to the caller with no open transaction
+        and no partial cancellation or audit residue. The caller is responsible
+        for archiving the AgentDef/workspace and removing team membership first
+        (or rolling them back if this method raises).
         """
         now_iso = _now().isoformat()
-
-        # Cancel armed schedules.
-        schedule_rows = self._conn.execute(
-            "SELECT id FROM schedules WHERE agent_name = ? AND status = ?",
-            (agent_name, ScheduleStatus.ARMED.value),
-        ).fetchall()
-        if schedule_rows:
-            self._conn.execute(
-                "UPDATE schedules SET status = ?, active = 0, updated_at = ? "
-                "WHERE agent_name = ? AND status = ?",
-                (ScheduleStatus.CANCELLED.value, now_iso, agent_name, ScheduleStatus.ARMED.value),
-            )
-            for row in schedule_rows:
-                self.insert_audit_log_uncommitted(
-                    task_id=row["id"],
-                    agent=agent_name,
-                    action="schedule_cancelled",
-                    payload={"reason": "agent_terminated"},
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Cancel armed schedules.
+            schedule_rows = self._conn.execute(
+                "SELECT id FROM schedules WHERE agent_name = ? AND status = ?",
+                (agent_name, ScheduleStatus.ARMED.value),
+            ).fetchall()
+            if schedule_rows:
+                self._conn.execute(
+                    "UPDATE schedules SET status = ?, active = 0, updated_at = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (ScheduleStatus.CANCELLED.value, now_iso, agent_name, ScheduleStatus.ARMED.value),
                 )
+                for row in schedule_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="schedule_cancelled",
+                        payload={"reason": "agent_terminated"},
+                    )
 
-        # Skip pending work-hours wakes.
-        wake_rows = self._conn.execute(
-            "SELECT id FROM work_hours WHERE agent_name = ? AND status = ?",
-            (agent_name, WorkHourStatus.PENDING.value),
-        ).fetchall()
-        if wake_rows:
-            self._conn.execute(
-                "UPDATE work_hours SET status = ?, ended_at = ?, error = ? "
-                "WHERE agent_name = ? AND status = ?",
-                (WorkHourStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, WorkHourStatus.PENDING.value),
-            )
-            for row in wake_rows:
-                self.insert_audit_log_uncommitted(
-                    task_id=row["id"],
-                    agent=agent_name,
-                    action="work_hour_skipped",
-                    payload={"reason": "agent_terminated"},
+            # Skip pending work-hours wakes.
+            wake_rows = self._conn.execute(
+                "SELECT id FROM work_hours WHERE agent_name = ? AND status = ?",
+                (agent_name, WorkHourStatus.PENDING.value),
+            ).fetchall()
+            if wake_rows:
+                self._conn.execute(
+                    "UPDATE work_hours SET status = ?, ended_at = ?, error = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (WorkHourStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, WorkHourStatus.PENDING.value),
                 )
+                for row in wake_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="work_hour_skipped",
+                        payload={"reason": "agent_terminated"},
+                    )
 
-        # Skip pending dreams.
-        dream_rows = self._conn.execute(
-            "SELECT id FROM dreams WHERE agent_name = ? AND status = ?",
-            (agent_name, DreamStatus.PENDING.value),
-        ).fetchall()
-        if dream_rows:
-            self._conn.execute(
-                "UPDATE dreams SET status = ?, ended_at = ?, error = ? "
-                "WHERE agent_name = ? AND status = ?",
-                (DreamStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, DreamStatus.PENDING.value),
-            )
-            for row in dream_rows:
-                self.insert_audit_log_uncommitted(
-                    task_id=row["id"],
-                    agent=agent_name,
-                    action="dream_skipped",
-                    payload={"reason": "agent_terminated"},
+            # Skip pending dreams.
+            dream_rows = self._conn.execute(
+                "SELECT id FROM dreams WHERE agent_name = ? AND status = ?",
+                (agent_name, DreamStatus.PENDING.value),
+            ).fetchall()
+            if dream_rows:
+                self._conn.execute(
+                    "UPDATE dreams SET status = ?, ended_at = ?, error = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (DreamStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, DreamStatus.PENDING.value),
                 )
+                for row in dream_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="dream_skipped",
+                        payload={"reason": "agent_terminated"},
+                    )
 
-        # Decline not-yet-started thread invocations.
-        self._conn.execute(
-            "UPDATE thread_invocations "
-            "SET status = ?, decline_reason = ?, consumed_at = ? "
-            "WHERE agent_name = ? AND status = ? AND started_at IS NULL",
-            (
-                ThreadInvocationStatus.DECLINED.value,
-                "agent_terminated",
-                now_iso,
-                agent_name,
-                ThreadInvocationStatus.PENDING.value,
-            ),
-        )
+            # Decline not-yet-started thread invocations.
+            self._conn.execute(
+                "UPDATE thread_invocations "
+                "SET status = ?, decline_reason = ?, consumed_at = ? "
+                "WHERE agent_name = ? AND status = ? AND started_at IS NULL",
+                (
+                    ThreadInvocationStatus.DECLINED.value,
+                    "agent_terminated",
+                    now_iso,
+                    agent_name,
+                    ThreadInvocationStatus.PENDING.value,
+                ),
+            )
 
-        self._conn.commit()
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _dream_candidate_row_to_model(self, row) -> DreamKbCandidate:
         return DreamKbCandidate(
