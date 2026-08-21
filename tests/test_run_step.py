@@ -14,6 +14,17 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_run_step(runtime: OrgPaths):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agents used in this module so launch/token-usage resolution admits them.
+    """
+    from tests.conftest import seed_test_agents
+    seed_test_agents(runtime, ("engineering_head", "dev_agent", "content_head", "content_agent"))
+
+
 @pytest.fixture
 def runtime(tmp_path: Path) -> OrgPaths:
     rt = RuntimeDir.init(tmp_path / "rt")

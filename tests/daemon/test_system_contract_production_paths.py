@@ -39,6 +39,21 @@ from runtime.models import (
 from runtime.config import Settings
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_system_contract_production_paths(org_state):
+    """Task/thread/wake/dream launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only workspaces. Seed active frontmatter for the
+    agents used in this module so launch guards admit them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(
+        OrgPaths(root=org_state.root),
+        ("engineering_head", "content_manager", "dev_agent"),
+    )
+
+
 # ── Thread production path ────────────────────────────────────────────
 
 

@@ -39,6 +39,18 @@ from runtime.orchestrator.org_config import OrgConfig
 _NOW = datetime(2026, 6, 29, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_thread_escalation_guardrail(tmp_path):
+    """Thread launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agents used in this module so the launch guard admits them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path), ("engineering_head", "dev_agent"))
+
+
 def _fake_thread() -> ThreadRecord:
     return ThreadRecord(
         id="THR-001",

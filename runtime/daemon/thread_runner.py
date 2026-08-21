@@ -561,18 +561,39 @@ async def run_invocation(
         paths = None
 
     # THR-095: read executor from org/agents/<name>.md (single source of truth).
+    # FAIL-CLOSED: terminated or missing agents must never fall back to
+    # ``claude`` and must never reach executor construction.
     try:
-        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
         agent_def = load_agent(paths, inv.agent_name) if paths else None
-        executor_name = (agent_def.executor if agent_def else "claude").lower()
     except Exception:
         agent_def = None
-        executor_name = "claude"
+
+    if agent_def is None:
+        reason = "agent_unavailable"
+        if paths and is_terminated(paths, inv.agent_name):
+            reason = "agent_terminated"
+        org_state.db.fail_invocation(
+            invocation_token,
+            status=ThreadInvocationStatus.DECLINED,
+            decline_reason=reason,
+        )
+        AuditLogger(org_state.db).log_thread_invocation_failed(
+            inv.thread_id,
+            agent=inv.agent_name,
+            token=invocation_token,
+            purpose=inv.purpose.value,
+            reason=reason,
+            kind="thread_invocation_failed",
+        )
+        return
+
+    executor_name = agent_def.executor.lower()
     if not _is_registered_executor(executor_name):
         executor_name = "claude"
 
     # Issue #568: forward AgentDef.model to executor.run for thread invocations.
-    model_name: str | None = agent_def.model if agent_def else None
+    model_name: str | None = agent_def.model
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 

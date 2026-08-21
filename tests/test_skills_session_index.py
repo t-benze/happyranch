@@ -792,16 +792,17 @@ def _seed_skills_and_config(
     # Agent definition
     agents_dir = org_dir / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
-    (agents_dir / f"{agent_name}.md").write_text(
-        "---\n"
-        f"name: {agent_name}\n"
-        "team: engineering\n"
-        "role: worker\n"
-        f"executor: {agent_executor}\n"
-        "---\n\n"
-        f"# {agent_name}\n\nBuild software.\n"
-        "## Routine Tasks\n\n- Triage open tickets.\n"
-    )
+    for name in (agent_name, "alice"):
+        (agents_dir / f"{name}.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            "team: engineering\n"
+            "role: worker\n"
+            f"executor: {agent_executor}\n"
+            "---\n\n"
+            f"# {name}\n\nBuild software.\n"
+            "## Routine Tasks\n\n- Triage open tickets.\n"
+        )
 
 
 def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
@@ -918,6 +919,9 @@ class TestCallPathManagedSkillsIndex:
 
     def _make_thread_state(self, tmp_path: Path, agent: str = "alice"):
         """Create a FakeOrgState with thread, messages, and invocation."""
+        from runtime.orchestrator._paths import OrgPaths
+        from tests.conftest import seed_test_agents
+        seed_test_agents(OrgPaths(root=tmp_path), (agent,))
         db = Database(tmp_path / "happyranch.db")
         db.insert_thread(ThreadRecord(
             id="THR-001", subject="Test thread",

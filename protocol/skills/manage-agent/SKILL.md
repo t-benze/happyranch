@@ -5,7 +5,7 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 
 # manage-agent
 
-Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** an agent (removes its workspace).
+Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** a non-manager worker (archives its definition and workspace).
 
 ## Authentication paths
 
@@ -73,6 +73,7 @@ Managers may only enroll, update, or terminate agents within their own team:
 
 - **enroll**: The new agent is assigned to the caller's team by default. Optionally, include `"target_team": "<team>"` in the payload — but if `target_team` differs from the caller's team, the request is rejected with `403 cross_team_forbidden`.
 - **update / terminate**: The target agent must already belong to the caller's team. Cross-team update or termination is rejected with `403 cross_team_forbidden`.
+- **terminate additional restriction**: Only non-manager workers may be terminated. Requests to terminate a team manager are rejected with `409 manager_terminate_forbidden`.
 
 This prevents a Content Manager from enrolling agents into the engineering team, and vice versa.
 
@@ -80,7 +81,7 @@ This prevents a Content Manager from enrolling agents into the engineering team,
 
 - **enroll**: Creates a pending enrollment request. `executor` is a registered executor profile name; if omitted, it defaults to `claude`. Built-in profiles (`claude`, `codex`, `opencode`, `pi`) are examples, not a closed list; org-config custom profiles are valid once registered (see `docs/agent-guides/agent-executors-and-permissions.md`). You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
 - **update**: Updates the agent's description, system prompt, executor, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. Only works on approved agents.
-- **terminate**: Marks the agent as terminated and deletes its workspace directory. Only works on approved agents.
+- **terminate**: Archives a quiescent, approved non-manager worker. The active agent file is moved to `org/agents/_terminated/<name>.md`, the workspace is moved to `workspaces/_terminated/<name>/`, and the worker is removed from its team. Historic tasks, audit rows, token records, thread messages/participants, schedules, wakes, dreams, and archived files are preserved. The agent name cannot be re-enrolled while the terminated record exists. Termination is refused when the worker has live work (non-terminal assigned tasks, started thread invocations, firing schedules, running wakes/dreams, or pending/running jobs) or when the target is a manager.
 
 ## Agent naming
 
@@ -89,5 +90,5 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
 ## Error handling
 
 - If `happyranch` returns non-zero, retry once after 1 second.
-- `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found) are not retryable.
+- `409` (duplicate/terminated name on enroll, non-approved agent on update/terminate, manager target, archive collision, or `agent_not_quiescent` conflicts) and `404` (agent not found) are not retryable.
 - `422` usually means the payload is missing required auth fields (task_id + session_id) — fix the JSON and retry.
