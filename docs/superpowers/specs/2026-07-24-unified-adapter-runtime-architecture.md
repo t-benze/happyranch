@@ -520,8 +520,15 @@ registration invitation. Two retry paths exist:
    (no further candidates); expiry closes it as ``expired``; both are
    nonretryable. Terminal legacy v0 operations that predate the THR-160
    candidate ledger are atomically backfilled as a failed ordinal-1 candidate
-   on store open, so a corrected candidate is admitted as ordinal 2 and the
-   two-candidate cap still refuses a third candidate. This path never calls
+   on store open. Only a trusted ``conformance_probe_failed`` terminal category
+   leaves the backfilled parent ``open`` so one genuinely changed corrected
+   candidate is admitted as ordinal 2 and the two-candidate cap still refuses a
+   third candidate. Every other terminal category
+   (``profile_binding_failed``, ``invalid_manifest``, malformed or integrity
+   failures, or any reason other than the approved conformance failure) is
+   backfilled with the parent already ``failed``: no corrected candidate is ever
+   admitted, the original legacy rows and identity history are retained, and
+   identical/reordered replay is rejected non-consumingly. This path never calls
    ``POST /runtime/custom-cli/{operation_id}/retry``, never replays a generic
    token, and never requires ``/forget`` first.
 

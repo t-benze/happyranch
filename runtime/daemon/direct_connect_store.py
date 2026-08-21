@@ -554,10 +554,17 @@ class DirectConnectAuthorityStore:
         terminal-fails.
 
         Only operations with a failed projection, a matching receipt, no existing
-        candidate row, and no parent lifecycle row are bridged. Nonterminal,
-        committed, malformed, or already-v1 rows are left conservative/
-        fail-closed. The backfill is idempotent: on reopen the candidate row
-        already exists, so the operation is skipped.
+        candidate row, and no parent lifecycle row are bridged. The parent state
+        depends on the terminal category: a trusted ``conformance_probe_failed``
+        failure with no approval/bound profile remains ``open`` so one genuinely
+        changed B can be admitted; every other terminal category
+        (``profile_binding_failed``, ``invalid_manifest``, malformed/integrity
+        failures, or any reason that is not an approved conformance failure) is
+        closed as ``failed`` permanently and will never admit a B.
+
+        Nonterminal, committed, malformed, or already-v1 rows are left
+        conservative/fail-closed. The backfill is idempotent: on reopen the
+        candidate row already exists, so the operation is skipped.
         """
         now = time.time() if now is None else now
         with self._lock, self._conn:
@@ -579,6 +586,7 @@ class DirectConnectAuthorityStore:
                 fingerprint = row["token_fingerprint"]
                 operation_id = row["operation_id"]
                 workspace_adapter_id = row["workspace_adapter_id"]
+                reason = str(row["reason"] or "")
                 authority = self._read_authority(cursor, fingerprint)
                 if authority is None:
                     continue
@@ -596,11 +604,16 @@ class DirectConnectAuthorityStore:
                     "SELECT created_at FROM direct_connect_operations WHERE operation_id = ?",
                     (operation_id,),
                 ).fetchone()["created_at"]
+                # Only the approved conformance-probe failure leaves the parent
+                # open for one corrected retry; all other terminal categories are
+                # permanently nonretryable.
+                is_conformance_failure = reason.startswith("conformance_probe_failed")
+                parent_state = "open" if is_conformance_failure else "failed"
                 cursor.execute(
                     """INSERT INTO direct_connect_parent_lifecycles
                        (token_fingerprint, state, latest_accepted_candidate_id, created_at, updated_at, expires_at)
-                       VALUES (?, 'open', ?, ?, ?, ?)""",
-                    (fingerprint, candidate_id, created_at, now, authority.expires_at),
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (fingerprint, parent_state, candidate_id, created_at, now, authority.expires_at),
                 )
                 cursor.execute(
                     """INSERT INTO direct_connect_candidates
