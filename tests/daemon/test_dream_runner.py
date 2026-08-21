@@ -5,12 +5,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from runtime.config import Settings
 from runtime.daemon.dream_runner import build_dream_prompt, run_dream
 from runtime.models import DreamRecord, DreamStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import ClaudeExecutor
 from runtime.orchestrator.org_config import OrgConfig
+
+
+@pytest.fixture(autouse=True)
+def _seed_dev_agent_for_dream_runner(org_state) -> None:
+    """Dream launch is fail-closed: every test needs an active AgentDef."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    agents_dir = org_state.root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    agent = AgentDef(
+        name="dev_agent", team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt="You are dev_agent.", description="", model=None,
+    )
+    (agents_dir / "dev_agent.md").write_text(render_agent_text(agent))
 
 
 def _dt(hour: int) -> datetime:
@@ -855,3 +872,89 @@ async def test_run_dream_no_model_preserves_default_behavior(org_state):
         f"model should be None when AgentDef has no model, "
         f"got {captured_model.get('model')!r}"
     )
+
+
+# ── TASK-5299: fail-closed admission and race-safe PENDING->RUNNING ───────
+
+
+async def test_run_dream_skips_when_agent_def_missing(org_state, monkeypatch):
+    """A pending dream for an agent with no active AgentDef must be skipped
+    before any executor is constructed and must not fall back to claude."""
+    _insert_pending_dream(org_state)
+    # Remove the active AgentDef seeded by the autouse fixture.
+    agents_dir = org_state.root / "org" / "agents"
+    (agents_dir / "dev_agent.md").unlink()
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert called == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+    assert "unavailable" in dream.error.lower()
+
+
+async def test_run_dream_skips_when_agent_def_terminated(org_state):
+    """A pending dream for an archived (terminated) agent must be skipped."""
+    _insert_pending_dream(org_state)
+    agents_dir = org_state.root / "org" / "agents"
+    terminated_dir = agents_dir / "_terminated"
+    terminated_dir.mkdir(parents=True, exist_ok=True)
+    # Move the active AgentDef into the terminated archive.
+    (agents_dir / "dev_agent.md").rename(terminated_dir / "dev_agent.md")
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert called == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+
+
+async def test_run_dream_no_executor_if_pending_transition_loses_race(
+    org_state, monkeypatch,
+):
+    """If the PENDING->RUNNING conditional transition fails (e.g. termination
+    set the dream to SKIPPED between admission and the transition), run_dream
+    must return without constructing an executor."""
+    _insert_pending_dream(org_state)
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    real_update_status_if = org_state.db.update_dream_status_if
+
+    def _losing_transition(*args, **kwargs):
+        called.append("transition_attempt")
+        return False
+
+    monkeypatch.setattr(
+        org_state.db, "update_dream_status_if", _losing_transition,
+    )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert "transition_attempt" in called
+    assert "factory" not in called

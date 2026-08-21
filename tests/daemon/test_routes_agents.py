@@ -20,9 +20,11 @@ def _paths(org_state) -> OrgPaths:
 
 
 def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> None:
-    # Create at least one workspace so list_agents finds it
+    # The active roster is driven by org/agents/*.md, not by workspace
+    # directories. Seed an active AgentDef and its workspace.
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
+    _seed_active_agent(org_state, "engineering_head", role="manager")
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
@@ -783,12 +785,19 @@ def test_manage_agent_enroll_invalid_name_returns_422(
     assert r.status_code == 422
 
 
-def _seed_active_agent(org_state, name: str, team: str = "engineering", executor: str = "claude", system_prompt: str = "prompt\n") -> None:
+def _seed_active_agent(
+    org_state,
+    name: str,
+    team: str = "engineering",
+    role: str = "worker",
+    executor: str = "claude",
+    system_prompt: str = "prompt\n",
+) -> None:
     """Write an active agent file for testing update/terminate endpoints."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     agent = AgentDef(
-        name=name, team=team, role="worker", executor=executor,
+        name=name, team=team, role=role, executor=executor,
         allow_rules=(), repos={}, enrolled_by="engineering_head",
         enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
         system_prompt=system_prompt,
@@ -3041,6 +3050,48 @@ def test_list_enrollments_terminated(
     assert any(e["name"] == "dev_agent" and e["status"] == "terminated" for e in rows)
 
 
+def test_list_agents_excludes_terminated_and_terminated_workspace(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GET /agents must be the active roster: terminated agents and the
+    archived workspace directory must never appear as active rows.
+    """
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    terminate_r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert terminate_r.status_code == 200
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = r.json()["agents"]
+    names = {a["name"] for a in rows}
+    assert "dev_agent" not in names
+    assert "_terminated" not in names
+
+    # The terminated enrollment is still exposed on the dedicated endpoint.
+    enroll_r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=terminated",
+        headers=auth_headers,
+    )
+    assert enroll_r.status_code == 200
+    assert any(
+        e["name"] == "dev_agent" and e["status"] == "terminated"
+        for e in enroll_r.json()["enrollments"]
+    )
+
+
 def test_manage_agent_enroll_rejects_terminated_name(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -3071,6 +3122,124 @@ def test_manage_agent_enroll_rejects_terminated_name(
     )
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "agent_name_unavailable"
+
+
+def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If the terminated agent file already exists, terminate returns 409 and
+    leaves the active agent, workspace, and future work untouched.
+    """
+    from datetime import datetime, timezone
+    from runtime.models import ScheduleRecord, ScheduleKind, ScheduleStatus
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    # Pre-create a terminated agent file to trigger the archive collision.
+    terminated_agents_dir = paths.agents_dir / "_terminated"
+    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+    (terminated_agents_dir / "dev_agent.md").write_text(
+        prompt_loader.load_agent(paths, "dev_agent").system_prompt or ""
+    )
+
+    now = datetime.now(timezone.utc)
+    sched = ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    )
+    org_state.db.schedules.insert(sched)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "archive_collision"
+
+    # Active identity and future work remain untouched.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+def test_manage_agent_terminate_workspace_move_failure_rolls_back(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If workspace archival fails after the agent file was moved, the route
+    rolls back both the file and team membership and leaves schedules armed.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from runtime.models import ScheduleRecord, ScheduleKind, ScheduleStatus
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    now = datetime.now(timezone.utc)
+    sched = ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    )
+    org_state.db.schedules.insert(sched)
+
+    with patch("runtime.daemon.routes.agents._move_dir_atomically") as mock_move:
+        mock_move.side_effect = OSError("injected move failure")
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "workspace_archive_failed"
+
+    # Everything must be rolled back to the active state.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
 def test_run_step_fails_terminated_agent_without_executor(
