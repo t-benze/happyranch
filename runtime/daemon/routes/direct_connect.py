@@ -14,7 +14,11 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from runtime.daemon import paths
-from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.daemon.direct_connect_store import (
+    DIRECT_CHILD_SLOT_RE,
+    DIRECT_SHA256_RE,
+    canonical_wrapper_destination,
+)
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX, _RUNTIME_ORG
 
 router = APIRouter()
@@ -23,7 +27,7 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 class UpgradeableChild(BaseModel):
-    slot: Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")]
+    slot: Annotated[str, Field(min_length=1, max_length=80, pattern=DIRECT_CHILD_SLOT_RE.pattern)]
     executable: Annotated[str, Field(min_length=1)]
     version_probe_argv: list[Annotated[str, Field(min_length=1)]]
 
@@ -41,7 +45,7 @@ class UpgradeableChild(BaseModel):
 
 class DirectManifestV2(BaseModel):
     manifest_version: Annotated[int, Field(strict=True, ge=2, le=2)]
-    wrapper_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    wrapper_sha256: Annotated[str, Field(pattern=DIRECT_SHA256_RE.pattern)]
     upgradeable_children: Annotated[list[UpgradeableChild], Field(min_length=1)]
     workspace_adapter_id: Literal["claude", "codex", "opencode", "pi"] = Field(
         ...,
@@ -97,6 +101,8 @@ def _no_symlink_ancestors(path: Path) -> None:
 
 
 def _artifact_facts(path: Path, *, expected_path: Path | None = None) -> tuple[str, dict[str, object]]:
+    # The returned key set is the canonical DIRECT_WRAPPER_FACT_KEYS shared with
+    # the store's v0 trust classifier (direct_connect_store).  Keep in lockstep.
     if expected_path is not None and path != expected_path:
         raise ValueError("wrapper is not at the server-issued canonical path")
     _no_symlink_ancestors(path)

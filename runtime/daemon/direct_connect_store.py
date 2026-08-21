@@ -22,17 +22,24 @@ from pathlib import Path
 FIRST_PARTY_WORKSPACE_ADAPTER_IDS = frozenset({"claude", "codex", "opencode", "pi"})
 _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Shared direct-connect manifest contract.  These are the single source of
+# truth for the canonical artifact form accepted by the modern intake route
+# (routes/direct_connect.py) and enforced by the v0 trust classifier in
+# _identity_from_operation_artifacts.  Keeping them here (imported by the
+# route) prevents the two validators from diverging.
+DIRECT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+DIRECT_CHILD_SLOT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 # Canonical structural facts written by the intake route.  Wrapper facts never
 # carry child-only probe metadata, and child facts may carry the probe argv.
-_WRAPPER_FACT_KEYS = frozenset(
+DIRECT_WRAPPER_FACT_KEYS = frozenset(
     {"owner_uid", "owner_gid", "mode", "parent_realpath", "parent_dev", "parent_ino"}
 )
-_CHILD_FACT_KEYS = _WRAPPER_FACT_KEYS | {"version_probe_argv"}
+DIRECT_CHILD_FACT_KEYS = DIRECT_WRAPPER_FACT_KEYS | {"version_probe_argv"}
 
 
-def _is_canonical_artifact_path(path: Path, wrapper_destination: Path) -> bool:
+def is_canonical_direct_artifact_path(path: Path, wrapper_destination: Path) -> bool:
     """True for a server-absolute, non-escaping artifact path that is not the wrapper."""
     return (
         path.is_absolute()
@@ -503,7 +510,7 @@ class DirectConnectAuthorityStore:
         wrapper_path = Path(wrapper_row["declared_path"])
         if wrapper_path != wrapper_destination:
             return None, None
-        if not _SHA256_RE.match(wrapper_row["sha256"]):
+        if not DIRECT_SHA256_RE.match(wrapper_row["sha256"]):
             return None, None
         try:
             wrapper_facts = json.loads(wrapper_row["structural_facts"])
@@ -511,7 +518,7 @@ class DirectConnectAuthorityStore:
             return None, None
         if not isinstance(wrapper_facts, dict):
             return None, None
-        if not wrapper_facts.keys() <= _WRAPPER_FACT_KEYS:
+        if not wrapper_facts.keys() <= DIRECT_WRAPPER_FACT_KEYS:
             return None, None
 
         seen_slots: set[str] = set()
@@ -520,10 +527,13 @@ class DirectConnectAuthorityStore:
         for child_row in child_rows:
             if child_row["slot"] == "wrapper":
                 return None, None
-            child_path = Path(child_row["declared_path"])
-            if not _is_canonical_artifact_path(child_path, wrapper_destination):
+            slot = child_row["slot"]
+            if not DIRECT_CHILD_SLOT_RE.match(slot):
                 return None, None
-            if not _SHA256_RE.match(child_row["sha256"]):
+            child_path = Path(child_row["declared_path"])
+            if not is_canonical_direct_artifact_path(child_path, wrapper_destination):
+                return None, None
+            if not DIRECT_SHA256_RE.match(child_row["sha256"]):
                 return None, None
             try:
                 child_facts = json.loads(child_row["structural_facts"])
@@ -531,18 +541,25 @@ class DirectConnectAuthorityStore:
                 return None, None
             if not isinstance(child_facts, dict):
                 return None, None
-            if not child_facts.keys() <= _CHILD_FACT_KEYS:
+            if not child_facts.keys() <= DIRECT_CHILD_FACT_KEYS:
                 return None, None
 
+            path_str = str(child_path)
             version_probe_argv: list[str] = []
             probe = child_facts.get("version_probe_argv")
             if probe is not None:
-                if not isinstance(probe, list) or not all(isinstance(v, str) for v in probe):
+                # The modern intake route enforces a non-empty argv whose first
+                # element is the declared child executable; the legacy row must
+                # satisfy the same contract or its probe facts are contradictory.
+                if (
+                    not isinstance(probe, list)
+                    or not probe
+                    or not all(isinstance(v, str) and v for v in probe)
+                    or probe[0] != path_str
+                ):
                     return None, None
                 version_probe_argv = list(probe)
 
-            slot = child_row["slot"]
-            path_str = str(child_path)
             if slot in seen_slots or path_str in seen_paths:
                 return None, None
             seen_slots.add(slot)

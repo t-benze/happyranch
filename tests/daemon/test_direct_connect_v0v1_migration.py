@@ -2094,3 +2094,127 @@ def test_v0_contradictory_child_facts_reject_changed_b_via_http_ingress(
         (fingerprint,),
     ).fetchone()[0] == 1
     assert store.parent_state(token) != "open"
+
+
+def test_v0_noncanonical_child_slot_rejects_changed_b_non_consumingly(
+    tmp_path: Path,
+) -> None:
+    """A child artifact slot outside the canonical manifest contract closes the parent."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_bad_child_slot"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-bad-child-slot", wrapper_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET slot = ? WHERE operation_id = ? AND slot = 'cli'",
+        ("bad slot!", operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    assert store.parent_state(token) != "open"
+    assert store.list_candidates(token) == []
+    assert store.is_retryable(token, now=5.0) is False
+
+    operation_b = store.reserve(
+        token, identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is None
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()["state"] == "failed"
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_events WHERE token_fingerprint = ? AND event_type != 'received_nonlaunchable'",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+
+    store.close()
+    reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert reopened.parent_state(token) != "open"
+    assert reopened.list_candidates(token) == []
+    reopened.close()
+
+
+def test_v0_mismatched_probe_argv_rejects_changed_b_non_consumingly(
+    tmp_path: Path,
+) -> None:
+    """A probe argv whose first element is not the declared child executable closes the parent."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_bad_probe_argv"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-bad-probe-argv", wrapper_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET structural_facts = ? WHERE operation_id = ? AND slot = 'cli'",
+        ('{"version_probe_argv": ["/abs/other", "--version"]}', operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    assert store.parent_state(token) != "open"
+    assert store.list_candidates(token) == []
+    assert store.is_retryable(token, now=5.0) is False
+
+    operation_b = store.reserve(
+        token, identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is None
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()["state"] == "failed"
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_events WHERE token_fingerprint = ? AND event_type != 'received_nonlaunchable'",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+
+    store.close()
+    reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert reopened.parent_state(token) != "open"
+    assert reopened.list_candidates(token) == []
+    reopened.close()
