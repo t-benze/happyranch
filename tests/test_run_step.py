@@ -21,16 +21,8 @@ def _seed_active_agents_for_run_step(runtime: OrgPaths):
     Legacy tests created only a workspace. Seed active frontmatter for the
     agents used in this module so launch/token-usage resolution admits them.
     """
-    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
-    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("engineering_head", "dev_agent", "content_head", "content_agent"):
-        ad = AgentDef(
-            name=name, team="engineering", role="manager",
-            executor="claude", allow_rules=(), repos={},
-            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
-            system_prompt=f"You are {name}.", description="", model=None,
-        )
-        (runtime.agents_dir / f"{name}.md").write_text(render_agent_text(ad))
+    from tests.conftest import seed_test_agents
+    seed_test_agents(runtime, ("engineering_head", "dev_agent", "content_head", "content_agent"))
 
 
 @pytest.fixture

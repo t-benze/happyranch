@@ -25,21 +25,6 @@ from runtime.models import (
 from runtime.orchestrator.org_config import OrgConfig
 
 
-def _write_active_agent(root: Path, name: str) -> None:
-    from datetime import datetime, timezone
-    from runtime.orchestrator._paths import OrgPaths
-    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
-    paths = OrgPaths(root=root)
-    agent = AgentDef(
-        name=name, team="engineering", role="worker", executor="claude",
-        allow_rules=(), repos={}, enrolled_by="founder",
-        enrolled_at_task=None, enrolled_at=datetime.now(timezone.utc),
-        system_prompt=f"prompt for {name}", description=f"desc for {name}",
-    )
-    paths.agents_dir.mkdir(parents=True, exist_ok=True)
-    (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
-
-
 @pytest.fixture(autouse=True)
 def _seed_active_agents_for_thread_runner(tmp_path):
     """Thread-runner launch is fail-closed: an active AgentDef is required.
@@ -47,8 +32,9 @@ def _seed_active_agents_for_thread_runner(tmp_path):
     Legacy tests created only a workspace/agent.yaml. Seed active frontmatter
     for the agents used in this module so the launch guard admits them.
     """
-    for name in ("alice", "bob"):
-        _write_active_agent(tmp_path, name)
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path), ("alice", "bob"))
 
 
 def test_render_message_includes_attachments() -> None:

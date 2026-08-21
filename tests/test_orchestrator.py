@@ -26,19 +26,11 @@ def _ensure_protocol_skills(test_settings):
 def _seed_active_agents_for_orchestrator(test_runtime):
     """Task launch is fail-closed: an active AgentDef is required.
 
-    Legacy tests created only a workspace. Seed active frontmatter for the
-    default agents used in this module so the launch guard admits them.
+    test_runtime already seeds the standard set; this fixture ensures the
+    module's default agents are present even if the shared set changes.
     """
-    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
-    test_runtime.agents_dir.mkdir(parents=True, exist_ok=True)
-    for name in _DEFAULT_AGENTS:
-        ad = AgentDef(
-            name=name, team="engineering", role="manager",
-            executor="claude", allow_rules=(), repos={},
-            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
-            system_prompt=f"You are {name}.", description="", model=None,
-        )
-        (test_runtime.agents_dir / f"{name}.md").write_text(render_agent_text(ad))
+    from tests.conftest import seed_test_agents
+    seed_test_agents(test_runtime, _DEFAULT_AGENTS)
 
 
 @pytest.fixture
