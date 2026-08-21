@@ -1699,12 +1699,21 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     chain = ChainState.deserialize(parent.active_chain)
+    child = orch._db.get_task(child_task_id)
     report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    action = compute_advance_action(chain=chain, report=report)
+    # The completed child's assigned_agent is the authoritative identity of
+    # the just-finished leg. The chain payload only persists the first leg's
+    # expect_verdict (first_leg_expect_verdict), NOT its agent, so
+    # compute_advance_action must receive the DB truth to fail-closed a
+    # FIRST-leg reviewer gate (see reviewer_downstream_omission).
+    completed_agent = child.assigned_agent if child is not None else None
+    action = compute_advance_action(
+        chain=chain, report=report, completed_agent=completed_agent,
+    )
     if action.kind == "wake":
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
@@ -1794,16 +1803,46 @@ def _carrier_fail_on_verdict_mismatch(
     child_task_id: str, chain_snapshot: str | None,
 ) -> bool:
     """After a carrier's chain leg completed but the chain did not advance
-    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
-    the carrier immediately (fail-closed at carrier).  Returns True if the
-    carrier was failed, False otherwise (including non-carriers)."""
+    (outcome == "wake"), check if this was a verdict mismatch OR an unsafe
+    omitted-reviewer gate.  If so, fail the carrier immediately (fail-closed
+    at carrier).  Returns True if the carrier was failed, False otherwise
+    (including non-carriers).
+
+    The omitted-reviewer case is recomputed from the SAME production fact
+    ``compute_advance_action`` used — ``reviewer_downstream_omission`` keyed
+    off the completed child's actual ``assigned_agent`` — rather than a broad
+    ``expected is None`` rule, so a true chain-complete (final-leg match) is
+    never misclassified as a failure.
+    """
     if chain_snapshot is None:
         return False
     if not _is_carrier(orch, parent):
         return False
-    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.chain import (
+        ChainState,
+        reviewer_downstream_omission,
+    )
     chain = ChainState.deserialize(chain_snapshot)
     expected = chain.current_expect_verdict()
+    # Fail-closed omitted-reviewer gate: a code_reviewer leg with a downstream
+    # leg and no explicit expect_verdict completed without gating. The first
+    # leg's agent is NOT persisted in the chain payload, so derive it from the
+    # completed child's assigned_agent (DB truth) — exactly as
+    # compute_advance_action did when it produced the wake.
+    child = orch._db.get_task(child_task_id)
+    completed_agent = child.assigned_agent if child is not None else None
+    has_downstream = (chain.step_index + 1) <= len(chain.legs)
+    if reviewer_downstream_omission(
+        agent=completed_agent,
+        expect_verdict=expected,
+        has_downstream=has_downstream,
+    ):
+        _fail(orch, parent.id,
+               note=f"carrier reviewer gate omitted: leg {child_task_id} "
+                    f"(code_reviewer) completed without an explicit expect_verdict")
+        # Feed carrier failure into the fan-out parent's barrier.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
     if expected is None:
         return False  # no verdict expectation → chain_complete, not a mismatch
     report = orch._db.get_latest_completion_report(child_task_id)

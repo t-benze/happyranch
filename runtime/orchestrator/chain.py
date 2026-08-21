@@ -79,9 +79,11 @@ class ChainState:
     def current_leg_agent(self) -> str | None:
         """Agent name of the just-terminated leg, or None for the first leg.
 
-        The first leg's agent is not persisted in the chain payload (only its
-        expect_verdict is, as ``first_leg_expect_verdict``), so a first-leg
-        reviewer is only rejected at authoring-time validation, never here.
+        The first leg's agent is NOT persisted in the chain payload (only its
+        expect_verdict is, as ``first_leg_expect_verdict``), so this returns
+        None at step_index=0. The execution seam must therefore supply the
+        completed child's actual ``assigned_agent`` (``completed_agent`` in
+        ``compute_advance_action``) to fail-closed a FIRST-leg reviewer gate.
         """
         if self.step_index == 0:
             return None
@@ -103,12 +105,24 @@ class AdvanceAction:
     actual: str | None = None
 
 
-def compute_advance_action(*, chain: ChainState, report: CompletionReport) -> AdvanceAction:
+def compute_advance_action(
+    *,
+    chain: ChainState,
+    report: CompletionReport,
+    completed_agent: str | None = None,
+) -> AdvanceAction:
     """Decide whether to auto-advance to the next leg or wake the manager.
 
     Caller has already confirmed the child task is in a terminal COMPLETED
     state (failed/cancelled children take a separate cascade path). This
     function only handles the COMPLETED branch.
+
+    ``completed_agent`` is the just-completed child's actual agent identity
+    (its ``TaskRecord.assigned_agent``), supplied by the execution seam. It is
+    required to fail-closed a FIRST-leg reviewer gate, because the first leg's
+    agent is not persisted in the chain payload (``current_leg_agent()``
+    returns None at step_index=0). When omitted, the check falls back to
+    ``current_leg_agent()`` (still correct for later legs).
     """
     if report.status == "blocked":
         return AdvanceAction(kind="wake", reason="child_blocked")
@@ -131,8 +145,13 @@ def compute_advance_action(*, chain: ChainState, report: CompletionReport) -> Ad
     # APPROVE from a REQUEST_CHANGES without a gate. Wake/clear instead.
     # Ordinary non-review legs (and the reviewer FINAL leg, which already
     # reached chain_complete above) are unaffected.
+    #
+    # The just-completed leg's agent is the DB truth (``completed_agent``);
+    # the chain payload only stores the first leg's expect_verdict, not its
+    # agent, so ``current_leg_agent()`` alone would miss a first-leg reviewer.
+    leg_agent = completed_agent if completed_agent is not None else chain.current_leg_agent()
     if reviewer_downstream_omission(
-        agent=chain.current_leg_agent(),
+        agent=leg_agent,
         expect_verdict=expected,
         has_downstream=True,
     ):

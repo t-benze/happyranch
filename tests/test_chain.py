@@ -166,3 +166,43 @@ def test_compute_advance_action_reviewer_omitted_approve_still_wakes():
     )
     assert action.kind == "wake"
     assert action.reason == "reviewer_expectation_omitted"
+
+
+def _first_leg_reviewer_omitted_chain():
+    # FIRST leg (step_index=0) is code_reviewer with omitted expect_verdict;
+    # its agent is NOT persisted in the chain payload (only
+    # first_leg_expect_verdict is), so current_leg_agent() is None.
+    return ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+
+
+def test_compute_advance_action_first_leg_reviewer_omitted_uses_completed_agent():
+    # The execution seam supplies the completed child's actual agent
+    # (``completed_agent``) because the first leg's agent is not in the chain
+    # payload. Without it, current_leg_agent() is None and the omission would
+    # be missed.
+    action = compute_advance_action(
+        chain=_first_leg_reviewer_omitted_chain(),
+        report=_report(verdict="REQUEST_CHANGES"),
+        completed_agent="code_reviewer",
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"
+
+
+def test_compute_advance_action_first_leg_reviewer_omitted_without_completed_agent_advances():
+    # Document the pre-repair hazard: with no completed_agent supplied,
+    # current_leg_agent() returns None for step_index=0, so the omission check
+    # cannot fire and the next leg advances. (Production always supplies
+    # completed_agent from the completed child's assigned_agent.)
+    action = compute_advance_action(
+        chain=_first_leg_reviewer_omitted_chain(),
+        report=_report(verdict="REQUEST_CHANGES"),
+    )
+    assert action.kind == "advance"

@@ -352,3 +352,239 @@ def test_validate_delegate_rejects_first_leg_reviewer_with_downstream_omission(r
     err = _validate_delegate(orch, decision)
     assert err is not None
     assert "expect_verdict" in err
+
+
+# ---------------------------------------------------------------------------
+# (7) FIRST-leg reviewer omission (persisted active_chain, step_index=0).
+#
+# The first leg's agent is NOT persisted in the chain payload (only
+# first_leg_expect_verdict is). The execution seam must derive the completed
+# leg's identity from the completed child's ``assigned_agent`` so a FIRST-leg
+# code_reviewer with a downstream leg and omitted expect_verdict also
+# wakes/clears rather than advancing QA.
+# ---------------------------------------------------------------------------
+def _omitted_review_chain_first_leg(*, step_audit_id: int = 1):
+    """code_reviewer (FIRST leg, expect_verdict OMITTED) -> qa_engineer."""
+    from runtime.orchestrator.chain import ChainState
+    return ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="qa_engineer", prompt="QA the PR",
+                     expect_verdict="PASS"),
+        ],
+        step_audit_id=step_audit_id,
+    )
+
+
+def test_first_leg_omitted_reviewer_request_changes_spawns_no_qa(runtime, db):
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg().serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="REQUEST_CHANGES",
+                          summary="needs changes")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []            # no QA child spawned
+    assert db.get_task("T-PAR").active_chain is None   # chain cleared
+    assert _chain_advances(db, "T-PAR") == []          # no auto-advance audit
+    assert orch._queue.qsize() == 1                    # parent woken once
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_first_leg_omitted_reviewer_missing_verdict_spawns_no_qa(runtime, db):
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg().serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict=None,
+                          summary="reviewed")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+# ---------------------------------------------------------------------------
+# (8) pipeline-carrier: a persisted active_fanout whose carrier's FIRST leg is
+# an omitted code_reviewer gate must FAIL the carrier (never chain-complete it
+# as false success), feed the fan-out barrier once, and never spawn QA.
+# ---------------------------------------------------------------------------
+def _seed_carrier(db: Database, *, verdict: str | None) -> None:
+    from runtime.orchestrator.fanout import FanoutState
+
+    fanout = FanoutState(
+        children_ids=["T-CAR"],
+        children_details=[{"agent": "code_reviewer", "prompt": "review"}],
+        width=1, manager_agent="engineering_head", status="spawned",
+    )
+    db.insert_task(TaskRecord(
+        id="T-FP", brief="fanout parent",
+        assigned_agent="engineering_head", task_type="task",
+    ))
+    db.update_task("T-FP", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.update_task_active_fanout("T-FP", fanout.serialize())
+
+    db.insert_task(TaskRecord(
+        id="T-CAR", brief="carrier", assigned_agent="code_reviewer",
+        parent_task_id="T-FP", task_type="subtask",
+    ))
+    db.update_task("T-CAR", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.update_task_active_chain("T-CAR", _omitted_review_chain_first_leg().serialize())
+
+    db.insert_task(TaskRecord(
+        id="T-FL", brief="review", assigned_agent="code_reviewer",
+        parent_task_id="T-CAR", task_type="subtask",
+    ))
+    db.update_task("T-FL", status=TaskStatus.COMPLETED, note="done")
+    db.insert_task_result(
+        task_id="T-FL", agent="code_reviewer", session_id="s",
+        status="completed", confidence_score=85,
+        output_summary="reviewed", verdict=verdict,
+    )
+
+
+def test_carrier_first_leg_omitted_reviewer_request_changes_fails_carrier(runtime, db):
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_carrier(db, verdict="REQUEST_CHANGES")
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-FL")
+
+    carrier = db.get_task("T-CAR")
+    assert carrier.status == TaskStatus.FAILED, (
+        f"carrier should FAIL on omitted reviewer gate, got {carrier.status}"
+    )
+    assert carrier.active_chain is None
+    assert db.get_children("T-CAR") == ["T-FL"]  # only the first leg; no QA child
+    assert _qa_children(db, "T-CAR") == []
+    assert _chain_advances(db, "T-CAR") == []
+    # Fan-out parent P woken exactly once (fail-closed barrier), never a QA
+    # child enqueued.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-FP"
+
+
+def test_carrier_first_leg_omitted_reviewer_missing_verdict_fails_carrier(runtime, db):
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_carrier(db, verdict=None)
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-FL")
+
+    carrier = db.get_task("T-CAR")
+    assert carrier.status == TaskStatus.FAILED, (
+        f"carrier should FAIL on omitted reviewer gate, got {carrier.status}"
+    )
+    assert carrier.active_chain is None
+    assert _qa_children(db, "T-CAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-FP"
+
+
+def test_carrier_omitted_reviewer_duplicate_terminal_cannot_revive(runtime, db):
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_carrier(db, verdict="REQUEST_CHANGES")
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-FL")
+
+    assert db.get_task("T-CAR").status == TaskStatus.FAILED
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-FP"
+
+    # Late/duplicate terminal for the same first leg cannot convert the
+    # carrier back to success or revive the chain / re-enqueue the parent.
+    _enqueue_parent_if_waiting(orch, "T-FL")
+
+    assert db.get_task("T-CAR").status == TaskStatus.FAILED
+    assert db.get_task("T-CAR").active_chain is None
+    assert _qa_children(db, "T-CAR") == []
+    assert orch._queue.qsize() == 0            # no second barrier/join effect
+
+
+def test_carrier_later_leg_omitted_reviewer_request_changes_fails_carrier(runtime, db):
+    """A LATER reviewer leg (not the first) with omitted expect_verdict also
+    fails the carrier — the recomputed production fact keys off the completed
+    child's assigned_agent, which is authoritative for every leg index."""
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.fanout import FanoutState
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    fanout = FanoutState(
+        children_ids=["T-CAR"],
+        children_details=[{"agent": "dev_agent", "prompt": "build"}],
+        width=1, manager_agent="engineering_head", status="spawned",
+    )
+    db.insert_task(TaskRecord(
+        id="T-FP", brief="fanout parent",
+        assigned_agent="engineering_head", task_type="task",
+    ))
+    db.update_task("T-FP", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.update_task_active_fanout("T-FP", fanout.serialize())
+
+    db.insert_task(TaskRecord(
+        id="T-CAR", brief="carrier", assigned_agent="dev_agent",
+        parent_task_id="T-FP", task_type="subtask",
+    ))
+    db.update_task("T-CAR", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    later_leg_chain = ChainState(
+        step_index=1,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="code_reviewer", prompt="review", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("T-CAR", later_leg_chain.serialize())
+
+    # First leg (dev_agent) already completed; the code_reviewer leg is the
+    # just-finished child (step_index=1).
+    db.insert_task(TaskRecord(
+        id="T-DEV", brief="build", assigned_agent="dev_agent",
+        parent_task_id="T-CAR", task_type="subtask",
+    ))
+    db.update_task("T-DEV", status=TaskStatus.COMPLETED, note="done")
+    db.insert_task(TaskRecord(
+        id="T-REV", brief="review", assigned_agent="code_reviewer",
+        parent_task_id="T-CAR", task_type="subtask",
+    ))
+    db.update_task("T-REV", status=TaskStatus.COMPLETED, note="done")
+    db.insert_task_result(
+        task_id="T-REV", agent="code_reviewer", session_id="s",
+        status="completed", confidence_score=85,
+        output_summary="needs changes", verdict="REQUEST_CHANGES",
+    )
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    carrier = db.get_task("T-CAR")
+    assert carrier.status == TaskStatus.FAILED, (
+        f"carrier should FAIL on later-leg omitted reviewer gate, got {carrier.status}"
+    )
+    assert carrier.active_chain is None
+    assert _qa_children(db, "T-CAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-FP"
