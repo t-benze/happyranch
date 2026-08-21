@@ -741,12 +741,34 @@ def test_preflight_parked_task_is_blocker_but_not_zombie(tmp_path: Path) -> None
 
 
 def test_preflight_is_read_only_across_all_blocker_surfaces(tmp_path: Path) -> None:
+    """Production-seam read-only proof across every durable liveness surface.
+    Seeds one of each blocker class — a persisted task, an armed schedule, a
+    running job, a queue item, an active session binding, a pending thread
+    invocation, a pending dream, and a pending work-hour — snapshots their
+    identifying fields and statuses (not merely a count), asserts the route
+    refuses with the intended blockers, then proves every snapshot is
+    unchanged after GET (no dequeue, terminalization/cancel, disarm,
+    reconciliation, archive/staging/fence side effect)."""
     state = _make_state(tmp_path)
     db = state.orgs["alpha"].db
     org = state.orgs["alpha"]
     _insert_in_progress(db, "T-1")
     _insert_schedule(db, "SCHED-A", ScheduleStatus.ARMED)
     _insert_job(db, "JOB-1", JobStatus.RUNNING)
+    db.insert_thread(ThreadRecord(id="TH-1", subject="t"))
+    inv = db.mint_thread_invocation(
+        thread_id="TH-1", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.insert_dream(DreamRecord(
+        id="DREAM-1", agent_name="dev_agent", local_date="2026-01-01",
+        scheduled_for=_NEW_BASE, window_end=_NEW_BASE, status=DreamStatus.PENDING,
+    ))
+    db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-1", agent_name="dev_agent", local_date="2026-01-01",
+        slot="00:00", mode=WorkHourMode.WINDOWED, scheduled_for=_NEW_BASE,
+        status=WorkHourStatus.PENDING,
+    ))
     state.queue.put_nowait("alpha", "T-9")
     org.sessions.set_active("T-1", "dev_agent", "sess-1")
 
@@ -756,11 +778,33 @@ def test_preflight_is_read_only_across_all_blocker_surfaces(tmp_path: Path) -> N
     before_job = db.get_job("JOB-1").status
     before_sessions = org.sessions.count_active()
     before_queue = state.queue.pending_slugs()
+    # identifying fields + status for the invocation/dream/work-hour surfaces
+    before_inv = db.get_invocation_any_status(inv.invocation_token)
+    before_inv_snapshot = (
+        before_inv.invocation_token, before_inv.thread_id, before_inv.agent_name,
+        before_inv.triggering_seq, before_inv.purpose.value, before_inv.status.value,
+        before_inv.started_at, before_inv.consumed_at, before_inv.session_id,
+        before_inv.dispatched_task_id, before_inv.decline_reason,
+    )
+    before_pending_tokens = [
+        i.invocation_token for i in db.list_pending_thread_invocations()
+    ]
+    before_dream = db.get_dream("DREAM-1")
+    before_dream_active_ids = db.list_dream_ids_by_status({"pending", "running"})
+    before_work_hour = db.work_hours.get("WORKHOUR-1")
+    before_work_hour_active_ids = db.work_hours.list_ids_by_status(
+        {"pending", "running"},
+    )
 
     client = _client(state)
     r = client.get("/api/v1/orgs/alpha/portability-preflight")
     assert r.status_code == 200
-    assert r.json()["eligible"] is False
+    body = r.json()
+    assert body["eligible"] is False
+    blockers = body["eligibility"]["blockers"]
+    assert blockers["pending_thread_invocations"] >= 1
+    assert "DREAM-1" in blockers["active_dreams"]
+    assert "WORKHOUR-1" in blockers["active_work_hours"]
 
     assert _org_entries(state, "alpha") == before_entries
     assert db.get_task("T-1").status == before_task
@@ -768,3 +812,21 @@ def test_preflight_is_read_only_across_all_blocker_surfaces(tmp_path: Path) -> N
     assert db.get_job("JOB-1").status == before_job
     assert org.sessions.count_active() == before_sessions
     assert state.queue.pending_slugs() == before_queue
+
+    # the seeded invocation/dream/work-hour are unchanged after GET
+    after_inv = db.get_invocation_any_status(inv.invocation_token)
+    assert (
+        after_inv.invocation_token, after_inv.thread_id, after_inv.agent_name,
+        after_inv.triggering_seq, after_inv.purpose.value, after_inv.status.value,
+        after_inv.started_at, after_inv.consumed_at, after_inv.session_id,
+        after_inv.dispatched_task_id, after_inv.decline_reason,
+    ) == before_inv_snapshot
+    assert [
+        i.invocation_token for i in db.list_pending_thread_invocations()
+    ] == before_pending_tokens
+    assert db.get_dream("DREAM-1").status == before_dream.status
+    assert db.list_dream_ids_by_status({"pending", "running"}) == before_dream_active_ids
+    assert db.work_hours.get("WORKHOUR-1").status == before_work_hour.status
+    assert db.work_hours.list_ids_by_status(
+        {"pending", "running"},
+    ) == before_work_hour_active_ids
