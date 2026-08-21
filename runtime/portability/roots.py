@@ -217,6 +217,12 @@ def _validate_legacy_skill_package(pkg_dir: Path) -> tuple[bool, str | None]:
     try:
         skill_yaml_path = pkg_dir / "skill.yaml"
         skill_md_path = pkg_dir / "SKILL.md"
+        # Fail closed: Path.is_file() follows symlinks, so a symlinked required
+        # member would be read and accepted. Reject symlinks explicitly BEFORE
+        # any read/parse so no content outside the org root can be certified
+        # portable.
+        if skill_yaml_path.is_symlink() or skill_md_path.is_symlink():
+            return False, "skill.yaml or SKILL.md is a symlink"
         if not skill_yaml_path.is_file() or not skill_md_path.is_file():
             return False, "missing skill.yaml or SKILL.md"
         meta = yaml.safe_load(skill_yaml_path.read_text(encoding="utf-8")) or {}

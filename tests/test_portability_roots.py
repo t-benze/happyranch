@@ -178,6 +178,34 @@ def test_invalid_legacy_skill_rejected(tmp_path: Path) -> None:
     )
 
 
+def test_skill_yaml_symlink_rejected(tmp_path: Path) -> None:
+    root = _build_full_org(tmp_path / "org")
+    external = tmp_path / "external-skill.yaml"
+    _write(external, _VALID_SKILL_YAML)
+    pkg = root / "skills" / "qa-scroll-test"
+    pkg.joinpath("skill.yaml").unlink()
+    pkg.joinpath("skill.yaml").symlink_to(external)
+    inventory = classify_root_entries(root)
+    assert any(
+        e.path == "skills/qa-scroll-test" and e.reason == REJECT_INVALID_SKILL
+        for e in inventory.rejected
+    )
+
+
+def test_skill_md_symlink_rejected(tmp_path: Path) -> None:
+    root = _build_full_org(tmp_path / "org")
+    external = tmp_path / "external-SKILL.md"
+    _write(external, "# External Skill\n\nbody\n")
+    pkg = root / "skills" / "qa-scroll-test"
+    pkg.joinpath("SKILL.md").unlink()
+    pkg.joinpath("SKILL.md").symlink_to(external)
+    inventory = classify_root_entries(root)
+    assert any(
+        e.path == "skills/qa-scroll-test" and e.reason == REJECT_INVALID_SKILL
+        for e in inventory.rejected
+    )
+
+
 def test_system_contract_skill_rejected(tmp_path: Path) -> None:
     root = _build_full_org(tmp_path / "org")
     _write(

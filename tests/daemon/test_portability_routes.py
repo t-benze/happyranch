@@ -111,6 +111,46 @@ def test_preflight_refuses_in_progress_with_no_side_effect(tmp_path: Path) -> No
     assert _org_entries(state, "alpha") == before
 
 
+@pytest.mark.parametrize(
+    "status, block_kind",
+    [
+        (TaskStatus.PENDING, None),
+        (TaskStatus.ESCALATED, None),
+        (TaskStatus.IN_PROGRESS, None),
+        (TaskStatus.IN_PROGRESS, BlockKind.DELEGATED),
+        (TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB),
+    ],
+    ids=["pending", "escalated", "in_progress",
+         "in_progress_delegated", "in_progress_blocked_on_job"],
+)
+def test_preflight_refuses_every_nonterminal_form(
+    tmp_path: Path, status: TaskStatus, block_kind: BlockKind | None,
+) -> None:
+    """Production-seam proof: seed each persisted nonterminal form through the
+    real Database shape and assert the HTTP route returns ineligible with the
+    task id in eligibility.blockers.tasks (Database.get_nonterminal_task_ids ->
+    _gather_task_liveness -> compute_eligibility -> route)."""
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.insert_task(TaskRecord(
+        id="T-1", brief="test", team="engineering",
+        assigned_agent="dev_agent", status=status,
+    ))
+    if block_kind is not None:
+        db.update_task("T-1", block_kind=block_kind.value)
+    before = _org_entries(state, "alpha")
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["eligible"] is False
+    assert body["eligibility"]["blockers"]["tasks"] == ["T-1"]
+    # read-only for every persisted nonterminal form
+    assert _org_entries(state, "alpha") == before
+
+
 def test_preflight_reports_possible_zombie(tmp_path: Path) -> None:
     state = _make_state(tmp_path)
     db = state.orgs["alpha"].db
