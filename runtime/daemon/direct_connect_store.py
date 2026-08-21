@@ -49,6 +49,47 @@ def is_canonical_direct_artifact_path(path: Path, wrapper_destination: Path) -> 
     )
 
 
+# Structural fact keys whose canonical value is a non-negative integer, plus
+# the permission-mode key and the realpath key.  These mirror the exact value
+# shapes written by the modern intake route's ``_artifact_facts``
+# (routes/direct_connect.py), so the v0 trust classifier below cannot diverge.
+_DIRECT_INT_FACT_KEYS = frozenset({"owner_uid", "owner_gid", "parent_dev", "parent_ino"})
+_DIRECT_MODE_FACT_KEY = "mode"
+_DIRECT_REALPATH_FACT_KEY = "parent_realpath"
+_DIRECT_MODE_MAX = 0o7777  # stat.S_IMODE yields permission bits in [0, 0o7777]
+
+
+def _canonical_structural_fact_value(key: str, value: object) -> bool:
+    """Return True when ``value`` is a canonical value for structural fact ``key``.
+
+    Mirrors the exact value shapes produced by the modern intake route's
+    ``_artifact_facts``: ``owner_uid``/``owner_gid``/``parent_dev``/
+    ``parent_ino`` are non-negative integers, ``mode`` is an integer permission
+    mode, and ``parent_realpath`` is a lexical absolute no-escape string.
+
+    ``bool`` is rejected even though it is an ``int`` subclass (JSON ``true``
+    must not pass as a numeric identifier), and non-finite or negative numeric
+    identifiers are rejected.
+
+    ``version_probe_argv`` and any key outside the structural whitelist are
+    validated by the dedicated child-probe check in the caller, so this
+    function returns True for them rather than rejecting.
+    """
+    if key in _DIRECT_INT_FACT_KEYS:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    if key == _DIRECT_MODE_FACT_KEY:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _DIRECT_MODE_MAX
+        )
+    if key == _DIRECT_REALPATH_FACT_KEY:
+        if not isinstance(value, str):
+            return False
+        parent = Path(value)
+        return parent.is_absolute() and ".." not in parent.parts
+    return True
+
 
 class DirectConnectRetryInProgress(RuntimeError):
     """Raised when an atomic forget would race a claimed retry validation."""
@@ -520,6 +561,11 @@ class DirectConnectAuthorityStore:
             return None, None
         if not wrapper_facts.keys() <= DIRECT_WRAPPER_FACT_KEYS:
             return None, None
+        if not all(
+            _canonical_structural_fact_value(key, value)
+            for key, value in wrapper_facts.items()
+        ):
+            return None, None
 
         seen_slots: set[str] = set()
         seen_paths: set[str] = set()
@@ -542,6 +588,11 @@ class DirectConnectAuthorityStore:
             if not isinstance(child_facts, dict):
                 return None, None
             if not child_facts.keys() <= DIRECT_CHILD_FACT_KEYS:
+                return None, None
+            if not all(
+                _canonical_structural_fact_value(key, value)
+                for key, value in child_facts.items()
+            ):
                 return None, None
 
             path_str = str(child_path)
