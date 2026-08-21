@@ -58,6 +58,12 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class AuthorityAuditMigrationRefusal(Exception):
+    """Legacy ``authority_audit`` rows reference candidates that do not exist,
+    so the candidate-FK retrofit was refused atomically. The legacy schema and
+    data are left intact for inspection."""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -378,6 +384,7 @@ class Database:
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
         self._create_authority_tables()
+        self._retrofit_authority_audit_fk_if_needed()
         self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
@@ -1905,6 +1912,111 @@ class Database:
                 END;
             """)
         self._conn.commit()
+
+    def _retrofit_authority_audit_fk_if_needed(self) -> None:
+        """Idempotent forward retrofit of the ``authority_audit`` candidate FK.
+
+        The corrective head (07eaaed0) added
+        ``authority_audit.candidate_id REFERENCES authority_candidates(id)``,
+        but that reference lives only inside ``CREATE TABLE IF NOT EXISTS``. A
+        database created at the prior reviewed head (405697a0) therefore
+        retains an ``authority_audit`` table WITHOUT the FK after opening the
+        corrected build — ``CREATE TABLE IF NOT EXISTS`` is a no-op on the
+        already-existing table, so a raw ``Database.execute`` orphan INSERT
+        succeeds and commits. Fresh-database tests cannot see this.
+
+        This retrofit upgrades that legacy table in place, atomically and
+        idempotently:
+
+        * If ``authority_audit`` is absent, this is a no-op — the corrected
+          ``_create_authority_tables`` creates it with the FK on fresh files.
+        * If the table already carries the FK, this is a no-op (idempotent).
+        * If the table is the legacy no-FK shape, it is rebuilt as a
+          transactionally-safe replacement table: every valid row is copied
+          verbatim (id, candidate_id, event_type, payload_json, created_at —
+          identity and order preserved), the old table is dropped, the new
+          table is renamed into place, and the index + append-only triggers
+          are recreated. All DDL and the row copy run inside ONE explicit
+          transaction, so a mid-migration failure rolls back with no partial
+          replacement, no synthetic empty table, and no data loss; a later
+          reopen retries the whole migration.
+        * Legacy orphan audit rows (a ``candidate_id`` with no matching
+          ``authority_candidates`` row) are never deleted, rewritten, or
+          re-parented. The migration refuses atomically — raising
+          :class:`AuthorityAuditMigrationRefusal` before any mutation — and
+          leaves the old schema/data intact for inspection.
+
+        ``executescript`` is deliberately avoided: it issues an implicit
+        COMMIT and swallows mid-script rollback, which would defeat the
+        atomicity requirement. Every statement runs through ``execute`` so a
+        failure raises with the whole transaction rolled back.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='authority_audit'"
+        ).fetchone()
+        if exists is None:
+            return
+        fks = self._conn.execute(
+            "PRAGMA foreign_key_list(authority_audit)"
+        ).fetchall()
+        if fks:
+            return
+        orphan_count = self._conn.execute(
+            "SELECT COUNT(*) FROM authority_audit a "
+            "WHERE NOT EXISTS (SELECT 1 FROM authority_candidates c "
+            "WHERE c.id = a.candidate_id)"
+        ).fetchone()[0]
+        if orphan_count:
+            raise AuthorityAuditMigrationRefusal(
+                f"authority_audit contains {orphan_count} legacy orphan row(s) whose "
+                "candidate_id has no matching authority_candidates row; refusing to "
+                "retrofit the candidate FK. The legacy schema and data are left intact "
+                "for inspection."
+            )
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute(
+                """
+                CREATE TABLE authority_audit__new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                    event_type   TEXT NOT NULL
+                        CHECK (event_type IN
+                            ('candidate_claimed','candidate_claim_lost',
+                             'evaluation_recorded','candidate_consumed')),
+                    payload_json TEXT,
+                    created_at   TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                "INSERT INTO authority_audit__new "
+                "(id, candidate_id, event_type, payload_json, created_at) "
+                "SELECT id, candidate_id, event_type, payload_json, created_at "
+                "FROM authority_audit"
+            )
+            self._conn.execute("DROP TABLE authority_audit")
+            self._conn.execute(
+                "ALTER TABLE authority_audit__new RENAME TO authority_audit"
+            )
+            self._conn.execute(
+                "CREATE INDEX idx_authority_audit_candidate "
+                "ON authority_audit(candidate_id)"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_update "
+                "BEFORE UPDATE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_delete "
+                "BEFORE DELETE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
         """Add scope columns and make task_id nullable for conversation usage."""

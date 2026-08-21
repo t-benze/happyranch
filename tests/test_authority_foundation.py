@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.infrastructure.database import Database
+from runtime.infrastructure.database import AuthorityAuditMigrationRefusal, Database
 from runtime.models import (
     AuthorityDisposition,
     AuthorityLifecycleState,
@@ -528,6 +528,282 @@ def test_crash_before_evaluation_leaves_no_continuable_partial_record(tmp_path):
     # A never-evaluated candidate cannot be consumed after reopen.
     assert db.consume_authority_candidate(cid) is False
     assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
+
+
+# ── Legacy 405697a0-shaped authority_audit (no FK) retrofit ──────────────
+
+def _seed_legacy_authority_db(
+    path: Path, *, orphan: bool = False,
+) -> tuple[str, str, str]:
+    """Build a faithful 405697a0-shaped authority database file.
+
+    Candidates and evaluations are seeded through the real persistence API
+    (so the created / evaluated / consumed states are realistic), then
+    ``authority_audit`` is rebuilt in the pre-corrective no-FK shape and audit
+    rows are inserted raw — a 405697a0 writer had no FK to enforce. Returns
+    the three candidate ids in (created, evaluated, consumed) order.
+    """
+    db = Database(path)
+    c_created, won = _claim(db, root="TASK-LEG-CREATED")
+    assert won is True
+    c_evaluated, won = _claim(db, root="TASK-LEG-EVALUATED")
+    assert won is True
+    c_consumed, won = _claim(db, root="TASK-LEG-CONSUMED")
+    assert won is True
+    db.record_authority_evaluation(
+        candidate_id=c_evaluated, disposition="escalate",
+        disposition_code="escalate", response_digest=_digest("resp-evaluated"),
+    )
+    db.record_authority_evaluation(
+        candidate_id=c_consumed, disposition="continue_same_root",
+        disposition_code="continue_same_root", response_digest=_digest("resp-consumed"),
+    )
+    assert db.consume_authority_candidate(c_consumed) is True
+
+    # Rebuild authority_audit in the legacy no-FK shape (as a 405697a0 file
+    # has), keeping the index + append-only triggers the legacy head created.
+    db._conn.execute("DROP TABLE authority_audit")
+    db._conn.executescript(
+        """
+        CREATE TABLE authority_audit (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id TEXT NOT NULL,
+            event_type   TEXT NOT NULL
+                CHECK (event_type IN
+                    ('candidate_claimed','candidate_claim_lost',
+                     'evaluation_recorded','candidate_consumed')),
+            payload_json TEXT,
+            created_at   TEXT NOT NULL
+        );
+        CREATE INDEX idx_authority_audit_candidate ON authority_audit(candidate_id);
+        CREATE TRIGGER authority_audit_no_update
+            BEFORE UPDATE ON authority_audit
+            BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+        CREATE TRIGGER authority_audit_no_delete
+            BEFORE DELETE ON authority_audit
+            BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+        """
+    )
+    now = "2026-08-21T00:00:00+00:00"
+    audit_rows = [
+        (c_created, "candidate_claimed", None),
+        (c_evaluated, "candidate_claimed", None),
+        (c_evaluated, "evaluation_recorded",
+         '{"disposition":"escalate","retention_class":"digest_only"}'),
+        (c_consumed, "candidate_claimed", None),
+        (c_consumed, "evaluation_recorded",
+         '{"disposition":"continue_same_root","retention_class":"digest_only"}'),
+        (c_consumed, "candidate_consumed", None),
+    ]
+    for candidate_id, event_type, payload in audit_rows:
+        db._conn.execute(
+            "INSERT INTO authority_audit (candidate_id, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (candidate_id, event_type, payload, now),
+        )
+    if orphan:
+        db._conn.execute(
+            "INSERT INTO authority_audit (candidate_id, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("AUTH-CAND-nonexistent", "candidate_claimed", None, now),
+        )
+    db._conn.commit()
+    db.close()
+    return c_created, c_evaluated, c_consumed
+
+
+def _authority_audit_schema_snapshot(db: Database) -> dict:
+    """Semantic schema snapshot of ``authority_audit`` (columns, FK, index,
+    trigger names) — robust to cosmetic SQL-formatting differences between the
+    fresh ``_create_authority_tables`` DDL and the retrofit DDL."""
+    conn = db._conn
+    cols = [
+        (r["name"], r["type"], r["notnull"], r["dflt_value"], r["pk"])
+        for r in conn.execute("PRAGMA table_info(authority_audit)").fetchall()
+    ]
+    fks = [
+        (r["table"], r["from"], r["to"])
+        for r in conn.execute("PRAGMA foreign_key_list(authority_audit)").fetchall()
+    ]
+    indexes: dict[str, list[str]] = {}
+    for idx in conn.execute("PRAGMA index_list(authority_audit)").fetchall():
+        if idx["origin"] == "c":
+            indexes[idx["name"]] = [
+                r["name"]
+                for r in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()
+            ]
+    triggers = sorted(
+        r["name"]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='trigger' AND tbl_name='authority_audit'"
+        ).fetchall()
+    )
+    return {"cols": cols, "fks": fks, "indexes": indexes, "triggers": triggers}
+
+
+def test_legacy_authority_audit_without_fk_migrates_preserving_rows(tmp_path):
+    path = tmp_path / "legacy.db"
+    c_created, c_evaluated, c_consumed = _seed_legacy_authority_db(path)
+
+    # Reopen: the retrofit runs and adds the FK.
+    db = Database(path)
+
+    # Corrected FK now present, pointing at authority_candidates.id.
+    fks = db._conn.execute("PRAGMA foreign_key_list(authority_audit)").fetchall()
+    assert [(f["table"], f["from"], f["to"]) for f in fks] == [
+        ("authority_candidates", "candidate_id", "id")
+    ]
+
+    # Index + append-only triggers recreated.
+    triggers = {r["name"] for r in db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='authority_audit'"
+    ).fetchall()}
+    assert {"authority_audit_no_update", "authority_audit_no_delete"} <= triggers
+    indexes = {r["name"] for r in db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='authority_audit'"
+    ).fetchall()}
+    assert "idx_authority_audit_candidate" in indexes
+
+    # Row identity / order / event types / payloads retained verbatim.
+    rows = db._conn.execute(
+        "SELECT id, candidate_id, event_type, payload_json "
+        "FROM authority_audit ORDER BY id"
+    ).fetchall()
+    assert [r["id"] for r in rows] == [1, 2, 3, 4, 5, 6]
+    assert [r["event_type"] for r in rows] == [
+        "candidate_claimed",
+        "candidate_claimed", "evaluation_recorded",
+        "candidate_claimed", "evaluation_recorded", "candidate_consumed",
+    ]
+    assert rows[2]["payload_json"] == '{"disposition":"escalate","retention_class":"digest_only"}'
+
+    # State retained across all three lifecycle stages.
+    assert db.get_authority_candidate(c_created).lifecycle_state == AuthorityLifecycleState.CREATED
+    assert db.get_authority_candidate(c_evaluated).lifecycle_state == AuthorityLifecycleState.EVALUATED
+    assert db.get_authority_candidate(c_evaluated).disposition == AuthorityDisposition.ESCALATE
+    assert db.get_authority_candidate(c_consumed).lifecycle_state == AuthorityLifecycleState.CONSUMED
+    assert db.get_authority_candidate(c_consumed).consumed_at is not None
+    ev = db.get_authority_evaluation(c_evaluated)
+    assert ev is not None and ev.response_digest == _digest("resp-evaluated")
+
+    # Post-migration adversarial raw orphan INSERT fails atomically, no row.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        db.execute(
+            "INSERT INTO authority_audit (candidate_id, event_type, created_at) "
+            "VALUES ('AUTH-CAND-nonexistent', 'candidate_claimed', 'now')",
+        )
+    db._conn.rollback()
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 6
+
+    db.close()
+
+    # Reopen twice — idempotent (no duplicate table/index/trigger errors).
+    for _ in range(2):
+        reopened = Database(path)
+        assert reopened._conn.execute(
+            "PRAGMA foreign_key_list(authority_audit)"
+        ).fetchall()
+        assert reopened._conn.execute(
+            "SELECT COUNT(*) FROM authority_audit"
+        ).fetchone()[0] == 6
+        reopened.close()
+
+
+def test_retrofitted_authority_audit_schema_matches_fresh(tmp_path):
+    fresh = Database(tmp_path / "fresh.db")
+    fresh_snapshot = _authority_audit_schema_snapshot(fresh)
+    fresh.close()
+
+    legacy_path = tmp_path / "legacy.db"
+    _seed_legacy_authority_db(legacy_path)
+    migrated = Database(legacy_path)
+    migrated_snapshot = _authority_audit_schema_snapshot(migrated)
+    migrated.close()
+
+    # The retrofit must reproduce the exact corrected schema (columns, FK,
+    # index, trigger names) of a freshly created database — no drift.
+    assert migrated_snapshot == fresh_snapshot
+
+
+def test_legacy_authority_audit_orphan_refuses_atomically(tmp_path):
+    path = tmp_path / "legacy_orphan.db"
+    _seed_legacy_authority_db(path, orphan=True)
+
+    with pytest.raises(AuthorityAuditMigrationRefusal):
+        Database(path)
+
+    # Old schema/data left intact for inspection — no partial rebuild.
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    assert conn.execute("PRAGMA foreign_key_list(authority_audit)").fetchall() == []
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    assert "authority_audit__new" not in tables
+    assert "authority_audit" in tables
+    triggers = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='authority_audit'"
+    ).fetchall()}
+    assert {"authority_audit_no_update", "authority_audit_no_delete"} <= triggers
+    # The orphan row is intact — not deleted, rewritten, or re-parented.
+    orphan_rows = conn.execute(
+        "SELECT candidate_id, event_type FROM authority_audit "
+        "WHERE candidate_id='AUTH-CAND-nonexistent'"
+    ).fetchall()
+    assert len(orphan_rows) == 1
+    assert orphan_rows[0]["event_type"] == "candidate_claimed"
+    # Total row count unchanged (6 valid + 1 orphan).
+    assert conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 7
+    conn.close()
+
+    # Deterministic: a second reopen refuses identically (no partial state).
+    with pytest.raises(AuthorityAuditMigrationRefusal):
+        Database(path)
+
+
+def test_legacy_authority_audit_migration_failure_rolls_back_and_reruns(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "legacy_fail.db"
+    c_consumed = _seed_legacy_authority_db(path)[2]
+
+    real_connect = sqlite3.connect
+
+    class _FailingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if isinstance(sql, str) and "DROP TABLE authority_audit" in sql:
+                raise RuntimeError("injected migration failure")
+            return super().execute(sql, *args, **kwargs)
+
+    def _connect(*args, **kwargs):
+        kwargs["factory"] = _FailingConnection
+        return real_connect(*args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr("runtime.infrastructure.database.sqlite3.connect", _connect)
+        with pytest.raises(RuntimeError, match="injected migration failure"):
+            Database(path)
+
+    # Patch undone. Inspect the file: no partial replacement, source intact.
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    assert "authority_audit__new" not in tables
+    assert "authority_audit" in tables
+    # Source rows preserved; FK still absent (migration did not complete).
+    assert conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 6
+    assert conn.execute("PRAGMA foreign_key_list(authority_audit)").fetchall() == []
+    conn.close()
+
+    # Rerun (normal connection) succeeds and preserves the durable state.
+    db = Database(path)
+    assert db._conn.execute("PRAGMA foreign_key_list(authority_audit)").fetchall()
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 6
+    assert db.get_authority_candidate(c_consumed).lifecycle_state == AuthorityLifecycleState.CONSUMED
+    db.close()
 
 
 # ── Defect A: strict typed closed records reject smuggled content ─────────
