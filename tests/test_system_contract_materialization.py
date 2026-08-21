@@ -31,6 +31,18 @@ from runtime.skills.system_contracts import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agent_for_system_contract_materialization(tmp_path):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agent used by the fail-closed task-path tests.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path / "runtime" / "orgs" / "test"), ("dev_agent",))
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════

@@ -38,6 +38,13 @@ from runtime.infrastructure.learnings_store import (
     PromotedLocked,
 )
 from runtime.infrastructure.memory_migration import migrate_workspace
+from runtime.models import (
+    DreamStatus,
+    ScheduleStatus,
+    TaskStatus,
+    ThreadInvocationStatus,
+    WorkHourStatus,
+)
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
@@ -241,6 +248,32 @@ class FounderCreateAgentBody(BaseModel):
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+_TERMINATED_AGENTS_DIRNAME = "_terminated"
+_TERMINATED_WORKSPACES_DIRNAME = "_terminated"
+
+
+def _terminated_agents_dir(paths: OrgPaths) -> Path:
+    return paths.agents_dir / _TERMINATED_AGENTS_DIRNAME
+
+
+def _terminated_workspaces_dir(paths: OrgPaths) -> Path:
+    return paths.workspaces_dir / _TERMINATED_WORKSPACES_DIRNAME
+
+
+def _move_dir_atomically(src: Path, dst: Path) -> None:
+    """Move a directory, preferring an atomic same-filesystem rename.
+
+    ``dst`` must not already exist. Falls back to ``shutil.move`` only when
+    the source and destination are on different filesystems.
+    """
+    if dst.exists():
+        raise FileExistsError(f"destination already exists: {dst}")
+    try:
+        os.rename(src, dst)
+    except OSError:
+        shutil.move(str(src), str(dst))
+
+
 def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[str, str]:
     """Validate the caller is a team manager and return (manager_name, manager_team).
 
@@ -271,6 +304,52 @@ def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[st
     )
 
 
+def _collect_quiescence_conflicts(org: OrgState, agent_name: str) -> list[dict]:
+    """Return stable IDs/kinds of live work that blocks termination.
+
+    Non-terminal directly assigned tasks (including children assigned to this
+    worker), already-started thread invocations, firing schedules, running
+    work-hours wakes, running dreams, and pending/running jobs attributable to
+    the worker are all conflicts. Each entry is ``{"kind": ..., "id": ...}``.
+    """
+    conflicts: list[dict] = []
+    db = org.db
+
+    # Non-terminal tasks assigned to this agent.
+    non_terminal_statuses = {
+        TaskStatus.PENDING.value,
+        TaskStatus.IN_PROGRESS.value,
+        TaskStatus.ESCALATED.value,
+    }
+    for task in db.list_tasks(assigned_agent=agent_name, limit=10000):
+        if task.status.value in non_terminal_statuses:
+            conflicts.append({"kind": "task", "id": task.id})
+
+    # Already-started (but not yet consumed/declined) thread invocations.
+    for token, _thread_id in db.list_started_invocations_for_agent(agent_name):
+        conflicts.append({"kind": "thread_invocation", "id": token})
+
+    # Firing schedules.
+    for sched in db.schedules.list(agent=agent_name, status=ScheduleStatus.FIRING, limit=500):
+        conflicts.append({"kind": "schedule", "id": sched.id})
+
+    # Running work-hours wakes.
+    for wh in db.work_hours.list(agent=agent_name, limit=500):
+        if wh.status == WorkHourStatus.RUNNING:
+            conflicts.append({"kind": "work_hour", "id": wh.id})
+
+    # Running dreams.
+    for dream in db.list_dreams(agent=agent_name, limit=500):
+        if dream.status == DreamStatus.RUNNING:
+            conflicts.append({"kind": "dream", "id": dream.id})
+
+    # Pending/running jobs attributable to the worker.
+    for job in db.list_jobs_db(agent=agent_name, status=["pending", "running"], limit=500):
+        conflicts.append({"kind": "job", "id": job.id})
+
+    return conflicts
+
+
 def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) -> None:
     """Append a single learning line to learnings.md, creating the file+header if missing.
 
@@ -296,28 +375,35 @@ def _resolve_agent_model(paths: OrgPaths, agent_name: str) -> str | None:
 
 @router.get("/agents")
 def list_agents(slug: str, org: OrgDep) -> dict:
+    """Return the active agent roster.
+
+    The canonical active roster is ``prompt_loader.list_agents(paths)`` — the
+    set of approved agent markdown files under ``org/agents/``. This excludes
+    pending enrollments, terminated archives, and any stray workspace
+    directories that do not correspond to an active AgentDef.
+
+    Compatibility note: earlier implementations discovered agents by scanning
+    ``workspaces/`` and would surface workspace-only directories. That behavior
+    is not a documented requirement; the file-based roster is the supported
+    source of truth.
+    """
     paths = OrgPaths(root=org.root)
-    ws_dir = paths.workspaces_dir
-    if ws_dir.exists():
-        agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
-    else:
-        agent_names = []
     rows = []
-    for name in agent_names:
-        agent_def = prompt_loader.load_agent(paths, name)
+    for agent_def in prompt_loader.list_agents(paths):
+        name = agent_def.name
         # THR-095: repos are read from AgentDef.repos (org/agents/<name>.md).
         # agent.yaml is no longer the source for repos.
-        repos = dict(agent_def.repos) if agent_def else {}
+        repos = dict(agent_def.repos) if agent_def.repos else {}
         rows.append({
             "name": name,
-            "team": agent_def.team if agent_def else None,
-            "role": agent_def.role if agent_def else None,
-            "executor": agent_def.executor if agent_def else None,
-            "model": _resolve_agent_model(paths, name),
-            "description": agent_def.description if agent_def else None,
+            "team": agent_def.team,
+            "role": agent_def.role,
+            "executor": agent_def.executor,
+            "model": agent_def.model,
+            "description": agent_def.description,
             # Phase 2: additive read-only fields (D6 spec)
             "repos": repos,
-            "system_prompt": agent_def.system_prompt if agent_def else "",
+            "system_prompt": agent_def.system_prompt,
         })
     return {"agents": rows}
 
@@ -487,10 +573,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         _validate_executor(body.executor or "claude")
-        # Check for duplicate: look in both pending and active.
-        if (prompt_loader.load_pending_agent(paths, body.name) is not None
-                or prompt_loader.load_agent(paths, body.name) is not None):
-            raise HTTPException(status_code=409, detail=f"agent {body.name!r} already enrolled")
+        # Reuse any name that has ever been enrolled (active, pending, or
+        # terminated) to keep historical identity unambiguous.
+        if prompt_loader.is_name_unavailable(paths, body.name):
+            detail = {"code": "agent_name_unavailable", "name": body.name}
+            if prompt_loader.is_terminated(paths, body.name):
+                detail["reason"] = "a terminated agent with this name exists"
+            raise HTTPException(status_code=409, detail=detail)
         # Validate target_team BEFORE inserting — avoid zombie enrollment files.
         async with org.teams_lock:
             target_team = body.target_team or manager_team
@@ -615,6 +704,84 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         existing = prompt_loader.load_agent(paths, body.name)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+
+        # Only non-manager workers may be terminated. Removing a manager would
+        # corrupt the team hierarchy.
+        if existing.role == "manager":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "manager_terminate_forbidden",
+                    "name": body.name,
+                    "reason": "terminating a team manager is not allowed",
+                },
+            )
+
+        # Enforce quiescence before any destructive archive step. Active work
+        # is never killed, cancelled, reassigned, or silently mutated.
+        conflicts = _collect_quiescence_conflicts(org, body.name)
+        if conflicts:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "agent_not_quiescent",
+                    "name": body.name,
+                    "conflicts": conflicts,
+                },
+            )
+
+        # Preflight archive collision and move feasibility BEFORE any state
+        # mutation. If the active AgentDef or workspace cannot be archived, we
+        # must return 409/500 with the agent still fully active: team
+        # membership, armed schedules, pending wakes/dreams, and unstarted
+        # invocations untouched.
+        active_path = paths.agents_dir / f"{body.name}.md"
+        terminated_agents_dir = _terminated_agents_dir(paths)
+        terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+        terminated_agent_path = terminated_agents_dir / f"{body.name}.md"
+        if terminated_agent_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "archive_collision",
+                    "name": body.name,
+                    "reason": "a terminated agent file already exists",
+                },
+            )
+
+        workspace = paths.workspaces_dir / body.name
+        terminated_workspace_dir = _terminated_workspaces_dir(paths)
+        terminated_workspace_dir.mkdir(parents=True, exist_ok=True)
+        terminated_workspace = terminated_workspace_dir / body.name
+        workspace_exists = workspace.exists()
+        if workspace_exists and terminated_workspace.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "archive_collision",
+                    "name": body.name,
+                    "reason": "a terminated workspace already exists",
+                },
+            )
+        if workspace_exists and not workspace.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "workspace_archive_failed",
+                    "name": body.name,
+                    "reason": "workspace path is not a directory",
+                },
+            )
+        if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "workspace_archive_failed",
+                    "name": body.name,
+                    "reason": "terminated workspace directory is not writable",
+                },
+            )
+
         async with org.teams_lock:
             agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
@@ -626,13 +793,88 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         "agent_team": agent_team,
                     },
                 )
-            # Unlink file first — if it raises, teams.yaml stays untouched.
-            active_path = paths.agents_dir / f"{body.name}.md"
-            active_path.unlink(missing_ok=True)
+
+            # Re-check quiescence under the lock: new live work may have been
+            # assigned between the outer check and lock acquisition.
+            conflicts = _collect_quiescence_conflicts(org, body.name)
+            if conflicts:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "agent_not_quiescent",
+                        "name": body.name,
+                        "conflicts": conflicts,
+                    },
+                )
+
+            # Archive the filesystem identity FIRST. If this fails, no DB or
+            # team mutation has occurred yet, so the agent remains fully active.
+            os.replace(active_path, terminated_agent_path)
+            if workspace_exists:
+                try:
+                    _move_dir_atomically(workspace, terminated_workspace)
+                except Exception:
+                    try:
+                        os.replace(terminated_agent_path, active_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": "workspace_archive_failed",
+                            "name": body.name,
+                        },
+                    )
+
+            # Remove team membership while still holding the lock. If the
+            # subsequent DB cleanup fails, we roll this back together with the
+            # filesystem archive.
             org.teams.remove_worker(manager_team, body.name)
-        workspace = paths.workspaces_dir / body.name
-        if workspace.exists():
-            shutil.rmtree(workspace)
+
+            # Atomically cancel armed schedules, skip pending wakes/dreams, and
+            # decline unstarted invocations. A failure here rolls back the team
+            # and filesystem archive so the agent stays active and consistent.
+            try:
+                org.db.terminate_agent_cleanups(body.name)
+            except Exception:
+                _logger = logging.getLogger(__name__)
+                _logger.exception(
+                    "terminate cleanup failed for %s; rolling back archive",
+                    body.name,
+                )
+                # Roll back team membership first.
+                try:
+                    org.teams.add_worker(manager_team, body.name)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back team membership for %s",
+                        body.name,
+                    )
+                # Roll back the filesystem archive.
+                try:
+                    if workspace_exists and terminated_workspace.exists():
+                        _move_dir_atomically(terminated_workspace, workspace)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back workspace archive for %s",
+                        body.name,
+                    )
+                try:
+                    if terminated_agent_path.exists():
+                        os.replace(terminated_agent_path, active_path)
+                except OSError:
+                    _logger.exception(
+                        "failed to roll back agent file archive for %s",
+                        body.name,
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "terminate_cleanup_failed",
+                        "name": body.name,
+                    },
+                )
+
         audit.log_agent_managed(
             scope_id=scope_id,
             action="terminate",
@@ -640,7 +882,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             source=source,
             actor=manager_name,
         )
-        return {"ok": True}
+        return {"ok": True, "status": "terminated"}
 
     raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
 
@@ -688,12 +930,12 @@ async def founder_create_agent(
     # ---- team mutation + agent file write, under the same lock ----
     async with org.teams_lock:
         # Duplicate check inside the lock to close TOCTOU between check + write.
-        if (prompt_loader.load_pending_agent(paths, body.name) is not None
-                or prompt_loader.load_agent(paths, body.name) is not None):
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "agent_exists", "name": body.name},
-            )
+        # Terminated names are also unavailable to preserve historical identity.
+        if prompt_loader.is_name_unavailable(paths, body.name):
+            detail = {"code": "agent_exists", "name": body.name}
+            if prompt_loader.is_terminated(paths, body.name):
+                detail["reason"] = "a terminated agent with this name exists"
+            raise HTTPException(status_code=409, detail=detail)
 
         if body.role == "worker":
             assert body.team is not None
@@ -1188,10 +1430,12 @@ def list_enrollments(
 ) -> dict:
     """List enrollments with optional ?status= and/or ?team= filters.
 
-    File-based: pending agents live in _pending/, active in agents_dir/.
+    File-based: pending agents live in _pending/, active in agents_dir/,
+    and terminated/archived agents live in agents_dir/_terminated/.
     The ?team= filter is voluntary scoping — it does not authenticate the
     caller as a member of that team. Founders always get an unfiltered view
-    when neither parameter is supplied.
+    when neither parameter is supplied. Terminated agents are surfaced only
+    when ?status=terminated is explicitly requested.
     """
     paths = OrgPaths(root=org.root)
 
@@ -1199,6 +1443,21 @@ def list_enrollments(
     # parsed AgentDef so the founder UI can render the same shape as the
     # active-agents table without a second roundtrip.
     all_enrollments: list[dict] = []
+
+    if enrollment_status == "terminated":
+        for agent in prompt_loader.list_terminated(paths):
+            all_enrollments.append({
+                "name": agent.name,
+                "team": agent.team,
+                "role": agent.role,
+                "executor": agent.executor,
+                "description": agent.description or "",
+                "status": "terminated",
+                "enrolled_by": agent.enrolled_by,
+                "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
+            })
+        return {"enrollments": all_enrollments}
+
     for agent in prompt_loader.list_pending(paths):
         all_enrollments.append({
             "name": agent.name,
@@ -1248,6 +1507,15 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         existing = prompt_loader.load_agent(paths, agent_name)
         if existing is not None:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+        if prompt_loader.is_terminated(paths, agent_name):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_name_unavailable",
+                    "name": agent_name,
+                    "reason": "a terminated agent with this name exists",
+                },
+            )
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
     # Refuse to promote an agent whose declared team isn't registered.

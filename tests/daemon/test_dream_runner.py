@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
 
 from runtime.config import Settings
 from runtime.daemon.dream_runner import build_dream_prompt, run_dream
@@ -11,6 +16,21 @@ from runtime.models import DreamRecord, DreamStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import ClaudeExecutor
 from runtime.orchestrator.org_config import OrgConfig
+
+
+@pytest.fixture(autouse=True)
+def _seed_dev_agent_for_dream_runner(org_state) -> None:
+    """Dream launch is fail-closed: every test needs an active AgentDef."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    agents_dir = org_state.root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    agent = AgentDef(
+        name="dev_agent", team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt="You are dev_agent.", description="", model=None,
+    )
+    (agents_dir / "dev_agent.md").write_text(render_agent_text(agent))
 
 
 def _dt(hour: int) -> datetime:
@@ -855,3 +875,235 @@ async def test_run_dream_no_model_preserves_default_behavior(org_state):
         f"model should be None when AgentDef has no model, "
         f"got {captured_model.get('model')!r}"
     )
+
+
+# ── TASK-5299: fail-closed admission and race-safe PENDING->RUNNING ───────
+
+
+async def test_run_dream_skips_when_agent_def_missing(org_state, monkeypatch):
+    """A pending dream for an agent with no active AgentDef must be skipped
+    before any executor is constructed and must not fall back to claude."""
+    _insert_pending_dream(org_state)
+    # Remove the active AgentDef seeded by the autouse fixture.
+    agents_dir = org_state.root / "org" / "agents"
+    (agents_dir / "dev_agent.md").unlink()
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert called == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+    assert "unavailable" in dream.error.lower()
+
+
+async def test_run_dream_skips_when_agent_def_terminated(org_state):
+    """A pending dream for an archived (terminated) agent must be skipped."""
+    _insert_pending_dream(org_state)
+    agents_dir = org_state.root / "org" / "agents"
+    terminated_dir = agents_dir / "_terminated"
+    terminated_dir.mkdir(parents=True, exist_ok=True)
+    # Move the active AgentDef into the terminated archive.
+    (agents_dir / "dev_agent.md").rename(terminated_dir / "dev_agent.md")
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert called == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+
+
+async def test_run_dream_no_executor_if_pending_transition_loses_race(
+    org_state, monkeypatch,
+):
+    """If the PENDING->RUNNING conditional transition fails (e.g. termination
+    set the dream to SKIPPED between admission and the transition), run_dream
+    must return without constructing an executor."""
+    _insert_pending_dream(org_state)
+
+    called = []
+
+    def factory(*_a, **_k):
+        called.append("factory")
+        return FakeExecutor()
+
+    real_update_status_if = org_state.db.update_dream_status_if
+
+    def _losing_transition(*args, **kwargs):
+        called.append("transition_attempt")
+        return False
+
+    monkeypatch.setattr(
+        org_state.db, "update_dream_status_if", _losing_transition,
+    )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=factory,
+    )
+
+    assert "transition_attempt" in called
+    assert "factory" not in called
+
+
+# ── TASK-5322: termination-vs-dream durable single-winner interleaving ───
+
+
+def _activate_manager_session(org_state) -> None:
+    """Register an active engineering_head session so manage-agent terminate
+    authenticates (mirrors test_routes_agents._activate_eh_session)."""
+    org_state.sessions.set_active("TASK-100", "engineering_head", "sess-eh-test")
+
+
+async def _terminate_via_route(app, auth_headers):
+    """Issue the real manage-agent terminate route call on the same loop."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        return await client.post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": "TASK-100",
+                "session_id": "sess-eh-test",
+            },
+            headers=auth_headers,
+        )
+
+
+async def test_run_dream_termination_wins_no_executor_and_keeps_terminal_state(
+    app, org_state, auth_headers,
+):
+    """Termination archives the agent and terminalizes the pending dream
+    (SKIPPED/agent_terminated) while run_dream is paused at the admission
+    boundary. The waiting runner must make zero executor-factory calls and must
+    not overwrite the durable terminal reason."""
+    _insert_pending_dream(org_state)
+    _activate_manager_session(org_state)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    factory_calls = []
+
+    async def gate():
+        entered.set()
+        await release.wait()
+
+    def factory(*_a, **_k):
+        factory_calls.append("factory")
+        return FakeExecutor()
+
+    task = asyncio.create_task(
+        run_dream(
+            org_state=org_state,
+            dream_id="DREAM-001",
+            executor_factory=factory,
+            admission_gate=gate,
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+
+        r = await _terminate_via_route(app, auth_headers)
+        assert r.status_code == 200
+
+        # Termination won: the pending dream is durably SKIPPED with the
+        # termination cleanup reason.
+        dream = org_state.db.get_dream("DREAM-001")
+        assert dream.status == DreamStatus.SKIPPED
+        assert dream.error == "agent_terminated"
+    finally:
+        release.set()
+
+    await asyncio.wait_for(task, timeout=10)
+
+    # The resumed runner must not construct an executor and must not overwrite
+    # the terminal state set by termination.
+    assert factory_calls == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+    assert dream.error == "agent_terminated"
+
+
+async def test_run_dream_wins_running_then_termination_conflicts(
+    app, org_state, auth_headers,
+):
+    """run_dream claims PENDING->RUNNING first, so a concurrent termination
+    must observe the running dream as non-quiescent and return conflict rather
+    than falsely succeeding. The active AgentDef, workspace, and team
+    membership stay intact."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+
+    _insert_pending_dream(org_state)
+    _activate_manager_session(org_state)
+
+    claimed = asyncio.Event()
+    release_exec = threading.Event()
+
+    class BlockingExecutor(FakeExecutor):
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            release_exec.wait(timeout=10)
+            return FakeResult()
+
+    def factory(*_a, **_k):
+        claimed.set()
+        return BlockingExecutor()
+
+    task = asyncio.create_task(
+        run_dream(
+            org_state=org_state,
+            dream_id="DREAM-001",
+            executor_factory=factory,
+        )
+    )
+    try:
+        await asyncio.wait_for(claimed.wait(), timeout=10)
+
+        # The dream is durably RUNNING by the time the factory runs; termination
+        # must refuse.
+        assert org_state.db.get_dream("DREAM-001").status == DreamStatus.RUNNING
+
+        r = await _terminate_via_route(app, auth_headers)
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert detail["code"] == "agent_not_quiescent"
+        assert any(
+            c["kind"] == "dream" and c["id"] == "DREAM-001"
+            for c in detail["conflicts"]
+        )
+
+        # No false successful termination: identity, workspace, and team intact.
+        paths = OrgPaths(root=org_state.root)
+        assert prompt_loader.load_agent(paths, "dev_agent") is not None
+        assert (org_state.root / "workspaces" / "dev_agent").exists()
+        assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    finally:
+        release_exec.set()
+
+    await asyncio.wait_for(task, timeout=10)
+
+    # The dream ran to completion (FAILED/no_callback) rather than being
+    # skipped or silently terminated.
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status != DreamStatus.SKIPPED

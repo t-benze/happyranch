@@ -25,6 +25,18 @@ from runtime.models import (
 from runtime.orchestrator.org_config import OrgConfig
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_thread_runner(tmp_path):
+    """Thread-runner launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace/agent.yaml. Seed active frontmatter
+    for the agents used in this module so the launch guard admits them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path), ("alice", "bob"))
+
+
 def test_render_message_includes_attachments() -> None:
     msg = ThreadMessage(
         thread_id="THR-001",
@@ -1104,7 +1116,7 @@ async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monk
     (ws / "agent.yaml").write_text("executor: claude\n")
     # Authoritative AgentDef frontmatter with gpt-5.6-terra model.
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
@@ -1512,7 +1524,7 @@ async def test_thread_invocation_forwards_agent_model_to_executor_run(
     (ws / "agent.yaml").write_text("executor: claude\n")
     # Create AgentDef with a model in org/agents/<name>.md
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
@@ -1554,9 +1566,10 @@ async def test_thread_invocation_refreshes_repos_before_executor_run(tmp_path, m
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("executor: claude\n")
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
-        "---\nname: alice\nteam: engineering\nrole: worker\nexecutor: claude\n---\n"
+        "---\nname: alice\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n"
+        "You are a test agent.\n"
     )
 
     import runtime.daemon.thread_runner as runner_mod
@@ -1603,7 +1616,7 @@ async def test_thread_invocation_no_model_preserves_default_behavior(
     (ws / "agent.yaml").write_text("executor: claude\n")
     # AgentDef with NO model
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\n---\n\n"
@@ -1650,7 +1663,7 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
