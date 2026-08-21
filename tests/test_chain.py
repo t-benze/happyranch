@@ -132,3 +132,37 @@ def test_compute_advance_action_wake_on_final_leg_match():
     action = compute_advance_action(chain=cs, report=_report(verdict="PASS"))
     assert action.kind == "wake"
     assert action.reason == "chain_complete"
+
+
+def _reviewer_omitted_chain():
+    return ChainState(
+        step_index=1,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="code_reviewer", prompt="review", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+
+
+def test_compute_advance_action_reviewer_omitted_request_changes_wakes():
+    # A code_reviewer leg with a downstream leg and no expect_verdict must
+    # wake/clear rather than advance, even though the verdict is a "mismatch"
+    # shape it could never gate.
+    action = compute_advance_action(
+        chain=_reviewer_omitted_chain(), report=_report(verdict="REQUEST_CHANGES"),
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"
+
+
+def test_compute_advance_action_reviewer_omitted_approve_still_wakes():
+    # Fail-closed: without an explicit gate the orchestrator cannot trust an
+    # APPROVE either, so an omitted-expectation reviewer with a downstream leg
+    # never auto-advances — the manager re-declares with a gate.
+    action = compute_advance_action(
+        chain=_reviewer_omitted_chain(), report=_report(verdict="APPROVE"),
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"

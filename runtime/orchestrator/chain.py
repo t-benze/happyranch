@@ -16,6 +16,28 @@ from typing import Literal
 
 from runtime.models import ChainLeg, CompletionReport
 
+# Agent name whose chain leg acts as a review GATE by role. A code_reviewer
+# leg that has a downstream leg must declare an explicit ``expect_verdict`` so
+# the orchestrator can distinguish APPROVE (advance) from REQUEST_CHANGES
+# (wake). Omitting it is fail-closed at both authoring (validation) and
+# execution (compute_advance_action).
+REVIEWER_AGENT = "code_reviewer"
+
+
+def reviewer_downstream_omission(
+    *, agent: str | None, expect_verdict: str | None, has_downstream: bool,
+) -> bool:
+    """True when a review-gate leg is unsafe to auto-advance.
+
+    A ``code_reviewer`` leg that has a downstream leg must declare an explicit
+    ``expect_verdict``. Without it the orchestrator cannot tell an APPROVE
+    (advance) from a REQUEST_CHANGES (wake), so the omission must be
+    fail-closed: reject at authoring, wake/clear rather than advance at
+    execution. Ordinary non-review legs (and a reviewer FINAL leg, which has
+    no downstream leg to wrongly advance) are unaffected.
+    """
+    return bool(agent == REVIEWER_AGENT and has_downstream and expect_verdict is None)
+
 
 @dataclass
 class ChainState:
@@ -54,6 +76,17 @@ class ChainState:
         # step_index=1..N corresponds to legs[0..N-1].
         return self.legs[self.step_index - 1].expect_verdict
 
+    def current_leg_agent(self) -> str | None:
+        """Agent name of the just-terminated leg, or None for the first leg.
+
+        The first leg's agent is not persisted in the chain payload (only its
+        expect_verdict is, as ``first_leg_expect_verdict``), so a first-leg
+        reviewer is only rejected at authoring-time validation, never here.
+        """
+        if self.step_index == 0:
+            return None
+        return self.legs[self.step_index - 1].agent
+
 
 @dataclass
 class AdvanceAction:
@@ -65,7 +98,7 @@ class AdvanceAction:
     next_leg: ChainLeg | None = None
     next_step_index: int | None = None
     # wake fields:
-    reason: str | None = None    # "child_blocked" | "verdict_mismatch" | "chain_complete"
+    reason: str | None = None    # "child_blocked" | "verdict_mismatch" | "reviewer_expectation_omitted" | "chain_complete"
     expected: str | None = None
     actual: str | None = None
 
@@ -92,6 +125,18 @@ def compute_advance_action(*, chain: ChainState, report: CompletionReport) -> Ad
     # 1..len(chain.legs); next_index > len(chain.legs) means no more legs.
     if next_index > len(chain.legs):
         return AdvanceAction(kind="wake", reason="chain_complete")
+
+    # Fail-closed: a code_reviewer leg with a downstream leg and no explicit
+    # expect_verdict must not auto-advance — the orchestrator cannot tell an
+    # APPROVE from a REQUEST_CHANGES without a gate. Wake/clear instead.
+    # Ordinary non-review legs (and the reviewer FINAL leg, which already
+    # reached chain_complete above) are unaffected.
+    if reviewer_downstream_omission(
+        agent=chain.current_leg_agent(),
+        expect_verdict=expected,
+        has_downstream=True,
+    ):
+        return AdvanceAction(kind="wake", reason="reviewer_expectation_omitted")
 
     next_leg = chain.legs[next_index - 1]
     return AdvanceAction(

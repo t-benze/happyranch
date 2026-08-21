@@ -499,6 +499,23 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                     status=TaskStatus.FAILED, auto_revisit_spawned=False,
                 )
                 return
+            # Fail-closed: a code_reviewer carrier first leg with a downstream
+            # leg (non-empty then) must declare an explicit expect_verdict.
+            rev_err = _reviewer_downstream_omission_error(
+                agent=child.agent,
+                expect_verdict=child.expect_verdict,
+                has_downstream=bool(child.then),
+                where=f"fanout child {i + 1} first leg",
+            )
+            if rev_err is not None:
+                note = f"invalid fanout: {rev_err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
             # Validate carrier chain legs for pipeline children (Phase 2).
             for j, leg in enumerate(child.then):
                 leg_err = _validate_one_leg(
@@ -507,6 +524,21 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 )
                 if leg_err is not None:
                     note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+                rev_err = _reviewer_downstream_omission_error(
+                    agent=leg.agent,
+                    expect_verdict=leg.expect_verdict,
+                    has_downstream=(j < len(child.then) - 1),
+                    where=f"fanout child {i + 1} then leg {j + 1}",
+                )
+                if rev_err is not None:
+                    note = f"invalid fanout: {rev_err}"
                     _fail(orch, task_id, note=note)
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
@@ -826,6 +858,24 @@ def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) ->
     return None
 
 
+def _reviewer_downstream_omission_error(
+    *, agent: str | None, expect_verdict: str | None,
+    has_downstream: bool, where: str,
+) -> str | None:
+    """Fail-closed authoring check: a code_reviewer leg with a downstream leg
+    must declare an explicit expect_verdict. Returns a human-readable error
+    naming the offending leg, or None when the leg is safe."""
+    from runtime.orchestrator.chain import reviewer_downstream_omission
+    if reviewer_downstream_omission(
+        agent=agent, expect_verdict=expect_verdict, has_downstream=has_downstream,
+    ):
+        return (
+            f"{where} is a code_reviewer leg with downstream legs; "
+            "it must set expect_verdict"
+        )
+    return None
+
+
 def _prepare_attachment_params(
     orch: "Orchestrator",
     prevalidated: list[dict],
@@ -938,8 +988,27 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
     if err is not None:
         return err
-    for i, leg in enumerate(decision.then or []):
+    then = decision.then or []
+    # Fail-closed: a code_reviewer leg with a downstream leg must declare an
+    # explicit expect_verdict, or a REQUEST_CHANGES would auto-advance QA.
+    err = _reviewer_downstream_omission_error(
+        agent=decision.agent,
+        expect_verdict=decision.expect_verdict,
+        has_downstream=bool(then),
+        where="first leg",
+    )
+    if err is not None:
+        return err
+    for i, leg in enumerate(then):
         err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
+        if err is not None:
+            return err
+        err = _reviewer_downstream_omission_error(
+            agent=leg.agent,
+            expect_verdict=leg.expect_verdict,
+            has_downstream=(i < len(then) - 1),
+            where=f"chain leg {i + 2}",
+        )
         if err is not None:
             return err
     return None

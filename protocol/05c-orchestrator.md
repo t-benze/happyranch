@@ -714,6 +714,13 @@ MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
 manager decision step (not cascade-failed). Self-blocked reviews that omit a
 verdict waste the delegation and burn a re-spawn round.
 
+When a manager declares an inline chain, a `code_reviewer` leg that has a
+downstream leg **must** declare an explicit `expect_verdict`. A `code_reviewer`
+leg with a downstream leg that omits `expect_verdict` is rejected at
+declaration time; any persisted in-flight chain with such a leg wakes the
+manager and clears the chain instead of auto-advancing, so a reviewer
+`REQUEST_CHANGES` can never auto-dispatch the next leg.
+
 ---
 
 ### Agent Todos: internal Schedule fire mechanism (THR-105)
