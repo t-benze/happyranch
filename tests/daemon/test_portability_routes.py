@@ -14,7 +14,19 @@ from runtime.daemon import paths
 from runtime.daemon.routes.portability import router as portability_router
 from runtime.daemon.state import DaemonState
 from runtime.infrastructure.database import Database
-from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.models import (
+    BlockKind,
+    DreamRecord,
+    DreamStatus,
+    ScheduleKind,
+    ScheduleRecord,
+    ScheduleStatus,
+    TaskRecord,
+    TaskStatus,
+    WorkHourMode,
+    WorkHourRecord,
+    WorkHourStatus,
+)
 from runtime.portability.eligibility import STALE_HEARTBEAT_SECONDS
 from runtime.runtime import RuntimeDir
 
@@ -283,3 +295,129 @@ def test_reconcile_rejects_bad_disposition(tmp_path: Path) -> None:
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "bad_disposition"
+
+
+# ---------------------------------------------------------------------------
+# Exhaustive liveness regression (THR-187 Slice A, third fix-forward): the
+# presentation list APIs (``list_dreams`` / ``work_hours.list`` /
+# ``schedules.list``) are capped at 500 and ordered newest-first. Preflight
+# must not collect active ids through them, or an old active row behind 500
+# newer terminal rows is hidden and the org is wrongly reported eligible.
+# Each test seeds 500 newer terminal rows plus one older active row through the
+# real record/store shapes (ordering key: dream/work-hour ``scheduled_for``,
+# schedule ``created_at``) and asserts the route still reports the old active
+# id in the corresponding blockers field, with no preflight side effect.
+
+_OLD = datetime(2020, 1, 1, tzinfo=timezone.utc)
+_NEW_BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _seed_500_terminal_dreams_plus_old_active(db: Database) -> str:
+    active_id = "DREAM-ACTIVE"
+    for i in range(500):
+        newer = _NEW_BASE + timedelta(minutes=i)
+        db.insert_dream(DreamRecord(
+            id=f"DREAM-{i:03d}", agent_name=f"agent-{i}",
+            local_date="2026-01-01", scheduled_for=newer, window_end=newer,
+            status=DreamStatus.COMPLETED,
+        ))
+    db.insert_dream(DreamRecord(
+        id=active_id, agent_name="dev_agent", local_date="2020-01-01",
+        scheduled_for=_OLD, window_end=_OLD, status=DreamStatus.PENDING,
+    ))
+    return active_id
+
+
+def _seed_500_terminal_work_hours_plus_old_active(db: Database) -> str:
+    active_id = "WORKHOUR-ACTIVE"
+    for i in range(500):
+        newer = _NEW_BASE + timedelta(minutes=i)
+        db.work_hours.insert(WorkHourRecord(
+            id=f"WORKHOUR-{i:03d}", agent_name=f"agent-{i}",
+            local_date="2026-01-01", slot=f"{i % 24:02d}:00",
+            mode=WorkHourMode.WINDOWED, scheduled_for=newer,
+            status=WorkHourStatus.COMPLETED,
+        ))
+    db.work_hours.insert(WorkHourRecord(
+        id=active_id, agent_name="dev_agent", local_date="2020-01-01",
+        slot="00:00", mode=WorkHourMode.WINDOWED, scheduled_for=_OLD,
+        status=WorkHourStatus.PENDING,
+    ))
+    return active_id
+
+
+def _seed_500_terminal_schedules_plus_old_active(db: Database) -> str:
+    active_id = "SCHEDULE-ACTIVE"
+    for i in range(500):
+        newer = _NEW_BASE + timedelta(minutes=i)
+        db.schedules.insert(ScheduleRecord(
+            id=f"SCHEDULE-{i:03d}", agent_name=f"agent-{i}",
+            kind=ScheduleKind.ONE_SHOT, fire_at=newer,
+            normalized_brief="terminal", source_instruction="terminal",
+            status=ScheduleStatus.FIRED, active=0, created_at=newer,
+        ))
+    db.schedules.insert(ScheduleRecord(
+        id=active_id, agent_name="dev_agent", kind=ScheduleKind.ONE_SHOT,
+        fire_at=_OLD, normalized_brief="active", source_instruction="active",
+        status=ScheduleStatus.ARMED, created_at=_OLD,
+    ))
+    return active_id
+
+
+def test_preflight_refuses_old_active_dream_after_500_terminal(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    active_id = _seed_500_terminal_dreams_plus_old_active(db)
+    before = _org_entries(state, "alpha")
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["eligible"] is False
+    assert active_id in body["eligibility"]["blockers"]["active_dreams"]
+    assert _org_entries(state, "alpha") == before  # read-only
+
+
+def test_preflight_refuses_old_active_work_hour_after_500_terminal(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    active_id = _seed_500_terminal_work_hours_plus_old_active(db)
+    before = _org_entries(state, "alpha")
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["eligible"] is False
+    assert active_id in body["eligibility"]["blockers"]["active_work_hours"]
+    assert _org_entries(state, "alpha") == before  # read-only
+
+
+def test_preflight_refuses_old_active_schedule_after_500_terminal(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    active_id = _seed_500_terminal_schedules_plus_old_active(db)
+    before = _org_entries(state, "alpha")
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["eligible"] is False
+    assert active_id in body["eligibility"]["blockers"]["active_schedules"]
+    assert _org_entries(state, "alpha") == before  # read-only
+
+
+def test_presentation_list_cap_unchanged_after_501_rows(tmp_path: Path) -> None:
+    """Narrow preservation: the generic presentation list cap (500, newest-first)
+    is unchanged. The exhaustive fix is preflight-only and must not loosen the
+    generic list APIs their existing callers rely on."""
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _seed_500_terminal_dreams_plus_old_active(db)
+    assert len(db.list_dreams(limit=500)) == 500
+    assert all(d.status == DreamStatus.COMPLETED for d in db.list_dreams(limit=500))

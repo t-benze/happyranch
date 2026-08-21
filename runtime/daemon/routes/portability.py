@@ -77,18 +77,15 @@ def _active_job_ids(org) -> list[str]:
 
 
 def _active_dream_ids(org) -> list[str]:
-    return [d.id for d in org.db.list_dreams(limit=500)
-            if d.status.value in _ACTIVE_DREAM_STATUSES]
+    return org.db.list_dream_ids_by_status(_ACTIVE_DREAM_STATUSES)
 
 
 def _active_work_hour_ids(org) -> list[str]:
-    return [w.id for w in org.db.work_hours.list(limit=500)
-            if w.status.value in _ACTIVE_WORK_HOUR_STATUSES]
+    return org.db.work_hours.list_ids_by_status(_ACTIVE_WORK_HOUR_STATUSES)
 
 
 def _active_schedule_ids(org) -> list[str]:
-    return [s.id for s in org.db.schedules.list(limit=500)
-            if s.status.value in _ACTIVE_SCHEDULE_STATUSES]
+    return org.db.schedules.list_ids_by_status(_ACTIVE_SCHEDULE_STATUSES)
 
 
 @router.get("/portability-preflight")
