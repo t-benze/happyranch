@@ -260,12 +260,16 @@ def _validate_legacy_skill_package(pkg_dir: Path) -> tuple[bool, str | None]:
             return False, f"unrecognized package member {member.name!r}"
 
         # references/ and assets/ hold regular files only — no symlinks, no
-        # nested trees, no special files.
+        # nested trees, no special files. Check is_symlink() BEFORE exists():
+        # Path.exists() is False for a dangling symlink, so a dangling directory
+        # link would otherwise be treated as absent and the package accepted.
         for sub in ("references", "assets"):
             sp = pkg_dir / sub
+            if sp.is_symlink():
+                return False, f"{sub} must be a directory of regular files"
             if not sp.exists():
                 continue
-            if sp.is_symlink() or not sp.is_dir():
+            if not sp.is_dir():
                 return False, f"{sub} must be a directory of regular files"
             for f in sp.iterdir():
                 if f.is_symlink() or not f.is_file():

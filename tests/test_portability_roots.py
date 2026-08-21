@@ -206,6 +206,30 @@ def test_skill_md_symlink_rejected(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("member", ["references", "assets"])
+def test_optional_dir_dangling_symlink_rejected(tmp_path: Path, member: str) -> None:
+    root = _build_full_org(tmp_path / "org")
+    pkg = root / "skills" / "qa-scroll-test"
+    # Dangling symlink: the target does not exist, so Path.exists() is False
+    # and the pre-fix validator treats it as absent (accepted). Must reject.
+    pkg.joinpath(member).symlink_to(tmp_path / "does-not-exist")
+    inventory = classify_root_entries(root)
+    assert any(
+        e.path == "skills/qa-scroll-test" and e.reason == REJECT_INVALID_SKILL
+        for e in inventory.rejected
+    )
+
+
+def test_optional_dirs_regular_files_accepted(tmp_path: Path) -> None:
+    root = _build_full_org(tmp_path / "org")
+    pkg = root / "skills" / "qa-scroll-test"
+    _write(pkg / "references" / "guide.md", "# Guide\n")
+    _write(pkg / "assets" / "icon.svg", "<svg/>\n")
+    inventory = classify_root_entries(root)
+    assert not inventory.rejected, [e.model_dump() for e in inventory.rejected]
+    assert "skills/qa-scroll-test" in _paths(inventory, RootClassification.INCLUDE)
+
+
 def test_system_contract_skill_rejected(tmp_path: Path) -> None:
     root = _build_full_org(tmp_path / "org")
     _write(
