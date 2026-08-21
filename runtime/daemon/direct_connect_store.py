@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import threading
@@ -21,6 +22,25 @@ from pathlib import Path
 FIRST_PARTY_WORKSPACE_ADAPTER_IDS = frozenset({"claude", "codex", "opencode", "pi"})
 _FINGERPRINT_DOMAIN = b"happyranch/direct-connect-authority/v1\0"
 _NONLAUNCHABLE_STATE = "minted_nonlaunchable"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Canonical structural facts written by the intake route.  Wrapper facts never
+# carry child-only probe metadata, and child facts may carry the probe argv.
+_WRAPPER_FACT_KEYS = frozenset(
+    {"owner_uid", "owner_gid", "mode", "parent_realpath", "parent_dev", "parent_ino"}
+)
+_CHILD_FACT_KEYS = _WRAPPER_FACT_KEYS | {"version_probe_argv"}
+
+
+def _is_canonical_artifact_path(path: Path, wrapper_destination: Path) -> bool:
+    """True for a server-absolute, non-escaping artifact path that is not the wrapper."""
+    return (
+        path.is_absolute()
+        and ".." not in path.parts
+        and path != wrapper_destination
+        and str(path) != "."
+    )
+
 
 
 class DirectConnectRetryInProgress(RuntimeError):
@@ -46,8 +66,6 @@ def fingerprint_registration_token(token_plaintext: str) -> str:
 
 def _canonical_adapter_id(intended_profile_name: str) -> str:
     """Keep the direct authority's identifier server-derived and stable."""
-    import re
-
     return re.sub(r"[^a-z0-9]+", "-", f"{intended_profile_name}-adapter".lower()).strip("-") or "adapter"
 
 
@@ -454,51 +472,86 @@ class DirectConnectAuthorityStore:
         current manifest version (2) because that is the only version the intake
         route accepts; this lets a later genuinely identical submission collide
         with the migrated identity.
+
+        This is the v0 trust boundary: a legacy terminal conformance failure is
+        only trusted as an ordinal-1 parent when every artifact used to form the
+        normalized identity is strictly well-formed and correlated with the
+        expected record model.
         """
-        wrapper_rows = cursor.execute(
+        if workspace_adapter_id not in FIRST_PARTY_WORKSPACE_ADAPTER_IDS:
+            return None, None
+
+        all_rows = cursor.execute(
             """SELECT slot, kind, declared_path, sha256, structural_facts
                FROM direct_connect_artifacts
-               WHERE operation_id = ? AND kind = 'immutable_wrapper'""",
+               WHERE operation_id = ?""",
             (operation_id,),
         ).fetchall()
-        if len(wrapper_rows) != 1:
+
+        wrapper_rows = [r for r in all_rows if r["kind"] == "immutable_wrapper"]
+        child_rows = [r for r in all_rows if r["kind"] == "upgradeable_child"]
+        if (
+            len(wrapper_rows) != 1
+            or len(child_rows) < 1
+            or len(wrapper_rows) + len(child_rows) != len(all_rows)
+        ):
             return None, None
+
         wrapper_row = wrapper_rows[0]
         if wrapper_row["slot"] != "wrapper":
             return None, None
         wrapper_path = Path(wrapper_row["declared_path"])
         if wrapper_path != wrapper_destination:
             return None, None
+        if not _SHA256_RE.match(wrapper_row["sha256"]):
+            return None, None
         try:
             wrapper_facts = json.loads(wrapper_row["structural_facts"])
         except json.JSONDecodeError:
             return None, None
-
-        child_rows = cursor.execute(
-            """SELECT slot, kind, declared_path, sha256, structural_facts
-               FROM direct_connect_artifacts
-               WHERE operation_id = ? AND kind = 'upgradeable_child'
-               ORDER BY declared_path""",
-            (operation_id,),
-        ).fetchall()
-        if not child_rows:
+        if not isinstance(wrapper_facts, dict):
+            return None, None
+        if not wrapper_facts.keys() <= _WRAPPER_FACT_KEYS:
             return None, None
 
+        seen_slots: set[str] = set()
+        seen_paths: set[str] = set()
         identity_children: list[dict[str, object]] = []
         for child_row in child_rows:
+            if child_row["slot"] == "wrapper":
+                return None, None
+            child_path = Path(child_row["declared_path"])
+            if not _is_canonical_artifact_path(child_path, wrapper_destination):
+                return None, None
+            if not _SHA256_RE.match(child_row["sha256"]):
+                return None, None
             try:
                 child_facts = json.loads(child_row["structural_facts"])
             except json.JSONDecodeError:
                 return None, None
+            if not isinstance(child_facts, dict):
+                return None, None
+            if not child_facts.keys() <= _CHILD_FACT_KEYS:
+                return None, None
+
             version_probe_argv: list[str] = []
-            if isinstance(child_facts, dict):
-                probe = child_facts.get("version_probe_argv")
-                if isinstance(probe, list):
-                    version_probe_argv = [str(v) for v in probe]
+            probe = child_facts.get("version_probe_argv")
+            if probe is not None:
+                if not isinstance(probe, list) or not all(isinstance(v, str) for v in probe):
+                    return None, None
+                version_probe_argv = list(probe)
+
+            slot = child_row["slot"]
+            path_str = str(child_path)
+            if slot in seen_slots or path_str in seen_paths:
+                return None, None
+            seen_slots.add(slot)
+            seen_paths.add(path_str)
+
             identity_children.append(
                 {
-                    "slot": child_row["slot"],
-                    "path": child_row["declared_path"],
+                    "slot": slot,
+                    "path": path_str,
                     "sha256": child_row["sha256"],
                     "facts": child_facts,
                     "version_probe_argv": version_probe_argv,

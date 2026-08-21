@@ -1844,3 +1844,253 @@ def test_v0_bound_profile_terminal_a_rejects_changed_b_via_http_ingress(
         (fingerprint,),
     ).fetchone()[0] == 1
     assert store.parent_state(token) != "open"
+
+
+def test_v0_malformed_wrapper_sha256_rejects_changed_b_non_consumingly(
+    tmp_path: Path,
+) -> None:
+    """A malformed-but-parseable wrapper sha256 closes the parent fail-closed.
+
+    Changing only the stored wrapper artifact sha256 to a parseable non-hex
+    string must not produce a trusted identity or open parent. A later changed B
+    is refused non-consumingly: no candidate/identity/receipt/probe/event is
+    fabricated, and the original legacy rows are preserved.
+    """
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_bad_wrapper_sha"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-bad-wrapper-sha", wrapper_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET sha256 = ? WHERE operation_id = ? AND slot = 'wrapper'",
+        ("not-a-sha256", operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    assert store.parent_state(token) != "open"
+    assert store.list_candidates(token) == []
+    assert store.is_retryable(token, now=5.0) is False
+
+    operation_b = store.reserve(
+        token, identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is None
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()["state"] == "failed"
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_events WHERE token_fingerprint = ? AND event_type != 'received_nonlaunchable'",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+
+    store.close()
+    reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert reopened.parent_state(token) != "open"
+    assert reopened.list_candidates(token) == []
+    reopened.close()
+
+
+def test_v0_contradictory_child_artifact_facts_rejects_changed_b_non_consumingly(
+    tmp_path: Path,
+) -> None:
+    """A child artifact fact that contradicts the canonical schema closes the parent."""
+    db_path = tmp_path / "direct.db"
+    wrapper_path = tmp_path / "adapters" / "profile-adapter"
+    token = "hrreg_v0_bad_child_facts"
+    fingerprint = fingerprint_registration_token(token)
+    operation_a = _seed_legacy_v0_database(db_path, token, "v0-bad-child-facts", wrapper_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET structural_facts = ? WHERE operation_id = ? AND kind = 'upgradeable_child'",
+        ('{"version_probe_argv": "not-a-list"}', operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+
+    assert store.parent_state(token) != "open"
+    assert store.list_candidates(token) == []
+    assert store.is_retryable(token, now=5.0) is False
+
+    operation_b = store.reserve(
+        token, identity_hash="hash-b" * 16, identity_blob="blob-b", now=5.0,
+    )
+    assert operation_b is None
+
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()["state"] == "failed"
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_events WHERE token_fingerprint = ? AND event_type != 'received_nonlaunchable'",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+
+    store.close()
+    reopened = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert reopened.parent_state(token) != "open"
+    assert reopened.list_candidates(token) == []
+    reopened.close()
+
+
+def test_v0_malformed_wrapper_sha256_rejects_changed_b_via_http_ingress(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """HTTP ingress proof: malformed wrapper sha256 rejects changed B with 409."""
+    import time
+
+    db_path = tmp_path / "direct.db"
+    runtime_root = tmp_path / "daemon"
+    wrapper_path = runtime_root / "adapters" / "recover-profile-adapter"
+    token = "hrreg_http_v0_bad_wrapper_sha"
+    fingerprint = fingerprint_registration_token(token)
+    future = time.time() + 1000.0
+    operation_a = _seed_legacy_v0_database(
+        db_path, token, "recover-profile", wrapper_path, expires_at=future,
+    )
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET sha256 = ? WHERE operation_id = ? AND slot = 'wrapper'",
+        ("not-a-sha256", operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    tc, state, _future = _setup_http_migration_test(tmp_path, monkeypatch, token, db_path)
+
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_b, b"#!/bin/sh\necho b\n")
+    wrapper_hash_b = _write_executable(wrapper_path, b"#!/bin/sh\necho wrapper-b\n")
+
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_connect_payload(wrapper_hash_b, child_b),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "closed" in detail or "nonretryable" in detail
+
+    store = state.direct_connect_authority_store
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_operations WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert store.parent_state(token) != "open"
+
+
+def test_v0_contradictory_child_facts_reject_changed_b_via_http_ingress(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """HTTP ingress proof: contradictory child facts reject changed B with 409."""
+    import time
+
+    db_path = tmp_path / "direct.db"
+    runtime_root = tmp_path / "daemon"
+    wrapper_path = runtime_root / "adapters" / "recover-profile-adapter"
+    token = "hrreg_http_v0_bad_child_facts"
+    fingerprint = fingerprint_registration_token(token)
+    future = time.time() + 1000.0
+    operation_a = _seed_legacy_v0_database(
+        db_path, token, "recover-profile", wrapper_path, expires_at=future,
+    )
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE direct_connect_artifacts SET structural_facts = ? WHERE operation_id = ? AND kind = 'upgradeable_child'",
+        ('{"version_probe_argv": "not-a-list"}', operation_a),
+    )
+    conn.commit()
+    conn.close()
+
+    tc, state, _future = _setup_http_migration_test(tmp_path, monkeypatch, token, db_path)
+
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_b, b"#!/bin/sh\necho b\n")
+    wrapper_hash_b = _write_executable(wrapper_path, b"#!/bin/sh\necho wrapper-b\n")
+
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_connect_payload(wrapper_hash_b, child_b),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "closed" in detail or "nonretryable" in detail
+
+    store = state.direct_connect_authority_store
+    cursor = store._conn.cursor()
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_receipts WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert cursor.execute(
+        "SELECT COUNT(*) FROM direct_connect_operations WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 1
+    assert store.parent_state(token) != "open"
