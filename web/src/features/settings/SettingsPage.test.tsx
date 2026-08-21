@@ -1139,6 +1139,9 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
           wrapper_destination: executable,
           operation_id: connected ? operationId : null,
           profile_state: connected ? 'committed' : null,
+          reason: null,
+          state: connected ? 'connected' : null,
+          retry_eligible: false,
         }),
       ),
       http.post(`/api/v1/runtime/custom-cli/${operationId}/commit`, () => {
@@ -1477,6 +1480,9 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
           wrapper_destination: '/tmp/happyranch-daemon/adapters/prompt-test-adapter',
           operation_id: null,
           profile_state: null,
+          reason: null,
+          state: null,
+          retry_eligible: false,
         }),
       ),
     );

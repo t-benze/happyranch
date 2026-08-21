@@ -587,6 +587,8 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: null,
       profile_state: null,
       reason: null,
+      state: null,
+      retry_eligible: false,
     });
   });
 
@@ -666,6 +668,8 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: 'op-onb-1',
       profile_state: 'committed',
       reason: null,
+      state: 'connected',
+      retry_eligible: false,
     });
     const commitSpy = vi.spyOn(directConnectApi, 'commit');
 
@@ -676,7 +680,7 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     expect(commitSpy).not.toHaveBeenCalled();
   });
 
-  test('retryable error from the daemon projection shows a retry action, which succeeds on retry', async () => {
+  test('retryable error shows changed-artifact instruction and reruns the existing prompt without calling /retry', async () => {
     const user = userEvent.setup();
     const profileName = 'onb-retry-cli';
 
@@ -694,21 +698,32 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
       operation_id: 'op-onb-retry',
       profile_state: 'failed',
       reason: 'conformance_probe_failed: timed out',
+      state: 'failed_retryable',
+      retry_eligible: true,
     });
-    const retrySpy = vi
-      .spyOn(directConnectApi, 'retry')
-      .mockResolvedValueOnce({ operation_id: 'op-onb-retry', profile_state: 'committed', profile_name: profileName });
+    const retrySpy = vi.spyOn(directConnectApi, 'retry');
 
-    await screen.findByText(/connection failed/i, {}, { timeout: 10000 });
+    await screen.findByText(/retry with changed artifacts/i, {}, { timeout: 10000 });
     expect(screen.getByText(/timed out/i)).toBeInTheDocument();
     expect(retrySpy).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: /^retry$/i }));
+    // The existing prompt is still rendered; the user is instructed to change
+    // artifacts and rerun it. Clicking the rerun action returns to polling
+    // without minting or calling /retry.
+    vi.mocked(directConnectApi.getStatus).mockResolvedValue({
+      wrapper_destination: '/tmp/happyranch-daemon/adapters/onb-retry-cli-adapter',
+      operation_id: 'op-onb-retry',
+      profile_state: 'committed',
+      reason: null,
+      state: 'connected',
+      retry_eligible: false,
+    });
+    await user.click(screen.getByRole('button', { name: /i've rerun the prompt/i }));
 
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).not.toHaveBeenCalled();
     expect(vi.spyOn(directConnectApi, 'commit')).not.toHaveBeenCalled();
-  });
+  }, 20000);
 });
 
 describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {

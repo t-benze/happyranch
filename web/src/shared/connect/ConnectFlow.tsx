@@ -282,13 +282,32 @@ export function AdapterConnect({
     );
   }
 
-  // Failed state — the receipt landed but projection failed; retryable.
+  // Retryable failure — first conformance-probe failure. The user must change
+  // the wrapper/artifacts and rerun the EXISTING prompt before expiry. No
+  // token replay, no /retry, no /forget prerequisite.
+  if (flow.state.stage === 'failed_retryable') {
+    const s = flow.state;
+    return (
+      <AdapterRetryableBody
+        name={s.name}
+        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination)}
+        reason={s.reason}
+        onRerun={flow.rerunExistingPrompt}
+        onBack={flow.back}
+      />
+    );
+  }
+
+  // Failed state — terminal nonretryable, expired, or exhausted. The dedicated
+  // /retry action is the historical immutable-snapshot validation path, not an
+  // artifact retry.
   if (flow.state.stage === 'failed') {
     return (
       <AdapterBindFailedBody
         name={flow.state.name}
         adapterId={flow.state.operationId}
         error={flow.state.reason}
+        category={flow.state.category}
         onRetry={flow.retryValidation}
         onBack={flow.back}
         onClear={flow.clearFailed}
@@ -924,6 +943,105 @@ export function AdapterWaitingBody({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Adapter retryable failure — first conformance-probe failure        */
+/* ------------------------------------------------------------------ */
+
+export function AdapterRetryableBody({
+  name,
+  prompt,
+  reason,
+  onRerun,
+  onBack,
+}: {
+  name: string;
+  prompt: string;
+  reason: string;
+  onRerun: () => void;
+  onBack: () => void;
+}): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(prompt);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+  return (
+    <div className="mt-6 max-w-2xl">
+      <div className="border-feedback-warning/30 bg-feedback-warning/5 mb-4 rounded-lg border p-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="text-feedback-warning h-4 w-4" />
+          <p className="text-text-primary text-sm font-medium">
+            Connection attempt failed — retry with changed artifacts
+          </p>
+        </div>
+        <p className="text-text-secondary mt-2 text-xs">
+          <span className="font-mono">{name}</span> reported in, but the
+          conformance probe failed. Modify the wrapper or child artifacts,
+          then rerun the existing prompt below before it expires. Unchanged
+          or reordered artifacts are refused; only one genuinely changed
+          candidate remains under this token.
+        </p>
+        <div className="bg-surface-sunken mt-3 rounded p-3">
+          <p className="text-feedback-danger font-mono text-xs">
+            Error: {reason}
+          </p>
+        </div>
+      </div>
+
+      <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
+        <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <span aria-hidden="true" className="flex gap-1.5">
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+            </span>
+            <span className="text-text-muted font-mono text-xs">
+              existing connect prompt · rerun with changed artifacts
+            </span>
+          </div>
+          <CopyButton copied={copied} onClick={copy} />
+        </div>
+        <pre className="text-text-secondary overflow-x-auto px-4 py-4 font-mono text-xs leading-relaxed whitespace-pre">
+          {prompt}
+        </pre>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button onClick={copy}>
+          {copied ? (
+            <>
+              <Check aria-hidden="true" />
+              Copied
+            </>
+          ) : (
+            <>
+              <CopyGlyph />
+              Copy prompt
+            </>
+          )}
+        </Button>
+        <Button variant="outline" onClick={onRerun}>
+          <RefreshCw aria-hidden="true" size={15} />
+          I&apos;ve rerun the prompt — watch for the new attempt
+        </Button>
+      </div>
+
+      <div className="mt-5 flex items-center gap-4">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
+        >
+          <ArrowLeft aria-hidden="true" size={14} />
+          Back to the prompt
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Adapter connect failed — receipt landed, projection failed         */
 /* ------------------------------------------------------------------ */
 
@@ -931,6 +1049,7 @@ export function AdapterBindFailedBody({
   name,
   adapterId,
   error,
+  category,
   onRetry,
   onBack,
   onClear,
@@ -942,6 +1061,7 @@ export function AdapterBindFailedBody({
    *  name — kept stable to avoid an unrelated churn in this component). */
   adapterId: string;
   error: string;
+  category: 'nonretryable' | 'expired' | 'exhausted';
   onRetry: () => void;
   onBack: () => void;
   onClear: () => void;
@@ -952,6 +1072,11 @@ export function AdapterBindFailedBody({
   const clearErrorMessage = clearError instanceof ApiError
     ? (typeof clearError.detail === 'string' ? clearError.detail : clearError.message)
     : clearError instanceof Error ? clearError.message : null;
+  const categoryMessage = {
+    expired: 'This connect link expired before the CLI finished. Start over with a fresh prompt.',
+    exhausted: 'This lifecycle has used its allowed retry. Start over with a fresh registration.',
+    nonretryable: 'This failure is not retryable with the same artifacts.',
+  }[category];
   return (
     <div className="mt-6 max-w-lg">
       <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
@@ -963,8 +1088,7 @@ export function AdapterBindFailedBody({
         </div>
         <p className="text-text-secondary mt-2 text-xs">
           <span className="font-mono">{name}</span> reported in, but
-          HappyRanch could not finish connecting it. This may be transient —
-          retry below.
+          HappyRanch could not finish connecting it. {categoryMessage}
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
           <p className="text-text-muted font-mono text-xs">
@@ -977,7 +1101,7 @@ export function AdapterBindFailedBody({
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button onClick={onRetry} disabled={isClearing}>
             <RefreshCw aria-hidden="true" size={15} />
-            Retry
+            Validate immutable snapshot
           </Button>
           <Button variant="outline" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={14} />
@@ -999,7 +1123,7 @@ export function AdapterBindFailedBody({
           )}
         </div>
         <p className="text-text-muted mt-3 text-xs">
-          This removes only the failed connection record. It does not remove a newer wrapper.
+          Validate immutable snapshot re-checks the persisted wrapper/child snapshot without changing artifacts. To retry with changed artifacts, clear this record and start over.
         </p>
         {clearErrorMessage && <p className="text-feedback-danger mt-2 text-sm" role="alert">{clearErrorMessage}</p>}
       </div>

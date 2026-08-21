@@ -14,7 +14,11 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from runtime.daemon import paths
-from runtime.daemon.direct_connect_store import canonical_wrapper_destination
+from runtime.daemon.direct_connect_store import (
+    DIRECT_CHILD_SLOT_RE,
+    DIRECT_SHA256_RE,
+    canonical_wrapper_destination,
+)
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX, _RUNTIME_ORG
 
 router = APIRouter()
@@ -23,7 +27,7 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 class UpgradeableChild(BaseModel):
-    slot: Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")]
+    slot: Annotated[str, Field(min_length=1, max_length=80, pattern=DIRECT_CHILD_SLOT_RE.pattern)]
     executable: Annotated[str, Field(min_length=1)]
     version_probe_argv: list[Annotated[str, Field(min_length=1)]]
 
@@ -41,7 +45,7 @@ class UpgradeableChild(BaseModel):
 
 class DirectManifestV2(BaseModel):
     manifest_version: Annotated[int, Field(strict=True, ge=2, le=2)]
-    wrapper_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    wrapper_sha256: Annotated[str, Field(pattern=DIRECT_SHA256_RE.pattern)]
     upgradeable_children: Annotated[list[UpgradeableChild], Field(min_length=1)]
     workspace_adapter_id: Literal["claude", "codex", "opencode", "pi"] = Field(
         ...,
@@ -97,6 +101,8 @@ def _no_symlink_ancestors(path: Path) -> None:
 
 
 def _artifact_facts(path: Path, *, expected_path: Path | None = None) -> tuple[str, dict[str, object]]:
+    # The returned key set is the canonical DIRECT_WRAPPER_FACT_KEYS shared with
+    # the store's v0 trust classifier (direct_connect_store).  Keep in lockstep.
     if expected_path is not None and path != expected_path:
         raise ValueError("wrapper is not at the server-issued canonical path")
     _no_symlink_ancestors(path)
@@ -206,68 +212,171 @@ async def connect(request: Request) -> dict[str, str]:
         authority_store.terminalize_known(token, "noncanonical_authority_target")
         daemon.registration_token_store.consume_runtime(token)
         _reject("invalid direct registration context")
+
     token_store = daemon.registration_token_store
     now = time.time()
     token_record = token_store.validate_runtime(token, now=now)
-    if (
-        token_record is None or token_record.org != _RUNTIME_ORG
-        or token_record.purpose != "adapter"
-        or token_record.intended_profile_name != authority.intended_profile_name
-        or token_record.consumed or token_record.reserved or token_record.expires_at < now
-        or authority.expires_at < now
-    ):
-        authority_store.terminalize_known(token, "invalid_direct_context", now=now)
-        token_store.consume_runtime(token, now=now)
-        _reject("invalid direct registration context")
-    reserved_record = token_store.reserve_runtime(token, now=now)
-    operation_id = authority_store.reserve(token, now=now) if reserved_record is not None else None
-    if operation_id is None:
-        if reserved_record is not None:
-            token_store.commit_runtime(token)
-        authority_store.terminalize_known(token, "reservation_refused", now=now)
+    is_retryable = authority_store.is_retryable(token, now=now)
+
+    # Once a token is consumed it can only be reused for a durable retry admission.
+    # Any other reuse (including an in-flight first candidate) is rejected as 401.
+    if token_record is not None and token_record.consumed and not is_retryable:
         _reject("direct registration token is no longer available")
+
+    identity_evaluated = False
+    operation_id: str | None = None
+    reserved_record: object | None = None
+    body: DirectConnectRequest | None = None
     try:
         raw = await request.json()
         body = DirectConnectRequest.model_validate(raw)
+
+        # Validate the server-fixed wrapper destination first.
         wrapper_hash, wrapper_facts = _artifact_facts(
             expected_wrapper, expected_path=expected_wrapper
         )
         if wrapper_hash != body.manifest.wrapper_sha256:
             raise ValueError("wrapper hash does not match immutable manifest")
-        children: list[dict[str, object]] = []
+
+        # Validate children and gather hashes/facts for identity normalization.
+        validated_children: list[dict[str, object]] = []
+        identity_children: list[dict[str, object]] = []
         for child in body.manifest.upgradeable_children:
             child_path = Path(child.executable)
             child_hash, child_facts = _artifact_facts(child_path)
             if child_path == expected_wrapper:
                 raise ValueError("wrapper cannot be an upgradeable child")
             child_facts["version_probe_argv"] = child.version_probe_argv
-            children.append({"slot": child.slot, "path": str(child_path), "sha256": child_hash, "facts": child_facts})
+            validated_children.append(
+                {"slot": child.slot, "path": str(child_path), "sha256": child_hash, "facts": child_facts}
+            )
+            identity_children.append(
+                {
+                    "slot": child.slot,
+                    "path": str(child_path),
+                    "sha256": child_hash,
+                    "facts": child_facts,
+                    "version_probe_argv": child.version_probe_argv,
+                }
+            )
+
+        identity_hash = authority_store.normalize_identity_hash(
+            expected_wrapper, wrapper_hash, wrapper_facts, identity_children,
+            body.manifest.workspace_adapter_id, body.manifest.manifest_version,
+        )
+        canonical = {
+            "domain": "happyranch/direct-connect/identity/v1",
+            "wrapper_path": str(expected_wrapper),
+            "wrapper_sha256": wrapper_hash,
+            "wrapper_facts": wrapper_facts,
+            "children": sorted(
+                [
+                    {
+                        "path": c["path"],
+                        "sha256": c["sha256"],
+                        "facts": c["facts"],
+                        "version_probe_argv": c["version_probe_argv"],
+                    }
+                    for c in identity_children
+                ],
+                key=lambda c: c["path"],
+            ),
+            "workspace_adapter_id": body.manifest.workspace_adapter_id,
+            "manifest_version": body.manifest.manifest_version,
+        }
+        identity_blob = json.dumps(canonical, sort_keys=True)
+        identity_evaluated = True
+
+        verdict, operation_id = authority_store.evaluate_admission(
+            token, identity_hash=identity_hash, identity_blob=identity_blob, now=now,
+        )
+        if verdict == "duplicate":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="duplicate candidate identity")
+        if verdict == "in_progress":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="in-progress admission")
+        if verdict == "terminal_nonretryable":
+            parent_state = authority_store.parent_state(token)
+            if parent_state in {"failed", "committed"}:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="direct registration closed")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="direct registration terminal")
+        if operation_id is None:
+            authority_store.terminalize_known(token, "reservation_refused", now=now)
+            _reject("direct registration token is no longer available")
+
+        if verdict == "admit_first":
+            if (
+                token_record is None
+                or token_record.org != _RUNTIME_ORG
+                or token_record.purpose != "adapter"
+                or token_record.intended_profile_name != authority.intended_profile_name
+                or token_record.consumed
+                or token_record.reserved
+                or token_record.expires_at < now
+                or authority.expires_at < now
+            ):
+                authority_store.terminalize_known(token, "invalid_direct_context", now=now)
+                if token_record is not None and not token_record.consumed:
+                    token_store.consume_runtime(token, now=now)
+                _reject("invalid direct registration context")
+            reserved_record = token_store.reserve_runtime(token, now=now)
+            if reserved_record is None:
+                authority_store.terminalize_known(token, "reservation_refused", now=now)
+                _reject("direct registration token is no longer available")
+        elif verdict == "admit_retry":
+            if token_record is not None and not token_record.consumed and not token_record.reserved and token_record.expires_at >= now:
+                reserved_record = token_store.reserve_runtime(token, now=now)
+
         receipt = authority_store.receive(
             token, operation_id, wrapper_sha256=wrapper_hash, wrapper_facts=wrapper_facts,
-            children=children, workspace_adapter_id=body.manifest.workspace_adapter_id, now=now,
+            wrapper_path=expected_wrapper, children=validated_children,
+            workspace_adapter_id=body.manifest.workspace_adapter_id,
+            identity_hash=identity_hash, identity_blob=identity_blob, now=now,
         )
     except json.JSONDecodeError as error:
         detail = f"invalid direct manifest JSON: {error.msg} (line {error.lineno}, column {error.colno})"
         logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
-        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
-        token_store.commit_runtime(token)
+        if reserved_record is not None:
+            token_store.commit_runtime(token)
+        if identity_evaluated and operation_id is not None:
+            authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        else:
+            token_store.consume_runtime(token, now=now)
+            authority_store.terminalize_known(token, "invalid_manifest", now=now)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
     except ValidationError as error:
         detail = f"invalid direct manifest schema: {_schema_error_detail(error)}"
         logger.warning("Direct manifest rejected (%s): %s", type(error).__name__, detail)
-        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
-        token_store.commit_runtime(token)
+        if reserved_record is not None:
+            token_store.commit_runtime(token)
+        if identity_evaluated and operation_id is not None:
+            authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        else:
+            token_store.consume_runtime(token, now=now)
+            authority_store.terminalize_known(token, "invalid_manifest", now=now)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from None
     except (ValueError, TypeError) as error:
         logger.warning("Direct manifest rejected (%s): invalid artifact or manifest integrity", type(error).__name__)
-        authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
-        token_store.commit_runtime(token)
+        if reserved_record is not None:
+            token_store.commit_runtime(token)
+        if identity_evaluated and operation_id is not None:
+            authority_store.terminalize(token, operation_id, "invalid_manifest", now=now)
+        else:
+            token_store.consume_runtime(token, now=now)
+            authority_store.terminalize_known(token, "invalid_manifest", now=now)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid direct manifest") from None
+    except HTTPException:
+        raise
     except Exception:
-        authority_store.terminalize(token, operation_id, "intake_fault", now=now)
-        token_store.commit_runtime(token)
+        logger.exception("Direct intake failed")
+        if reserved_record is not None:
+            token_store.commit_runtime(token)
+        if identity_evaluated and operation_id is not None:
+            authority_store.terminalize(token, operation_id, "intake_fault", now=now)
+        else:
+            token_store.consume_runtime(token, now=now)
+            authority_store.terminalize_known(token, "intake_fault", now=now)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake failed") from None
-    if not token_store.commit_runtime(token):
+    if reserved_record is not None and not token_store.commit_runtime(token):
         authority_store.compensate_received(token, operation_id, "registration_token_commit_failed", now=now)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct intake receipt unavailable")
     return {"operation_id": receipt.operation_id, "state": receipt.state}

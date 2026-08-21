@@ -505,22 +505,65 @@ shape-validation semantics. ``token_usage`` remains optional unless the
 candidate declares the established ``token_metering`` capability and provides
 trustworthy canonical usage.
 
-**THR-160 failed-operation retry validation.** A direct-connect terminal
-failure is historical immutable evidence, not a registration invitation:
-master-bearer ``POST /runtime/custom-cli/{operation_id}/retry`` is permitted
-only for that failed operation and uses a separate durable attempt lifecycle.
-It retrieves the original receipt's persisted wrapper path/SHA and every child
-path/SHA, independently repeats the intake/launch path, type, executable,
-no-symlink, and hash checks, and fails closed before probing on any missing,
-duplicate, unusable, or mismatched snapshot fact. It accepts no user artifact
-fields, mutable adapter record, ambient PATH lookup, new candidate manifest,
-or token replay. Every outcome appends nonsecret category-only lifecycle
-evidence; no retry overwrites the original failed projection/reason or removes
-historical failure events. Only a successful identical bounded probe may bind
-through the ordinary direct adapter/profile persistence primitives with their
-normal compensation. Status may communicate that resulting live connection to
-existing consumers, but must retain explicit historical-failure fields rather
-than claiming the projection itself became committed.
+**THR-160 corrected-artifact retry and immutable-snapshot validation.**
+A direct-connect terminal failure is historical immutable evidence, not a
+registration invitation. Two retry paths exist:
+
+1. **Corrected-artifact retry (same-token).** A first candidate that fails
+   only the conformance probe leaves the canonical ledger in
+   ``failed_retryable`` with ``retry_eligible: true``. The candidate CLI may
+   rerun the *existing* generated prompt with genuinely changed wrapper/child
+   artifacts before the original 30-minute expiry; ``/connect`` admits exactly
+   one such corrected candidate. Unchanged or merely reordered artifacts are
+   refused with an indefinite, non-consuming ``409 Duplicate``. There is no
+   cooldown. A second terminal failure closes the lifecycle as ``exhausted``
+   (no further candidates); expiry closes it as ``expired``; both are
+   nonretryable. Terminal legacy v0 operations that predate the THR-160
+   candidate ledger are classified on store open before any backfill: the
+   operation, receipt, projection, artifacts, and authority must all correlate
+   (matching operation/receipt IDs, receipt token fingerprint equal to the
+   operation fingerprint, receipt in the expected received state, a terminal
+   ``conformance_probe_failed`` projection with no bound/approved ``profile_name``
+   or ``adapter_id``, no succeeded retry, and a derivable normalized identity).
+   Only a fully trusted conformance failure backfills as an ``open`` parent with
+   a failed ordinal-1 candidate so one genuinely changed corrected candidate is
+   admitted as ordinal 2. Every other terminal category
+   (``profile_binding_failed``, ``invalid_manifest``, malformed or integrity
+   failures, or any reason other than the approved conformance failure),
+   corrupted receipt correlation, bound/approved profile fact, expired authority,
+   or integrity-invalid artifact set is backfilled closed (``failed``/``expired``)
+   without ever opening the parent; where the identity is still derivable it is
+   retained so identical/reordered replay is rejected non-consumingly. The
+   two-candidate cap still refuses a third candidate. This path never calls
+   ``POST /runtime/custom-cli/{operation_id}/retry``, never replays a generic
+   token, and never requires ``/forget`` first.
+
+2. **Immutable-snapshot validation.** Master-bearer
+   ``POST /runtime/custom-cli/{operation_id}/retry`` is permitted only for a
+   terminal ``failed`` projection and uses a separate durable attempt lifecycle.
+   It retrieves the original receipt's persisted wrapper path/SHA and every
+   child path/SHA, independently repeats the intake/launch path, type,
+   executable, no-symlink, and hash checks, and fails closed before probing on
+   any missing, duplicate, unusable, or mismatched snapshot fact. It accepts no
+   user artifact fields, mutable adapter record, ambient PATH lookup, new
+   candidate manifest, or token replay. Every outcome appends nonsecret
+   category-only lifecycle evidence; no retry overwrites the original failed
+   projection/reason or removes historical failure events. Only a successful
+   identical bounded probe may bind through the ordinary direct adapter/profile
+   persistence primitives with their normal compensation. Status may
+   communicate that resulting live connection to existing consumers, but must
+   retain explicit historical-failure fields rather than claiming the
+   projection itself became committed.
+
+Both paths are bounded by: a two-candidate cap per direct-connect lifecycle;
+durable retry after a generic initial consume or daemon restart; append-only
+retention of the parent authority, accepted candidates, identity history,
+receipts, operations, and events for the authority lifetime (cleanup via
+``POST /runtime/custom-cli/{operation_id}/forget`` removes only the permitted
+derived artifacts, failed projection row, and any retry-attempt row for that
+operation); the legacy submit fence (``/connect`` is receipt-only and spawns no
+subprocess); status redaction; and the canonical wrapper destination as the only
+required prompt value.
 
 ### 4.4 Registration, Conformance, Provenance
 

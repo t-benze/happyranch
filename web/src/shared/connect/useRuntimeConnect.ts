@@ -391,13 +391,34 @@ export function buildDirectConnectPrompt(
   ].join('\n');
 }
 
-/** Direct-connect state machine. */
+/** Direct-connect state machine.
+ *
+ * The server ``state`` field is authoritative; ``profile_state`` is legacy.
+ * ``failed_retryable`` is a first conformance-probe failure that admits exactly
+ * one corrected-artifact retry by rerunning the existing prompt. ``failed``
+ * covers terminal nonretryable, expired, and exhausted states.
+ */
 export type DirectConnectState =
   | { stage: 'form' }
   | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
   | { stage: 'committing'; name: string; wrapperDestination: string }
   | { stage: 'connected'; name: string; wrapperDestination: string }
-  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string }
+  | {
+      stage: 'failed_retryable';
+      name: string;
+      token: string;
+      wrapperDestination: string;
+      operationId: string;
+      reason: string;
+    }
+  | {
+      stage: 'failed';
+      name: string;
+      wrapperDestination: string;
+      operationId: string;
+      reason: string;
+      category: 'nonretryable' | 'expired' | 'exhausted';
+    }
   | { stage: 'cleared'; name: string; wrapperStatus: ForgetWrapperStatus };
 
 /** Mint-time value for the RuntimeRegistrationTokenMintRequest's
@@ -426,6 +447,10 @@ export function useDirectConnect({
 }) {
   const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
+  // Preserve the originally minted registration token across committing,
+  // failed_retryable polls, and Back so the retryable prompt always reruns
+  // the same existing prompt.
+  const originalTokenRef = useRef('');
   const queryClient = useQueryClient();
   const directCommitPending = useRef(false);
 
@@ -441,6 +466,7 @@ export function useDirectConnect({
       return { ...resp, wrapperDestination: status.wrapper_destination };
     },
     onSuccess: (resp, name) => {
+      originalTokenRef.current = resp.token;
       setExpiresAt(resp.expires_at);
       setState({
         stage: 'waiting',
@@ -467,9 +493,12 @@ export function useDirectConnect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.stage, expiresAt]);
 
-  const pollName = (state.stage === 'waiting' && !state.expired) || state.stage === 'committing'
-    ? state.name
-    : '';
+  const pollName =
+    (state.stage === 'waiting' && !state.expired) ||
+    state.stage === 'committing' ||
+    state.stage === 'failed_retryable'
+      ? state.name
+      : '';
   const { data: statusData } = useQuery({
     queryKey: ['direct-connect', 'status', pollName],
     queryFn: () => directConnect.getStatus(pollName),
@@ -484,37 +513,61 @@ export function useDirectConnect({
     mutationFn: (operationId: string) => directConnect.forget(operationId),
   });
 
-  // A daemon-projected candidate CLI receipt moves waiting -> committing.
-  // The daemon owns projection; this hook only observes its terminal status.
+  // Observe the server-authoritative lifecycle state. The daemon owns
+  // projection and retry eligibility; this hook never computes retryability.
   useEffect(() => {
-    if (state.stage === 'waiting') {
-      if (state.expired || !statusData?.operation_id || statusData.profile_state == null) return;
-      setState({
-        stage: 'committing',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
-      });
+    if (!statusData?.operation_id) return;
+    if (state.stage === 'form' || state.stage === 'cleared') return;
+    const { name, wrapperDestination } = state;
+
+    const transitionToConnected = (): void => {
+      setState({ stage: 'connected', name, wrapperDestination });
+      onConnected({ name, path: wrapperDestination, via: 'custom' });
+    };
+
+    if (statusData.state === 'connected') {
+      transitionToConnected();
       return;
     }
-    if (state.stage !== 'committing' || directCommitPending.current || !statusData?.operation_id) return;
 
-    if (statusData.profile_state === 'committed') {
+    if (statusData.state === 'failed_retryable' && statusData.retry_eligible) {
+      if (state.stage === 'failed_retryable') return;
       setState({
-        stage: 'connected',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
-      });
-      onConnected({ name: state.name, path: state.wrapperDestination, via: 'custom' });
-    } else if (statusData.profile_state === 'failed') {
-      setState({
-        stage: 'failed',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
+        stage: 'failed_retryable',
+        name,
+        token: originalTokenRef.current,
+        wrapperDestination,
         operationId: statusData.operation_id,
         reason: statusData.reason ?? 'The connection could not be completed.',
       });
-    } else if (statusData.profile_state === 'planned' || statusData.profile_state == null) {
-      // Daemon projection remains non-terminal; keep polling while committing.
+      return;
+    }
+
+    if (
+      statusData.state === 'failed_nonretryable' ||
+      statusData.state === 'expired' ||
+      statusData.state === 'exhausted'
+    ) {
+      if (state.stage === 'failed') return;
+      const category: 'nonretryable' | 'expired' | 'exhausted' =
+        statusData.state === 'expired' ? 'expired' : statusData.state === 'exhausted' ? 'exhausted' : 'nonretryable';
+      setState({
+        stage: 'failed',
+        name,
+        wrapperDestination,
+        operationId: statusData.operation_id,
+        reason: statusData.reason ?? 'The connection could not be completed.',
+        category,
+      });
+      return;
+    }
+
+    // The server reports ``active`` (projection or retry probe in flight) or
+    // ``waiting`` (receipt received, no projection row yet). The UI shows a
+    // single "finishing connection" committing state for both.
+    if (statusData.state === 'active' || statusData.state === 'waiting') {
+      if (state.stage === 'committing') return;
+      setState({ stage: 'committing', name, wrapperDestination });
     }
   }, [onConnected, state, statusData]);
 
@@ -526,6 +579,9 @@ export function useDirectConnect({
       mint.mutate(state.name);
     }
   };
+  /** The historical immutable-snapshot validation path. Only available from a
+   *  terminal nonretryable failed state; textually distinct from the
+   *  corrected-artifact retry path. */
   const retryValidation = (): void => {
     if (state.stage !== 'failed') return;
     const { name, wrapperDestination, operationId } = state;
@@ -548,6 +604,8 @@ export function useDirectConnect({
                 operation_id: operationId,
                 profile_state: 'planned',
                 reason: null,
+                state: 'active',
+                retry_eligible: false,
               },
             );
             void queryClient.invalidateQueries({ queryKey: ['direct-connect', 'status', name] });
@@ -558,6 +616,7 @@ export function useDirectConnect({
           setState({
             stage: 'failed', name, wrapperDestination, operationId,
             reason: resp.reason ?? 'The connection could not be completed.',
+            category: 'nonretryable',
           });
         }
       },
@@ -566,12 +625,21 @@ export function useDirectConnect({
         setState({
           stage: 'failed', name, wrapperDestination, operationId,
           reason: 'Could not reach the daemon to finish connecting.',
+          category: 'nonretryable',
         });
       },
     });
   };
+  /** Corrected-artifact retry: keep the original token and prompt, return to
+   *  the committing/waiting poll so the user's rerun of the existing prompt is
+   *  observed. Never calls /retry, /forget, or mints a token. */
+  const rerunExistingPrompt = (): void => {
+    if (state.stage !== 'failed_retryable') return;
+    const { name, wrapperDestination } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+  };
   const clearFailed = (): void => {
-    if (state.stage !== 'failed' || forgetMutation.isPending) return;
+    if ((state.stage !== 'failed' && state.stage !== 'failed_retryable') || forgetMutation.isPending) return;
     const { name, operationId } = state;
     forgetMutation.mutate(operationId, {
       onSuccess: (resp) => setState({ stage: 'cleared', name, wrapperStatus: resp.wrapper_status }),
@@ -584,7 +652,7 @@ export function useDirectConnect({
   };
 
   return {
-    state, mint, start, regenerate, retryValidation, back, clearFailed,
+    state, mint, start, regenerate, retryValidation, rerunExistingPrompt, back, clearFailed,
     forgetError: forgetMutation.error, isClearing: forgetMutation.isPending,
   };
 }

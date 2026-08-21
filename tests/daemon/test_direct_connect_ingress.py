@@ -78,7 +78,10 @@ def test_valid_direct_ingress_writes_exactly_one_nonlaunchable_receipt(client, t
         "direct_connect_receipts": 1, "direct_connect_events": 1,
     }
     replay = tc.post("/api/v1/runtime/custom-cli/connect", json=_payload(wrapper_hash, child), headers={"Authorization": f"Bearer {token}"})
-    assert replay.status_code == 401
+    # THR-160: the consumed registration token is invisible, but the accepted
+    # candidate identity is durably recorded, so an identical replay is a 409.
+    assert replay.status_code == 409
+    assert replay.json()["detail"].startswith("duplicate")
     assert state.direct_connect_authority_store.counts()["direct_connect_operations"] == 1
 
 
@@ -313,9 +316,126 @@ def test_token_commit_fault_compensates_nonlaunchable_receipt(client, tmp_path, 
     )
 
     assert response.status_code == 500
+    # THR-160: receipt artifacts are retained after token commit failure so the
+    # failure is attributable to the generic token seam, not the candidate identity.
     assert state.direct_connect_authority_store.counts() == {
+        "direct_connect_operations": 1,
+        "direct_connect_artifacts": 2,
+        "direct_connect_receipts": 1,
+        "direct_connect_events": 2,
+    }
+
+
+def test_unexpected_admission_fault_returns_generic_and_leaves_no_unauthorized_residue(client, tmp_path, monkeypatch):
+    """Arbitrary exceptions at the admission seam reduce to a fixed category.
+
+    The generic ``except Exception`` handler in ``connect()`` must never emit
+    candidate-controlled exception text on the HTTP trust boundary. It logs
+    server-side, consumes the registration token, terminalizes the known
+    authority with ``intake_fault``, and leaves no candidate/operation/receipt/
+    artifact/identity rows behind.
+    """
+    tc, state = client
+    token = _mint(tc)
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination)
+    child = tmp_path / "bin" / "child"
+    _write_executable(child)
+    sentinel = "UNIQUE_SENTINEL_7a3f9e2b"
+
+    original_evaluate_admission = state.direct_connect_authority_store.evaluate_admission
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(state.direct_connect_authority_store, "evaluate_admission", _boom)
+
+    response = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_payload(wrapper_hash, child),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Restore the real admission seam before the positive controls below.
+    monkeypatch.setattr(state.direct_connect_authority_store, "evaluate_admission", original_evaluate_admission)
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "direct intake failed"
+    assert sentinel.lower() not in response.text.lower()
+    assert token not in response.text
+
+    # Generic registration-token lock: consumed, not reserved.
+    assert state.registration_token_store.validate_runtime(token) is None
+    record = state.registration_token_store.consume_runtime(token)
+    assert record is None  # already consumed
+
+    store = state.direct_connect_authority_store
+    fingerprint = store.get_for_token(token).token_fingerprint
+
+    # Authorized terminalization residue only: one terminalized reservation and
+    # one terminalized event, both carrying the fixed category, not the sentinel.
+    reservation = store._conn.execute(
+        "SELECT state, reason FROM direct_connect_reservations WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()
+    assert reservation is not None
+    assert reservation["state"] == "terminalized"
+    assert reservation["reason"] == "intake_fault"
+    assert sentinel.lower() not in str(reservation["reason"]).lower()
+
+    event = store._conn.execute(
+        "SELECT event_type, detail FROM direct_connect_events WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()
+    assert event is not None
+    assert event["event_type"] == "terminalized"
+    assert event["detail"] == "intake_fault"
+    assert sentinel.lower() not in str(event["detail"]).lower()
+
+    # No candidate/operation/receipt/artifact/identity rows created by the fault.
+    assert store.counts() == {
         "direct_connect_operations": 0,
         "direct_connect_artifacts": 0,
         "direct_connect_receipts": 0,
-        "direct_connect_events": 2,
+        "direct_connect_events": 1,
     }
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_candidates WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM direct_connect_identity_history WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()[0] == 0
+
+    # Parent lifecycle is closed nonretryable.
+    parent = store._conn.execute(
+        "SELECT state FROM direct_connect_parent_lifecycles WHERE token_fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()
+    assert parent is not None
+    assert parent["state"] == "failed"
+
+    # Normal first-submit control: a fresh token still succeeds end-to-end.
+    fresh_token = _mint(tc)
+    fresh_authority = store.get_for_token(fresh_token)
+    _write_executable(fresh_authority.wrapper_destination)
+    fresh_child = tmp_path / "bin" / "fresh-child"
+    _write_executable(fresh_child)
+    first = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_payload(hashlib.sha256(fresh_authority.wrapper_destination.read_bytes()).hexdigest(), fresh_child),
+        headers={"Authorization": f"Bearer {fresh_token}"},
+    )
+    assert first.status_code == 201
+    assert first.json()["state"] == "received_nonlaunchable"
+
+    # Documented expected-error control: identical replay is a non-consuming 409.
+    replay = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=_payload(hashlib.sha256(fresh_authority.wrapper_destination.read_bytes()).hexdigest(), fresh_child),
+        headers={"Authorization": f"Bearer {fresh_token}"},
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"].startswith("duplicate")

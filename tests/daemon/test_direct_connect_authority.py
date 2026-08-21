@@ -376,11 +376,16 @@ def _seed_projected_operation(store, *, token: str, state: str) -> str:
         token_plaintext=token, name="custom-cli", intended_profile_name="forget-profile",
         workspace_adapter_id="codex", issued_at=1, expires_at=100,
     )
-    operation_id = store.reserve(token, now=2)
+    identity_hash = f"hash-{token}"
+    identity_blob = f"blob-{token}"
+    operation_id = store.reserve(
+        token, identity_hash=identity_hash, identity_blob=identity_blob, now=2,
+    )
     assert operation_id is not None
     store.receive(
         token, operation_id, wrapper_sha256="f" * 64, wrapper_facts={}, children=[],
-        workspace_adapter_id="codex", now=2,
+        workspace_adapter_id="codex",
+        identity_hash=identity_hash, identity_blob=identity_blob, now=2,
     )
     assert store.plan_projection(operation_id, now=3)
     if state == "failed":
@@ -405,16 +410,22 @@ def test_forget_failed_operation_removes_its_authority_records_and_appends_audit
     assert outcome.intended_profile_name == "forget-profile"
     assert outcome.wrapper_status == "preserved_unsafe"
 
-    for table in (
-        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
-    ):
+    # THR-160: immutable parent/candidate/identity/receipt/audit evidence is
+    # retained; only safe derived artifacts/projections are removed.
+    for table in ("direct_connect_artifacts", "direct_connect_projections"):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    for table in (
+        "direct_connect_authorities", "direct_connect_parent_lifecycles",
+        "direct_connect_candidates", "direct_connect_identity_history",
+        "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_reservations",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     events = store._conn.execute(
         "SELECT event_type, detail FROM direct_connect_events ORDER BY created_at, rowid"
     ).fetchall()
     assert len(events) == event_count + 1
-    assert tuple(events[-1]) == ("forgotten", "terminal failed operation removed")
+    assert tuple(events[-1]) == ("forgotten", "terminal failed operation derived state removed")
 
 
 def test_failed_wrapper_cleanup_reports_absent_and_nonregular_candidates_without_deleting(tmp_path) -> None:
@@ -664,3 +675,170 @@ def test_direct_authority_reservation_has_one_concurrent_winner(tmp_path) -> Non
 
     assert sum(result is not None for result in results) == 1
     assert store.reserve("hrreg_concurrent", now=2) is None
+
+
+def _seed_candidate(
+    store, *, token: str, profile: str, identity_hash: str, identity_blob: str,
+    wrapper_sha256: str = "f" * 64, expires_at: float = 100,
+) -> str:
+    """Mint, reserve, and receive one identity-aware candidate."""
+    store.mint_authority(
+        token_plaintext=token, name="custom-cli", intended_profile_name=profile,
+        workspace_adapter_id="codex", issued_at=1, expires_at=expires_at,
+    )
+    operation_id = store.reserve(
+        token, identity_hash=identity_hash, identity_blob=identity_blob, now=2,
+    )
+    assert operation_id is not None
+    store.receive(
+        token, operation_id, wrapper_sha256=wrapper_sha256, wrapper_facts={}, children=[],
+        workspace_adapter_id="codex",
+        identity_hash=identity_hash, identity_blob=identity_blob, now=2,
+    )
+    return operation_id
+
+
+def test_latest_candidate_status_first_conformance_failure_is_retryable(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_candidate(
+        store, token="hrreg_retryable", profile="retryable-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+    )
+    store.plan_projection(operation_id, now=3)
+    store.mark_failed(operation_id, "conformance_probe_failed: missing canary", now=4)
+
+    status = store.latest_candidate_status("hrreg_retryable", now=5)
+
+    assert status is not None
+    assert status.state == "failed_retryable"
+    assert status.retry_eligible is True
+    assert status.reason == "conformance_probe_failed: missing canary"
+
+
+def test_latest_candidate_status_second_conformance_failure_is_exhausted(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    op_a = _seed_candidate(
+        store, token="hrreg_exhausted", profile="exhausted-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+    )
+    store.plan_projection(op_a, now=3)
+    store.mark_failed(op_a, "conformance_probe_failed: missing canary", now=4)
+
+    op_b = store.reserve(
+        "hrreg_exhausted", identity_hash="hash-b", identity_blob="hash-b", now=5,
+    )
+    assert op_b is not None
+    store.receive(
+        "hrreg_exhausted", op_b, wrapper_sha256="e" * 64, wrapper_facts={}, children=[],
+        workspace_adapter_id="codex",
+        identity_hash="hash-b", identity_blob="blob-b", now=5,
+    )
+    store.plan_projection(op_b, now=6)
+    store.mark_failed(op_b, "conformance_probe_failed: still missing canary", now=7)
+
+    status = store.latest_candidate_status("hrreg_exhausted", now=8)
+
+    assert status is not None
+    assert status.state == "exhausted"
+    assert status.retry_eligible is False
+
+
+def test_latest_candidate_status_expired_parent_is_expired(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_candidate(
+        store, token="hrreg_expired", profile="expired-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+        expires_at=10,
+    )
+    store.plan_projection(operation_id, now=3)
+    store.mark_failed(operation_id, "conformance_probe_failed: missing canary", now=4)
+
+    status = store.latest_candidate_status("hrreg_expired", now=20)
+
+    assert status is not None
+    assert status.state == "expired"
+    assert status.retry_eligible is False
+
+
+def test_latest_candidate_status_committed_is_connected(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    operation_id = _seed_candidate(
+        store, token="hrreg_connected", profile="connected-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+    )
+    store.plan_projection(operation_id, now=3)
+    store.mark_committed(
+        operation_id, adapter_id="connected-adapter", profile_name="connected-profile", now=4,
+    )
+
+    status = store.latest_candidate_status("hrreg_connected", now=5)
+
+    assert status is not None
+    assert status.state == "connected"
+    assert status.retry_eligible is False
+    assert status.reason is None
+
+
+def test_latest_candidate_status_wrong_target_is_nonretryable(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    store = DirectConnectAuthorityStore(tmp_path / "direct.db", runtime_root=tmp_path)
+    store.mint_authority(
+        token_plaintext="hrreg_wrong", name="custom-cli", intended_profile_name="wrong-profile",
+        workspace_adapter_id="codex", issued_at=1, expires_at=100,
+    )
+    store.terminalize_known("hrreg_wrong", "wrong_target_or_forbidden_selector", now=2)
+
+    status = store.latest_candidate_status("hrreg_wrong", now=3)
+
+    # terminalize_known creates no candidate, so no latest candidate status.
+    assert status is None
+    assert store.parent_state("hrreg_wrong") == "failed"
+
+
+def test_reopen_twice_retains_coupled_candidate_history(tmp_path) -> None:
+    from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+
+    db_path = tmp_path / "direct.db"
+    store = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    op_a = _seed_candidate(
+        store, token="hrreg_reopen", profile="reopen-profile",
+        identity_hash="hash-a", identity_blob="blob-a",
+    )
+    store.plan_projection(op_a, now=3)
+    store.mark_failed(op_a, "conformance_probe_failed: missing canary", now=4)
+    op_b = store.reserve(
+        "hrreg_reopen", identity_hash="hash-b", identity_blob="blob-b", now=5,
+    )
+    assert op_b is not None
+    store.receive(
+        "hrreg_reopen", op_b, wrapper_sha256="e" * 64, wrapper_facts={}, children=[],
+        workspace_adapter_id="codex",
+        identity_hash="hash-b", identity_blob="blob-b", now=5,
+    )
+    store.close()
+
+    reopened1 = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    assert reopened1.is_retryable("hrreg_reopen") is False  # second candidate exists
+    assert len(reopened1.list_candidates("hrreg_reopen")) == 2
+    reopened1.close()
+
+    reopened2 = DirectConnectAuthorityStore(db_path, runtime_root=tmp_path)
+    candidates = reopened2.list_candidates("hrreg_reopen")
+    assert len(candidates) == 2
+    assert candidates[0].identity_hash == "hash-a"
+    assert candidates[1].identity_hash == "hash-b"
+    # Identity history survives both reopens so duplicates remain rejected.
+    with pytest.raises(Exception):
+        reopened2.reserve(
+            "hrreg_reopen", identity_hash="hash-a", identity_blob="blob-a", now=6,
+        )
+    reopened2.close()

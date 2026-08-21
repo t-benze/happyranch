@@ -18,7 +18,11 @@ from fastapi.testclient import TestClient
 from runtime.config import Settings
 from runtime.daemon import paths
 from runtime.daemon.app import create_app
-from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+from runtime.daemon.direct_connect_store import (
+    DirectConnectAuthorityStore,
+    DirectConnectRetryStaleCandidateError,
+    fingerprint_registration_token,
+)
 from runtime.daemon.state import DaemonState
 
 
@@ -346,6 +350,75 @@ def _failed_operation(tc: TestClient, state, tmp_path) -> str:
     return operation_id
 
 
+def _drive_to_terminal_failure(
+    tc: TestClient, state: DaemonState, operation_id: str, monkeypatch
+) -> None:
+    """Use the existing /commit seam to drive a receipt to terminal failed."""
+    from runtime.orchestrator import custom_adapter_registry
+
+    monkeypatch.setattr(
+        custom_adapter_registry,
+        "run_conformance_probe",
+        lambda _executable, _name, **_kwargs: (_ for _ in ()).throw(
+            ValueError("probe failed")
+        ),
+    )
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+    assert response.status_code == 200, response.text
+    assert response.json()["profile_state"] == "failed"
+
+
+def _mint_connect_and_fail(
+    tc: TestClient,
+    state: DaemonState,
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    wrapper_body: bytes = b"#!/bin/sh\ncat\n",
+    child_name: str = "child",
+) -> tuple[str, str]:
+    """Mint a direct token, connect one candidate, fail its projection, return (token, operation_id)."""
+    response = tc.post(
+        "/api/v1/auth/registration-token/runtime",
+        json={
+            "name": "custom-cli",
+            "purpose": "adapter",
+            "intended_profile_name": "custom-profile",
+            "workspace_adapter_id": "codex",
+        },
+    )
+    assert response.status_code == 200
+    token = response.json()["token"]
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash = _write_executable(authority.wrapper_destination, wrapper_body)
+    child = tmp_path / "bin" / child_name
+    _write_executable(child)
+    payload = {
+        "metadata": {},
+        "manifest": {
+            "manifest_version": 2,
+            "wrapper_sha256": wrapper_hash,
+            "upgradeable_children": [
+                {
+                    "slot": "cli",
+                    "executable": str(child),
+                    "version_probe_argv": [str(child), "--version"],
+                }
+            ],
+            "workspace_adapter_id": "codex",
+        },
+    }
+    connect_response = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert connect_response.status_code == 201
+    operation_id = connect_response.json()["operation_id"]
+    _drive_to_terminal_failure(tc, state, operation_id, monkeypatch)
+    return token, operation_id
+
+
 def test_retry_validates_failed_snapshot_without_rewriting_historical_projection(
     client, tmp_path, monkeypatch,
 ):
@@ -422,11 +495,97 @@ def test_retry_binding_failure_compensates_adapter_and_preserves_original_failur
     response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
 
     assert response.status_code == 200
-    assert response.json()["reason"] == "profile_binding_failed"
+    body = response.json()
+    assert body["reason"] == "profile_binding_failed"
+    assert "binding failed" not in str(body).lower()
     assert load_adapters() == {}
     assert get_registry().get_profile("custom-profile") is None
     projection = state.direct_connect_authority_store.get_projection(operation_id)
     assert projection is not None and projection.reason == "original conformance failure"
+
+    # Sentinel check: the raw exception text must not leak into any persisted
+    # status or history field; every surface shows only the fixed category.
+    store = state.direct_connect_authority_store
+    retry_reason = store._conn.execute(
+        "SELECT reason FROM direct_connect_retry_attempts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    assert retry_reason is not None and retry_reason[0] == "profile_binding_failed"
+    event_details = store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? AND event_type = 'retry_validation_failed'",
+        (operation_id,),
+    ).fetchall()
+    assert [row[0] for row in event_details] == ["profile_binding_failed"]
+    for row in store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? OR token_fingerprint = (SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?)",
+        (operation_id, operation_id),
+    ).fetchall():
+        assert "binding failed" not in str(row[0]).lower()
+
+
+def test_initial_commit_binding_failure_normalizes_to_category_and_never_leaks_sentinel(
+    client, tmp_path, monkeypatch,
+):
+    """Initial projection profile-binding exceptions emit only the fixed category.
+
+    Every durable surface (HTTP commit response, status current view,
+    projection row, event trail) must show ``profile_binding_failed`` and never
+    the unique sentinel exception text, candidate output, or path material.
+    """
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    operation_id = _mint_and_connect(tc, state, tmp_path)
+    _fake_probe(monkeypatch)
+    sentinel = "SENTINEL-INITIAL-BIND-LEAK-TASK-5249"
+    monkeypatch.setattr(
+        custom_adapter_registry, "_perform_adapter_profile_binding",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    response = tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profile_state"] == "failed"
+    assert body["reason"] == "profile_binding_failed"
+    assert sentinel.lower() not in str(body).lower()
+
+    # Status route (current) also redacts.
+    status = tc.get(
+        "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
+    )
+    assert status.status_code == 200
+    status_body = status.json()
+    assert status_body["state"] == "failed_nonretryable"
+    assert status_body["reason"] == "profile_binding_failed"
+    assert status_body["profile_state"] == "failed"
+    assert sentinel.lower() not in str(status_body).lower()
+
+    # No live adapter/profile/registry residue.
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+
+    # Durable projection and event rows contain only the category.
+    store = state.direct_connect_authority_store
+    projection = store.get_projection(operation_id)
+    assert projection is not None
+    assert projection.state == "failed"
+    assert projection.reason == "profile_binding_failed"
+    assert sentinel.lower() not in str(projection.reason).lower()
+
+    event_details = store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? AND event_type = 'projection_failed'",
+        (operation_id,),
+    ).fetchall()
+    assert [row[0] for row in event_details] == ["profile_binding_failed"]
+    for row in store._conn.execute(
+        "SELECT detail FROM direct_connect_events WHERE operation_id = ? OR token_fingerprint = (SELECT token_fingerprint FROM direct_connect_operations WHERE operation_id = ?)",
+        (operation_id, operation_id),
+    ).fetchall():
+        assert sentinel.lower() not in str(row[0]).lower()
 
 
 @pytest.mark.parametrize("artifact", ["wrapper", "child"])
@@ -506,8 +665,11 @@ def test_forget_route_module_contract_retains_every_present_wrapper():
     contract = " ".join((direct_connect_commit.__doc__ or "").replace("`", "").split())
 
     assert "Master-bearer-authed cleanup route for a terminal FAILED custom-CLI operation" in contract
-    assert "deletes eligible failed authority, receipt, and projection rows" in contract
-    assert "retains every present derived wrapper" in contract
+    assert "deletes eligible failed authority, receipt, and projection rows" not in contract
+    assert "deletes derived state for one terminal failed operation" in contract
+    assert "retains every present derived wrapper" not in contract
+    assert "retains the immutable parent authority, accepted candidate record, canonical identity history, receipt, operation row, and event trail" in contract
+    assert "only safe derived artifacts/projections and any retry-attempt row are removed" in contract
     assert "already_absent, preserved_changed, or preserved_unsafe" in contract
     assert "missing, planned, or committed" in contract
     assert "retry validation is running or has succeeded" in contract
@@ -563,11 +725,17 @@ def test_forget_failed_projection_removes_records_but_preserves_matching_wrapper
         "wrapper_status": "preserved_unsafe",
     }
     assert wrapper.exists()
-    for table in (
-        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
-    ):
+    # THR-160: immutable parent/candidate/identity/receipt/audit evidence is
+    # retained; only safe derived artifacts/projections/retry_attempts are removed.
+    for table in ("direct_connect_artifacts", "direct_connect_projections"):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    for table in (
+        "direct_connect_authorities", "direct_connect_parent_lifecycles",
+        "direct_connect_candidates", "direct_connect_identity_history",
+        "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_reservations",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
@@ -682,11 +850,17 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
     assert store._conn.execute(
         "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?", (operation_id,)
     ).fetchone()[0] == 0
-    for table in (
-        "direct_connect_artifacts", "direct_connect_receipts", "direct_connect_operations",
-        "direct_connect_projections", "direct_connect_reservations", "direct_connect_authorities",
-    ):
+    # THR-160: immutable parent/candidate/identity/receipt/audit evidence is
+    # retained; only safe derived artifacts/projections/retry_attempts are removed.
+    for table in ("direct_connect_artifacts", "direct_connect_projections"):
         assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    for table in (
+        "direct_connect_authorities", "direct_connect_parent_lifecycles",
+        "direct_connect_candidates", "direct_connect_identity_history",
+        "direct_connect_receipts", "direct_connect_operations",
+        "direct_connect_reservations",
+    ):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
     event_types_after_forget = [row[0] for row in store._conn.execute(
         "SELECT event_type FROM direct_connect_events WHERE operation_id = ?", (operation_id,)
     )]
@@ -696,8 +870,8 @@ def test_forget_after_terminal_failed_retry_removes_attempt_and_retains_event_hi
         "/api/v1/runtime/custom-cli/status", params={"intended_profile_name": "custom-profile"},
     )
     assert status_response.status_code == 200
-    assert status_response.json()["operation_id"] is None
-    assert status_response.json()["profile_state"] is None
+    assert status_response.json()["operation_id"] == operation_id
+    assert status_response.json()["profile_state"] == "failed"
 
 
 def test_forget_refuses_a_durably_running_retry_without_deleting_operation_state(
@@ -788,3 +962,308 @@ def test_forget_refuses_failed_projection_after_retry_establishes_live_connectio
     assert response.json()["detail"] == "refused: retry validation established a live connection"
     assert wrapper.exists()
     assert state.direct_connect_authority_store.get_projection(operation_id).state == "failed"
+
+
+def test_retry_refuses_stale_candidate_after_corrected_b_is_accepted(
+    client, tmp_path, monkeypatch
+):
+    """Once genuinely changed candidate B is accepted, retry(A) is a non-consuming 409."""
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    token, operation_a = _mint_connect_and_fail(tc, state, tmp_path, monkeypatch)
+
+    # Accept genuinely changed B under the same parent token.
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash_b = _write_executable(
+        authority.wrapper_destination, b"#!/bin/sh\necho v2\n"
+    )
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_b)
+    payload_b = {
+        "metadata": {},
+        "manifest": {
+            "manifest_version": 2,
+            "wrapper_sha256": wrapper_hash_b,
+            "upgradeable_children": [
+                {
+                    "slot": "cli",
+                    "executable": str(child_b),
+                    "version_probe_argv": [str(child_b), "--version"],
+                }
+            ],
+            "workspace_adapter_id": "codex",
+        },
+    }
+    connect_b = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=payload_b,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert connect_b.status_code == 201
+    operation_b = connect_b.json()["operation_id"]
+    assert operation_b != operation_a
+
+    # Retry(A) must be refused as stale without running a probe or binding.
+    probe_calls = 0
+
+    def counting_probe(*_args, **_kwargs):
+        nonlocal probe_calls
+        probe_calls += 1
+        raise AssertionError("stale retry must not invoke probe")
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", counting_probe)
+
+    retry_response = tc.post(f"/api/v1/runtime/custom-cli/{operation_a}/retry")
+
+    assert retry_response.status_code == 409
+    assert "stale" in retry_response.json()["detail"].lower()
+    assert probe_calls == 0
+
+    store = state.direct_connect_authority_store
+    # No retry attempt or retry-validation-started event for A.
+    assert (
+        store._conn.execute(
+            "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?",
+            (operation_a,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        store._conn.execute(
+            """SELECT COUNT(*) FROM direct_connect_events
+               WHERE operation_id = ? AND event_type = 'retry_validation_started'""",
+            (operation_a,),
+        ).fetchone()[0]
+        == 0
+    )
+
+    # No adapter/profile residue from the stale retry.
+    assert load_adapters() == {}
+    assert get_registry().get_profile("custom-profile") is None
+
+    # B remains the latest/current candidate and can be committed.
+    latest = store.get_latest_candidate_for_token_fingerprint(
+        fingerprint_registration_token(token)
+    )
+    assert latest is not None
+    assert latest.operation_id == operation_b
+
+    _fake_probe(monkeypatch)
+    commit_b = tc.post(f"/api/v1/runtime/custom-cli/{operation_b}/commit")
+    assert commit_b.status_code == 200
+    assert commit_b.json()["profile_state"] == "committed"
+    assert get_registry().get_profile("custom-profile") is not None
+
+
+def test_race_retry_a_with_commit_b_after_b_accepted_only_b_wins(
+    client, tmp_path, monkeypatch
+):
+    """Concurrent retry(A) and commit(B) after B is accepted: A is stale, B commits, one probe total.
+
+    The real HTTP seam is covered by ``test_retry_refuses_stale_candidate_after_corrected_b_is_accepted``.
+    Here we race the two coordinators directly so an explicit threading barrier can
+    rendezvous at the store's latest-candidate seam (TestClient serializes requests
+    through a single event-loop thread, so a barrier inside an HTTP handler would not
+    admit both parties). The durable one-winner facts are the same.
+    """
+    from runtime.daemon import direct_connect_projection
+    from runtime.daemon.direct_connect_retry import retry_validate
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+    from runtime.orchestrator.adapter_store import load_adapters
+    from runtime.orchestrator.executor_registry import get_registry
+
+    tc, state = client
+    token, operation_a = _mint_connect_and_fail(tc, state, tmp_path, monkeypatch)
+
+    # Accept B first (received_nonlaunchable, no projection).
+    authority = state.direct_connect_authority_store.get_for_token(token)
+    wrapper_hash_b = _write_executable(
+        authority.wrapper_destination, b"#!/bin/sh\necho v2\n"
+    )
+    child_b = tmp_path / "bin" / "child-b"
+    _write_executable(child_b)
+    payload_b = {
+        "metadata": {},
+        "manifest": {
+            "manifest_version": 2,
+            "wrapper_sha256": wrapper_hash_b,
+            "upgradeable_children": [
+                {
+                    "slot": "cli",
+                    "executable": str(child_b),
+                    "version_probe_argv": [str(child_b), "--version"],
+                }
+            ],
+            "workspace_adapter_id": "codex",
+        },
+    }
+    connect_b = tc.post(
+        "/api/v1/runtime/custom-cli/connect",
+        json=payload_b,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert connect_b.status_code == 201
+    operation_b = connect_b.json()["operation_id"]
+
+    probe_count = [0]
+    probe_lock = threading.Lock()
+
+    def fake_probe(_executable, adapter_id, **_kwargs):
+        with probe_lock:
+            probe_count[0] += 1
+        return AdapterOutput.model_validate({
+            "success": True,
+            "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "adapter_metadata": {
+                "adapter": adapter_id,
+                "adapter_version": "9.9.9",
+                "contract_version": 1,
+            },
+        })
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+
+    # Synchronize both coordinators at the latest-candidate check seam.
+    seam_barrier = threading.Barrier(2)
+    original_claim = DirectConnectAuthorityStore.claim_retry_attempt
+    original_project = direct_connect_projection.project
+
+    def claim_at_seam(self, operation_id, *, now=None):
+        seam_barrier.wait(timeout=5)
+        return original_claim(self, operation_id, now=now)
+
+    def project_at_seam(store, operation_id, *, now=None):
+        seam_barrier.wait(timeout=5)
+        return original_project(store, operation_id, now=now)
+
+    monkeypatch.setattr(DirectConnectAuthorityStore, "claim_retry_attempt", claim_at_seam)
+    monkeypatch.setattr(direct_connect_projection, "project", project_at_seam)
+
+    retry_outcomes = []
+    commit_outcomes = []
+
+    def retry_a():
+        try:
+            retry_outcomes.append(retry_validate(state.direct_connect_authority_store, operation_a))
+        except Exception as exc:  # noqa: BLE001
+            retry_outcomes.append(exc)
+
+    def commit_b():
+        commit_outcomes.append(
+            direct_connect_projection.project(state.direct_connect_authority_store, operation_b)
+        )
+
+    t_retry = threading.Thread(target=retry_a)
+    t_commit = threading.Thread(target=commit_b)
+    t_retry.start()
+    t_commit.start()
+    t_retry.join(timeout=10)
+    t_commit.join(timeout=10)
+    assert not t_retry.is_alive()
+    assert not t_commit.is_alive()
+
+    # retry-A must have been refused as a stale candidate.
+    assert len(retry_outcomes) == 1
+    assert isinstance(retry_outcomes[0], DirectConnectRetryStaleCandidateError)
+
+    # commit-B must succeed.
+    assert len(commit_outcomes) == 1
+    assert commit_outcomes[0].state == "committed"
+
+    # Exactly one probe ran (for B), zero stale-A retry probes.
+    assert probe_count[0] == 1
+
+    store = state.direct_connect_authority_store
+    assert (
+        store._conn.execute(
+            "SELECT COUNT(*) FROM direct_connect_retry_attempts WHERE operation_id = ?",
+            (operation_a,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        store._conn.execute(
+            """SELECT COUNT(*) FROM direct_connect_events
+               WHERE operation_id = ? AND event_type = 'retry_validation_started'""",
+            (operation_a,),
+        ).fetchone()[0]
+        == 0
+    )
+
+    # B is committed; no stale-A adapter/profile residue.
+    assert get_registry().get_profile("custom-profile") is not None
+    assert len(load_adapters()) == 1
+
+
+def test_retry_current_failed_candidate_still_claims_one_attempt_and_is_idempotent(
+    client, tmp_path, monkeypatch
+):
+    """A failed current candidate's retry still claims exactly one running attempt."""
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+
+    tc, state = client
+    operation_id = _failed_operation(tc, state, tmp_path)
+
+    entered_probe = threading.Event()
+    release_probe = threading.Event()
+    probe_count = [0]
+    probe_lock = threading.Lock()
+
+    def fake_probe(_executable, adapter_id, **_kwargs):
+        with probe_lock:
+            probe_count[0] += 1
+        entered_probe.set()
+        assert release_probe.wait(timeout=5)
+        return AdapterOutput.model_validate({
+            "success": True,
+            "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "adapter_metadata": {
+                "adapter": adapter_id,
+                "adapter_version": "9.9.9",
+                "contract_version": 1,
+            },
+        })
+
+    monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
+
+    responses = []
+
+    def run_retry():
+        responses.append(tc.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry"))
+
+    t1 = threading.Thread(target=run_retry)
+    t2 = threading.Thread(target=run_retry)
+    t1.start()
+    t2.start()
+    assert entered_probe.wait(timeout=5)
+
+    # Exactly one running attempt should exist for the current failed candidate.
+    attempts = state.direct_connect_authority_store._conn.execute(
+        "SELECT state FROM direct_connect_retry_attempts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchall()
+    assert len(attempts) == 1
+    assert attempts[0][0] == "running"
+
+    release_probe.set()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert not t1.is_alive()
+    assert not t2.is_alive()
+
+    assert all(r.status_code == 200 for r in responses)
+    assert all(r.json()["profile_state"] == "committed" for r in responses)
+    assert probe_count[0] == 1
