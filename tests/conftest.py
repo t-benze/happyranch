@@ -8,6 +8,32 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.runtime import RuntimeDir
 
 
+# Standard test agents that many modules invoke through _run_agent or
+# run_invocation. Under THR-095/TASK-5293 launch is fail-closed, so tests
+# that previously relied on a silent claude fallback now need active
+# AgentDef frontmatter. Modules with special agent requirements can
+# override or supplement this list in their own fixtures.
+_TEST_AGENT_NAMES = (
+    "engineering_head", "product_manager", "dev_agent", "payment_agent",
+    "qa_engineer", "senior_dev", "content_head", "content_agent",
+    "alice", "bob",
+)
+
+
+def seed_test_agents(paths: OrgPaths, names: tuple[str, ...] | None = None) -> None:
+    """Write active AgentDef frontmatter for test agents under ``paths``."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    for name in (names or _TEST_AGENT_NAMES):
+        ad = AgentDef(
+            name=name, team="engineering", role="manager",
+            executor="claude", allow_rules=(), repos={},
+            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt=f"You are {name}.", description="", model=None,
+        )
+        (paths.agents_dir / f"{name}.md").write_text(render_agent_text(ad))
+
+
 # ── Test-mode platform isolation ──────────────────────────────────────
 # Test environments may not have distinct macOS executor accounts.
 # This fixture monkeypatches detect_platform_isolation to return a

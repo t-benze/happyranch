@@ -5,7 +5,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
@@ -13,6 +13,7 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.prompt_loader import is_terminated, load_agent
 from runtime.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
@@ -96,13 +97,28 @@ def _load_task_history(workspace: Path) -> str:
 
 
 def _executor_name(paths: OrgPaths, agent_name: str) -> str:
-    """THR-095: resolve executor from org/agents/<name>.md (single source)."""
+    """THR-095: resolve executor from org/agents/<name>.md (single source).
+
+    Kept for schedule_runner / wake_runner compatibility. Dreams use
+    ``_active_agent_def`` for fail-closed admission.
+    """
     try:
-        from runtime.orchestrator.prompt_loader import load_agent
         agent_def = load_agent(paths, agent_name)
         return (agent_def.executor if agent_def else "claude").lower()
     except Exception:
         return "claude"
+
+
+def _active_agent_def(paths: OrgPaths, agent_name: str) -> "AgentDef | None":
+    """Return the active AgentDef, or None if missing or terminated.
+
+    Dreams must fail-closed: a missing or archived agent must never fall back
+    to the claude executor.
+    """
+    agent_def = load_agent(paths, agent_name)
+    if agent_def is None or is_terminated(paths, agent_name):
+        return None
+    return agent_def
 
 
 async def run_dream(
@@ -111,14 +127,59 @@ async def run_dream(
     dream_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
+    admission_gate: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     dream = org_state.db.get_dream(dream_id)
     if dream is None or dream.status != DreamStatus.PENDING:
         return
 
-    workspace = org_state.root / "workspaces" / dream.agent_name
+    paths = OrgPaths(root=org_state.root)
+
+    # ── Lifecycle admission: the active-AgentDef read and the conditional
+    # PENDING->RUNNING / PENDING->SKIPPED claim must serialize with a
+    # concurrent termination's archive/cleanup under the shared
+    # org.teams_lock so termination-vs-dream has a single durable winner.
+    # The lock is held ONLY across the re-read + claim; audit,
+    # materialization, repo refresh, and executor construction happen after
+    # release. ``admission_gate`` is a narrow test hook awaited at the
+    # admission boundary (before lock acquisition) for deterministic
+    # interleaving tests.
+    if admission_gate is not None:
+        await admission_gate()
+
     now = datetime.now(timezone.utc)
-    org_state.db.update_dream(dream_id, status=DreamStatus.RUNNING, started_at=now)
+    async with org_state.teams_lock:
+        agent_def = _active_agent_def(paths, dream.agent_name)
+        if agent_def is None:
+            # Missing/terminated agent: terminal non-execution (SKIPPED).
+            # Conditional so a concurrent termination's own terminal winner is
+            # never overwritten; never a claude fallback.
+            transitioned = org_state.db.update_dream_status_if(
+                dream_id,
+                DreamStatus.PENDING,
+                DreamStatus.SKIPPED,
+                ended_at=now,
+                error="agent_unavailable",
+            )
+        else:
+            # Atomic PENDING -> RUNNING claim. If a concurrent termination
+            # terminalized the dream before this lock was acquired, the
+            # conditional update fails and we return without an executor.
+            transitioned = org_state.db.update_dream_status_if(
+                dream_id,
+                DreamStatus.PENDING,
+                DreamStatus.RUNNING,
+                started_at=now,
+            )
+
+    if agent_def is None:
+        if transitioned:
+            AuditLogger(org_state.db).log_dream_failed(
+                dream_id, dream.agent_name, reason="agent_unavailable",
+            )
+        return
+    if not transitioned:
+        return
     AuditLogger(org_state.db).log_dream_started(dream_id, dream.agent_name)
 
     # Spec "Input Window": include the agent's audit rows since window_start,
@@ -132,7 +193,6 @@ async def run_dream(
         recent_audit, _ = org_state.db.query_audit_logs(
             agent=dream.agent_name, limit=_AUDIT_WINDOW_CAP,
         )
-    paths = OrgPaths(root=org_state.root)
     try:
         org_config = load_org_config(paths)
     except Exception:
@@ -141,22 +201,19 @@ async def run_dream(
         paths=paths, agent_name=dream.agent_name,
     )
 
-    # TASK-2511: resolve executor name early for the materialization guard.
-    _prov = _executor_name(paths, dream.agent_name)
+    # TASK-2511: resolve executor name from the active AgentDef. Missing agents
+    # were already rejected above, so this path never silently falls back to
+    # claude because of a missing or terminated AgentDef.
+    _prov = agent_def.executor.lower()
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 
-    # Resolve agent team before the unified call.
-    try:
-        from runtime.orchestrator.prompt_loader import load_agent
-        agent_def = load_agent(paths, dream.agent_name)
-        agent_team = agent_def.team if agent_def else "engineering"
-    except Exception:
-        agent_def = None
-        agent_team = "engineering"
+    agent_team = agent_def.team
 
     # Issue #568: forward AgentDef.model to executor.run for dream invocations.
-    model_name: str | None = agent_def.model if agent_def else None
+    model_name: str | None = agent_def.model
+
+    workspace = org_state.root / "workspaces" / dream.agent_name
 
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.

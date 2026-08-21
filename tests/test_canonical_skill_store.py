@@ -48,6 +48,21 @@ from runtime.skills.symlink_materializer import (
 # ── Fixtures ────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agent_for_canonical_store_tests(tmp_path):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agent used by the runner-path dual-failure tests.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(
+        OrgPaths(root=tmp_path / "runtime-dir" / "orgs" / "test-org"),
+        ("dev_agent",),
+    )
+
+
 @pytest.fixture
 def temp_canonical_root(tmp_path):
     """Temporary canonical store root."""

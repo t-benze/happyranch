@@ -20,9 +20,11 @@ def _paths(org_state) -> OrgPaths:
 
 
 def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> None:
-    # Create at least one workspace so list_agents finds it
+    # The active roster is driven by org/agents/*.md, not by workspace
+    # directories. Seed an active AgentDef and its workspace.
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
+    _seed_active_agent(org_state, "engineering_head", role="manager")
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
@@ -783,12 +785,19 @@ def test_manage_agent_enroll_invalid_name_returns_422(
     assert r.status_code == 422
 
 
-def _seed_active_agent(org_state, name: str, team: str = "engineering", executor: str = "claude", system_prompt: str = "prompt\n") -> None:
+def _seed_active_agent(
+    org_state,
+    name: str,
+    team: str = "engineering",
+    role: str = "worker",
+    executor: str = "claude",
+    system_prompt: str = "prompt\n",
+) -> None:
     """Write an active agent file for testing update/terminate endpoints."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     agent = AgentDef(
-        name=name, team=team, role="worker", executor=executor,
+        name=name, team=team, role=role, executor=executor,
         allow_rules=(), repos={}, enrolled_by="engineering_head",
         enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
         system_prompt=system_prompt,
@@ -2581,3 +2590,873 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     assert len(audit_after) == audit_count_before, (
         f"Audit rows changed: before={audit_count_before}, after={len(audit_after)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Agent termination: archival, quiescence, and fail-closed launch (TASK-5293)
+# ---------------------------------------------------------------------------
+
+
+def test_manage_agent_terminate_archives_worker_preserves_history(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Termination archives the AgentDef and workspace but keeps every historic
+    row (task, audit, token usage, thread participant, memory) readable.
+    """
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus, TokenUsage
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    memory_file = workspace / "memory" / "learning.md"
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text("- remember this\n")
+
+    # Historic task assigned to dev_agent.
+    task = TaskRecord(
+        id="TASK-HIST",
+        team="engineering",
+        brief="old work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.FAILED,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+    org_state.db.insert_audit_log("TASK-HIST", "dev_agent", "did_something", {})
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-HIST",
+        agent="dev_agent",
+        session_id="sess-old",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        scope_type="task",
+        scope_id="TASK-HIST",
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "terminated"
+
+    paths = _paths(org_state)
+    assert prompt_loader.load_agent(paths, "dev_agent") is None
+    assert prompt_loader.load_terminated_agent(paths, "dev_agent") is not None
+    assert not (paths.workspaces_dir / "dev_agent").exists()
+    archived_ws = paths.workspaces_dir / "_terminated" / "dev_agent"
+    assert archived_ws.exists()
+    assert (archived_ws / "memory" / "learning.md").read_text() == "- remember this\n"
+    assert org_state.teams.team_for_agent("dev_agent") is None
+
+    # Historic records still reference the agent name.
+    assert org_state.db.get_task("TASK-HIST").assigned_agent == "dev_agent"
+    audit = org_state.db.query_audit_logs(agent="dev_agent", limit=10)[0]
+    assert any(row["agent"] == "dev_agent" for row in audit)
+
+
+def test_manage_agent_terminate_refuses_manager(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _write_agent_md(_paths(org_state), _make_agent("engineering_head", role="manager"))
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "engineering_head",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "manager_terminate_forbidden"
+
+
+def test_manage_agent_terminate_blocks_active_task(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    task = TaskRecord(
+        id="TASK-LIVE",
+        team="engineering",
+        brief="live work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.PENDING,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    body = r.json()["detail"]
+    assert body["code"] == "agent_not_quiescent"
+    assert any(c["kind"] == "task" and c["id"] == "TASK-LIVE" for c in body["conflicts"])
+
+
+def test_manage_agent_terminate_blocks_started_thread_invocation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import (
+        ThreadRecord,
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    org_state.db.insert_thread(ThreadRecord(id="THR-LIVE", subject="x"))
+    org_state.db.add_thread_participant("THR-LIVE", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-LIVE", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-LIVE", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    org_state.db.stamp_invocation_started(inv.invocation_token, session_id="sess-live")
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "thread_invocation" and c["id"] == inv.invocation_token for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_firing_schedule(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import ScheduleRecord, ScheduleStatus, ScheduleKind
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    fire_at = datetime.now(timezone.utc)
+    record = ScheduleRecord(
+        id="SCHED-LIVE",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=fire_at,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.FIRING,
+        created_at=fire_at,
+        updated_at=fire_at,
+    )
+    org_state.db.schedules.insert(record)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "schedule" and c["id"] == "SCHED-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_work_hour(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import WorkHourRecord, WorkHourStatus, WorkHourMode
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    record = WorkHourRecord(
+        id="WORKHOUR-LIVE",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.RUNNING,
+        started_at=now,
+        created_at=now,
+    )
+    org_state.db.work_hours.insert(record)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "work_hour" and c["id"] == "WORKHOUR-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_dream(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import DreamRecord, DreamStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    dream = DreamRecord(
+        id="DREAM-LIVE",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.RUNNING,
+        started_at=now,
+        created_at=now,
+    )
+    org_state.db.insert_dream(dream)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "dream" and c["id"] == "DREAM-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_job(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import JobRecord, JobStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="JOB-LIVE",
+        task_id="TASK-1",
+        agent_name="dev_agent",
+        title="x",
+        rationale="test",
+        script_text="echo hi",
+        interpreter="bash",
+        status=JobStatus.RUNNING,
+        review_required=False,
+        persistent=False,
+        created_at=now.isoformat(),
+        started_at=now.isoformat(),
+    )
+    org_state.db.insert_job(job)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "job" and c["id"] == "JOB-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_declines_unstarted_invocations(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import (
+        ThreadRecord,
+        ThreadInvocationPurpose,
+        ThreadInvocationStatus,
+        ThreadMessageKind,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    org_state.db.insert_thread(ThreadRecord(id="THR-DECL", subject="x"))
+    org_state.db.add_thread_participant("THR-DECL", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-DECL", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-DECL", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    after = org_state.db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.DECLINED
+    assert after.decline_reason == "agent_terminated"
+
+
+def test_manage_agent_terminate_cancels_armed_schedule_skips_wake_and_dream(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import (
+        DreamRecord,
+        DreamStatus,
+        ScheduleRecord,
+        ScheduleKind,
+        ScheduleStatus,
+        WorkHourRecord,
+        WorkHourMode,
+        WorkHourStatus,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+
+    sched = ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    )
+    org_state.db.schedules.insert(sched)
+
+    wh = WorkHourRecord(
+        id="WORKHOUR-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.PENDING,
+        created_at=now,
+    )
+    org_state.db.work_hours.insert(wh)
+
+    dream = DreamRecord(
+        id="DREAM-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.PENDING,
+        created_at=now,
+    )
+    org_state.db.insert_dream(dream)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.CANCELLED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.SKIPPED
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.SKIPPED
+
+
+def test_list_enrollments_terminated(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=terminated",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = r.json()["enrollments"]
+    assert any(e["name"] == "dev_agent" and e["status"] == "terminated" for e in rows)
+
+
+def test_list_agents_excludes_terminated_and_terminated_workspace(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GET /agents must be the active roster: terminated agents and the
+    archived workspace directory must never appear as active rows.
+    """
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    terminate_r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert terminate_r.status_code == 200
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = r.json()["agents"]
+    names = {a["name"] for a in rows}
+    assert "dev_agent" not in names
+    assert "_terminated" not in names
+
+    # The terminated enrollment is still exposed on the dedicated endpoint.
+    enroll_r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=terminated",
+        headers=auth_headers,
+    )
+    assert enroll_r.status_code == 200
+    assert any(
+        e["name"] == "dev_agent" and e["status"] == "terminated"
+        for e in enroll_r.json()["enrollments"]
+    )
+
+
+def test_manage_agent_enroll_rejects_terminated_name(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "sys",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "agent_name_unavailable"
+
+
+def _seed_all_future_work(org_state) -> str:
+    """Seed every future-work kind for terminate failure-path tests: an armed
+    schedule, a pending work-hours wake, a pending dream, and an unstarted
+    thread invocation. Returns the unstarted invocation token."""
+    from datetime import datetime, timezone
+    from runtime.models import (
+        DreamRecord,
+        DreamStatus,
+        ScheduleKind,
+        ScheduleRecord,
+        ScheduleStatus,
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+        ThreadRecord,
+        WorkHourMode,
+        WorkHourRecord,
+        WorkHourStatus,
+    )
+
+    now = datetime.now(timezone.utc)
+
+    org_state.db.schedules.insert(ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    ))
+
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_thread(ThreadRecord(id="THR-PEND", subject="x"))
+    org_state.db.add_thread_participant("THR-PEND", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-PEND", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-PEND", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    return inv.invocation_token
+
+
+def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If the terminated agent file already exists, terminate returns 409 and
+    leaves the active agent, workspace, and every future-work record (armed
+    schedule, pending wake, pending dream, unstarted invocation) untouched.
+    """
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    # Pre-create a terminated agent file to trigger the archive collision.
+    terminated_agents_dir = paths.agents_dir / "_terminated"
+    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+    (terminated_agents_dir / "dev_agent.md").write_text(
+        prompt_loader.load_agent(paths, "dev_agent").system_prompt or ""
+    )
+
+    inv_token = _seed_all_future_work(org_state)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "archive_collision"
+
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
+    # Active identity, workspace, and team membership remain intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+def test_manage_agent_terminate_workspace_move_failure_rolls_back(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If workspace archival fails after the agent file was moved, the route
+    rolls back the file and team membership and leaves every future-work record
+    (armed schedule, pending wake, pending dream, unstarted invocation)
+    unchanged.
+    """
+    from unittest.mock import patch
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    with patch("runtime.daemon.routes.agents._move_dir_atomically") as mock_move:
+        mock_move.side_effect = OSError("injected move failure")
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "workspace_archive_failed"
+
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
+    # Everything must be rolled back to the active state.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A fault injected into the first audit write — AFTER the schedule
+    cancellation has already been persisted in-transaction — must roll back the
+    complete cleanup transaction BEFORE the route's archive compensation runs.
+    AgentDef, workspace, team membership, and all four future-work rows stay
+    exactly as they were, with no cleanup audit residue and no open DB
+    transaction left behind.
+    """
+    from runtime.infrastructure import database as db_module
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    transiently_cancelled = {"seen": False}
+
+    def _failing_audit(self, task_id, agent, action, payload=None):
+        # The first audit write is the armed schedule's and runs only AFTER its
+        # UPDATE has already executed inside the open transaction. Prove that
+        # mutation happened (transiently) before raising, so this test genuinely
+        # exercises "failure after the first persisted mutation" rather than a
+        # no-op error path.
+        row = self._conn.execute(
+            "SELECT status, active FROM schedules WHERE id = 'SCHED-ARMED'"
+        ).fetchone()
+        transiently_cancelled["seen"] = (
+            row is not None
+            and row["status"] == ScheduleStatus.CANCELLED.value
+            and row["active"] == 0
+        )
+        raise RuntimeError("injected audit insertion failure")
+
+    with patch.object(
+        db_module.Database, "insert_audit_log_uncommitted", new=_failing_audit,
+    ):
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "terminate_cleanup_failed"
+
+    # The fault landed after the first persisted mutation, proving the rollback
+    # reversed an in-flight write rather than trivially doing nothing.
+    assert transiently_cancelled["seen"] is True
+
+    # Every future-work record is exactly its pre-call value.
+    sched = org_state.db.schedules.get("SCHED-ARMED")
+    assert sched.status == ScheduleStatus.ARMED
+    assert sched.active == 1
+    wake = org_state.db.work_hours.get("WORKHOUR-PEND")
+    assert wake.status == WorkHourStatus.PENDING
+    assert wake.ended_at is None
+    assert wake.error is None
+    dream = org_state.db.get_dream("DREAM-PEND")
+    assert dream.status == DreamStatus.PENDING
+    assert dream.ended_at is None
+    assert dream.error is None
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+    assert inv.consumed_at is None
+
+    # Active identity, workspace, and team membership remain intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+    # No cleanup audit residue from any cancelled/skipped/declined row.
+    cleanup_actions = {"schedule_cancelled", "work_hour_skipped", "dream_skipped"}
+    audit_rows, _ = org_state.db.query_audit_logs(agent="dev_agent", limit=1000)
+    assert all(row["action"] not in cleanup_actions for row in audit_rows)
+
+    # The database connection has no open transaction left behind.
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_run_step_fails_terminated_agent_without_executor(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Once archived, a task assigned to the agent fails closed before any
+    executor is constructed.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+
+    # Terminate the agent while it has no live work.
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    # A task assigned to the now-archived agent must fail closed.
+    task = TaskRecord(
+        id="TASK-TERM",
+        team="engineering",
+        brief="work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.PENDING,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+
+    orch = Orchestrator(
+        db=org_state.db,
+        settings=org_state.settings,
+        paths=_paths(org_state),
+        slug="alpha",
+        teams=org_state.teams,
+    )
+    with patch("runtime.orchestrator.orchestrator.build_executor") as mock_build:
+        orch.run_step("TASK-TERM")
+    mock_build.assert_not_called()
+    failed = org_state.db.get_task("TASK-TERM")
+    assert failed.status == TaskStatus.FAILED
+    assert "terminated" in failed.note.lower()
