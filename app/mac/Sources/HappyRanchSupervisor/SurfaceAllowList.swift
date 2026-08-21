@@ -98,6 +98,9 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/runtime/adapters/register"),
             // Adapter submission (CLI-only scoped-token; not in browser)
             ("POST", "/runtime/adapters/submit"),
+            // Org-portability (CLI-only / founder-only — no browser consumer)
+            ("GET", "/portability-preflight"),
+            ("POST", "/reconcile-portability"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")

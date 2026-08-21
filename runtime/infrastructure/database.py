@@ -4095,6 +4095,26 @@ class Database:
         return [self._row_to_job(r) for r in rows]
 
     @_synchronized
+    def list_job_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered job-id query (no cap, DB-side filter).
+
+        ``list_jobs_db`` is a presentation list capped (default 50) and ordered
+        newest-first; using it for a liveness check can hide an old active row
+        behind newer terminal rows. This returns every job id whose status is
+        in ``statuses`` so a portability preflight cannot miss an active job.
+        Read-only; returns ids only, not full job records.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT id FROM jobs WHERE status IN ({placeholders}) "
+            "ORDER BY created_at, id",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    @_synchronized
     def transition_job_to_rejected(
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
@@ -5223,6 +5243,20 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_pending_thread_invocations(self) -> list[ThreadInvocation]:
+        """Return every org-wide ``pending`` thread invocation (any thread).
+
+        Used by the portability preflight quiescence check: a pending reply/
+        bootstrap/task-followup invocation is in-flight work and must block.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations "
+            "WHERE status = ? ORDER BY id",
+            (ThreadInvocationStatus.PENDING.value,),
+        )
+        return [self._row_to_invocation(r) for r in cursor.fetchall()]
+
+    @_synchronized
     def list_started_invocations_for_agent(
         self, agent_name: str,
     ) -> list[tuple[str, str]]:
@@ -5577,6 +5611,25 @@ class Database:
             (*params, limit),
         ).fetchall()
         return [self._dream_row_to_model(row) for row in rows]
+
+    @_synchronized
+    def list_dream_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered dream-id query (no cap, DB-side filter).
+
+        ``list_dreams`` is a presentation list capped at 500 and ordered
+        newest-first; using it for a liveness check can hide an old active row
+        behind 500 newer terminal rows. This returns every dream id whose
+        status is in ``statuses`` so a portability preflight cannot miss an
+        active dream. Read-only.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT id FROM dreams WHERE status IN ({placeholders})",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        return [row["id"] for row in rows]
 
     @_synchronized
     def get_last_successful_dream(self, agent_name: str) -> DreamRecord | None:

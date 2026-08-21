@@ -134,6 +134,25 @@ class WorkHoursStore:
             ).fetchall()
         return [self._row_to_model(row) for row in rows]
 
+    def list_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered work-hour-id query (no cap, DB-side filter).
+
+        ``list`` is a presentation list capped at 500 and ordered newest-first;
+        using it for a liveness check can hide an old active row behind 500
+        newer terminal rows. This returns every id whose status is in
+        ``statuses`` so a portability preflight cannot miss an active
+        work-hour. Read-only.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id FROM work_hours WHERE status IN ({placeholders})",
+                tuple(sorted(statuses)),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
     def update(self, work_hour_id: str, **fields: object) -> None:
         bad = set(fields) - _UPDATABLE
         if bad:

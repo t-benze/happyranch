@@ -185,6 +185,25 @@ class ScheduleStore:
             ).fetchall()
         return self._models_skipping_unknown_kinds(rows)
 
+    def list_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered schedule-id query (no cap, DB-side filter).
+
+        ``list`` is a presentation list capped at 500 and ordered newest-first;
+        using it for a liveness check can hide an old active row behind 500
+        newer terminal rows. This returns every id whose status is in
+        ``statuses`` so a portability preflight cannot miss an active schedule.
+        Read-only.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id FROM schedules WHERE status IN ({placeholders})",
+                tuple(sorted(statuses)),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
     # ----------------------------------------------------- due / active helpers
 
     def list_due(self, now: datetime) -> list[ScheduleRecord]:
