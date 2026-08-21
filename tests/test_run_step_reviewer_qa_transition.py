@@ -94,6 +94,54 @@ def _dev_review_qa_chain(*, step_index: int, step_audit_id: int = 1):
     )
 
 
+def _dev_review_qa_chain_omitted(*, step_index: int, step_audit_id: int = 1):
+    """code_reviewer leg OMITS expect_verdict (the THR-175 hole)."""
+    from runtime.orchestrator.chain import ChainState
+    return ChainState(
+        step_index=step_index,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="code_reviewer", prompt="review the PR", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="QA the PR", expect_verdict="PASS"),
+        ],
+        step_audit_id=step_audit_id,
+    )
+
+
+def _senior_dev_review_qa_chain_omitted(*, step_index: int, step_audit_id: int = 1):
+    """senior_dev reviewer leg (tourism org) OMITS expect_verdict."""
+    from runtime.orchestrator.chain import ChainState
+    return ChainState(
+        step_index=step_index,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="senior_dev", prompt="review the PR", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="QA the PR", expect_verdict="PASS"),
+        ],
+        step_audit_id=step_audit_id,
+    )
+
+
+def _non_reviewer_verdictless_chain(*, step_index: int, step_audit_id: int = 1):
+    """A non-reviewer leg (senior_dev, NOT in default reviewer_agents) with
+    omitted expectation and a downstream QA leg — ordinary semantics."""
+    from runtime.orchestrator.chain import ChainState
+    return ChainState(
+        step_index=step_index,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="senior_dev", prompt="pair on the PR", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="QA the PR", expect_verdict="PASS"),
+        ],
+        step_audit_id=step_audit_id,
+    )
+
+
+def _set_reviewer_agents(db: Database, names: list[str]) -> None:
+    import json as _json
+    db.upsert_org_setting("reviewer_agents", _json.dumps(names))
+
+
 def _seed_parent(db: Database, parent_id: str = "T-PAR") -> None:
     db.insert_task(TaskRecord(
         id=parent_id, brief="chain parent",
@@ -299,3 +347,170 @@ def test_late_terminal_handling_after_mismatch_cannot_spawn_qa(runtime, db):
     # Whatever is enqueued is never a QA child — only the idempotent parent wake.
     for slug, tid in orch._queue.drain():
         assert tid == "T-PAR"
+
+
+# ---------------------------------------------------------------------------
+# THR-175: reviewer identity is the org-configured ``reviewer_agents`` setting,
+# and a reviewer leg that OMITS expect_verdict must fail-closed at the real
+# execution seam (never advance QA/downstream).
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_omitted_expectation_request_changes_spawns_no_qa(runtime, db):
+    """A code_reviewer leg with OMITTED expect_verdict and a downstream QA leg
+    returning REQUEST_CHANGES must NOT spawn/enqueue QA, must clear the chain,
+    and must wake the parent exactly once (no chain_auto_advance audit)."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="REQUEST_CHANGES",
+                          summary="needs changes")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_reviewer_omitted_expectation_missing_verdict_spawns_no_qa(runtime, db):
+    """A code_reviewer leg with OMITTED expect_verdict reporting NO verdict
+    must NOT spawn QA, must clear the chain, and wake the parent once."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict=None,
+                          summary="reviewed")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_reviewer_omitted_expectation_approve_advances_qa_exactly_once(runtime, db):
+    """A code_reviewer leg with OMITTED expect_verdict that returns an explicit
+    APPROVE advances to exactly one QA child."""
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="APPROVE",
+                          summary="looks good")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    qa_ids = _qa_children(db, "T-PAR")
+    assert len(qa_ids) == 1
+    assert ChainState.deserialize(db.get_task("T-PAR").active_chain).step_index == 2
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == qa_ids[0]
+    advances = _chain_advances(db, "T-PAR")
+    assert len(advances) == 1
+
+
+def test_tourism_senior_dev_omitted_expectation_request_changes_no_qa(runtime, db):
+    """A tourism org whose reviewer_agents = ["senior_dev"] fails closed the
+    SAME way: senior_dev omitted expectation + REQUEST_CHANGES never advances
+    QA.  code_reviewer is NOT a reviewer in this org, so only senior_dev gates."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _set_reviewer_agents(db, ["senior_dev"])
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _senior_dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="senior_dev", verdict="REQUEST_CHANGES",
+                          summary="needs changes")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_tourism_senior_dev_omitted_expectation_approve_advances_qa(runtime, db):
+    """Explicit APPROVE from a configured senior_dev reviewer advances QA once."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _set_reviewer_agents(db, ["senior_dev"])
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _senior_dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="senior_dev", verdict="APPROVE",
+                          summary="approved")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    qa_ids = _qa_children(db, "T-PAR")
+    assert len(qa_ids) == 1
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == qa_ids[0]
+
+
+def test_verdictless_non_review_chain_still_advances(runtime, db):
+    """A NON-reviewer leg (senior_dev, not in default reviewer_agents) with
+    omitted expectation and a downstream leg still advances on ANY verdict —
+    ordinary verdict-less chain semantics are preserved, not generalized."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _non_reviewer_verdictless_chain(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-SD", parent_id="T-PAR",
+                          agent="senior_dev", verdict="REQUEST_CHANGES",
+                          summary="notes for the next leg")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-SD")
+
+    # senior_dev is NOT a reviewer → the leg advances to QA despite a
+    # non-approve verdict (ordinary semantics).
+    qa_ids = _qa_children(db, "T-PAR")
+    assert len(qa_ids) == 1
+    assert db.get_task(qa_ids[0]).assigned_agent == "qa_engineer"
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == qa_ids[0]
+
+
+def test_code_reviewer_not_reviewer_when_setting_overridden(runtime, db):
+    """When reviewer_agents is overridden to NOT include code_reviewer, a
+    code_reviewer leg with omitted expectation advances (it is no longer a
+    reviewer in this org)."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _set_reviewer_agents(db, ["senior_dev"])  # code_reviewer NOT a reviewer now
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="REQUEST_CHANGES",
+                          summary="notes")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    qa_ids = _qa_children(db, "T-PAR")
+    assert len(qa_ids) == 1  # advanced — code_reviewer is not a reviewer here

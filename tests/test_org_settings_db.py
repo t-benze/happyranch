@@ -21,13 +21,16 @@ from runtime.daemon.routes.settings import get_settings
 from runtime.infrastructure.database import Database
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
+    DEFAULT_REVIEWER_AGENTS,
     _ORG_WRITABLE_KEYS,
     _ORG_SETTINGS_SEED_SENTINEL,
     DreamingConfig,
     OrgConfig,
     WorkingHoursConfig,
+    backfill_reviewer_agents_setting,
     load_org_config,
     resolve_org_setting_dreaming,
+    resolve_org_setting_reviewer_agents,
     resolve_org_setting_session_timeout,
     resolve_org_setting_threads,
     resolve_org_setting_working_hours,
@@ -89,7 +92,7 @@ def test_all_four_sections_emit_audit_row(tmp_path: Path):
     }
     write_org_setting_to_db(paths, db, patch)
 
-    for section in _ORG_WRITABLE_KEYS:
+    for section in ("dreaming", "threads", "session_timeout_seconds", "working_hours"):
         rows = db.get_audit_logs(f"config:{section}")
         assert len(rows) > 0, f"audit row missing for config:{section}"
         assert rows[-1]["action"] == "org_config_write"
@@ -230,9 +233,10 @@ def test_seed_runs_exactly_once(tmp_path: Path):
 
     # First seed
     seeded = seed_org_settings_from_config(paths, db)
-    assert len(seeded) == 4  # all 4 keys seeded
+    assert len(seeded) == 5  # all 5 keys seeded
     assert "dreaming" in seeded
     assert "threads" in seeded
+    assert "reviewer_agents" in seeded
 
     # Verify DB has the seeded values
     dreaming_raw = db.get_org_setting("dreaming")
@@ -271,7 +275,7 @@ def test_seed_safe_on_fresh_db_without_config_yaml(tmp_path: Path):
     # No config.yaml file at all
 
     seeded = seed_org_settings_from_config(paths, db)
-    assert len(seeded) == 4
+    assert len(seeded) == 5
 
     # Defaults should be written
     dreaming = json.loads(db.get_org_setting("dreaming"))
@@ -390,7 +394,7 @@ def test_seed_preserves_continuous_mode_timezone(tmp_path: Path):
     # Seed into DB
     db = Database(paths.db_path)
     seeded = seed_org_settings_from_config(paths, db)
-    assert len(seeded) == 4
+    assert len(seeded) == 5
 
     # Resolve from DB (using code_default=WorkingHoursConfig())
     from runtime.orchestrator.org_config import WorkingHoursConfig, _working_hours_layer_to_dict
@@ -492,3 +496,106 @@ def test_audit_transactional_atomicity_still_green(tmp_path: Path):
         assert db.get_org_setting(section) is not None, f"DB row missing for {section}"
         audit_rows = db.get_audit_logs(f"config:{section}")
         assert len(audit_rows) > 0, f"Audit row missing for config:{section}"
+
+
+# ---------------------------------------------------------------------------
+# THR-175: reviewer_agents org setting — resolution, seed, backfill.
+# ---------------------------------------------------------------------------
+
+
+def _make_org(root: Path, *, teams: str, config_yaml: str | None) -> OrgPaths:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "org").mkdir(parents=True, exist_ok=True)
+    (root / "org" / "teams.yaml").write_text(teams)
+    if config_yaml is not None:
+        (root / "org" / "config.yaml").write_text(config_yaml)
+    return OrgPaths(root=root)
+
+
+def test_reviewer_agents_resolves_default_when_no_row(tmp_path: Path):
+    """With no DB row, reviewer_agents resolves to DEFAULT_REVIEWER_AGENTS."""
+    paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
+    db = Database(paths.db_path)
+    assert resolve_org_setting_reviewer_agents(db) == ("code_reviewer",)
+    assert resolve_org_setting_reviewer_agents(db) == DEFAULT_REVIEWER_AGENTS
+
+
+def test_reviewer_agents_resolves_db_row(tmp_path: Path):
+    """A DB row wins over the code default."""
+    paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
+    db = Database(paths.db_path)
+    db.upsert_org_setting("reviewer_agents", json.dumps(["senior_dev"]))
+    assert resolve_org_setting_reviewer_agents(db) == ("senior_dev",)
+
+
+def test_reviewer_agents_malformed_row_falls_back_to_default(tmp_path: Path):
+    """A malformed row (non-list / empty / non-string) never breaks the read
+    path — it falls back to the code default."""
+    paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
+    db = Database(paths.db_path)
+    for bad in ("not-json", "[]", '[""]', '{"x": 1}', "[1, 2]"):
+        db.upsert_org_setting("reviewer_agents", bad)
+        assert resolve_org_setting_reviewer_agents(db) == DEFAULT_REVIEWER_AGENTS, bad
+
+
+def test_seed_persists_configured_reviewer_agents(tmp_path: Path):
+    """The one-shot seed writes the org's configured reviewer_agents (5th knob)."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n",
+        config_yaml="reviewer_agents: [senior_dev]\n",
+    )
+    db = Database(paths.db_path)
+    seeded = seed_org_settings_from_config(paths, db)
+    assert "reviewer_agents" in seeded
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+
+def test_backfill_persists_tourism_senior_dev_after_sentinel_fired(tmp_path: Path):
+    """A tourism org whose .org_settings_seeded sentinel already fired (so the
+    4-knob seed no-ops) still gets reviewer_agents persisted from config.yaml
+    via the backfill — without re-running the seed or weakening the sentinel."""
+    paths = _make_org(
+        tmp_path / "hk-tourism",
+        teams="teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent, senior_dev, qa_engineer]\n",
+        config_yaml="reviewer_agents: [senior_dev]\n",
+    )
+    # Simulate a pre-THR-175 org: sentinel already fired, no reviewer_agents row.
+    (paths.root / _ORG_SETTINGS_SEED_SENTINEL).write_text("")
+    db = Database(paths.db_path)
+    assert db.get_org_setting("reviewer_agents") is None
+
+    value = backfill_reviewer_agents_setting(paths, db)
+    assert json.loads(value) == ["senior_dev"]
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+    # Idempotent: a second run is a no-op and does NOT overwrite.
+    assert backfill_reviewer_agents_setting(paths, db) is None
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+
+def test_backfill_never_overwrites_explicit_valid_setting(tmp_path: Path):
+    """An explicit existing reviewer_agents row is never overwritten."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n",
+        config_yaml="reviewer_agents: [senior_dev]\n",
+    )
+    db = Database(paths.db_path)
+    db.upsert_org_setting("reviewer_agents", json.dumps(["code_reviewer", "senior_dev"]))
+    assert backfill_reviewer_agents_setting(paths, db) is None
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer", "senior_dev"]
+
+
+def test_backfill_family_org_gets_default_not_tourism_override(tmp_path: Path):
+    """A sibling/family org with NO reviewer_agents config gets the code
+    default — there is no family/sibling inheritance of reviewer identities."""
+    paths = _make_org(
+        tmp_path / "hk-family",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev_agent, code_reviewer, qa_engineer]\n",
+        config_yaml=None,
+    )
+    db = Database(paths.db_path)
+    value = backfill_reviewer_agents_setting(paths, db)
+    assert json.loads(value) == ["code_reviewer"]
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]

@@ -486,12 +486,25 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             return
 
         # Validate each child's workspace exists (reuse _validate_one_leg).
+        reviewer_agents = _reviewer_agents_for(orch)
         for i, child in enumerate(decision.children):
             child_err = _validate_one_leg(
                 orch, agent=child.agent, where=f"fanout child {i + 1}",
             )
             if child_err is not None:
                 note = f"invalid fanout: {child_err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
+            # THR-175: a pipeline-carrier first leg that is a configured
+            # reviewer must declare expect_verdict=APPROVE (only when the child
+            # actually carries a downstream ``then`` chain).
+            if child.then and child.agent in reviewer_agents and child.expect_verdict is None:
+                note = f"invalid fanout: {_reviewer_omitted_expectation_error(child.agent)}"
                 _fail(orch, task_id, note=note)
                 _enqueue_parent_if_waiting(orch, task_id)
                 _maybe_post_thread_followup(
@@ -507,6 +520,15 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 )
                 if leg_err is not None:
                     note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+                if leg.agent in reviewer_agents and leg.expect_verdict is None:
+                    note = f"invalid fanout: {_reviewer_omitted_expectation_error(leg.agent)}"
                     _fail(orch, task_id, note=note)
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
@@ -810,6 +832,29 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
     )
 
 
+def _reviewer_agents_for(orch: "Orchestrator") -> frozenset[str]:
+    """The org's configured reviewer identities as a frozenset (THR-175).
+
+    Resolved from the DB-backed ``reviewer_agents`` org setting (code default
+    ``code_reviewer``) at the real Database seam.  Callers use this to decide
+    which chain legs are reviewer legs whose verdicts gate auto-advance.
+    """
+    from runtime.orchestrator.org_config import resolve_org_setting_reviewer_agents
+    return frozenset(resolve_org_setting_reviewer_agents(orch._db))
+
+
+def _reviewer_omitted_expectation_error(agent: str) -> str:
+    """HARD-REJECT message for a configured reviewer leg that omits
+    ``expect_verdict``.  Remediation: set ``expect_verdict: "APPROVE"`` on
+    every configured reviewer leg."""
+    return (
+        f"reviewer leg {agent!r} omits expect_verdict — HARD REJECT. "
+        f"A configured reviewer leg ({agent!r}) must declare "
+        f'expect_verdict: "APPROVE" so downstream QA/work only auto-advances '
+        f"on an explicit approval."
+    )
+
+
 def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) -> str | None:
     """Validate a single delegation leg (agent present + workspace exists).
     Returns None on success, a human-readable error string on failure.
@@ -934,14 +979,25 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     """Return a human-readable error string if the delegate decision is
     unusable, or None if it's good to spawn. Validates the first leg and
     every entry in ``decision.then`` (chain legs), returning on the first
-    failure encountered."""
+    failure encountered.
+
+    THR-175: any configured reviewer leg (first leg or a ``then`` leg) that
+    omits ``expect_verdict`` is a HARD REJECT before any child is spawned."""
+    reviewer_agents = _reviewer_agents_for(orch)
     err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
     if err is not None:
         return err
+    # A reviewer FIRST leg only matters when it gates a downstream chain
+    # (``then`` non-empty). A bare single-leg reviewer delegate (no ``then``,
+    # no ``expect_verdict``) is not a chain and is not rejected.
+    if decision.then and decision.agent in reviewer_agents and decision.expect_verdict is None:
+        return _reviewer_omitted_expectation_error(decision.agent)
     for i, leg in enumerate(decision.then or []):
         err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
         if err is not None:
             return err
+        if leg.agent in reviewer_agents and leg.expect_verdict is None:
+            return _reviewer_omitted_expectation_error(leg.agent)
     return None
 
 
@@ -1051,6 +1107,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         prior_steps=prior_steps,
         manager_name=agent,
         self_only=not is_mgr,
+        reviewer_agents=sorted(_reviewer_agents_for(orch)),
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
@@ -1635,7 +1692,14 @@ def _advance_chain_for_completed_child(
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    action = compute_advance_action(chain=chain, report=report)
+    completed_child = orch._db.get_task(child_task_id)
+    completed_agent = completed_child.assigned_agent if completed_child is not None else None
+    action = compute_advance_action(
+        chain=chain,
+        report=report,
+        completed_agent=completed_agent,
+        reviewer_agents=_reviewer_agents_for(orch),
+    )
     if action.kind == "wake":
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
@@ -1732,21 +1796,31 @@ def _carrier_fail_on_verdict_mismatch(
         return False
     if not _is_carrier(orch, parent):
         return False
-    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.chain import ChainState, compute_advance_action
     chain = ChainState.deserialize(chain_snapshot)
-    expected = chain.current_expect_verdict()
-    if expected is None:
-        return False  # no verdict expectation → chain_complete, not a mismatch
     report = orch._db.get_latest_completion_report(child_task_id)
-    actual = report.verdict if report else None
-    if actual == expected:
-        return False  # chain_complete, not a mismatch
-    # Carrier verdict mismatch: fail the whole carrier.
-    _fail(orch, parent.id,
-           note=f"carrier verdict mismatch: expected {expected!r}, got {actual!r}")
-    # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
-    return True
+    if report is None:
+        # No report for the completed child — fail-closed only when a verdict
+        # expectation exists (pre-existing semantics).
+        return chain.current_expect_verdict() is not None
+    completed_child = orch._db.get_task(child_task_id)
+    completed_agent = completed_child.assigned_agent if completed_child is not None else None
+    action = compute_advance_action(
+        chain=chain,
+        report=report,
+        completed_agent=completed_agent,
+        reviewer_agents=_reviewer_agents_for(orch),
+    )
+    # A verdict mismatch OR a THR-175 reviewer non-approve (omitted-expectation
+    # reviewer leg) must fail the whole carrier — never chain-complete it as a
+    # false success.
+    if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
+        _fail(orch, parent.id,
+               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}")
+        # Feed carrier failure into the fan-out parent's barrier.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
+    return False
 
 
 def _carrier_fail_immediate(

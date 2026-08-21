@@ -181,15 +181,17 @@ def _layer_to_view(layer) -> WorkHoursLayerView:
 class OrgSettingsView(BaseModel):
     """Read-only view of selected org-level settings.
 
-    ALLOW-LIST: only session_timeout_seconds, dreaming, threads, and
-    working_hours. feishu_notifications and any other OrgConfig field are
-    excluded by construction — they have NO attribute on this model.
+    ALLOW-LIST: only session_timeout_seconds, dreaming, threads,
+    working_hours, and reviewer_agents. feishu_notifications and any other
+    OrgConfig field are excluded by construction — they have NO attribute on
+    this model.
     """
 
     session_timeout_seconds: int | None
     dreaming: DreamingSettingsView
     threads: ThreadsSettingsView
     working_hours: WorkingHoursSettingsView
+    reviewer_agents: list[str]
 
 
 def _org_config_to_view_from_resolved(
@@ -198,6 +200,7 @@ def _org_config_to_view_from_resolved(
     dreaming_cfg,
     threads_kwargs: dict,
     wh_cfg,
+    reviewer_agents: list[str],
 ) -> OrgSettingsView:
     """Build OrgSettingsView from DB-resolved values (THR-095 single-store)."""
     return OrgSettingsView(
@@ -231,6 +234,7 @@ def _org_config_to_view_from_resolved(
             teams={name: _layer_to_view(layer) for name, layer in wh_cfg.teams.items()},
             overrides={name: _layer_to_view(layer) for name, layer in wh_cfg.overrides.items()},
         ),
+        reviewer_agents=list(reviewer_agents),
     )
 
 
@@ -262,6 +266,7 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
         OrgConfig,
         WorkingHoursConfig,
         resolve_org_setting_dreaming,
+        resolve_org_setting_reviewer_agents,
         resolve_org_setting_threads,
         resolve_org_setting_session_timeout,
         resolve_org_setting_working_hours,
@@ -271,6 +276,7 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
     threads_kwargs = resolve_org_setting_threads(org.db, code_default=OrgConfig())
     sto = resolve_org_setting_session_timeout(org.db, code_default=None)
     wh_cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
+    reviewer_agents = resolve_org_setting_reviewer_agents(org.db)
     return SettingsResponse(
         system=SystemSettingsView.from_settings(global_settings),
         org=_org_config_to_view_from_resolved(
@@ -278,6 +284,7 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
             dreaming_cfg=dreaming_cfg,
             threads_kwargs=threads_kwargs,
             wh_cfg=wh_cfg,
+            reviewer_agents=list(reviewer_agents),
         ),
     )
 
@@ -437,12 +444,26 @@ class OrgSettingsPatch(BaseModel):
     dreaming: DreamingPatch | None = None
     threads: ThreadsPatch | None = None
     working_hours: WorkingHoursPatch | None = None
+    reviewer_agents: list[str] | None = None
 
     @field_validator("session_timeout_seconds")
     @classmethod
     def _timeout_must_be_positive(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError("session_timeout_seconds must be a positive integer")
+        return v
+
+    @field_validator("reviewer_agents")
+    @classmethod
+    def _reviewer_agents_must_be_nonempty_strings(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("reviewer_agents must be a non-empty list of agent names")
+        if not all(isinstance(n, str) and n.strip() for n in v):
+            raise ValueError("reviewer_agents entries must be non-empty strings")
+        if len(set(v)) != len(v):
+            raise ValueError("reviewer_agents entries must be unique")
         return v
 
 
@@ -513,6 +534,10 @@ def _patch_to_raw_dict(patch: OrgSettingsPatch) -> dict:
 
     if patch.working_hours is not None:
         result["working_hours"] = _working_hours_patch_to_raw(patch.working_hours)
+
+    # THR-175: reviewer_agents is a plain list (scalar-shaped, not deep-merged).
+    if "reviewer_agents" in fields or patch.reviewer_agents is not None:
+        result["reviewer_agents"] = patch.reviewer_agents
 
     return result
 
@@ -695,6 +720,33 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
         )
         if wh_errors:
             raise HTTPException(status_code=422, detail={"errors": wh_errors})
+
+    # THR-175: validate reviewer_agents against the live roster. A malformed
+    # or unusable list (empty, non-string, unknown agent) is a HARD REJECT —
+    # the setting gates reviewer-leg auto-advance, so a stale identity would
+    # silently disable the QA/downstream gate.
+    if "reviewer_agents" in patch_raw:
+        known_agents = _resolve_agent_names(paths)
+        ra = patch_raw["reviewer_agents"]
+        ra_errors: list[str] = []
+        if not isinstance(ra, list) or not ra:
+            ra_errors.append("reviewer_agents must be a non-empty list of agent names")
+        else:
+            unknown = sorted(set(ra) - known_agents)
+            if unknown:
+                ra_errors.append(
+                    "reviewer_agents references unknown agent(s): " + ", ".join(unknown)
+                )
+        if ra_errors:
+            detail = {
+                "errors": ra_errors,
+                "remediation": (
+                    "HARD REJECT: set expect_verdict: \"APPROVE\" on every "
+                    "configured reviewer leg; reviewer_agents must name "
+                    "known agents."
+                ),
+            }
+            raise HTTPException(status_code=422, detail=detail)
 
     # THR-095: write to DB (transactional per section: upsert + audit row).
     try:

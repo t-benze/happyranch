@@ -25,14 +25,14 @@ def test_audit_returns_all_entries(tmp_home, app, org_state, auth_headers) -> No
     r = TestClient(app).get("/api/v1/orgs/alpha/audit", headers=auth_headers)
     assert r.status_code == 200
     entries = r.json()["entries"]
-    # THR-095: the org_settings seed writes 4 audit rows (config:dreaming,
-    # config:threads, config:session_timeout_seconds, config:working_hours)
-    # before the 3 _seed rows → total 7.
-    assert len(entries) == 7
-    assert [e["id"] for e in entries] == [1, 2, 3, 4, 5, 6, 7]
-    # The first _seed entry (session_start) should be at id 5.
-    assert entries[4]["action"] == "session_start"
-    assert entries[4]["payload"] == {"w": "/tmp/a"}
+    # THR-095: the org_settings seed writes 5 audit rows (config:dreaming,
+    # config:threads, config:session_timeout_seconds, config:working_hours,
+    # config:reviewer_agents) before the 3 _seed rows → total 8.
+    assert len(entries) == 8
+    assert [e["id"] for e in entries] == [1, 2, 3, 4, 5, 6, 7, 8]
+    # The first _seed entry (session_start) should be at id 6.
+    assert entries[5]["action"] == "session_start"
+    assert entries[5]["payload"] == {"w": "/tmp/a"}
 
 
 def test_audit_filters_by_task_id(tmp_home, app, org_state, auth_headers) -> None:
@@ -65,8 +65,8 @@ def test_audit_limit_caps_to_most_recent(tmp_home, app, org_state, auth_headers)
     )
     body = r.json()
     entries = body["entries"]
-    # THR-095: 4 seed audit rows + 3 _seed rows → most recent 2 are ids 6,7.
-    assert [e["id"] for e in entries] == [6, 7]
+    # THR-095: 5 seed audit rows + 3 _seed rows → most recent 2 are ids 7,8.
+    assert [e["id"] for e in entries] == [7, 8]
     assert "next_cursor" in body
 
 
