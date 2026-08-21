@@ -5,7 +5,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
@@ -127,6 +127,7 @@ async def run_dream(
     dream_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
+    admission_gate: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     dream = org_state.db.get_dream(dream_id)
     if dream is None or dream.status != DreamStatus.PENDING:
@@ -134,31 +135,49 @@ async def run_dream(
 
     paths = OrgPaths(root=org_state.root)
 
-    # ── Admission gate: only an active AgentDef may proceed. Missing or
-    # terminated agents use SKIPPED, a documented terminal non-execution state.
-    agent_def = _active_agent_def(paths, dream.agent_name)
-    if agent_def is None:
-        org_state.db.update_dream(
-            dream_id,
-            status=DreamStatus.SKIPPED,
-            ended_at=datetime.now(timezone.utc),
-            error="agent_unavailable",
-        )
-        AuditLogger(org_state.db).log_dream_failed(
-            dream_id, dream.agent_name, reason="agent_unavailable",
-        )
-        return
+    # ── Lifecycle admission: the active-AgentDef read and the conditional
+    # PENDING->RUNNING / PENDING->SKIPPED claim must serialize with a
+    # concurrent termination's archive/cleanup under the shared
+    # org.teams_lock so termination-vs-dream has a single durable winner.
+    # The lock is held ONLY across the re-read + claim; audit,
+    # materialization, repo refresh, and executor construction happen after
+    # release. ``admission_gate`` is a narrow test hook awaited at the
+    # admission boundary (before lock acquisition) for deterministic
+    # interleaving tests.
+    if admission_gate is not None:
+        await admission_gate()
 
-    # ── Atomic PENDING -> RUNNING transition. If a concurrent termination set
-    # the dream to SKIPPED (or any other status) before we got here, the
-    # conditional update fails and we return without constructing an executor.
     now = datetime.now(timezone.utc)
-    transitioned = org_state.db.update_dream_status_if(
-        dream_id,
-        DreamStatus.PENDING,
-        DreamStatus.RUNNING,
-        started_at=now,
-    )
+    async with org_state.teams_lock:
+        agent_def = _active_agent_def(paths, dream.agent_name)
+        if agent_def is None:
+            # Missing/terminated agent: terminal non-execution (SKIPPED).
+            # Conditional so a concurrent termination's own terminal winner is
+            # never overwritten; never a claude fallback.
+            transitioned = org_state.db.update_dream_status_if(
+                dream_id,
+                DreamStatus.PENDING,
+                DreamStatus.SKIPPED,
+                ended_at=now,
+                error="agent_unavailable",
+            )
+        else:
+            # Atomic PENDING -> RUNNING claim. If a concurrent termination
+            # terminalized the dream before this lock was acquired, the
+            # conditional update fails and we return without an executor.
+            transitioned = org_state.db.update_dream_status_if(
+                dream_id,
+                DreamStatus.PENDING,
+                DreamStatus.RUNNING,
+                started_at=now,
+            )
+
+    if agent_def is None:
+        if transitioned:
+            AuditLogger(org_state.db).log_dream_failed(
+                dream_id, dream.agent_name, reason="agent_unavailable",
+            )
+        return
     if not transitioned:
         return
     AuditLogger(org_state.db).log_dream_started(dream_id, dream.agent_name)

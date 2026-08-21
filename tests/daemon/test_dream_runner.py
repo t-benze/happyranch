@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from runtime.config import Settings
@@ -958,3 +961,149 @@ async def test_run_dream_no_executor_if_pending_transition_loses_race(
 
     assert "transition_attempt" in called
     assert "factory" not in called
+
+
+# ── TASK-5322: termination-vs-dream durable single-winner interleaving ───
+
+
+def _activate_manager_session(org_state) -> None:
+    """Register an active engineering_head session so manage-agent terminate
+    authenticates (mirrors test_routes_agents._activate_eh_session)."""
+    org_state.sessions.set_active("TASK-100", "engineering_head", "sess-eh-test")
+
+
+async def _terminate_via_route(app, auth_headers):
+    """Issue the real manage-agent terminate route call on the same loop."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        return await client.post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": "TASK-100",
+                "session_id": "sess-eh-test",
+            },
+            headers=auth_headers,
+        )
+
+
+async def test_run_dream_termination_wins_no_executor_and_keeps_terminal_state(
+    app, org_state, auth_headers,
+):
+    """Termination archives the agent and terminalizes the pending dream
+    (SKIPPED/agent_terminated) while run_dream is paused at the admission
+    boundary. The waiting runner must make zero executor-factory calls and must
+    not overwrite the durable terminal reason."""
+    _insert_pending_dream(org_state)
+    _activate_manager_session(org_state)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    factory_calls = []
+
+    async def gate():
+        entered.set()
+        await release.wait()
+
+    def factory(*_a, **_k):
+        factory_calls.append("factory")
+        return FakeExecutor()
+
+    task = asyncio.create_task(
+        run_dream(
+            org_state=org_state,
+            dream_id="DREAM-001",
+            executor_factory=factory,
+            admission_gate=gate,
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+
+        r = await _terminate_via_route(app, auth_headers)
+        assert r.status_code == 200
+
+        # Termination won: the pending dream is durably SKIPPED with the
+        # termination cleanup reason.
+        dream = org_state.db.get_dream("DREAM-001")
+        assert dream.status == DreamStatus.SKIPPED
+        assert dream.error == "agent_terminated"
+    finally:
+        release.set()
+
+    await asyncio.wait_for(task, timeout=10)
+
+    # The resumed runner must not construct an executor and must not overwrite
+    # the terminal state set by termination.
+    assert factory_calls == []
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.SKIPPED
+    assert dream.error == "agent_terminated"
+
+
+async def test_run_dream_wins_running_then_termination_conflicts(
+    app, org_state, auth_headers,
+):
+    """run_dream claims PENDING->RUNNING first, so a concurrent termination
+    must observe the running dream as non-quiescent and return conflict rather
+    than falsely succeeding. The active AgentDef, workspace, and team
+    membership stay intact."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+
+    _insert_pending_dream(org_state)
+    _activate_manager_session(org_state)
+
+    claimed = asyncio.Event()
+    release_exec = threading.Event()
+
+    class BlockingExecutor(FakeExecutor):
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            release_exec.wait(timeout=10)
+            return FakeResult()
+
+    def factory(*_a, **_k):
+        claimed.set()
+        return BlockingExecutor()
+
+    task = asyncio.create_task(
+        run_dream(
+            org_state=org_state,
+            dream_id="DREAM-001",
+            executor_factory=factory,
+        )
+    )
+    try:
+        await asyncio.wait_for(claimed.wait(), timeout=10)
+
+        # The dream is durably RUNNING by the time the factory runs; termination
+        # must refuse.
+        assert org_state.db.get_dream("DREAM-001").status == DreamStatus.RUNNING
+
+        r = await _terminate_via_route(app, auth_headers)
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert detail["code"] == "agent_not_quiescent"
+        assert any(
+            c["kind"] == "dream" and c["id"] == "DREAM-001"
+            for c in detail["conflicts"]
+        )
+
+        # No false successful termination: identity, workspace, and team intact.
+        paths = OrgPaths(root=org_state.root)
+        assert prompt_loader.load_agent(paths, "dev_agent") is not None
+        assert (org_state.root / "workspaces" / "dev_agent").exists()
+        assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    finally:
+        release_exec.set()
+
+    await asyncio.wait_for(task, timeout=10)
+
+    # The dream ran to completion (FAILED/no_callback) rather than being
+    # skipped or silently terminated.
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status != DreamStatus.SKIPPED

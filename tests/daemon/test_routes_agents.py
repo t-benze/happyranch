@@ -3124,31 +3124,28 @@ def test_manage_agent_enroll_rejects_terminated_name(
     assert r.json()["detail"]["code"] == "agent_name_unavailable"
 
 
-def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    """If the terminated agent file already exists, terminate returns 409 and
-    leaves the active agent, workspace, and future work untouched.
-    """
+def _seed_all_future_work(org_state) -> str:
+    """Seed every future-work kind for terminate failure-path tests: an armed
+    schedule, a pending work-hours wake, a pending dream, and an unstarted
+    thread invocation. Returns the unstarted invocation token."""
     from datetime import datetime, timezone
-    from runtime.models import ScheduleRecord, ScheduleKind, ScheduleStatus
-    from runtime.orchestrator import prompt_loader
-
-    _activate_eh_session(org_state)
-    _seed_active_agent(org_state, "dev_agent")
-    paths = _paths(org_state)
-    workspace = paths.workspaces_dir / "dev_agent"
-    workspace.mkdir(parents=True)
-
-    # Pre-create a terminated agent file to trigger the archive collision.
-    terminated_agents_dir = paths.agents_dir / "_terminated"
-    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
-    (terminated_agents_dir / "dev_agent.md").write_text(
-        prompt_loader.load_agent(paths, "dev_agent").system_prompt or ""
+    from runtime.models import (
+        DreamRecord,
+        DreamStatus,
+        ScheduleKind,
+        ScheduleRecord,
+        ScheduleStatus,
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+        ThreadRecord,
+        WorkHourMode,
+        WorkHourRecord,
+        WorkHourStatus,
     )
 
     now = datetime.now(timezone.utc)
-    sched = ScheduleRecord(
+
+    org_state.db.schedules.insert(ScheduleRecord(
         id="SCHED-ARMED",
         agent_name="dev_agent",
         team="engineering",
@@ -3161,8 +3158,72 @@ def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
         active=1,
         created_at=now,
         updated_at=now,
+    ))
+
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_thread(ThreadRecord(id="THR-PEND", subject="x"))
+    org_state.db.add_thread_participant("THR-PEND", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-PEND", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    org_state.db.schedules.insert(sched)
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-PEND", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    return inv.invocation_token
+
+
+def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If the terminated agent file already exists, terminate returns 409 and
+    leaves the active agent, workspace, and every future-work record (armed
+    schedule, pending wake, pending dream, unstarted invocation) untouched.
+    """
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    # Pre-create a terminated agent file to trigger the archive collision.
+    terminated_agents_dir = paths.agents_dir / "_terminated"
+    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+    (terminated_agents_dir / "dev_agent.md").write_text(
+        prompt_loader.load_agent(paths, "dev_agent").system_prompt or ""
+    )
+
+    inv_token = _seed_all_future_work(org_state)
 
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/manage",
@@ -3177,10 +3238,18 @@ def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "archive_collision"
 
-    # Active identity and future work remain untouched.
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
+    # Active identity, workspace, and team membership remain intact.
     assert prompt_loader.load_agent(paths, "dev_agent") is not None
     assert workspace.exists()
-    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert (workspace / "marker.txt").read_text() == "keep me"
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
@@ -3188,11 +3257,17 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """If workspace archival fails after the agent file was moved, the route
-    rolls back both the file and team membership and leaves schedules armed.
+    rolls back the file and team membership and leaves every future-work record
+    (armed schedule, pending wake, pending dream, unstarted invocation)
+    unchanged.
     """
-    from datetime import datetime, timezone
     from unittest.mock import patch
-    from runtime.models import ScheduleRecord, ScheduleKind, ScheduleStatus
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
     from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
@@ -3202,22 +3277,7 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     workspace.mkdir(parents=True)
     (workspace / "marker.txt").write_text("keep me")
 
-    now = datetime.now(timezone.utc)
-    sched = ScheduleRecord(
-        id="SCHED-ARMED",
-        agent_name="dev_agent",
-        team="engineering",
-        kind=ScheduleKind.ONE_SHOT,
-        fire_at=now,
-        timezone="UTC",
-        normalized_brief="brief",
-        source_instruction="do it",
-        status=ScheduleStatus.ARMED,
-        active=1,
-        created_at=now,
-        updated_at=now,
-    )
-    org_state.db.schedules.insert(sched)
+    inv_token = _seed_all_future_work(org_state)
 
     with patch("runtime.daemon.routes.agents._move_dir_atomically") as mock_move:
         mock_move.side_effect = OSError("injected move failure")
@@ -3234,11 +3294,18 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     assert r.status_code == 500
     assert r.json()["detail"]["code"] == "workspace_archive_failed"
 
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
     # Everything must be rolled back to the active state.
     assert prompt_loader.load_agent(paths, "dev_agent") is not None
     assert workspace.exists()
     assert (workspace / "marker.txt").read_text() == "keep me"
-    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
