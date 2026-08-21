@@ -809,3 +809,135 @@ class ScheduleRecord(BaseModel):
     transcript_path: str | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+
+# ── THR-181 Track A: durable authority candidate/evaluation/audit foundation ──
+#
+# Slice 1 is an isolated, additive persistence foundation. These models define
+# the typed vocabulary for the authority_* tables in database.py. They are NOT
+# wired into any runtime surface yet — no evaluator invocation, policy
+# enforcement, selection/activation, or Exit-B behavior exists in this slice.
+# Every prose-bearing field is stored as a *digest* (never the raw content),
+# and every state/disposition value is a closed StrEnum mirrored by a SQLite
+# CHECK constraint so the DB itself rejects unknown values.
+
+
+class AuthorityLifecycleState(StrEnum):
+    """Controlled candidate lifecycle. Mirrored by a SQLite CHECK constraint."""
+    CREATED = "created"          # claimed, not yet evaluated
+    EVALUATED = "evaluated"      # a single evaluation disposition recorded
+    CONSUMED = "consumed"        # disposition consumed exactly once (later slice)
+
+
+class AuthorityDisposition(StrEnum):
+    """The primary controlled outcome recorded by the (later) evaluator slice."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+
+
+class AuthorityDispositionCode(StrEnum):
+    """Fine-grained fail-closed reason codes. Superset of AuthorityDisposition."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+    LOW_CONFIDENCE = "low_confidence"
+    TIMEOUT = "timeout"
+    MALFORMED_OUTPUT = "malformed_output"
+    INJECTION_GUARD = "injection_guard"
+    AUDIT_FAILURE = "audit_failure"
+
+
+class AuthorityRetentionClass(StrEnum):
+    """How long a snapshot/response digest is retained. Mirrored by CHECK."""
+    DIGEST_ONLY = "digest_only"
+    SHADOW = "shadow"
+    INDEFINITE = "indefinite"
+
+
+class AuthorityRedactionClass(StrEnum):
+    """Whether content was redacted before it was digested. Mirrored by CHECK."""
+    NONE = "none"
+    REDACTED = "redacted"
+
+
+class AuthorityAuditEventType(StrEnum):
+    """Controlled append-only authority audit event vocabulary."""
+    CANDIDATE_CLAIMED = "candidate_claimed"
+    CANDIDATE_CLAIM_LOST = "candidate_claim_lost"
+    EVALUATION_RECORDED = "evaluation_recorded"
+    CANDIDATE_CONSUMED = "candidate_consumed"
+
+
+class AuthorityFenceResult(BaseModel):
+    """One mechanical fence outcome: a boolean plus an optional controlled code.
+
+    Structured, never prose — the fence name is the dict key, and this model
+    is the value. Evaluator prose/attestation text must never be stored here.
+    """
+    passed: bool
+    code: str | None = None
+
+
+class AuthorityCandidate(BaseModel):
+    """Immutable identity of one pre-escalation authority candidate.
+
+    ``claim_key`` is the deterministic sha256 digest of the
+    root/session/causal-event/policy-prompt-model tuple — the CAS key that
+    guarantees at most one durable candidate per tuple.
+    """
+    id: str
+    claim_key: str
+    root_task_id: str
+    team: str
+    manager_agent: str
+    manager_session_id: str
+    causal_event_id: str
+    causal_event_digest: str
+    causal_result_id: str | None = None
+    policy_id: str
+    policy_version: str
+    policy_digest: str
+    prompt_id: str
+    prompt_version: str
+    prompt_digest: str
+    model_id: str
+    model_version: str
+    model_digest: str
+    snapshot_digest: str
+    snapshot_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    snapshot_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    disposition: AuthorityDisposition | None = None
+    lifecycle_state: AuthorityLifecycleState = AuthorityLifecycleState.CREATED
+    consumed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class AuthorityEvaluation(BaseModel):
+    """The single, immutable evaluation outcome for a candidate.
+
+    Stores the *digest* of the evaluator response plus a controlled
+    disposition/code — never the raw response text or unredacted exchange.
+    """
+    id: int | None = None
+    candidate_id: str
+    disposition: AuthorityDisposition
+    disposition_code: AuthorityDispositionCode
+    response_digest: str
+    response_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    response_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class AuthorityAuditEvent(BaseModel):
+    """One append-only authority audit event. Immutable after write."""
+    id: int | None = None
+    candidate_id: str
+    event_type: AuthorityAuditEventType
+    payload: dict | None = None
+    created_at: datetime = Field(default_factory=_now)
