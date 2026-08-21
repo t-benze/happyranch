@@ -859,6 +859,12 @@ def _validate_executor(executor: str) -> None:
 # reverse that migration losslessly, so that one case retains the
 # conservative full-workspace snapshot (see _bootstrap_runs_legacy_migration
 # and _capture_full_workspace_snapshot below).
+#
+# Compensation also requires that every owned path be a regular file (or
+# absent): a pre-existing symlink/non-regular entry cannot be restored
+# exactly after a write-through or replace. The switch preflights this with
+# _bootstrap_unsupported_owned_paths and fails closed before bootstrap
+# mutates anything.
 # ---------------------------------------------------------------------------
 
 # Bootstrap-owned regular-file paths (relative to the workspace root).
@@ -886,6 +892,38 @@ def _bootstrap_runs_legacy_migration(workspace: Path) -> bool:
     only for the one case a bounded journal cannot reverse losslessly.
     """
     return (workspace / "learnings").exists() and not (workspace / "memory").exists()
+
+
+def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
+    """Return owned paths bootstrap cannot safely mutate (symlink / non-regular).
+
+    Bootstrap may write through an owned path (following a symlink) or
+    atomically replace it. A pre-existing symlink (e.g. a symlinked
+    ``AGENTS.md``) or a non-regular entry (directory, FIFO, socket, device)
+    at an owned path cannot be losslessly compensated: writing through a
+    symlink mutates its (arbitrary, possibly external) target, and replacing
+    it discards the link. The caller must therefore reject the switch BEFORE
+    bootstrap makes any mutation.
+
+    Detection uses ``is_symlink`` first (an ``lstat`` that never follows the
+    link), so a symlink is classified without reading or touching its
+    target. ``exists``/``is_file``/``is_dir`` are only consulted after the
+    path is known not to be a symlink.
+    """
+    unsupported: list[str] = []
+    for rel in _BOOTSTRAP_OWNED_FILES:
+        fp = workspace / rel
+        if fp.is_symlink():
+            unsupported.append(rel)
+        elif fp.exists() and not fp.is_file():
+            unsupported.append(rel)
+    for dirname in _BOOTSTRAP_OWNED_DIRS:
+        d = workspace / dirname
+        if d.is_symlink():
+            unsupported.append(dirname)
+        elif d.exists() and not d.is_dir():
+            unsupported.append(dirname)
+    return unsupported
 
 
 class _BootstrapRollbackJournal:
@@ -1108,6 +1146,35 @@ async def set_agent_executor(
     # switch — no config change, no audit row. Only if this succeeds does
     # the switch become durable.
     if has_workspace:
+        # ── Preflight: reject symlinked / non-regular owned paths ──
+        # A pre-existing symlink (or FIFO/socket/device/dir) at a
+        # bootstrap-owned path cannot be losslessly compensated: bootstrap
+        # may write through or replace it, and restore would then delete a
+        # pre-existing symlink or leave its target mutated. Fail closed
+        # BEFORE bootstrap makes any mutation so the old executor,
+        # frontmatter, and audit state stay untouched and the symlink target
+        # is never followed or written. (Same contract as the bootstrap
+        # failure path: 400 executor_bootstrap_failed, nothing mutated.)
+        unsupported = _bootstrap_unsupported_owned_paths(workspace)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned path is a symlink or unsupported "
+                        "non-regular type: " + ", ".join(sorted(unsupported))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because an owned path is a symlink or "
+                        "unsupported non-regular type. The previous executor "
+                        "has been preserved. Resolve the path conflict before "
+                        "retrying."
+                    ),
+                },
+            )
+
         # ── Snapshot pre-bootstrap workspace state ──
         # THR-190: the modern bootstrap write surface is bounded to a small,
         # explicit set of owned files. Capture only those; never traverse or

@@ -2353,6 +2353,111 @@ def test_set_executor_bootstrap_failure_after_successful_union(
     )
 
 
+def test_set_executor_bootstrap_preflight_rejects_symlinked_owned_path(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fail-closed: a pre-existing symlink at a bootstrap-owned path
+    (AGENTS.md) cannot be losslessly compensated, so the switch must reject
+    BEFORE bootstrap runs and without following/mutating the symlink target.
+
+    Seeds AGENTS.md as a symlink to a sentinel target, then puts a recording
+    spy on the real CodexWorkspaceAdapter.write_agents_md seam and proves:
+    (1) the writer is NEVER called (bootstrap never runs),
+    (2) the symlink survives with its original target,
+    (3) the sentinel target bytes are unchanged,
+    (4) old executor/frontmatter/audit state is unchanged,
+    (5) the route returns 400 executor_bootstrap_failed."""
+    import os as _os
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── Seed a pre-existing owned symlink: AGENTS.md -> sentinel target ──
+    sentinel_target = workspace / "sentinel-target.md"
+    sentinel_target.write_bytes(b"# sentinel target: must never be mutated\n")
+    agents_md = workspace / "AGENTS.md"
+    agents_md.symlink_to(sentinel_target.name)  # relative link target
+
+    # A normal pre-existing owned file (CLAUDE.md) proves the preflight only
+    # rejects the conflicting path and never disturbs regular-file switching.
+    (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spy at the real adapter writer seam ──
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── Option B: the adapter writer was never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert agents_md.is_symlink(), "AGENTS.md symlink was removed/replaced"
+    assert _os.readlink(agents_md) == sentinel_target.name, (
+        f"AGENTS.md target changed: {_os.readlink(agents_md)!r} != "
+        f"{sentinel_target.name!r}"
+    )
+
+    # ── The sentinel target was never followed or mutated ──
+    assert sentinel_target.read_bytes() == b"# sentinel target: must never be mutated\n", (
+        "sentinel target bytes were mutated"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite symlink preflight: before={audit_before}, "
+        f"after={audit_after}"
+    )
+
+
 def test_set_executor_bootstrap_journal_ignores_repos_sentinel(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
