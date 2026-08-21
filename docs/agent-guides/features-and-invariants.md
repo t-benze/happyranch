@@ -43,6 +43,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 
 - **Multi-org runtime.** A single daemon hosts multiple orgs in parallel under a schema-v2 container (`<runtime>/orgs/<slug>/...`); per-org routes live under `/api/v1/orgs/<slug>/...`. Specs `docs/superpowers/specs/2026-04-26-multi-org-runtime-design.md` (superseded), `docs/superpowers/specs/2026-04-28-parallel-multi-org-runtime-design.md`; current shape `docs/agent-guides/project-layout.md`; impl `runtime/daemon/org_state.py`, `runtime/daemon/runtimes.py`.
 - **Org content model.** Each org is loaded from `org/` — charter, `teams.yaml`, per-agent `agents/*.md`, and `config.yaml`. Guide `docs/agent-guides/project-layout.md`; impl `runtime/orchestrator/org_config.py`, `runtime/orchestrator/teams.py`, `runtime/orchestrator/agent_def.py`.
+- **Org portability (Slice A).** CLI-only, relocation-only preflight + reconciliation. See [Org Portability](#org-portability-thr-187-slice-a) below. Impl `runtime/portability/` (pure classifier + eligibility), `runtime/daemon/routes/portability.py`, `cli/commands/runtime.py`.
 - **Token-usage tracking.** Per-task, per-agent, thread-scoped, dream-scoped, and work-hour-scoped token accounting with two complementary metrics: **churn** (`churn_tokens` = input + output + reasoning, the cache-excluded fresh-work cost used for ranking/thresholds) and **context** (`context_tokens` = churn + cache_read + cache_creation, the cache-inclusive total). Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`; API `runtime/daemon/routes/tokens.py`; CLI `happyranch tokens` (issue #216).
 ### Web & CLI
 
@@ -55,6 +56,36 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 
 - **Nightly dreaming.** Private scheduled per-agent reflection runs, separate from tasks and threads, that may write learnings, propose KB candidates, and open a founder-only thread on meaningful output. Dream-originated threads carry the `composed_from_dream_id` marker (A4 migration, design-overhaul). Spec `docs/superpowers/specs/2026-06-09-nightly-dreaming-design.md`; impl `runtime/infrastructure/dream_store.py`, `runtime/daemon/dream_runner.py`, `runtime/daemon/dream_scheduler.py`, `runtime/daemon/dream_queue.py`, `runtime/daemon/routes/dreams.py`. See [Dreams](#dreams) below for traps.
 - **Per-agent work-hours / scheduled wakes.** Founder-configured per-agent work windows (windowed or continuous) that wake idle agents on schedule to self-dispatch routine tasks parsed from per-agent `org/agents/<name>.md`. Backed by a `work_hours` table mirroring the dreams data model. Founder-facing `happyranch work-hours status|list|show` plus the agent wake callback `spawn`. Funded as #92. **Web UI (design-overhaul, THR-035 consolidation):** the wake-execution list (formerly a standalone Schedule surface at `/orgs/:slug/schedule`) is now the **Wakes** in-page tab of the Work Hours surface at `/orgs/:slug/work-hours?view=wakes`; old `/schedule` bookmarks redirect. Lists per-agent work-hour wakes grouped by agent with real stored fields (date, slot, mode, scheduled-for, status, routine count, spawned task IDs via IdBadge click-through). No authoring controls — creating named recurring wakes is deferred (D6). Spec `docs/superpowers/specs/2026-06-10-working-hours-design.md`; impl `runtime/daemon/work_hours_scheduler.py`, `runtime/daemon/wake_runner.py`, `runtime/daemon/wake_queue.py`, `runtime/daemon/routes/work_hours.py`, `runtime/infrastructure/work_hours_store.py`, `cli/commands/work_hours.py`, web `features/work-hours-config/WakesView.tsx`. The consolidated Work Hours surface (config overview + wakes tab) lives in `web/src/features/work-hours-config/`.
+
+## Org Portability (THR-187 Slice A)
+
+Slice A is **preflight + reconciliation only** — no archive, export, import,
+staging, transfer fence, source deletion, workspace/task-output transfer, or
+cancellation of live work. It is CLI-private (`happyranch orgs ...`); there is
+no UI, TS client, or browser contract.
+
+- **`happyranch orgs portability-preflight <slug>`** — read-only, founder-
+  authenticated. Exhaustively classifies every direct org-root child exactly
+  once as `include`, a *named* `exclude`, or `reject`. Allow-list: `happyranch.db`,
+  `org`, `artifacts`, `kb`, `threads`, `task-attachments`, `jobs`, `dreams`,
+  `work_hours`, `schedules`, `talks`, conditional valid legacy `skills`, and only
+  `workspaces/<agent>/memory/**`. Generated markers, derived projection, WAL/SHM
+  sidecars, caches, zero-byte legacy residue, and non-memory workspace data are
+  named exclusions; unknown/nonregular/nonzero-residue/invalid-skill roots reject.
+  Quiescence: refuses any pending/in_progress/escalated task (live, delegated,
+  or job-parked), active session/PID or queue entry, pending thread invocation,
+  pending/running job/dream/work-hour, or armed/firing schedule. It *reports*
+  possible zombies; it never resolves them.
+- **`happyranch orgs reconcile-portability <slug> --from-file <request.json>`** —
+  founder/master-bearer only (reuses the existing human-authority dependency).
+  Names exactly one candidate + evidence/disposition; revalidates a true zombie
+  under the org DB lock; invokes the shared result/terminalization seam
+  (`_consume_completion_report` for an orphaned result, or the reaper's
+  `cancelled` transition). Audits actor, SHA-256 request hash, evidence,
+  disposition, and before/after state under the ordinary `task_id` scope. A
+  delegated/job-blocked task is never a zombie merely because it is old.
+  Preflight never calls reconciliation; reconciliation has no export-cancellation
+  path.
 
 ## Knowledge Base
 

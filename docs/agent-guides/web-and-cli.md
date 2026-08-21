@@ -87,6 +87,32 @@ configuration (status / init / register / repair) is served over four HTTP route
 There is no standalone `/assistant` web page, no xterm terminal, and no
 "Open full session" escape hatch — the dock is the sole assistant surface.
 
+### Org portability (Slice A)
+
+CLI-only, relocation-only safety surfaces (no UI / TS client / browser
+contract). Slice A is preflight + reconciliation only — it creates no archive
+and performs no export/import.
+
+```bash
+# Read-only: classify every direct org-root child + report quiescence blockers
+happyranch orgs portability-preflight <slug>
+
+# Founder/master-bearer-only: reconcile exactly one confirmed zombie
+happyranch orgs reconcile-portability <slug> --from-file /tmp/reconcile.json
+```
+
+`reconcile-portability` request JSON names one candidate plus evidence and a
+disposition (`cancel` or `consume_result`):
+
+```json
+{"candidate_task_id": "TASK-123", "disposition": "cancel", "evidence": {"reason": "dead pid + stale heartbeat"}}
+```
+
+The `--from-file` path must be absolute. See `docs/agent-guides/features-and-invariants.md`
+(Org Portability) and `protocol/05c-orchestrator.md` (Organization portability)
+for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
+reporting, and reconciliation limits.
+
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
 ### PR CI wait / guarded merge entrypoints

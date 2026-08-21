@@ -105,6 +105,16 @@ class TaskQueue:
     def is_running(self) -> bool:
         return any(not t.done() for t in self._worker_tasks)
 
+    def pending_slugs(self) -> set[str]:
+        """Snapshot the set of slugs with at least one queued item.
+
+        Read-only; used by the portability preflight quiescence check as
+        defense-in-depth on top of the DB nonterminal-task predicate. The
+        underlying asyncio.Queue deque is not mutated here; a miss under
+        concurrent put/get is backstopped by the DB check.
+        """
+        return {item[0] for item in list(self._queue._queue)}
+
     async def stop(self, *, timeout: float = 5.0) -> None:
         self._stopping = True
         for t in self._worker_tasks:

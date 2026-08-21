@@ -651,6 +651,43 @@ TEXT`` (NULL default). No new ``TaskStatus``, ``block_kind``, or overload of
 any existing column — all founder-gated. Flagged via ``zombie_flagged_at``;
 cancel = the existing ``cancelled`` transition.
 
+#### Organization portability — preflight & reconciliation (THR-187 Slice A)
+
+**Slice A is preflight/reconciliation only.** It adds a read-only CLI
+``happyranch orgs portability-preflight <slug>`` and a distinct founder-only
+``happyranch orgs reconcile-portability <slug> --from-file <request.json>``.
+There is **no** archive, export, import, staging, transfer fence, source
+retirement, cancellation-of-live-work, or other transfer side effect in this
+slice. Export/import/rebind are later, separately authorized slices.
+
+**Exhaustive root classification.** The preflight classifies every direct
+child of a source org root exactly once as `include`, a *named* `exclude`
+(generated marker, derived projection, SQLite sidecar, cache, zero-byte legacy
+residue, non-memory workspace data, task output), or `reject` (unknown root,
+nonregular/unsafe entry, nonzero legacy-residue DB, invalid legacy skill).
+The allow-list is `happyranch.db`, `org`, `artifacts`, `kb`, `threads`,
+`task-attachments`, `jobs`, `dreams`, `work_hours`, `schedules`, `talks`,
+conditional valid legacy `skills`, and only `workspaces/<agent>/memory/**`.
+There is no fall-through/default copy: an unclassified present root rejects.
+
+**Quiescence & zombie reporting.** Preflight refuses any pending/in_progress/
+escalated task (including live, delegated, and job-parked forms), any active
+session binding/PID or queued item, any pending thread invocation, pending/
+running job, pending/running dream/work-hour, or armed/firing schedule. It
+*reports* possible zombies (in_progress, no block_kind, stale heartbeat, dead
+pid) but never resolves them.
+
+**Reconciliation limits.** ``reconcile-portability`` is founder/master-bearer
+only (reuses the existing human-authority dependency unchanged). It names
+exactly one candidate plus evidence/disposition; revalidates a true zombie
+under the org DB lock; and invokes the shared result/terminalization seam
+(``_consume_completion_report`` for an orphaned result, or the reaper's
+``cancelled`` transition). It audits actor, SHA-256 request hash, evidence,
+disposition, and before/after state under the ordinary ``task_id`` scope. A
+delegated/job-blocked task is never a zombie merely because it is old.
+Preflight never calls reconciliation; reconciliation offers no export
+cancellation path. CLI-private only — no UI, TS client, or browser contract.
+
 #### Transitions
 
 ```

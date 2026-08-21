@@ -127,6 +127,74 @@ def cmd_orgs_unload(args: argparse.Namespace) -> None:
     print(f"unloaded: {r.json()['slug']}")
 
 
+def cmd_orgs_portability_preflight(args: argparse.Namespace) -> None:
+    """Read-only org-portability preflight: classify roots + report blockers."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get(f"/api/v1/orgs/{args.slug}/portability-preflight")
+    if not _ok(r):
+        return
+    body = r.json()
+    status = "eligible" if body["eligible"] else "INELIGIBLE"
+    print(f"slug: {body['slug']}")
+    print(f"root: {body['root']}")
+    print(f"portability: {status}")
+    rejections = body["classification"]["rejections"]
+    if rejections:
+        print("\nrejections (must resolve before any export):")
+        for e in rejections:
+            print(f"  reject  {e['path']}  ({e['reason']})")
+    blockers = body["eligibility"]["blockers"]
+    if blockers.get("tasks"):
+        print(f"nonterminal tasks: {', '.join(blockers['tasks'])}")
+    if blockers.get("active_sessions"):
+        print(f"active sessions: {blockers['active_sessions']}")
+    if blockers.get("queued_items"):
+        print(f"queued items: {blockers['queued_items']}")
+    if blockers.get("pending_thread_invocations"):
+        print(f"pending thread invocations: {blockers['pending_thread_invocations']}")
+    if blockers.get("active_jobs"):
+        print(f"active jobs: {', '.join(blockers['active_jobs'])}")
+    if blockers.get("active_dreams"):
+        print(f"active dreams: {', '.join(blockers['active_dreams'])}")
+    if blockers.get("active_work_hours"):
+        print(f"active work-hours: {', '.join(blockers['active_work_hours'])}")
+    if blockers.get("active_schedules"):
+        print(f"active schedules: {', '.join(blockers['active_schedules'])}")
+    zombies = body["eligibility"]["possible_zombies"]
+    if zombies:
+        print("\npossible zombies (reported only — not resolved):")
+        for z in zombies:
+            print(f"  {z['task_id']}  agent={z['assigned_agent']}")
+
+
+def cmd_orgs_reconcile_portability(args: argparse.Namespace) -> None:
+    """Founder-only reconciliation of a confirmed zombie (shared terminalization)."""
+    import json as _json
+    from cli._shared import require_absolute_payload_path
+
+    path = require_absolute_payload_path(args.request_path, kind="reconcile-portability")
+    try:
+        payload = _json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: cannot read reconcile request: {exc}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/orgs/{args.slug}/reconcile-portability", json=payload)
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"reconciled: {body['task_id']} ({body['disposition']})")
+    print(f"request_hash: {body['request_hash']}")
+
+
 
 def cmd_web(args: argparse.Namespace) -> None:
     """Open the HappyRanch web UI in the default browser."""
@@ -365,6 +433,24 @@ def register(sub) -> None:
     )
     p_orgs_unload.add_argument("slug")
     p_orgs_unload.set_defaults(func=cmd_orgs_unload)
+
+    p_orgs_preflight = orgs_sub.add_parser(
+        "portability-preflight",
+        help="read-only org-portability preflight (classify roots + report blockers)",
+    )
+    p_orgs_preflight.add_argument("slug")
+    p_orgs_preflight.set_defaults(func=cmd_orgs_portability_preflight)
+
+    p_orgs_reconcile = orgs_sub.add_parser(
+        "reconcile-portability",
+        help="founder-only reconciliation of a confirmed zombie",
+    )
+    p_orgs_reconcile.add_argument("slug")
+    p_orgs_reconcile.add_argument(
+        "--from-file", dest="request_path", required=True,
+        help="absolute path to the reconcile request JSON",
+    )
+    p_orgs_reconcile.set_defaults(func=cmd_orgs_reconcile_portability)
 
     p_web = sub.add_parser("web", help="Open the HappyRanch web UI in the default browser")
     p_web.add_argument(

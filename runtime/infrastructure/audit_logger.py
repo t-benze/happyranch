@@ -159,6 +159,36 @@ class AuditLogger:
             payload={"reason": "zombie recovered — flag cleared"},
         )
 
+    def log_portability_reconciled(
+        self,
+        *,
+        task_id: str,
+        actor: str,
+        request_hash: str,
+        evidence: dict,
+        disposition: str,
+        before: dict,
+        after: dict,
+    ) -> None:
+        """Record a founder-authorized portability zombie reconciliation.
+
+        Uses the ordinary ``task_id`` scope (the reconciled task), not a new
+        scope prefix. Payload carries the SHA-256 request hash, founder evidence,
+        disposition, and before/after state so the human decision is auditable.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=actor,
+            action="portability_reconciled",
+            payload={
+                "request_hash": request_hash,
+                "evidence": evidence,
+                "disposition": disposition,
+                "before": before,
+                "after": after,
+            },
+        )
+
     def log_task_cancelled(
         self, task_id: str, rationale: str, cascade: bool, actor: str = "founder",
     ) -> None:

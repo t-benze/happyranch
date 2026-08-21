@@ -869,6 +869,16 @@ workspaces/
 └── ...
 ```
 
+> **Org-root portability (THR-187 Slice A).** The *only* workspace content
+> that is portable across a same-slug relocation is
+> ``workspaces/<agent>/memory/**``. ``task_history.md`` (rebuilt from the DB),
+> ``repo/`` clones, regenerated bootstrap files, injected settings/skills,
+> caches, task-output directories, and every other workspace byte are
+> non-portable and named as exclusions by the preflight classifier.
+> ``runtime/portability/roots.py`` is the authoritative exhaustive direct-org-root
+> classification (allow / named exclusion / reject); see 05c-orchestrator
+> §Organization portability.
+
 ### Three layers of memory
 
 **1. Institutional memory (knowledge base)**

@@ -5221,6 +5221,20 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_pending_thread_invocations(self) -> list[ThreadInvocation]:
+        """Return every org-wide ``pending`` thread invocation (any thread).
+
+        Used by the portability preflight quiescence check: a pending reply/
+        bootstrap/task-followup invocation is in-flight work and must block.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations "
+            "WHERE status = ? ORDER BY id",
+            (ThreadInvocationStatus.PENDING.value,),
+        )
+        return [self._row_to_invocation(r) for r in cursor.fetchall()]
+
+    @_synchronized
     def list_invocations_for_thread_grouped_by_seq(
         self, thread_id: str
     ) -> dict[int, list[dict[str, object]]]:
