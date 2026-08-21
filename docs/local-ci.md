@@ -11,7 +11,9 @@ feedforward signal, not a substitute.
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Node.js 24+ and npm (for the `web` target)
+- Node.js **exactly 24** (the repository `.nvmrc` declaration) and npm, for
+  the `web`/`all` targets. The wrapper verifies the effective Node major is
+  24 before any work and exits nonzero otherwise (see Caveats).
 - An up-to-date `uv.lock` file (run `uv lock` if you've changed
   `pyproject.toml`; `uv sync --frozen` rejects a stale lock)
 - The `integration` target spawns an isolated daemon per test (tmp
@@ -114,9 +116,15 @@ publication-process requirements.
   production daemon with active Claude sessions can inflate memory during the run.
 - **Vitest non-watch.** Web tests use `npx vitest run` (non-watch), not
   bare `vitest` which enters interactive watch mode.
+- **Exact Node 24 runtime precondition.** `web` and `all` read the repository
+  `.nvmrc` declaration (Node 24, matching the GitHub "Web (Node 24)" job) and
+  verify the effective `node --version` major is exactly 24 **before** running
+  any `npm`/`uv` work. If the effective Node is missing, malformed, or a
+  different major, the wrapper prints a remediation (the `.nvmrc` declaration
+  plus the standard `nvm install 24 && nvm use 24` path) and exits nonzero.
+  When `nvm` is available it attempts `nvm use 24` and re-verifies first.
 - **npm ci, not npm install.** The web target uses `npm ci` to enforce
-  lockfile parity. Node version is whatever is installed locally, not the
-  GHA Node 24 image.
+  lockfile parity.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.

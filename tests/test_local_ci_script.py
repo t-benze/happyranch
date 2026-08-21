@@ -1,0 +1,203 @@
+"""Tests for the Node-24 runtime guard in ``scripts/local_ci.sh``.
+
+The web/all targets of the local CI wrapper must run under effective Node.js
+major exactly 24 (the repository ``.nvmrc`` declaration, matching the GitHub
+"Web (Node 24)" job). These tests exercise the wrapper against controlled fake
+``node``/``npm``/``npx``/``uv`` shims on a temporary PATH so they are fully
+deterministic and do not depend on the host's real Node/npm/uv:
+
+* a fake ``v26`` node is rejected before any ``uv`` or ``npm`` work runs;
+* a fake ``v24`` node permits the web/all commands to execute through the shims;
+* the optional ``nvm`` selection branch selects ``v24`` and re-verifies;
+* a malformed/absent ``.nvmrc`` declaration fails closed.
+
+The fakes shadow the real tools by prepending a temp ``bin`` dir to ``PATH``;
+``NVM_DIR``/``HOME`` are pointed at empty dirs so the selection branch cannot
+accidentally pick up a real Node 24 installed on the host.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = REPO_ROOT / "scripts" / "local_ci.sh"
+
+NODE_VERSION_FILE_VAR = "LOCAL_CI_FAKE_NODE_VERSION_FILE"
+INVOCATION_LOG_VAR = "LOCAL_CI_FAKE_INVOCATION_LOG"
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content)
+    path.chmod(0o755)
+
+
+def _fake_node(bin_dir: Path) -> None:
+    """A fake ``node`` whose ``--version`` is read from an env-controlled file."""
+    _write_executable(
+        bin_dir / "node",
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "--version" ]; then\n'
+        '  cat "${LOCAL_CI_FAKE_NODE_VERSION_FILE}"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
+    )
+
+
+def _fake_recorder(bin_dir: Path, name: str) -> None:
+    """A fake tool (npm/npx/uv) that records its invocation and exits 0."""
+    _write_executable(
+        bin_dir / name,
+        "#!/usr/bin/env bash\n"
+        f'echo "{name} $*" >> "${{LOCAL_CI_FAKE_INVOCATION_LOG}}"\n'
+        "exit 0\n",
+    )
+
+
+def _setup_fake_env(tmp_path: Path, node_version: str) -> tuple[Path, Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    version_file = tmp_path / "node-version"
+    version_file.write_text(node_version + "\n")
+    log_file = tmp_path / "invocations.log"
+    _fake_node(bin_dir)
+    for name in ("npm", "npx", "uv"):
+        _fake_recorder(bin_dir, name)
+    return bin_dir, version_file, log_file
+
+
+def _run_local_ci(
+    target: str,
+    bin_dir: Path,
+    version_file: Path,
+    log_file: Path,
+    env_extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env[NODE_VERSION_FILE_VAR] = str(version_file)
+    env[INVOCATION_LOG_VAR] = str(log_file)
+    # Default: no version manager available, so the selection branch cannot
+    # accidentally select a real Node 24 installed on the host.
+    env["NVM_DIR"] = str(version_file.parent / "no-nvm-dir")
+    env["HOME"] = str(version_file.parent)
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
+        ["bash", str(SCRIPT), target],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_all_rejects_mismatched_node_before_any_work(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v26.0.0")
+    result = _run_local_ci("all", bin_dir, version_file, log_file)
+
+    assert result.returncode != 0
+    # Neither uv (python) nor npm/npx (web) may have run.
+    assert not log_file.exists()
+    assert "does not match the repository declaration" in result.stderr
+    assert "24" in result.stderr
+    assert ".nvmrc" in result.stderr
+    assert "nvm use" in result.stderr
+
+
+def test_web_rejects_mismatched_node_before_npm(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v26.0.0")
+    result = _run_local_ci("web", bin_dir, version_file, log_file)
+
+    assert result.returncode != 0
+    assert not log_file.exists()
+    assert "does not match the repository declaration" in result.stderr
+
+
+def test_web_permits_valid_node_24_and_runs_commands(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    result = _run_local_ci("web", bin_dir, version_file, log_file)
+
+    assert result.returncode == 0, result.stderr
+    log = log_file.read_text()
+    assert "npm ci" in log
+    assert "npm run lint" in log
+    assert "npm run typecheck" in log
+    assert "npm run build" in log
+    assert "npx vitest run" in log
+    # The web target must not run any Python work.
+    assert "uv" not in log
+
+
+def test_all_permits_valid_node_24_and_runs_python_then_web(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    result = _run_local_ci("all", bin_dir, version_file, log_file)
+
+    assert result.returncode == 0, result.stderr
+    log = log_file.read_text()
+    # Python runs first (guard passed), then web.
+    assert "uv sync --frozen" in log
+    assert "uv run pytest" in log
+    assert "npm ci" in log
+    assert "npx vitest run" in log
+
+
+def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v26.0.0")
+
+    # Fake nvm.sh that "selects" Node 24 by rewriting the fake node's version.
+    nvm_dir = tmp_path / "nvm"
+    nvm_dir.mkdir()
+    (nvm_dir / "nvm.sh").write_text(
+        "nvm() {\n"
+        '  if [ "${1:-}" = "use" ]; then\n'
+        f'    echo "v24.0.0" > "{version_file}"\n'
+        "    return 0\n"
+        "  fi\n"
+        "  return 1\n"
+        "}\n"
+    )
+
+    result = _run_local_ci(
+        "web",
+        bin_dir,
+        version_file,
+        log_file,
+        env_extra={"NVM_DIR": str(nvm_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "npm ci" in log_file.read_text()
+
+
+def test_malformed_declaration_fails_closed(tmp_path: Path) -> None:
+    # Copy the script into a standalone repo-like tree with a malformed .nvmrc.
+    tree = tmp_path / "repo"
+    (tree / "scripts").mkdir(parents=True)
+    script_copy = tree / "scripts" / "local_ci.sh"
+    script_copy.write_text(SCRIPT.read_text())
+    script_copy.chmod(0o755)
+    (tree / ".nvmrc").write_text(">=24\n")  # not a bare numeric major
+
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env[NODE_VERSION_FILE_VAR] = str(version_file)
+    env[INVOCATION_LOG_VAR] = str(log_file)
+    env["NVM_DIR"] = str(tmp_path / "no-nvm-dir")
+    env["HOME"] = str(tmp_path)
+
+    result = subprocess.run(
+        ["bash", str(script_copy), "web"],
+        cwd=str(tree),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "missing or malformed" in result.stderr
+    assert not log_file.exists()
