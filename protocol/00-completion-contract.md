@@ -160,6 +160,10 @@ A manager can declare a multi-leg workflow in one decision via `decision.then` (
 
 The orchestrator spawns the first leg, then auto-advances to the next leg on each child terminal whose `verdict` matches the leg's `expect_verdict`. Any mismatch (or `status=blocked`) clears the chain and wakes the manager. The final leg's match wakes the manager too — chains do not auto-`done`. Each subsequent leg's brief is auto-suffixed with a "Prior leg context" block (the upstream worker's summary + verdict + output_dir).
 
+Terminal consumption is at-most-once and keyed on the chain's durable `in_flight_child_id`: a terminal report is consumed only while its child's id exactly matches the chain's current in-flight child, so a stale/late duplicate delivery (e.g. a recovery replay of an earlier leg after the next leg has already written its terminal) is a no-op — never a wake, `active_chain` clear, or re-interpretation against a later leg's expectation.
+
+A `code_reviewer` leg is a review GATE by role: when it has a downstream leg it **must** declare an explicit `expect_verdict`. A `code_reviewer` leg with a downstream leg that omits `expect_verdict` is rejected at declaration time, and for any persisted in-flight chain it wakes the manager and clears the chain rather than auto-advancing — without a gate the orchestrator cannot distinguish an `APPROVE` (advance) from a `REQUEST_CHANGES` (wake). Ordinary non-review legs may omit `expect_verdict` and advance unconditionally, and a `code_reviewer` FINAL leg (no downstream) may omit it too (it wakes chain-complete).
+
 Step-budget effect: declaring a chain consumes one orchestration step; auto-advances do NOT consume steps. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) costs 2 steps (declare + final wake) instead of 4.
 
 Cross-team validation runs on every leg at decision-parse time; any off-team agent rejects the whole decision via the feedback mechanism.

@@ -499,6 +499,23 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                     status=TaskStatus.FAILED, auto_revisit_spawned=False,
                 )
                 return
+            # Fail-closed: a code_reviewer carrier first leg with a downstream
+            # leg (non-empty then) must declare an explicit expect_verdict.
+            rev_err = _reviewer_downstream_omission_error(
+                agent=child.agent,
+                expect_verdict=child.expect_verdict,
+                has_downstream=bool(child.then),
+                where=f"fanout child {i + 1} first leg",
+            )
+            if rev_err is not None:
+                note = f"invalid fanout: {rev_err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
             # Validate carrier chain legs for pipeline children (Phase 2).
             for j, leg in enumerate(child.then):
                 leg_err = _validate_one_leg(
@@ -507,6 +524,21 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 )
                 if leg_err is not None:
                     note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+                rev_err = _reviewer_downstream_omission_error(
+                    agent=leg.agent,
+                    expect_verdict=leg.expect_verdict,
+                    has_downstream=(j < len(child.then) - 1),
+                    where=f"fanout child {i + 1} then leg {j + 1}",
+                )
+                if rev_err is not None:
+                    note = f"invalid fanout: {rev_err}"
                     _fail(orch, task_id, note=note)
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
@@ -781,6 +813,7 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 first_leg_expect_verdict=decision.expect_verdict,
                 legs=list(decision.then),
                 step_audit_id=_step_audit_id,
+                in_flight_child_id=child_id,
             )
             chain_json = chain.serialize()
         if not db.try_delegate(
@@ -823,6 +856,24 @@ def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) ->
         if where == "first leg":
             return f"no workspace for agent {agent!r}"
         return f"chain leg {where}: no workspace for agent {agent!r}"
+    return None
+
+
+def _reviewer_downstream_omission_error(
+    *, agent: str | None, expect_verdict: str | None,
+    has_downstream: bool, where: str,
+) -> str | None:
+    """Fail-closed authoring check: a code_reviewer leg with a downstream leg
+    must declare an explicit expect_verdict. Returns a human-readable error
+    naming the offending leg, or None when the leg is safe."""
+    from runtime.orchestrator.chain import reviewer_downstream_omission
+    if reviewer_downstream_omission(
+        agent=agent, expect_verdict=expect_verdict, has_downstream=has_downstream,
+    ):
+        return (
+            f"{where} is a code_reviewer leg with downstream legs; "
+            "it must set expect_verdict"
+        )
     return None
 
 
@@ -938,8 +989,27 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
     if err is not None:
         return err
-    for i, leg in enumerate(decision.then or []):
+    then = decision.then or []
+    # Fail-closed: a code_reviewer leg with a downstream leg must declare an
+    # explicit expect_verdict, or a REQUEST_CHANGES would auto-advance QA.
+    err = _reviewer_downstream_omission_error(
+        agent=decision.agent,
+        expect_verdict=decision.expect_verdict,
+        has_downstream=bool(then),
+        where="first leg",
+    )
+    if err is not None:
+        return err
+    for i, leg in enumerate(then):
         err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
+        if err is not None:
+            return err
+        err = _reviewer_downstream_omission_error(
+            agent=leg.agent,
+            expect_verdict=leg.expect_verdict,
+            has_downstream=(i < len(then) - 1),
+            where=f"chain leg {i + 2}",
+        )
         if err is not None:
             return err
     return None
@@ -1630,12 +1700,21 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     chain = ChainState.deserialize(parent.active_chain)
+    child = orch._db.get_task(child_task_id)
     report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    action = compute_advance_action(chain=chain, report=report)
+    # The completed child's assigned_agent is the authoritative identity of
+    # the just-finished leg. The chain payload only persists the first leg's
+    # expect_verdict (first_leg_expect_verdict), NOT its agent, so
+    # compute_advance_action must receive the DB truth to fail-closed a
+    # FIRST-leg reviewer gate (see reviewer_downstream_omission).
+    completed_agent = child.assigned_agent if child is not None else None
+    action = compute_advance_action(
+        chain=chain, report=report, completed_agent=completed_agent,
+    )
     if action.kind == "wake":
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
@@ -1673,6 +1752,12 @@ def _advance_chain_for_completed_child(
     # orphan link/audit/claim, no queue side effect.
     next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
+    # Durable ownership rotation: the newly spawned child becomes the chain's
+    # in-flight leg in the SAME serialized payload that try_advance_chain
+    # commits atomically alongside the child insert. A crash/write failure
+    # rolls back both — no chain state that points at a child that never
+    # materialized.
+    chain.in_flight_child_id = next_child_id
     chain_json = chain.serialize()
 
     next_child = TaskRecord(
@@ -1725,16 +1810,46 @@ def _carrier_fail_on_verdict_mismatch(
     child_task_id: str, chain_snapshot: str | None,
 ) -> bool:
     """After a carrier's chain leg completed but the chain did not advance
-    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
-    the carrier immediately (fail-closed at carrier).  Returns True if the
-    carrier was failed, False otherwise (including non-carriers)."""
+    (outcome == "wake"), check if this was a verdict mismatch OR an unsafe
+    omitted-reviewer gate.  If so, fail the carrier immediately (fail-closed
+    at carrier).  Returns True if the carrier was failed, False otherwise
+    (including non-carriers).
+
+    The omitted-reviewer case is recomputed from the SAME production fact
+    ``compute_advance_action`` used — ``reviewer_downstream_omission`` keyed
+    off the completed child's actual ``assigned_agent`` — rather than a broad
+    ``expected is None`` rule, so a true chain-complete (final-leg match) is
+    never misclassified as a failure.
+    """
     if chain_snapshot is None:
         return False
     if not _is_carrier(orch, parent):
         return False
-    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.chain import (
+        ChainState,
+        reviewer_downstream_omission,
+    )
     chain = ChainState.deserialize(chain_snapshot)
     expected = chain.current_expect_verdict()
+    # Fail-closed omitted-reviewer gate: a code_reviewer leg with a downstream
+    # leg and no explicit expect_verdict completed without gating. The first
+    # leg's agent is NOT persisted in the chain payload, so derive it from the
+    # completed child's assigned_agent (DB truth) — exactly as
+    # compute_advance_action did when it produced the wake.
+    child = orch._db.get_task(child_task_id)
+    completed_agent = child.assigned_agent if child is not None else None
+    has_downstream = (chain.step_index + 1) <= len(chain.legs)
+    if reviewer_downstream_omission(
+        agent=completed_agent,
+        expect_verdict=expected,
+        has_downstream=has_downstream,
+    ):
+        _fail(orch, parent.id,
+               note=f"carrier reviewer gate omitted: leg {child_task_id} "
+                    f"(code_reviewer) completed without an explicit expect_verdict")
+        # Feed carrier failure into the fan-out parent's barrier.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
     if expected is None:
         return False  # no verdict expectation → chain_complete, not a mismatch
     report = orch._db.get_latest_completion_report(child_task_id)
@@ -1984,9 +2099,47 @@ def _enqueue_parent_if_waiting(
     # parent has active_fanout), a verdict-mismatch or a failed leg fails
     # the whole carrier immediately — no partial-chain completion.
     child = orch._db.get_task(task_id)
+    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if child is not None and parent.active_chain is not None:
         if child.status == TaskStatus.COMPLETED:
-            # Snapshot the chain BEFORE advance (which may clear it).
+            # At-most-once terminal consumption, keyed on the DURABLE ownership
+            # marker ``active_chain.in_flight_child_id`` rather than sibling
+            # terminal state (which fails when the next leg has already written
+            # its terminal but not yet been delivered — a valid replay
+            # ordering). A terminal report may be consumed only while its
+            # child's id EXACTLY matches the chain's current in-flight child.
+            # This check runs BEFORE anything can clear state, wake, advance,
+            # log audit, fail/complete a carrier, or mutate a fanout barrier.
+            from runtime.orchestrator.chain import ChainState
+            chain = ChainState.deserialize(parent.active_chain)
+            in_flight = chain.in_flight_child_id
+            if in_flight is not None:
+                # New-style chain: exact ownership match required.
+                if in_flight != task_id:
+                    return  # stale duplicate/late delivery — no-op
+            else:
+                # Legacy payload (no ownership marker). The ONLY unambiguous
+                # bridge is: if a LATER leg is still in flight (some OTHER
+                # sibling non-terminal), this child's leg is definitively
+                # superseded → no-op (never clear while a later leg runs).
+                if any(
+                    s is not None and s.id != task_id
+                    and s.status not in TERMINAL_STATES
+                    for s in siblings
+                ):
+                    return  # stale duplicate; a later leg is already in flight
+                # Otherwise ownership is ambiguous (all siblings terminal):
+                # fail closed — clear the chain and wake the parent with NO
+                # downstream spawn. A carrier must FAIL, never falsely complete.
+                orch._db.update_task_active_chain(parent.id, None)
+                if _is_carrier(orch, parent):
+                    _carrier_fail_immediate(orch, parent, task_id)
+                    return  # carrier failure feeds the fan-out parent's barrier
+                queue = getattr(orch, "_queue", None)
+                if queue is not None:
+                    queue.put_nowait(orch._slug, parent.id)
+                return
+            # Exact ownership match: snapshot the chain BEFORE advance.
             chain_snapshot = parent.active_chain
             outcome = _advance_chain_for_completed_child(
                 orch=orch, parent_task_id=parent.id, child_task_id=task_id,
@@ -2014,7 +2167,6 @@ def _enqueue_parent_if_waiting(
             # Carrier fail-closed is applied at that point, not here.
             pass
 
-    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
         return
 
@@ -2796,14 +2948,15 @@ def _spawn_fanout_children(
             )
             for leg in child_info.get("then", []) or []
         ]
+        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
+        carrier_leg_offset += 1
         carrier_chain = ChainState(
             step_index=0,
             first_leg_expect_verdict=child_info.get("expect_verdict"),
             legs=then_legs,
             step_audit_id=step_audit_id or 0,
+            in_flight_child_id=first_leg_id,
         )
-        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
-        carrier_leg_offset += 1
         first_leg_data = {
             "id": first_leg_id,
             "team": parent.team,

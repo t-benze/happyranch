@@ -19,6 +19,7 @@ def test_chain_state_serialize_roundtrip():
             ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
         ],
         step_audit_id=4521,
+        in_flight_child_id="TASK-123",
     )
     payload = cs.serialize()
     cs2 = ChainState.deserialize(payload)
@@ -27,12 +28,16 @@ def test_chain_state_serialize_roundtrip():
     assert len(cs2.legs) == 1
     assert cs2.legs[0].agent == "qa_engineer"
     assert cs2.step_audit_id == 4521
+    assert cs2.in_flight_child_id == "TASK-123"
 
 
 def test_chain_state_deserialize_handles_missing_optional_fields():
     cs = ChainState.deserialize('{"step_index": 0, "legs": [], "step_audit_id": 1}')
     assert cs.first_leg_expect_verdict is None
     assert cs.legs == []
+    # A legacy payload (pre ownership-marker) deserializes with None — the
+    # execution seam treats None as ambiguous ownership and fails closed.
+    assert cs.in_flight_child_id is None
 
 
 def test_build_prior_leg_context_includes_all_fields():
@@ -132,3 +137,77 @@ def test_compute_advance_action_wake_on_final_leg_match():
     action = compute_advance_action(chain=cs, report=_report(verdict="PASS"))
     assert action.kind == "wake"
     assert action.reason == "chain_complete"
+
+
+def _reviewer_omitted_chain():
+    return ChainState(
+        step_index=1,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="code_reviewer", prompt="review", expect_verdict=None),
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+
+
+def test_compute_advance_action_reviewer_omitted_request_changes_wakes():
+    # A code_reviewer leg with a downstream leg and no expect_verdict must
+    # wake/clear rather than advance, even though the verdict is a "mismatch"
+    # shape it could never gate.
+    action = compute_advance_action(
+        chain=_reviewer_omitted_chain(), report=_report(verdict="REQUEST_CHANGES"),
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"
+
+
+def test_compute_advance_action_reviewer_omitted_approve_still_wakes():
+    # Fail-closed: without an explicit gate the orchestrator cannot trust an
+    # APPROVE either, so an omitted-expectation reviewer with a downstream leg
+    # never auto-advances — the manager re-declares with a gate.
+    action = compute_advance_action(
+        chain=_reviewer_omitted_chain(), report=_report(verdict="APPROVE"),
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"
+
+
+def _first_leg_reviewer_omitted_chain():
+    # FIRST leg (step_index=0) is code_reviewer with omitted expect_verdict;
+    # its agent is NOT persisted in the chain payload (only
+    # first_leg_expect_verdict is), so current_leg_agent() is None.
+    return ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+
+
+def test_compute_advance_action_first_leg_reviewer_omitted_uses_completed_agent():
+    # The execution seam supplies the completed child's actual agent
+    # (``completed_agent``) because the first leg's agent is not in the chain
+    # payload. Without it, current_leg_agent() is None and the omission would
+    # be missed.
+    action = compute_advance_action(
+        chain=_first_leg_reviewer_omitted_chain(),
+        report=_report(verdict="REQUEST_CHANGES"),
+        completed_agent="code_reviewer",
+    )
+    assert action.kind == "wake"
+    assert action.reason == "reviewer_expectation_omitted"
+
+
+def test_compute_advance_action_first_leg_reviewer_omitted_without_completed_agent_advances():
+    # Document the pre-repair hazard: with no completed_agent supplied,
+    # current_leg_agent() returns None for step_index=0, so the omission check
+    # cannot fire and the next leg advances. (Production always supplies
+    # completed_agent from the completed child's assigned_agent.)
+    action = compute_advance_action(
+        chain=_first_leg_reviewer_omitted_chain(),
+        report=_report(verdict="REQUEST_CHANGES"),
+    )
+    assert action.kind == "advance"
