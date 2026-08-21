@@ -813,6 +813,7 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 first_leg_expect_verdict=decision.expect_verdict,
                 legs=list(decision.then),
                 step_audit_id=_step_audit_id,
+                in_flight_child_id=child_id,
             )
             chain_json = chain.serialize()
         if not db.try_delegate(
@@ -1751,6 +1752,12 @@ def _advance_chain_for_completed_child(
     # orphan link/audit/claim, no queue side effect.
     next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
+    # Durable ownership rotation: the newly spawned child becomes the chain's
+    # in-flight leg in the SAME serialized payload that try_advance_chain
+    # commits atomically alongside the child insert. A crash/write failure
+    # rolls back both — no chain state that points at a child that never
+    # materialized.
+    chain.in_flight_child_id = next_child_id
     chain_json = chain.serialize()
 
     next_child = TaskRecord(
@@ -2095,24 +2102,44 @@ def _enqueue_parent_if_waiting(
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if child is not None and parent.active_chain is not None:
         if child.status == TaskStatus.COMPLETED:
-            # At-most-once terminal consumption: a terminal report may be
-            # consumed only while its child is the chain's actual in-flight
-            # leg. The chain advances one leg at a time, so the in-flight leg
-            # is the ONLY child that is not yet terminal (every earlier leg is
-            # COMPLETED/FAILED and no later leg exists until the advance this
-            # report triggers). If any OTHER sibling is still non-terminal,
-            # this child's leg has already been superseded by a later-spawned
-            # leg — a sequential duplicate/late delivery must be a no-op, never
-            # a wake/clear/reinterpretation (which would otherwise reach
-            # verdict_mismatch against the later leg's expectation and clear
-            # active_chain, letting the later leg bypass its gate).
-            if any(
-                s is not None and s.id != task_id
-                and s.status not in TERMINAL_STATES
-                for s in siblings
-            ):
-                return  # stale duplicate; a later leg is already in flight
-            # Snapshot the chain BEFORE advance (which may clear it).
+            # At-most-once terminal consumption, keyed on the DURABLE ownership
+            # marker ``active_chain.in_flight_child_id`` rather than sibling
+            # terminal state (which fails when the next leg has already written
+            # its terminal but not yet been delivered — a valid replay
+            # ordering). A terminal report may be consumed only while its
+            # child's id EXACTLY matches the chain's current in-flight child.
+            # This check runs BEFORE anything can clear state, wake, advance,
+            # log audit, fail/complete a carrier, or mutate a fanout barrier.
+            from runtime.orchestrator.chain import ChainState
+            chain = ChainState.deserialize(parent.active_chain)
+            in_flight = chain.in_flight_child_id
+            if in_flight is not None:
+                # New-style chain: exact ownership match required.
+                if in_flight != task_id:
+                    return  # stale duplicate/late delivery — no-op
+            else:
+                # Legacy payload (no ownership marker). The ONLY unambiguous
+                # bridge is: if a LATER leg is still in flight (some OTHER
+                # sibling non-terminal), this child's leg is definitively
+                # superseded → no-op (never clear while a later leg runs).
+                if any(
+                    s is not None and s.id != task_id
+                    and s.status not in TERMINAL_STATES
+                    for s in siblings
+                ):
+                    return  # stale duplicate; a later leg is already in flight
+                # Otherwise ownership is ambiguous (all siblings terminal):
+                # fail closed — clear the chain and wake the parent with NO
+                # downstream spawn. A carrier must FAIL, never falsely complete.
+                orch._db.update_task_active_chain(parent.id, None)
+                if _is_carrier(orch, parent):
+                    _carrier_fail_immediate(orch, parent, task_id)
+                    return  # carrier failure feeds the fan-out parent's barrier
+                queue = getattr(orch, "_queue", None)
+                if queue is not None:
+                    queue.put_nowait(orch._slug, parent.id)
+                return
+            # Exact ownership match: snapshot the chain BEFORE advance.
             chain_snapshot = parent.active_chain
             outcome = _advance_chain_for_completed_child(
                 orch=orch, parent_task_id=parent.id, child_task_id=task_id,
@@ -2921,14 +2948,15 @@ def _spawn_fanout_children(
             )
             for leg in child_info.get("then", []) or []
         ]
+        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
+        carrier_leg_offset += 1
         carrier_chain = ChainState(
             step_index=0,
             first_leg_expect_verdict=child_info.get("expect_verdict"),
             legs=then_legs,
             step_audit_id=step_audit_id or 0,
+            in_flight_child_id=first_leg_id,
         )
-        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
-        carrier_leg_offset += 1
         first_leg_data = {
             "id": first_leg_id,
             "team": parent.team,

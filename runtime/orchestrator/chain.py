@@ -45,11 +45,22 @@ class ChainState:
 
     step_index = 0 when the first leg (the implicit decision.agent+prompt) is
     in flight; 1..N when a subsequent leg (from `legs`) is in flight.
+
+    ``in_flight_child_id`` is the DURABLE ownership marker: the exact task id
+    of the child currently in flight for the chain's current leg. It is written
+    atomically whenever a chain is materialized (initial delegate + fanout
+    carrier) and rotated whenever the chain advances. A terminal report may be
+    consumed only while its child's id EXACTLY matches this marker — never
+    inferred from sibling terminal state, agent equality, ordering, or the
+    latest report (those all fail in valid replay orderings). ``None`` on a
+    legacy payload (pre-marker) means ownership is ambiguous and the execution
+    seam must fail closed rather than infer it.
     """
     step_index: int
     first_leg_expect_verdict: str | None
     legs: list[ChainLeg]
     step_audit_id: int
+    in_flight_child_id: str | None = None
 
     def serialize(self) -> str:
         return json.dumps({
@@ -57,6 +68,7 @@ class ChainState:
             "first_leg_expect_verdict": self.first_leg_expect_verdict,
             "legs": [leg.model_dump() for leg in self.legs],
             "step_audit_id": self.step_audit_id,
+            "in_flight_child_id": self.in_flight_child_id,
         })
 
     @classmethod
@@ -67,6 +79,7 @@ class ChainState:
             first_leg_expect_verdict=data.get("first_leg_expect_verdict"),
             legs=[ChainLeg(**leg) for leg in data.get("legs", [])],
             step_audit_id=data["step_audit_id"],
+            in_flight_child_id=data.get("in_flight_child_id"),
         )
 
     def current_expect_verdict(self) -> str | None:

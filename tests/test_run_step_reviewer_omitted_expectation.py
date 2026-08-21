@@ -82,7 +82,8 @@ def _make_orch(db: Database, runtime: OrgPaths):
     return orch
 
 
-def _omitted_review_chain(*, step_index: int, step_audit_id: int = 1):
+def _omitted_review_chain(*, step_index: int, step_audit_id: int = 1,
+                            in_flight_child_id: str | None = None):
     """dev (first leg, already completed) -> code_reviewer (expect_verdict
     OMITTED) -> qa_engineer (expect_verdict=PASS)."""
     from runtime.orchestrator.chain import ChainState
@@ -96,6 +97,7 @@ def _omitted_review_chain(*, step_index: int, step_audit_id: int = 1):
                      expect_verdict="PASS"),
         ],
         step_audit_id=step_audit_id,
+        in_flight_child_id=in_flight_child_id,
     )
 
 
@@ -140,7 +142,7 @@ def test_omitted_reviewer_request_changes_spawns_no_qa(runtime, db):
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     _seed_parent(db)
-    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1).serialize())
+    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1, in_flight_child_id="T-REV").serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
                           agent="code_reviewer", verdict="REQUEST_CHANGES",
                           summary="needs changes")
@@ -163,7 +165,7 @@ def test_omitted_reviewer_missing_verdict_spawns_no_qa(runtime, db):
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     _seed_parent(db)
-    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1).serialize())
+    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1, in_flight_child_id="T-REV").serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
                           agent="code_reviewer", verdict=None,
                           summary="reviewed")
@@ -198,6 +200,7 @@ def test_explicit_approve_reviewer_reaches_one_qa(runtime, db):
                      expect_verdict="PASS"),
         ],
         step_audit_id=1,
+        in_flight_child_id="T-REV",
     )
     db.update_task_active_chain("T-PAR", chain.serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
@@ -244,6 +247,7 @@ def test_non_review_leg_omitted_expectation_still_advances(runtime, db):
             ChainLeg(agent="qa_engineer", prompt="QA", expect_verdict="PASS"),
         ],
         step_audit_id=1,
+        in_flight_child_id="T-DEV",
     )
     db.update_task_active_chain("T-PAR", chain.serialize())
     _seed_completed_child(db, child_id="T-DEV", parent_id="T-PAR",
@@ -268,7 +272,7 @@ def test_late_terminal_after_omitted_reviewer_rejection_cannot_revive(runtime, d
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     _seed_parent(db)
-    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1).serialize())
+    db.update_task_active_chain("T-PAR", _omitted_review_chain(step_index=1, in_flight_child_id="T-REV").serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
                           agent="code_reviewer", verdict="REQUEST_CHANGES",
                           summary="needs changes")
@@ -363,7 +367,8 @@ def test_validate_delegate_rejects_first_leg_reviewer_with_downstream_omission(r
 # code_reviewer with a downstream leg and omitted expect_verdict also
 # wakes/clears rather than advancing QA.
 # ---------------------------------------------------------------------------
-def _omitted_review_chain_first_leg(*, step_audit_id: int = 1):
+def _omitted_review_chain_first_leg(*, step_audit_id: int = 1,
+                                       in_flight_child_id: str | None = None):
     """code_reviewer (FIRST leg, expect_verdict OMITTED) -> qa_engineer."""
     from runtime.orchestrator.chain import ChainState
     return ChainState(
@@ -374,6 +379,7 @@ def _omitted_review_chain_first_leg(*, step_audit_id: int = 1):
                      expect_verdict="PASS"),
         ],
         step_audit_id=step_audit_id,
+        in_flight_child_id=in_flight_child_id,
     )
 
 
@@ -381,7 +387,7 @@ def test_first_leg_omitted_reviewer_request_changes_spawns_no_qa(runtime, db):
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     _seed_parent(db)
-    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg().serialize())
+    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg(in_flight_child_id="T-REV").serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
                           agent="code_reviewer", verdict="REQUEST_CHANGES",
                           summary="needs changes")
@@ -401,7 +407,7 @@ def test_first_leg_omitted_reviewer_missing_verdict_spawns_no_qa(runtime, db):
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     _seed_parent(db)
-    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg().serialize())
+    db.update_task_active_chain("T-PAR", _omitted_review_chain_first_leg(in_flight_child_id="T-REV").serialize())
     _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
                           agent="code_reviewer", verdict=None,
                           summary="reviewed")
@@ -444,7 +450,7 @@ def _seed_carrier(db: Database, *, verdict: str | None) -> None:
     ))
     db.update_task("T-CAR", status=TaskStatus.IN_PROGRESS,
                    block_kind=BlockKind.DELEGATED, note="waiting")
-    db.update_task_active_chain("T-CAR", _omitted_review_chain_first_leg().serialize())
+    db.update_task_active_chain("T-CAR", _omitted_review_chain_first_leg(in_flight_child_id="T-FL").serialize())
 
     db.insert_task(TaskRecord(
         id="T-FL", brief="review", assigned_agent="code_reviewer",
@@ -555,6 +561,7 @@ def test_carrier_later_leg_omitted_reviewer_request_changes_fails_carrier(runtim
             ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
         ],
         step_audit_id=1,
+        in_flight_child_id="T-REV",
     )
     db.update_task_active_chain("T-CAR", later_leg_chain.serialize())
 

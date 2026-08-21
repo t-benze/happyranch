@@ -431,6 +431,16 @@ cascade-failed. Instead:
    next decision step (existing behavior). REVISE-verdict auto-advance is
    unchanged.
 
+7. **At-most-once terminal consumption (durable ownership).** A chain terminal
+   is consumed only while its child's id EXACTLY matches the chain's durable
+   `in_flight_child_id` (an additive JSON field on `active_chain`, written
+   atomically at materialization and rotated atomically on every auto-advance).
+   A stale/late duplicate delivery — e.g. a recovery replay of an earlier leg
+   after the next leg has already written its terminal — is a no-op, never a
+   wake/clear/re-interpretation. A legacy `active_chain` payload lacking the
+   marker fails closed: clear the chain and wake the parent with no downstream
+   spawn, and a carrier FAILS rather than falsely completing.
+
 #### Fan-out (parallel delegation)
 
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children

@@ -19,6 +19,7 @@ def test_chain_state_serialize_roundtrip():
             ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS"),
         ],
         step_audit_id=4521,
+        in_flight_child_id="TASK-123",
     )
     payload = cs.serialize()
     cs2 = ChainState.deserialize(payload)
@@ -27,12 +28,16 @@ def test_chain_state_serialize_roundtrip():
     assert len(cs2.legs) == 1
     assert cs2.legs[0].agent == "qa_engineer"
     assert cs2.step_audit_id == 4521
+    assert cs2.in_flight_child_id == "TASK-123"
 
 
 def test_chain_state_deserialize_handles_missing_optional_fields():
     cs = ChainState.deserialize('{"step_index": 0, "legs": [], "step_audit_id": 1}')
     assert cs.first_leg_expect_verdict is None
     assert cs.legs == []
+    # A legacy payload (pre ownership-marker) deserializes with None — the
+    # execution seam treats None as ambiguous ownership and fails closed.
+    assert cs.in_flight_child_id is None
 
 
 def test_build_prior_leg_context_includes_all_fields():
