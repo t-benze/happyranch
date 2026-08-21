@@ -215,12 +215,22 @@ Slice A's `received_nonlaunchable` receipt:
      the ledger to `exhausted` (no further candidates allowed), while expiry
      moves it to `expired`; both are nonretryable. Success at any point
      closes the lifecycle as `connected`. Terminal legacy v0 operations that
-     predate the THR-160 candidate ledger are atomically backfilled into the
-     immutable parent authority as a failed ordinal-1 candidate on store open,
-     so a corrected candidate is admitted as ordinal 2 and the two-candidate
-     cap still refuses a third candidate. This path never calls
-     `/{operation_id}/retry`, never replays a generic token, and never
-     requires `/forget` first.
+     predate the THR-160 candidate ledger are classified on store open before
+     any backfill: the operation, receipt, projection, artifacts, and authority
+     must all correlate (matching operation/receipt IDs, receipt token
+     fingerprint equal to the operation fingerprint, receipt in the expected
+     received state, a terminal `conformance_probe_failed` projection with no
+     bound/approved `profile_name` or `adapter_id`, no succeeded retry, and a
+     derivable normalized identity). Only a fully trusted conformance failure
+     backfills as an `open` parent with a failed ordinal-1 candidate so a
+     genuinely changed corrected candidate is admitted as ordinal 2. Every
+     other terminal category, corrupted receipt correlation, bound/approved
+     profile fact, expired authority, or integrity-invalid artifact set is
+     backfilled closed (`failed`/`expired`) without ever opening the parent;
+     where the identity is still derivable it is retained so identical/reordered
+     replay is rejected non-consumingly. The two-candidate cap still refuses a
+     third candidate. This path never calls `/{operation_id}/retry`, never
+     replays a generic token, and never requires `/forget` first.
 
   2. **Immutable-snapshot validation.** A distinct master-bearer
      `POST /api/v1/runtime/custom-cli/{operation_id}/retry` action is

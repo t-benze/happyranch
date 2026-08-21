@@ -547,34 +547,33 @@ class DirectConnectAuthorityStore:
         A legacy v0 operation has no parent/candidate/identity rows because those
         tables were added in THR-160. When its projection has already reached a
         terminal ``failed`` state, atomically materialize the immutable parent
-        lifecycle, failed candidate attempt ordinal 1, and normalized identity
-        history from the durable receipt artifacts. This consumes the first
-        candidate slot so a later corrected candidate B is admitted as ordinal 2
-        and the two-candidate cap correctly refuses candidate C after B
-        terminal-fails.
+        lifecycle and normalized identity history from the durable receipt
+        artifacts.
 
-        Only operations with a failed projection, a matching receipt, no existing
-        candidate row, and no parent lifecycle row are bridged. The parent state
-        depends on the terminal category: a trusted ``conformance_probe_failed``
-        failure with no approval/bound profile remains ``open`` so one genuinely
-        changed B can be admitted; every other terminal category
-        (``profile_binding_failed``, ``invalid_manifest``, malformed/integrity
-        failures, or any reason that is not an approved conformance failure) is
-        closed as ``failed`` permanently and will never admit a B.
+        Only a fully correlated, trustworthy ``conformance_probe_failed``
+        failure with no approval/bound profile and a derivable identity remains
+        ``open`` so one genuinely changed B can be admitted as ordinal 2. Every
+        other terminal category, corrupted or missing receipt correlation,
+        bound/approved profile fact, expired authority, or integrity-invalid
+        artifact set is closed (``failed``/``expired``) and permanently refuses
+        any corrected retry. Where a trustworthy identity can still be derived,
+        it is retained so identical/reordered replays stay fenced.
 
-        Nonterminal, committed, malformed, or already-v1 rows are left
+        Nonterminal, committed, or already-v1 rows are left
         conservative/fail-closed. The backfill is idempotent: on reopen the
-        candidate row already exists, so the operation is skipped.
+        candidate/parent row already exists, so the operation is skipped.
         """
         now = time.time() if now is None else now
         with self._lock, self._conn:
             cursor = self._conn.cursor()
             rows = cursor.execute(
                 """SELECT o.operation_id, o.token_fingerprint, o.workspace_adapter_id,
-                          p.reason
+                          o.created_at, p.reason, p.profile_name, p.adapter_id,
+                          r.token_fingerprint AS receipt_fingerprint,
+                          r.state AS receipt_state
                    FROM direct_connect_operations o
-                   JOIN direct_connect_receipts r ON r.operation_id = o.operation_id
                    JOIN direct_connect_projections p ON p.operation_id = o.operation_id
+                   LEFT JOIN direct_connect_receipts r ON r.operation_id = o.operation_id
                    LEFT JOIN direct_connect_candidates c ON c.operation_id = o.operation_id
                    LEFT JOIN direct_connect_parent_lifecycles parent
                          ON parent.token_fingerprint = o.token_fingerprint
@@ -586,46 +585,85 @@ class DirectConnectAuthorityStore:
                 fingerprint = row["token_fingerprint"]
                 operation_id = row["operation_id"]
                 workspace_adapter_id = row["workspace_adapter_id"]
+                created_at = row["created_at"]
                 reason = str(row["reason"] or "")
                 authority = self._read_authority(cursor, fingerprint)
                 if authority is None:
                     continue
+
+                # Correlate all durable facts required by the legacy schema.
+                # A missing receipt, mismatched token fingerprint, unexpected
+                # receipt state, or any approved/bound profile fact makes the
+                # record untrusted and therefore fail-closed.
+                receipt_correlates = (
+                    row["receipt_fingerprint"] is not None
+                    and row["receipt_fingerprint"] == fingerprint
+                    and row["receipt_state"] == "received_nonlaunchable"
+                )
+                projection_correlates = (
+                    row["profile_name"] is None and row["adapter_id"] is None
+                )
+                succeeded_retry = cursor.execute(
+                    """SELECT 1 FROM direct_connect_retry_attempts
+                       WHERE operation_id = ? AND state = 'succeeded' LIMIT 1""",
+                    (operation_id,),
+                ).fetchone() is not None
+                facts_correlate = (
+                    receipt_correlates and projection_correlates and not succeeded_retry
+                )
+
                 identity_pair = self._identity_from_operation_artifacts(
                     cursor,
                     operation_id,
                     authority.wrapper_destination,
                     workspace_adapter_id,
                 )
-                if identity_pair == (None, None):
-                    continue
-                identity_hash, identity_blob = identity_pair
-                candidate_id = str(uuid.uuid4())
-                created_at = cursor.execute(
-                    "SELECT created_at FROM direct_connect_operations WHERE operation_id = ?",
-                    (operation_id,),
-                ).fetchone()["created_at"]
-                # Only the approved conformance-probe failure leaves the parent
-                # open for one corrected retry; all other terminal categories are
-                # permanently nonretryable.
+                identity_hash: str | None = None
+                identity_blob: str | None = None
+                if identity_pair != (None, None):
+                    identity_hash, identity_blob = identity_pair
+
                 is_conformance_failure = reason.startswith("conformance_probe_failed")
-                parent_state = "open" if is_conformance_failure else "failed"
+                is_expired = authority.expires_at < now
+
+                if (
+                    facts_correlate
+                    and identity_hash is not None
+                    and is_conformance_failure
+                    and not is_expired
+                ):
+                    parent_state = "open"
+                elif (
+                    facts_correlate
+                    and identity_hash is not None
+                    and is_conformance_failure
+                    and is_expired
+                ):
+                    parent_state = "expired"
+                else:
+                    parent_state = "failed"
+
+                candidate_id: str | None = None
+                if identity_hash is not None and identity_blob is not None:
+                    candidate_id = str(uuid.uuid4())
+                    cursor.execute(
+                        """INSERT INTO direct_connect_candidates
+                           (candidate_id, token_fingerprint, operation_id, attempt_ordinal, state, identity_hash, created_at)
+                           VALUES (?, ?, ?, 1, 'failed', ?, ?)""",
+                        (candidate_id, fingerprint, operation_id, identity_hash, created_at),
+                    )
+                    cursor.execute(
+                        """INSERT INTO direct_connect_identity_history
+                           (history_id, token_fingerprint, candidate_id, identity_hash, identity_blob, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (str(uuid.uuid4()), fingerprint, candidate_id, identity_hash, identity_blob, created_at),
+                    )
+
                 cursor.execute(
                     """INSERT INTO direct_connect_parent_lifecycles
                        (token_fingerprint, state, latest_accepted_candidate_id, created_at, updated_at, expires_at)
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     (fingerprint, parent_state, candidate_id, created_at, now, authority.expires_at),
-                )
-                cursor.execute(
-                    """INSERT INTO direct_connect_candidates
-                       (candidate_id, token_fingerprint, operation_id, attempt_ordinal, state, identity_hash, created_at)
-                       VALUES (?, ?, ?, 1, 'failed', ?, ?)""",
-                    (candidate_id, fingerprint, operation_id, identity_hash, created_at),
-                )
-                cursor.execute(
-                    """INSERT INTO direct_connect_identity_history
-                       (history_id, token_fingerprint, candidate_id, identity_hash, identity_blob, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), fingerprint, candidate_id, identity_hash, identity_blob, created_at),
                 )
 
     def _read_authority(
