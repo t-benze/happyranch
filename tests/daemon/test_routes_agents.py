@@ -2458,6 +2458,160 @@ def test_set_executor_bootstrap_preflight_rejects_symlinked_owned_path(
     )
 
 
+def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 CRITICAL (round 2): a pre-existing ``workspace/.claude`` symlink
+    to an EXTERNAL directory must be rejected BEFORE the six-context union
+    materialization runs, because ``repair_workspace_skills(..., '.claude/skills')``
+    follows the link and would create/replace/withdraw entries in the external
+    target. Proves, at the real route + adapter/materializer seams:
+
+    (1) 400 executor_bootstrap_failed,
+    (2) materialization is NEVER invoked (the reconciler never runs),
+    (3) the bootstrap writer is NEVER invoked,
+    (4) the ``.claude`` symlink survives with its original target,
+    (5) the external sentinel directory's ``skills/`` subtree is byte/state
+        identical (no creation/replacement/withdrawal),
+    (6) old executor/frontmatter/audit state is unchanged (no launch)."""
+    import os as _os
+    import hashlib
+    from pathlib import Path as _Path
+    from runtime.orchestrator import workspace_adapters as wa
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── External sentinel directory OUTSIDE the workspace ──
+    sentinel_dir = org_state.root / "external-sentinel-claude"
+    sentinel_skills = sentinel_dir / "skills"
+    sentinel_skills.mkdir(parents=True)
+    keep_file = sentinel_skills / "keep.txt"
+    keep_file.write_bytes(b"# sentinel keep: never mutated\n")
+    keep_link = sentinel_skills / "keep-link"
+    _os.symlink("keep.txt", keep_link)
+
+    # workspace/.claude -> external sentinel directory (the reviewed vector)
+    claude_link = workspace / ".claude"
+    claude_link.symlink_to(sentinel_dir, target_is_directory=True)
+
+    def _snapshot_sentinel(root: _Path) -> dict:
+        """Recursive (file-bytes, symlink-target, dir) snapshot of the sentinel."""
+        snap: dict = {}
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = ("link", _os.readlink(p))
+            elif p.is_file():
+                snap[rel] = ("file", hashlib.sha256(p.read_bytes()).hexdigest())
+            elif p.is_dir():
+                snap[rel] = ("dir",)
+        return snap
+
+    sentinel_before = _snapshot_sentinel(sentinel_dir)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on .claude symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── Materialization NEVER ran (the reconciler never followed .claude) ──
+    assert materialize_calls == [], (
+        f"materialization ran despite .claude symlink preflight: {materialize_calls}"
+    )
+
+    # ── Bootstrap writer never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite .claude symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert claude_link.is_symlink(), ".claude symlink was removed/replaced"
+    assert _os.readlink(claude_link) == str(sentinel_dir), (
+        f".claude target changed: {_os.readlink(claude_link)!r} != "
+        f"{str(sentinel_dir)!r}"
+    )
+
+    # ── External sentinel directory state is byte/state identical ──
+    # The full snapshot proves no creation/replacement/withdrawal in the
+    # sentinel skills/ subtree (including no newly-created skills directory).
+    assert _snapshot_sentinel(sentinel_dir) == sentinel_before, (
+        "external sentinel .claude/skills subtree was mutated"
+    )
+    assert keep_file.read_bytes() == b"# sentinel keep: never mutated\n", (
+        "sentinel keep.txt bytes were mutated"
+    )
+    assert keep_link.is_symlink(), "sentinel keep-link symlink was removed"
+    assert _os.readlink(keep_link) == "keep.txt", "sentinel keep-link target changed"
+    assert sorted(p.name for p in sentinel_skills.iterdir()) == [
+        "keep-link", "keep.txt"
+    ], "sentinel skills/ entry set changed (creation/withdrawal detected)"
+
+    # ── Old executor / frontmatter / audit unchanged (no launch) ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on .claude symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on .claude symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite .claude symlink preflight: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
 def test_set_executor_bootstrap_journal_ignores_repos_sentinel(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:

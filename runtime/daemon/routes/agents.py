@@ -1116,6 +1116,40 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
+    # ── Preflight: reject symlinked / non-regular owned paths ──
+    # A pre-existing symlink (or FIFO/socket/device/dir) at a
+    # bootstrap-owned path cannot be losslessly compensated: bootstrap may
+    # write through or replace it, and restore would then delete a
+    # pre-existing symlink or leave its target mutated. A symlinked
+    # ``.claude`` (a bootstrap-owned directory) is additionally followed by
+    # the six-context union's ``repair_workspace_skills(..., '.claude/skills')``
+    # during materialization, which would create/replace/withdraw entries in
+    # an arbitrary external target before any rejection. Fail closed BEFORE
+    # any union materialization, integrity work, or bootstrap mutation so the
+    # old executor, frontmatter, and audit state stay untouched and the
+    # symlink target is never followed or written. (Same contract as the
+    # bootstrap failure path: 400 executor_bootstrap_failed, nothing mutated.)
+    if has_workspace:
+        unsupported = _bootstrap_unsupported_owned_paths(workspace)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned path is a symlink or unsupported "
+                        "non-regular type: " + ", ".join(sorted(unsupported))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because an owned path is a symlink or "
+                        "unsupported non-regular type. The previous executor "
+                        "has been preserved. Resolve the path conflict before "
+                        "retrying."
+                    ),
+                },
+            )
+
     # ── Step 1: Materialize the six-context canonical union FIRST ──
     # This MUST complete successfully before any frontmatter is persisted.
     # On failure, the previous executor is preserved and a named HTTP
@@ -1146,35 +1180,6 @@ async def set_agent_executor(
     # switch — no config change, no audit row. Only if this succeeds does
     # the switch become durable.
     if has_workspace:
-        # ── Preflight: reject symlinked / non-regular owned paths ──
-        # A pre-existing symlink (or FIFO/socket/device/dir) at a
-        # bootstrap-owned path cannot be losslessly compensated: bootstrap
-        # may write through or replace it, and restore would then delete a
-        # pre-existing symlink or leave its target mutated. Fail closed
-        # BEFORE bootstrap makes any mutation so the old executor,
-        # frontmatter, and audit state stay untouched and the symlink target
-        # is never followed or written. (Same contract as the bootstrap
-        # failure path: 400 executor_bootstrap_failed, nothing mutated.)
-        unsupported = _bootstrap_unsupported_owned_paths(workspace)
-        if unsupported:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "executor_bootstrap_failed",
-                    "error": (
-                        "Bootstrap-owned path is a symlink or unsupported "
-                        "non-regular type: " + ", ".join(sorted(unsupported))
-                    ),
-                    "message": (
-                        "Executor workspace bootstrap was rejected before "
-                        "any mutation because an owned path is a symlink or "
-                        "unsupported non-regular type. The previous executor "
-                        "has been preserved. Resolve the path conflict before "
-                        "retrying."
-                    ),
-                },
-            )
-
         # ── Snapshot pre-bootstrap workspace state ──
         # THR-190: the modern bootstrap write surface is bounded to a small,
         # explicit set of owned files. Capture only those; never traverse or
