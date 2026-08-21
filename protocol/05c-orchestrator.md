@@ -673,9 +673,34 @@ There is no fall-through/default copy: an unclassified present root rejects.
 **Quiescence & zombie reporting.** Preflight refuses any pending/in_progress/
 escalated task (including live, delegated, and job-parked forms), any active
 session binding/PID or queued item, any pending thread invocation, pending/
-running job, pending/running dream/work-hour, or armed/firing schedule. It
+running job, pending/running dream/work-hour, or any armed/firing schedule. It
 *reports* possible zombies (in_progress, no block_kind, stale heartbeat, dead
 pid) but never resolves them.
+
+**Conservative schedule policy (founder, THR-187).** Preflight refuses when
+**any** schedule is **armed or firing** — both are live source-readiness
+hazards, so a relocation-specific disarm command or export fence is never
+built. The preflight response reports only *existing* controls as the exact
+actionable remedies:
+
+* an **armed** schedule → `happyranch todos pause --org <slug> <schedule_id>`
+  or `happyranch todos cancel --org <slug> <schedule_id>` (both are permitted
+  by the existing schedule state machine);
+* a **firing** schedule → no pause/cancel is permitted under the existing
+  state machine; the correct non-mutating remedy is to wait for it to reach a
+  terminal state, then re-run the preflight. No new control is added;
+* live nonterminal tasks / active jobs → the existing
+  `happyranch cancel <task_id> --org <slug>` and
+  `happyranch jobs stop <job_id> --org <slug>` lifecycle controls;
+* active sessions, queued items, pending thread invocations, dreams, and
+  work-hours have no founder cancel control — the remedy is the non-mutating
+  wait/resolve condition; and
+* a confirmed zombie → the separately audited, founder-only
+  `happyranch orgs reconcile-portability <slug> --from-file <absolute-json>`
+  path.
+
+Preflight itself is read-only: it never invokes any of these controls, never
+calls reconciliation, and performs no export/import/archive action.
 
 **Reconciliation limits.** ``reconcile-portability`` is founder/master-bearer
 only (reuses the existing human-authority dependency unchanged). It names

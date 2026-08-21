@@ -32,6 +32,7 @@ from runtime.models import TaskStatus
 from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 from runtime.portability.eligibility import (
     TaskLiveness,
+    ZombieCandidate,
     compute_eligibility,
     is_true_zombie,
 )
@@ -39,9 +40,11 @@ from runtime.portability.roots import classify_root_entries
 
 router = APIRouter(dependencies=[require_token()])
 
+_ACTIVE_JOB_STATUSES = {"pending", "running"}
 _ACTIVE_DREAM_STATUSES = {"pending", "running"}
 _ACTIVE_WORK_HOUR_STATUSES = {"pending", "running"}
-_ACTIVE_SCHEDULE_STATUSES = {"armed", "firing"}
+_ARMED_SCHEDULE_STATUSES = {"armed"}
+_FIRING_SCHEDULE_STATUSES = {"firing"}
 
 
 def _task_state_summary(task) -> dict:
@@ -73,7 +76,10 @@ def _gather_task_liveness(org) -> list[TaskLiveness]:
 
 
 def _active_job_ids(org) -> list[str]:
-    return [j.id for j in org.db.list_jobs_db(status=["pending", "running"], limit=500)]
+    # Dedicated uncapped status-filtered id query — never the capped,
+    # newest-first presentation list (list_jobs_db), which could hide an old
+    # active row behind newer terminal rows.
+    return org.db.list_job_ids_by_status(_ACTIVE_JOB_STATUSES)
 
 
 def _active_dream_ids(org) -> list[str]:
@@ -84,8 +90,112 @@ def _active_work_hour_ids(org) -> list[str]:
     return org.db.work_hours.list_ids_by_status(_ACTIVE_WORK_HOUR_STATUSES)
 
 
+def _armed_schedule_ids(org) -> list[str]:
+    return org.db.schedules.list_ids_by_status(_ARMED_SCHEDULE_STATUSES)
+
+
+def _firing_schedule_ids(org) -> list[str]:
+    return org.db.schedules.list_ids_by_status(_FIRING_SCHEDULE_STATUSES)
+
+
 def _active_schedule_ids(org) -> list[str]:
-    return org.db.schedules.list_ids_by_status(_ACTIVE_SCHEDULE_STATUSES)
+    return sorted(set(_armed_schedule_ids(org)) | set(_firing_schedule_ids(org)))
+
+
+def _build_remedies(
+    slug: str,
+    *,
+    tasks: list[str],
+    jobs: list[str],
+    dreams: list[str],
+    work_hours: list[str],
+    armed_schedules: list[str],
+    firing_schedules: list[str],
+    active_session_count: int,
+    queued_for_org: int,
+    pending_invocation_count: int,
+    zombies: list[ZombieCandidate],
+) -> list[dict]:
+    """Report the exact actionable remedy for each blocker using only the
+    existing founder controls (no relocation-specific disarm command, no
+    export fence). For a state with no existing control (a firing schedule,
+    live sessions/queue/invocations/dreams/work-hours), report the correct
+    non-mutating wait/resolve condition instead."""
+    remedies: list[dict] = []
+
+    for sid in sorted(armed_schedules):
+        remedies.append({
+            "kind": "schedule",
+            "target": sid,
+            "status": "armed",
+            "remedy": (
+                f"happyranch todos pause --org {slug} {sid} "
+                f"(or: happyranch todos cancel --org {slug} {sid})"
+            ),
+        })
+    for sid in sorted(firing_schedules):
+        remedies.append({
+            "kind": "schedule",
+            "target": sid,
+            "status": "firing",
+            "remedy": (
+                f"{sid} is firing and cannot be paused or cancelled under the "
+                f"existing schedule state machine; wait for it to reach a "
+                f"terminal state, then re-run the preflight"
+            ),
+        })
+
+    for tid in tasks:
+        remedies.append({
+            "kind": "task",
+            "target": tid,
+            "status": None,
+            "remedy": f"happyranch cancel {tid} --org {slug}",
+        })
+
+    for jid in jobs:
+        remedies.append({
+            "kind": "job",
+            "target": jid,
+            "status": None,
+            "remedy": f"happyranch jobs stop {jid} --org {slug}",
+        })
+
+    live_surfaces: list[str] = []
+    if active_session_count:
+        live_surfaces.append(f"{active_session_count} active session(s)")
+    if queued_for_org:
+        live_surfaces.append("a queued task")
+    if pending_invocation_count:
+        live_surfaces.append(f"{pending_invocation_count} pending thread invocation(s)")
+    if dreams:
+        live_surfaces.append(f"{len(dreams)} active dream(s)")
+    if work_hours:
+        live_surfaces.append(f"{len(work_hours)} active work-hour(s)")
+    if live_surfaces:
+        remedies.append({
+            "kind": "live_work",
+            "target": None,
+            "status": None,
+            "remedy": (
+                "no founder cancel control exists for: "
+                + "; ".join(live_surfaces)
+                + ". Wait for these to complete, then re-run the preflight"
+            ),
+        })
+
+    for z in zombies:
+        remedies.append({
+            "kind": "zombie",
+            "target": z.task_id,
+            "status": None,
+            "remedy": (
+                f"happyranch orgs reconcile-portability {slug} "
+                f"--from-file <absolute-json-path>"
+            ),
+        })
+
+    return remedies
 
 
 @router.get("/portability-preflight")
@@ -93,6 +203,8 @@ def portability_preflight(slug: str, org: OrgDep, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     inventory = classify_root_entries(org.root)
     now = datetime.now(timezone.utc)
+    armed_schedules = _armed_schedule_ids(org)
+    firing_schedules = _firing_schedule_ids(org)
     eligibility = compute_eligibility(
         tasks=_gather_task_liveness(org),
         active_session_count=org.sessions.count_active(),
@@ -118,6 +230,19 @@ def portability_preflight(slug: str, org: OrgDep, request: Request) -> dict:
             "blockers": eligibility.blockers(),
             "possible_zombies": [z.__dict__ for z in eligibility.possible_zombies],
         },
+        "remedies": _build_remedies(
+            slug,
+            tasks=eligibility.tasks,
+            jobs=eligibility.active_jobs,
+            dreams=eligibility.active_dreams,
+            work_hours=eligibility.active_work_hours,
+            armed_schedules=armed_schedules,
+            firing_schedules=firing_schedules,
+            active_session_count=eligibility.active_session_count,
+            queued_for_org=eligibility.queued_for_org,
+            pending_invocation_count=eligibility.pending_invocation_count,
+            zombies=eligibility.possible_zombies,
+        ),
     }
 
 

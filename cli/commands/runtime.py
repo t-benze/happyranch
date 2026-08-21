@@ -169,6 +169,12 @@ def cmd_orgs_portability_preflight(args: argparse.Namespace) -> None:
         print("\npossible zombies (reported only — not resolved):")
         for z in zombies:
             print(f"  {z['task_id']}  agent={z['assigned_agent']}")
+    remedies = body.get("remedies") or []
+    if remedies:
+        print("\nremedies (existing controls only — no disarm/export command):")
+        for r in remedies:
+            label = r["target"] if r.get("target") else r["kind"]
+            print(f"  [{r['kind']}] {label}: {r['remedy']}")
 
 
 def cmd_orgs_reconcile_portability(args: argparse.Namespace) -> None:

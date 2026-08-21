@@ -18,11 +18,17 @@ from runtime.models import (
     BlockKind,
     DreamRecord,
     DreamStatus,
+    JobInterpreter,
+    JobRecord,
+    JobStatus,
     ScheduleKind,
     ScheduleRecord,
     ScheduleStatus,
     TaskRecord,
     TaskStatus,
+    ThreadInvocationPurpose,
+    ThreadInvocationStatus,
+    ThreadRecord,
     WorkHourMode,
     WorkHourRecord,
     WorkHourStatus,
@@ -421,3 +427,344 @@ def test_presentation_list_cap_unchanged_after_501_rows(tmp_path: Path) -> None:
     _seed_500_terminal_dreams_plus_old_active(db)
     assert len(db.list_dreams(limit=500)) == 500
     assert all(d.status == DreamStatus.COMPLETED for d in db.list_dreams(limit=500))
+
+
+# ---------------------------------------------------------------------------
+# Session / queue / invocation / job liveness (TASK-5346 matrix, route proof)
+# ---------------------------------------------------------------------------
+
+def _insert_job(
+    db: Database,
+    job_id: str,
+    status: JobStatus,
+    *,
+    created_at: str | None = None,
+) -> None:
+    db.insert_job(JobRecord(
+        id=job_id, task_id="T-1", agent_name="dev_agent", title="t",
+        rationale="r", script_text="echo hi", interpreter=JobInterpreter.BASH,
+        status=status,
+        created_at=created_at or datetime.now(timezone.utc).isoformat(),
+    ))
+
+
+def _insert_schedule(
+    db: Database,
+    schedule_id: str,
+    status: ScheduleStatus,
+    *,
+    created_at: datetime | None = None,
+) -> None:
+    db.schedules.insert(ScheduleRecord(
+        id=schedule_id, agent_name="dev_agent", kind=ScheduleKind.ONE_SHOT,
+        fire_at=_NEW_BASE, normalized_brief="b", source_instruction="s",
+        status=status, active=1 if status == ScheduleStatus.ARMED else 0,
+        created_at=created_at or _NEW_BASE,
+    ))
+
+
+def test_preflight_refuses_active_session_binding(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    org = state.orgs["alpha"]
+    org.sessions.set_active("T-1", "dev_agent", "sess-live")
+    before = _org_entries(state, "alpha")
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert r.status_code == 200
+    assert body["eligible"] is False
+    assert body["eligibility"]["blockers"]["active_sessions"] == 1
+    assert _org_entries(state, "alpha") == before  # read-only
+
+
+def test_preflight_refuses_queue_entry(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    state.queue.put_nowait("alpha", "T-1")
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["blockers"]["queued_items"] == 1
+
+
+def test_preflight_ignores_other_org_queue_entry(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    state.queue.put_nowait("beta", "T-9")
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is True
+    assert body["eligibility"]["blockers"]["queued_items"] == 0
+
+
+@pytest.mark.parametrize(
+    "purpose",
+    [ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP,
+     ThreadInvocationPurpose.TASK_FOLLOWUP],
+    ids=["reply", "bootstrap", "task_followup"],
+)
+def test_preflight_refuses_pending_invocation(
+    tmp_path: Path, purpose: ThreadInvocationPurpose,
+) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.insert_thread(ThreadRecord(id="TH-1", subject="t"))
+    db.mint_thread_invocation(
+        thread_id="TH-1", agent_name="dev_agent",
+        triggering_seq=1, purpose=purpose,
+    )
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["blockers"]["pending_thread_invocations"] >= 1
+
+
+@pytest.mark.parametrize(
+    "terminalize", ["consume", "decline", "fail"],
+    ids=["consumed", "declined", "failed"],
+)
+def test_preflight_ignores_terminal_invocations(
+    tmp_path: Path, terminalize: str,
+) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.insert_thread(ThreadRecord(id="TH-1", subject="t"))
+    inv = db.mint_thread_invocation(
+        thread_id="TH-1", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    if terminalize == "consume":
+        db.consume_invocation(inv.invocation_token)
+    elif terminalize == "decline":
+        db.mark_invocation_declined(inv.invocation_token, decline_reason="test")
+    else:
+        db.fail_invocation(
+            inv.invocation_token,
+            status=ThreadInvocationStatus.FAILED,
+            decline_reason="test",
+        )
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is True
+    assert body["eligibility"]["blockers"]["pending_thread_invocations"] == 0
+
+
+@pytest.mark.parametrize(
+    "status", [JobStatus.PENDING, JobStatus.RUNNING],
+    ids=["pending", "running"],
+)
+def test_preflight_refuses_active_job(tmp_path: Path, status: JobStatus) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_job(db, "JOB-1", status)
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["blockers"]["active_jobs"] == ["JOB-1"]
+
+
+def test_preflight_refuses_501_active_jobs_uncapped(tmp_path: Path) -> None:
+    """Anti-cap proof: all 501 active jobs are reported (the 501st cannot be
+    hidden by the capped presentation list), a terminal job stays ineligible,
+    and the presentation list cap itself is preserved."""
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    ids: list[str] = []
+    for i in range(501):
+        jid = f"JOB-{i:04d}"
+        ids.append(jid)
+        _insert_job(
+            db, jid, JobStatus.PENDING,
+            created_at=(base + timedelta(minutes=i)).isoformat(),
+        )
+    oldest = ids[0]
+    _insert_job(db, "JOB-TERMINAL", JobStatus.COMPLETED)  # ineligible control
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    active = body["eligibility"]["blockers"]["active_jobs"]
+    assert len(active) == 501
+    assert active == ids  # deterministic ascending created_at order
+    assert oldest in active
+    assert "JOB-TERMINAL" not in active
+
+    # the generic presentation list stays capped (501st active hidden)
+    assert len(db.list_jobs_db(status=["pending", "running"], limit=500)) == 500
+
+
+def test_preflight_refuses_running_dream(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.insert_dream(DreamRecord(
+        id="DREAM-RUN", agent_name="dev_agent", local_date="2026-01-01",
+        scheduled_for=_NEW_BASE, window_end=_NEW_BASE, status=DreamStatus.RUNNING,
+    ))
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert "DREAM-RUN" in body["eligibility"]["blockers"]["active_dreams"]
+
+
+def test_preflight_refuses_running_work_hour(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-RUN", agent_name="dev_agent", local_date="2026-01-01",
+        slot="00:00", mode=WorkHourMode.WINDOWED, scheduled_for=_NEW_BASE,
+        status=WorkHourStatus.RUNNING,
+    ))
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert "WORKHOUR-RUN" in body["eligibility"]["blockers"]["active_work_hours"]
+
+
+@pytest.mark.parametrize(
+    "status", [ScheduleStatus.ARMED, ScheduleStatus.FIRING],
+    ids=["armed", "firing"],
+)
+def test_preflight_refuses_armed_and_firing_schedule(
+    tmp_path: Path, status: ScheduleStatus,
+) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_schedule(db, "SCHED-1", status)
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert "SCHED-1" in body["eligibility"]["blockers"]["active_schedules"]
+
+
+def test_preflight_armed_schedule_remedy_is_pause_or_cancel(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_schedule(db, "SCHED-A", ScheduleStatus.ARMED)
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    sched = [x for x in body["remedies"]
+             if x["kind"] == "schedule" and x["target"] == "SCHED-A"]
+    assert len(sched) == 1
+    assert sched[0]["status"] == "armed"
+    assert "happyranch todos pause --org alpha SCHED-A" in sched[0]["remedy"]
+    assert "happyranch todos cancel --org alpha SCHED-A" in sched[0]["remedy"]
+
+
+def test_preflight_firing_schedule_remedy_is_wait_not_disarm(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_schedule(db, "SCHED-F", ScheduleStatus.FIRING)
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    sched = [x for x in body["remedies"]
+             if x["kind"] == "schedule" and x["target"] == "SCHED-F"]
+    assert len(sched) == 1
+    assert sched[0]["status"] == "firing"
+    # firing cannot be paused/cancelled: no pause/cancel command, no export fence
+    assert "happyranch todos pause" not in sched[0]["remedy"]
+    assert "happyranch todos cancel" not in sched[0]["remedy"]
+    assert "fence" not in sched[0]["remedy"]
+    assert "export" not in sched[0]["remedy"]
+    assert "terminal" in sched[0]["remedy"]
+
+
+def test_preflight_task_remedy_is_existing_cancel(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_in_progress(db, "T-1")
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    t = [x for x in body["remedies"]
+         if x["kind"] == "task" and x["target"] == "T-1"]
+    assert len(t) == 1
+    assert "happyranch cancel T-1 --org alpha" in t[0]["remedy"]
+
+
+def test_preflight_zombie_remedy_is_reconcile_portability(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    _insert_true_zombie(db, "T-Z")
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    z = [x for x in body["remedies"]
+         if x["kind"] == "zombie" and x["target"] == "T-Z"]
+    assert len(z) == 1
+    assert ("happyranch orgs reconcile-portability alpha --from-file"
+            in z[0]["remedy"])
+    # reported, not resolved
+    assert db.get_task("T-Z").status == TaskStatus.IN_PROGRESS
+
+
+def test_preflight_eligible_has_no_remedies(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is True
+    assert body["remedies"] == []
+
+
+def test_preflight_parked_task_is_blocker_but_not_zombie(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    db.insert_task(TaskRecord(
+        id="T-PARKED", brief="parked", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(
+        "T-PARKED",
+        block_kind=BlockKind.BLOCKED_ON_JOB.value,
+        last_heartbeat=(datetime.now(timezone.utc)
+                        - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 10)).isoformat(),
+        executor_pid=DEAD_PID,
+    )
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    body = r.json()
+    assert body["eligible"] is False
+    assert body["eligibility"]["blockers"]["tasks"] == ["T-PARKED"]
+    assert body["eligibility"]["possible_zombies"] == []
+
+
+def test_preflight_is_read_only_across_all_blocker_surfaces(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    db = state.orgs["alpha"].db
+    org = state.orgs["alpha"]
+    _insert_in_progress(db, "T-1")
+    _insert_schedule(db, "SCHED-A", ScheduleStatus.ARMED)
+    _insert_job(db, "JOB-1", JobStatus.RUNNING)
+    state.queue.put_nowait("alpha", "T-9")
+    org.sessions.set_active("T-1", "dev_agent", "sess-1")
+
+    before_entries = _org_entries(state, "alpha")
+    before_task = db.get_task("T-1").status
+    before_sched = db.schedules.get("SCHED-A").status
+    before_job = db.get_job("JOB-1").status
+    before_sessions = org.sessions.count_active()
+    before_queue = state.queue.pending_slugs()
+
+    client = _client(state)
+    r = client.get("/api/v1/orgs/alpha/portability-preflight")
+    assert r.status_code == 200
+    assert r.json()["eligible"] is False
+
+    assert _org_entries(state, "alpha") == before_entries
+    assert db.get_task("T-1").status == before_task
+    assert db.schedules.get("SCHED-A").status == before_sched
+    assert db.get_job("JOB-1").status == before_job
+    assert org.sessions.count_active() == before_sessions
+    assert state.queue.pending_slugs() == before_queue

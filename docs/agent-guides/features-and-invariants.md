@@ -74,8 +74,23 @@ no UI, TS client, or browser contract.
   named exclusions; unknown/nonregular/nonzero-residue/invalid-skill roots reject.
   Quiescence: refuses any pending/in_progress/escalated task (live, delegated,
   or job-parked), active session/PID or queue entry, pending thread invocation,
-  pending/running job/dream/work-hour, or armed/firing schedule. It *reports*
+  pending/running job/dream/work-hour, or any armed/firing schedule. It *reports*
   possible zombies; it never resolves them.
+
+  **Conservative schedule policy (founder).** Preflight refuses when **any**
+  schedule is **armed or firing**; there is no relocation-specific disarm
+  command or export fence. The response reports only *existing* controls as
+  actionable remedies: an **armed** schedule →
+  `happyranch todos pause --org <slug> <schedule_id>` or
+  `happyranch todos cancel --org <slug> <schedule_id>`; a **firing** schedule
+  → no pause/cancel is permitted, so the correct non-mutating remedy is to wait
+  for it to reach a terminal state and re-run the preflight (no new control);
+  live nonterminal tasks/active jobs → `happyranch cancel <task_id> --org
+  <slug>` / `happyranch jobs stop <job_id> --org <slug>`; active sessions,
+  queued items, pending invocations, dreams, and work-hours have no founder
+  cancel control → wait/resolve; and a confirmed zombie → the founder-only
+  `happyranch orgs reconcile-portability <slug> --from-file <absolute-json>`
+  path. Preflight is read-only and never invokes any of these controls.
 - **`happyranch orgs reconcile-portability <slug> --from-file <request.json>`** —
   founder/master-bearer only (reuses the existing human-authority dependency).
   Names exactly one candidate + evidence/disposition; revalidates a true zombie

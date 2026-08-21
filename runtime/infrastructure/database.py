@@ -4095,6 +4095,26 @@ class Database:
         return [self._row_to_job(r) for r in rows]
 
     @_synchronized
+    def list_job_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered job-id query (no cap, DB-side filter).
+
+        ``list_jobs_db`` is a presentation list capped (default 50) and ordered
+        newest-first; using it for a liveness check can hide an old active row
+        behind newer terminal rows. This returns every job id whose status is
+        in ``statuses`` so a portability preflight cannot miss an active job.
+        Read-only; returns ids only, not full job records.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT id FROM jobs WHERE status IN ({placeholders}) "
+            "ORDER BY created_at, id",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    @_synchronized
     def transition_job_to_rejected(
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:

@@ -111,7 +111,8 @@ disposition (`cancel` or `consume_result`):
 The `--from-file` path must be absolute. See `docs/agent-guides/features-and-invariants.md`
 (Org Portability) and `protocol/05c-orchestrator.md` (Organization portability)
 for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
-reporting, and reconciliation limits.
+reporting, the conservative schedule policy (any armed or firing schedule
+refuses, with existing-control remedies only), and reconciliation limits.
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
