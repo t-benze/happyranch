@@ -20,6 +20,7 @@ boundary and its dedicated ``authority_*`` tables only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -38,6 +39,11 @@ from runtime.models import (
 
 # ── Claim-parameter factory (synthetic, deterministic per root) ──────────
 
+def _digest(tag: str) -> str:
+    """Deterministic sha256 hex digest for a tag (valid bounded-hex digest)."""
+    return hashlib.sha256(tag.encode("utf-8")).hexdigest()
+
+
 def _claim_kwargs(root: str = "TASK-0001", **overrides) -> dict:
     base = dict(
         root_task_id=root,
@@ -45,18 +51,18 @@ def _claim_kwargs(root: str = "TASK-0001", **overrides) -> dict:
         manager_agent="engineering_manager",
         manager_session_id="sess-0001",
         causal_event_id=f"evt-{root}",
-        causal_event_digest=f"digest-{root}",
+        causal_event_digest=_digest(f"causal-{root}"),
         causal_result_id=None,
         policy_id="policy/engineering/routine-gated-follow-through",
         policy_version="v1",
-        policy_digest="policy-digest-0001",
+        policy_digest=_digest("policy-0001"),
         prompt_id="prompt/authority-evaluator",
         prompt_version="v1",
-        prompt_digest="prompt-digest-0001",
+        prompt_digest=_digest("prompt-0001"),
         model_id="model/authority-evaluator",
         model_version="v1",
-        model_digest="model-digest-0001",
-        snapshot_digest="snapshot-digest-0001",
+        model_digest=_digest("model-0001"),
+        snapshot_digest=_digest(f"snapshot-{root}"),
         fence_results={"cancellation": {"passed": True, "code": None}},
     )
     base.update(overrides)
@@ -121,7 +127,7 @@ def test_authority_evaluations_append_only(db):
     cid, _ = _claim(db)
     db.record_authority_evaluation(
         candidate_id=cid, disposition="escalate", disposition_code="escalate",
-        response_digest="response-digest-0001",
+        response_digest=_digest("response-0001"),
     )
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         db._conn.execute("UPDATE authority_evaluations SET disposition='continue_same_root'")
@@ -195,7 +201,7 @@ def test_record_evaluation_rejects_unknown_disposition(db):
     with pytest.raises(sqlite3.IntegrityError):
         db.record_authority_evaluation(
             candidate_id=cid, disposition="bogus", disposition_code="escalate",
-            response_digest="response-digest-0001",
+            response_digest=_digest("response-0001"),
         )
     # Atomic rollback: the candidate was NOT transitioned by the failed insert.
     assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
@@ -208,11 +214,11 @@ def test_candidate_persists_digests_not_prose(db):
     cid, won = _claim(db)
     assert won is True
     got = db.get_authority_candidate(cid)
-    assert got.snapshot_digest == "snapshot-digest-0001"
-    assert got.causal_event_digest == "digest-TASK-0001"
-    assert got.policy_digest == "policy-digest-0001"
-    assert got.prompt_digest == "prompt-digest-0001"
-    assert got.model_digest == "model-digest-0001"
+    assert got.snapshot_digest == _digest("snapshot-TASK-0001")
+    assert got.causal_event_digest == _digest("causal-TASK-0001")
+    assert got.policy_digest == _digest("policy-0001")
+    assert got.prompt_digest == _digest("prompt-0001")
+    assert got.model_digest == _digest("model-0001")
     # Structured fence results round-trip; no prose field exists on the model.
     assert got.fence_results["cancellation"].passed is True
     assert got.manager_session_id == "sess-0001"
@@ -222,10 +228,10 @@ def test_evaluation_persists_response_digest_not_raw(db):
     cid, _ = _claim(db)
     db.record_authority_evaluation(
         candidate_id=cid, disposition="continue_same_root",
-        disposition_code="continue_same_root", response_digest="response-digest-0001",
+        disposition_code="continue_same_root", response_digest=_digest("response-0001"),
     )
     ev = db.get_authority_evaluation(cid)
-    assert ev.response_digest == "response-digest-0001"
+    assert ev.response_digest == _digest("response-0001")
     assert ev.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
     # The raw response is never stored — the only response column is the digest.
     eval_cols = {r[1] for r in db._conn.execute("PRAGMA table_info(authority_evaluations)").fetchall()}
@@ -346,7 +352,7 @@ def test_record_evaluation_rolls_back_when_candidate_already_evaluated(db):
     cid, _ = _claim(db)
     db.record_authority_evaluation(
         candidate_id=cid, disposition="escalate", disposition_code="escalate",
-        response_digest="response-digest-0001",
+        response_digest=_digest("response-0001"),
     )
     # Second evaluation is a DB-level single-evaluation violation: the UNIQUE
     # candidate_id constraint raises before the transition, so the whole
@@ -354,7 +360,7 @@ def test_record_evaluation_rolls_back_when_candidate_already_evaluated(db):
     with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
         db.record_authority_evaluation(
             candidate_id=cid, disposition="continue_same_root",
-            disposition_code="continue_same_root", response_digest="response-digest-0002",
+            disposition_code="continue_same_root", response_digest=_digest("response-0002"),
         )
     assert db._conn.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 1
     got = db.get_authority_candidate(cid)
@@ -368,7 +374,7 @@ def test_record_evaluation_missing_candidate_rolls_back(db):
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         db.record_authority_evaluation(
             candidate_id="AUTH-CAND-nonexistent", disposition="escalate",
-            disposition_code="escalate", response_digest="response-digest-0001",
+            disposition_code="escalate", response_digest=_digest("response-0001"),
         )
     assert db._conn.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 0
 
@@ -382,7 +388,7 @@ def test_consume_is_exactly_once_and_requires_evaluation(db):
     assert db.consume_authority_candidate(cid) is False
     db.record_authority_evaluation(
         candidate_id=cid, disposition="continue_same_root",
-        disposition_code="continue_same_root", response_digest="response-digest-0001",
+        disposition_code="continue_same_root", response_digest=_digest("response-0001"),
     )
     assert db.consume_authority_candidate(cid) is True
     assert db.consume_authority_candidate(cid) is False  # no extra consumption
@@ -486,7 +492,7 @@ def test_crash_reopen_round_trip_at_each_durable_stage(tmp_path):
     # Stage 2: record evaluation, crash, reopen.
     db.record_authority_evaluation(
         candidate_id=cid, disposition="continue_same_root",
-        disposition_code="continue_same_root", response_digest="response-digest-0001",
+        disposition_code="continue_same_root", response_digest=_digest("response-0001"),
     )
     db.close()
 
@@ -495,7 +501,7 @@ def test_crash_reopen_round_trip_at_each_durable_stage(tmp_path):
     assert got.lifecycle_state == AuthorityLifecycleState.EVALUATED
     assert got.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
     ev = db.get_authority_evaluation(cid)
-    assert ev is not None and ev.response_digest == "response-digest-0001"
+    assert ev is not None and ev.response_digest == _digest("response-0001")
 
     # Stage 3: consume, crash, reopen.
     assert db.consume_authority_candidate(cid) is True
@@ -522,3 +528,158 @@ def test_crash_before_evaluation_leaves_no_continuable_partial_record(tmp_path):
     # A never-evaluated candidate cannot be consumed after reopen.
     assert db.consume_authority_candidate(cid) is False
     assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
+
+
+# ── Defect A: strict typed closed records reject smuggled content ─────────
+
+def test_claim_rejects_bearer_secret_with_no_residue(db):
+    with pytest.raises(ValueError):
+        _claim(db, snapshot_digest="Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature")
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+
+
+def test_claim_rejects_task_prose_with_no_residue(db):
+    with pytest.raises(ValueError):
+        _claim(db, snapshot_digest="The task escalated because the manager asked for a review.")
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+
+
+def test_evaluation_rejects_model_exchange_with_no_residue(db):
+    cid, _ = _claim(db)
+    with pytest.raises(ValueError):
+        db.record_authority_evaluation(
+            candidate_id=cid,
+            disposition="escalate",
+            disposition_code="escalate",
+            response_digest='[{"role":"user","content":"what now"}]',
+        )
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 0
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
+
+
+def test_claim_rejects_unknown_fence_code_with_no_residue(db):
+    with pytest.raises(ValueError):
+        _claim(db, fence_results={"cancellation": {"passed": True, "code": "bogus_code"}})
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+
+
+def test_claim_rejects_unknown_fence_field_with_no_residue(db):
+    with pytest.raises(ValueError):
+        _claim(db, fence_results={"cancellation": {"passed": True, "unexpected": 1}})
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+
+
+def test_claim_accepts_known_fence_code(db):
+    cid, won = _claim(db, fence_results={"cancellation": {"passed": False, "code": "cancelled"}})
+    assert won is True
+    got = db.get_authority_candidate(cid)
+    assert got.fence_results["cancellation"].passed is False
+    assert got.fence_results["cancellation"].code.value == "cancelled"
+
+
+def test_audit_rejects_nested_payload_with_no_residue(db):
+    cid, _ = _claim(db)
+    with pytest.raises(ValueError):
+        db.record_authority_audit(
+            candidate_id=cid, event_type="candidate_claimed",
+            payload={"nested": {"arbitrary": "json"}},
+        )
+    with pytest.raises(ValueError):
+        db.record_authority_audit(
+            candidate_id=cid, event_type="candidate_claimed",
+            payload={"digest": {"nested": "json"}},
+        )
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 0
+
+
+# ── Defect B: DB-level lifecycle enforcement blocks raw-SQL fabrication ──
+
+def test_raw_sql_cannot_skip_to_consumed_without_evaluation(db):
+    cid, _ = _claim(db)
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db.execute(
+            "UPDATE authority_candidates SET lifecycle_state='consumed', consumed_at='now' WHERE id=?",
+            (cid,),
+        )
+    db._conn.rollback()
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
+
+
+def test_raw_sql_cannot_fabricate_evaluated_without_evaluation_row(db):
+    cid, _ = _claim(db)
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db.execute(
+            "UPDATE authority_candidates SET lifecycle_state='evaluated', disposition='escalate' WHERE id=?",
+            (cid,),
+        )
+    db._conn.rollback()
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CREATED
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 0
+
+
+def test_raw_sql_cannot_transition_backward(db):
+    cid, _ = _claim(db)
+    db.record_authority_evaluation(
+        candidate_id=cid, disposition="escalate", disposition_code="escalate",
+        response_digest=_digest("response-0001"),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db.execute("UPDATE authority_candidates SET lifecycle_state='created' WHERE id=?", (cid,))
+    db._conn.rollback()
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.EVALUATED
+
+
+def test_raw_sql_cannot_mutate_disposition_after_evaluation(db):
+    cid, _ = _claim(db)
+    db.record_authority_evaluation(
+        candidate_id=cid, disposition="escalate", disposition_code="escalate",
+        response_digest=_digest("response-0001"),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db.execute(
+            "UPDATE authority_candidates SET disposition='continue_same_root' WHERE id=?", (cid,)
+        )
+    db._conn.rollback()
+    assert db.get_authority_candidate(cid).disposition == AuthorityDisposition.ESCALATE
+
+
+def test_valid_api_round_trip_passes_lifecycle_guard(db):
+    cid, won = _claim(db)
+    assert won is True
+    db.record_authority_evaluation(
+        candidate_id=cid, disposition="continue_same_root",
+        disposition_code="continue_same_root", response_digest=_digest("response-0001"),
+    )
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.EVALUATED
+    assert db.consume_authority_candidate(cid) is True
+    assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CONSUMED
+
+
+# ── Defect C: audit candidate attribution is FK + API enforced ───────────
+
+def test_audit_rejects_missing_candidate_and_leaves_no_orphan(db):
+    # API validation rejects a missing candidate before any INSERT.
+    with pytest.raises(ValueError):
+        db.record_authority_audit(candidate_id="AUTH-CAND-nonexistent", event_type="candidate_claimed")
+    # DB-level FK rejects the same fabrication through a raw execute.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        db.execute(
+            "INSERT INTO authority_audit (candidate_id, event_type, created_at) "
+            "VALUES ('AUTH-CAND-nonexistent', 'candidate_claimed', 'now')",
+        )
+    db._conn.rollback()
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 0
+
+
+def test_audit_valid_append_only_still_works(db):
+    cid, _ = _claim(db)
+    db.record_authority_audit(candidate_id=cid, event_type="candidate_claimed")
+    db.record_authority_audit(
+        candidate_id=cid, event_type="evaluation_recorded",
+        payload={"disposition": "escalate", "retention_class": "digest_only"},
+    )
+    rows = db.list_authority_audit(cid)
+    assert len(rows) == 2
+    assert rows[0].event_type.value == "candidate_claimed"
+    assert rows[1].payload.disposition == AuthorityDisposition.ESCALATE
+    assert rows[1].payload.retention_class.value == "digest_only"

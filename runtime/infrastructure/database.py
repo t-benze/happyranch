@@ -12,6 +12,8 @@ from pathlib import Path
 
 from runtime.models import (
     AuthorityAuditEvent,
+    AuthorityAuditEventType,
+    AuthorityAuditPayload,
     AuthorityCandidate,
     AuthorityEvaluation,
     AuthorityFenceResult,
@@ -41,6 +43,8 @@ from runtime.models import (
     ThreadStatus,
     TokenUsage,
     WorkHourStatus,
+    validate_authority_digest,
+    validate_authority_version,
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
@@ -93,7 +97,44 @@ def _parse_authority_fence_results(raw: str | None) -> dict[str, AuthorityFenceR
     if raw is None:
         return None
     data = json.loads(raw)
-    return {name: AuthorityFenceResult(**value) for name, value in data.items()}
+    return {name: AuthorityFenceResult.model_validate(value) for name, value in data.items()}
+
+
+def _serialize_authority_fence_results(
+    fence_results: dict | None,
+) -> str | None:
+    """Strictly validate and serialize a fence-results mapping.
+
+    Each value must be a closed ``AuthorityFenceResult`` (extra keys and
+    unknown codes are rejected); fence names must be non-empty strings. Returns
+    the JSON column value, or None for an absent mapping. Raises ValueError
+    (via Pydantic) rather than silently storing or redacting anything.
+    """
+    if fence_results is None:
+        return None
+    if not isinstance(fence_results, dict):
+        raise ValueError("fence_results must be a dict mapping fence name -> AuthorityFenceResult")
+    normalized: dict[str, AuthorityFenceResult] = {}
+    for name, value in fence_results.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("fence result names must be non-empty strings")
+        normalized[name] = AuthorityFenceResult.model_validate(value)
+    return json.dumps(
+        {name: result.model_dump(mode="json") for name, result in normalized.items()}
+    )
+
+
+def _serialize_authority_audit_payload(payload: object | None) -> str | None:
+    """Strictly validate and serialize an authority audit payload.
+
+    The payload must be a closed ``AuthorityAuditPayload`` — unknown keys,
+    nested arbitrary JSON, prose, credentials, and raw model exchanges are
+    rejected. Returns the JSON column value, or None for an absent payload.
+    """
+    if payload is None:
+        return None
+    model = AuthorityAuditPayload.model_validate(payload)
+    return json.dumps(model.model_dump(mode="json", exclude_none=True))
 
 
 def _synchronized(method):
@@ -1803,7 +1844,7 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS authority_audit (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                candidate_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
                 event_type   TEXT NOT NULL
                     CHECK (event_type IN
                         ('candidate_claimed','candidate_claim_lost',
@@ -1820,6 +1861,48 @@ class Database:
             CREATE TRIGGER IF NOT EXISTS authority_audit_no_delete
                 BEFORE DELETE ON authority_audit
                 BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+
+            -- DB-level lifecycle enforcement (not only Python): blocks fabrication
+            -- through a raw ``Database.execute`` UPDATE. Only the intended finite
+            -- transitions are permitted, disposition and consumed_at are immutable
+            -- once set, and the ``evaluated``/``consumed`` states require a
+            -- consistent ``authority_evaluations`` row for the candidate. The
+            -- trigger body references ``authority_evaluations`` (created above),
+            -- which SQLite resolves at trigger execution time.
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_lifecycle_guard
+                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+                ON authority_candidates
+                FOR EACH ROW
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                    WHERE NOT (
+                        -- created -> evaluated: requires a committed evaluation row
+                        -- and a freshly set disposition (NULL -> value);
+                        -- consumed_at is still NULL.
+                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                         AND NEW.lifecycle_state = 'evaluated'
+                         AND NEW.disposition IS NOT NULL
+                         AND NEW.consumed_at IS NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id))
+                        OR
+                        -- evaluated -> consumed: exactly-once; disposition frozen;
+                        -- a committed evaluation row must exist; consumed_at
+                        -- stamped exactly once (NULL -> value).
+                        (OLD.lifecycle_state = 'evaluated'
+                         AND NEW.lifecycle_state = 'consumed'
+                         AND NEW.disposition IS OLD.disposition
+                         AND OLD.consumed_at IS NULL
+                         AND NEW.consumed_at IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id))
+                        OR
+                        -- no-op on the guarded columns (e.g. updated_at-only writes).
+                        (NEW.lifecycle_state = OLD.lifecycle_state
+                         AND NEW.disposition IS OLD.disposition
+                         AND NEW.consumed_at IS OLD.consumed_at)
+                    );
+                END;
             """)
         self._conn.commit()
 
@@ -7697,6 +7780,19 @@ class Database:
         incidental thread ordering; the UNIQUE constraint, not scheduling, is
         the arbiter. No evaluator is invoked and no consumption occurs here.
         """
+        # Pre-serialization validation — reject prose/credentials/model exchanges
+        # smuggled into digest fields and non-closed fence results BEFORE any row
+        # is written (no silent redaction, no durable residue).
+        validate_authority_digest(causal_event_digest, "causal_event_digest")
+        validate_authority_digest(policy_digest, "policy_digest")
+        validate_authority_digest(prompt_digest, "prompt_digest")
+        validate_authority_digest(model_digest, "model_digest")
+        validate_authority_digest(snapshot_digest, "snapshot_digest")
+        validate_authority_version(policy_version, "policy_version")
+        validate_authority_version(prompt_version, "prompt_version")
+        validate_authority_version(model_version, "model_version")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
+
         claim_key = _authority_claim_key(
             root_task_id,
             manager_session_id,
@@ -7742,7 +7838,7 @@ class Database:
                 snapshot_digest,
                 snapshot_retention_class,
                 snapshot_redaction_class,
-                json.dumps(fence_results) if fence_results is not None else None,
+                fence_results_json,
                 now,
                 now,
             ),
@@ -7775,6 +7871,8 @@ class Database:
         ``sqlite3.IntegrityError`` and rolls back. Stores only the response
         *digest* and controlled disposition/code — never raw response text.
         """
+        validate_authority_digest(response_digest, "response_digest")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("BEGIN")
         try:
@@ -7791,7 +7889,7 @@ class Database:
                     response_digest,
                     response_retention_class,
                     response_redaction_class,
-                    json.dumps(fence_results) if fence_results is not None else None,
+                    fence_results_json,
                     now,
                 ),
             )
@@ -7816,14 +7914,26 @@ class Database:
         payload: dict | None = None,
     ) -> int:
         """Append one immutable audit event. The table's BEFORE UPDATE/DELETE
-        triggers make it append-only at the DB level."""
+        triggers make it append-only at the DB level, and candidate attribution
+        is DB-enforced via a foreign key to ``authority_candidates``."""
+        # API validation (in addition to the DB-level FK): closed event
+        # vocabulary, closed payload, and an existing candidate.
+        event_type_value = AuthorityAuditEventType(event_type).value
+        payload_json = _serialize_authority_audit_payload(payload)
+        exists = self._conn.execute(
+            "SELECT 1 FROM authority_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError(
+                f"authority audit requires an existing candidate: {candidate_id!r}"
+            )
         cur = self._conn.execute(
             """INSERT INTO authority_audit (candidate_id, event_type, payload_json, created_at)
                VALUES (?, ?, ?, ?)""",
             (
                 candidate_id,
-                event_type,
-                json.dumps(payload) if payload is not None else None,
+                event_type_value,
+                payload_json,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -7937,7 +8047,11 @@ class Database:
                 id=r["id"],
                 candidate_id=r["candidate_id"],
                 event_type=r["event_type"],
-                payload=json.loads(r["payload_json"]) if r["payload_json"] else None,
+                payload=(
+                    AuthorityAuditPayload.model_validate(json.loads(r["payload_json"]))
+                    if r["payload_json"]
+                    else None
+                ),
                 created_at=r["created_at"],
             )
             for r in rows
