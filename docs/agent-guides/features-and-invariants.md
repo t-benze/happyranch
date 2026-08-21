@@ -43,7 +43,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 
 - **Multi-org runtime.** A single daemon hosts multiple orgs in parallel under a schema-v2 container (`<runtime>/orgs/<slug>/...`); per-org routes live under `/api/v1/orgs/<slug>/...`. Specs `docs/superpowers/specs/2026-04-26-multi-org-runtime-design.md` (superseded), `docs/superpowers/specs/2026-04-28-parallel-multi-org-runtime-design.md`; current shape `docs/agent-guides/project-layout.md`; impl `runtime/daemon/org_state.py`, `runtime/daemon/runtimes.py`.
 - **Org content model.** Each org is loaded from `org/` — charter, `teams.yaml`, per-agent `agents/*.md`, and `config.yaml`. Guide `docs/agent-guides/project-layout.md`; impl `runtime/orchestrator/org_config.py`, `runtime/orchestrator/teams.py`, `runtime/orchestrator/agent_def.py`.
-- **Org portability (Slice A).** CLI-only, relocation-only preflight + reconciliation. See [Org Portability](#org-portability-thr-187-slice-a) below. Impl `runtime/portability/` (pure classifier + eligibility), `runtime/daemon/routes/portability.py`, `cli/commands/runtime.py`.
+- **Org portability (Slices A + B).** CLI-only, relocation-only preflight + reconciliation (A) and archive export/inspection/import-relocation (B). See [Org Portability](#org-portability-thr-187) below. Impl `runtime/portability/` (classifier, eligibility, fence, archive, capture), `runtime/daemon/routes/portability.py`, `cli/commands/runtime.py`.
 - **Token-usage tracking.** Per-task, per-agent, thread-scoped, dream-scoped, and work-hour-scoped token accounting with two complementary metrics: **churn** (`churn_tokens` = input + output + reasoning, the cache-excluded fresh-work cost used for ranking/thresholds) and **context** (`context_tokens` = churn + cache_read + cache_creation, the cache-inclusive total). Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`; API `runtime/daemon/routes/tokens.py`; CLI `happyranch tokens` (issue #216).
 ### Web & CLI
 
@@ -57,7 +57,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Nightly dreaming.** Private scheduled per-agent reflection runs, separate from tasks and threads, that may write learnings, propose KB candidates, and open a founder-only thread on meaningful output. Dream-originated threads carry the `composed_from_dream_id` marker (A4 migration, design-overhaul). Spec `docs/superpowers/specs/2026-06-09-nightly-dreaming-design.md`; impl `runtime/infrastructure/dream_store.py`, `runtime/daemon/dream_runner.py`, `runtime/daemon/dream_scheduler.py`, `runtime/daemon/dream_queue.py`, `runtime/daemon/routes/dreams.py`. See [Dreams](#dreams) below for traps.
 - **Per-agent work-hours / scheduled wakes.** Founder-configured per-agent work windows (windowed or continuous) that wake idle agents on schedule to self-dispatch routine tasks parsed from per-agent `org/agents/<name>.md`. Backed by a `work_hours` table mirroring the dreams data model. Founder-facing `happyranch work-hours status|list|show` plus the agent wake callback `spawn`. Funded as #92. **Web UI (design-overhaul, THR-035 consolidation):** the wake-execution list (formerly a standalone Schedule surface at `/orgs/:slug/schedule`) is now the **Wakes** in-page tab of the Work Hours surface at `/orgs/:slug/work-hours?view=wakes`; old `/schedule` bookmarks redirect. Lists per-agent work-hour wakes grouped by agent with real stored fields (date, slot, mode, scheduled-for, status, routine count, spawned task IDs via IdBadge click-through). No authoring controls — creating named recurring wakes is deferred (D6). Spec `docs/superpowers/specs/2026-06-10-working-hours-design.md`; impl `runtime/daemon/work_hours_scheduler.py`, `runtime/daemon/wake_runner.py`, `runtime/daemon/wake_queue.py`, `runtime/daemon/routes/work_hours.py`, `runtime/infrastructure/work_hours_store.py`, `cli/commands/work_hours.py`, web `features/work-hours-config/WakesView.tsx`. The consolidated Work Hours surface (config overview + wakes tab) lives in `web/src/features/work-hours-config/`.
 
-## Org Portability (THR-187 Slice A)
+## Org Portability (THR-187)
 
 Slice A is **preflight + reconciliation only** — no archive, export, import,
 staging, transfer fence, source deletion, workspace/task-output transfer, or
@@ -101,6 +101,35 @@ no UI, TS client, or browser contract.
   delegated/job-blocked task is never a zombie merely because it is old.
   Preflight never calls reconciliation; reconciliation has no export-cancellation
   path.
+
+Slice B is **archive export / inspection / import-relocation**, still CLI-private
+and plaintext/unsigned (`trust_acknowledged: true` required on the mutating
+export/import). See `protocol/05c-orchestrator.md` (Organization portability)
+for the full contract; the essentials:
+
+- **`happyranch orgs portability-export <slug> --from-file <export.json>`** —
+  requires Slice-A readiness (no rejections, no live work, no armed/firing
+  schedule). Acquires a per-org transfer fence, rechecks quiescence under
+  `org.db_lock` immediately before a `sqlite3` online backup (never WAL/SHM),
+  captures the allow-list, and writes a data-only `tar.gz` with a sorted
+  member/size/SHA-256 manifest plus format/policy version, source slug, v2
+  fingerprint, and included/excluded/rejected sets. Returns the whole-archive
+  digest (identity). Never terminalizes/cancels work.
+- **`happyranch orgs portability-inspect <slug> --from-file <inspect.json>`** —
+  read-only; validates the archive and reports manifest + digest + quarantined
+  legacy-skill evidence.
+- **`happyranch orgs portability-import <slug> --from-file <import.json>`** —
+  same-slug relocation into an **unused** slug in another schema-v2 runtime.
+  Rejects v0/v1/old DB shapes and any on-disk destination occupancy (loaded,
+  broken, partial, data-bearing). Extracts only under
+  `orgs/_pending/<operation-id>`, validates every member (hashes, pathname
+  safety, no symlink/hardlink/device/FIFO/nonregular, SQLite integrity + FK,
+  B2 artifact cross-checks, legacy-skill constraints), forces imported
+  schedules `active=0`, then publishes by same-filesystem atomic rename.
+  Persists a receipt under `orgs/_archive` recording digest + slug + result +
+  quarantined legacy skills; exact digest+slug retry is idempotent, a different
+  digest conflicts. Legacy skills stay `legacy_portable_quarantined` — never
+  activated/materialized. Slice C (rebind/rearm) is out of scope here.
 
 ## Knowledge Base
 

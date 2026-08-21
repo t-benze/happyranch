@@ -869,14 +869,18 @@ workspaces/
 └── ...
 ```
 
-> **Org-root portability (THR-187 Slice A).** The *only* workspace content
+> **Org-root portability (THR-187).** The *only* workspace content
 > that is portable across a same-slug relocation is
 > ``workspaces/<agent>/memory/**``. ``task_history.md`` (rebuilt from the DB),
 > ``repo/`` clones, regenerated bootstrap files, injected settings/skills,
 > caches, task-output directories, and every other workspace byte are
 > non-portable and named as exclusions by the preflight classifier.
 > ``runtime/portability/roots.py`` is the authoritative exhaustive direct-org-root
-> classification (allow / named exclusion / reject); see 05c-orchestrator
+> classification (allow / named exclusion / reject). Slice B (export/import)
+> captures only the allow-list plus the SQLite backup (never WAL/SHM), carries
+> valid legacy ``skills/`` packages as ``legacy_portable_quarantined`` content
+> (no eligibility/materialization/activation), and persists import receipts
+> under the reserved ``orgs/_archive`` namespace; see 05c-orchestrator
 > §Organization portability.
 
 ### Three layers of memory

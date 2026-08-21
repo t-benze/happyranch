@@ -264,6 +264,11 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     startup honor ``catch_up_on_startup`` (false -> record a ``skipped`` row so
     the steady-state loop won't re-pick the slot today).
     """
+    # THR-187 Slice B: while an export capture holds the org transfer fence,
+    # admit no new work-hour wake scheduling.
+    if getattr(org, "transfer_fence", None) is not None and org.transfer_fence.held:
+        return 0
+
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     if not cfg.enabled:

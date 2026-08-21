@@ -1520,6 +1520,14 @@ async def dispatch_from_thread_endpoint(
     slug: str, thread_id: str, body: DispatchBody, org: OrgDep, request: Request,
 ) -> dict:
     state: DaemonState = request.app.state.daemon
+    # THR-187 Slice B transfer fence: refuse new thread-invocation dispatch
+    # (a new pending invocation + enqueued task) while an export capture holds
+    # the org transfer fence.
+    if org.transfer_fence.held:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "transfer_in_progress", "slug": slug},
+        )
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})

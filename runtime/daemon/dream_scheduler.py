@@ -125,6 +125,11 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
+    # THR-187 Slice B: while an export capture holds the org transfer fence,
+    # admit no new dream scheduling.
+    if getattr(org, "transfer_fence", None) is not None and org.transfer_fence.held:
+        return 0
+
     org_cfg = load_org_config(OrgPaths(root=org.root))
     # THR-095 F2: resolve dreaming from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())

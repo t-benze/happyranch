@@ -194,6 +194,14 @@ def _append_pending_review_thread_message(
 
 @router.post("/jobs/submit", status_code=201)
 async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
+    # THR-187 Slice B transfer fence: refuse new job admission while an export
+    # capture holds the org transfer fence.
+    if org.transfer_fence.held:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "transfer_in_progress", "slug": slug},
+        )
+
     # §5.1 validation order. Task-path auth only.
     # SubmitBody validator guarantees both task_id and session_id.
     assert body.task_id is not None and body.session_id is not None

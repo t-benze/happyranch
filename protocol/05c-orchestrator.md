@@ -651,14 +651,15 @@ TEXT`` (NULL default). No new ``TaskStatus``, ``block_kind``, or overload of
 any existing column — all founder-gated. Flagged via ``zombie_flagged_at``;
 cancel = the existing ``cancelled`` transition.
 
-#### Organization portability — preflight & reconciliation (THR-187 Slice A)
+#### Organization portability — preflight, reconciliation, export/import (THR-187)
 
 **Slice A is preflight/reconciliation only.** It adds a read-only CLI
 ``happyranch orgs portability-preflight <slug>`` and a distinct founder-only
 ``happyranch orgs reconcile-portability <slug> --from-file <request.json>``.
 There is **no** archive, export, import, staging, transfer fence, source
 retirement, cancellation-of-live-work, or other transfer side effect in this
-slice. Export/import/rebind are later, separately authorized slices.
+slice. Export/import are the separately authorized Slice B below; rebind/rearm
+is the still-later Slice C.
 
 **Exhaustive root classification.** The preflight classifies every direct
 child of a source org root exactly once as `include`, a *named* `exclude`
@@ -712,6 +713,65 @@ disposition, and before/after state under the ordinary ``task_id`` scope. A
 delegated/job-blocked task is never a zombie merely because it is old.
 Preflight never calls reconciliation; reconciliation offers no export
 cancellation path. CLI-private only — no UI, TS client, or browser contract.
+
+#### Organization portability — archive export, inspection, import (THR-187 Slice B)
+
+**Slice B is CLI-private archive export / inspection / import-relocation.**
+It adds ``happyranch orgs portability-export <slug> --from-file <abs.json>``,
+``happyranch orgs portability-inspect <slug> --from-file <abs.json>``, and
+``happyranch orgs portability-import <slug> --from-file <abs.json>``. All three
+use the existing master-bearer pattern unchanged; the mutating export/import
+requests require an affirmative plaintext/unsigned trust acknowledgement
+(``trust_acknowledged: true``) — the archive is never signed or encrypted, and
+checksums prove corruption, not sender identity.
+
+**Export.** Source must be ready by the Slice-A predicate (no rejections, no
+live work — including armed *and* firing schedules, with exactly the existing
+remedies). Export never terminalizes/cancels work. It acquires a per-org
+transfer fence (rejecting new dispatch/invocation/scheduler admission while
+held — wired through ``enqueue_task``, job submit, thread dispatch, and the
+dream/wake/schedule schedulers), re-gathers and rechecks every Slice-A
+quiescence fact under ``org.db_lock`` immediately before the SQLite backup,
+and captures the allow-list. A failed second check returns a conflict and
+leaves the source untouched (no archive). The fence is released only after
+capture validation; exceptional paths release it. The SQLite snapshot is a
+``sqlite3`` online backup into private staging — ``happyranch.db-wal``/
+``-shm`` are never copied.
+
+**Archive format.** A standard-library, data-only ``tar.gz`` with a leading
+``manifest.json`` and ``payload/...`` members. Member names are normalized
+relative POSIX paths; the manifest carries format/policy version, source slug,
+a v2 compatibility fingerprint (hash of the sorted table/column schema shape),
+a sorted member path/size/SHA-256 inventory, the source-root inventory, and
+explicit included/excluded/rejected sets, plus legacy-skill and B2 custom-skill
+validation evidence. Nothing inside the archive is ever executed or
+dereferenced. The whole-archive digest is the archive's *identity* and is
+returned in the export response / recorded in the import receipt — never
+recursively claimed inside the archive's own bytes (per-member hashes are
+integrity, not identity).
+
+**Import.** Same source/destination slug only; the destination runtime must be
+schema-v2 and the destination slug must be **unused on disk** — loaded, broken,
+partial, or data-bearing occupancy refuses (never reclaim/overwrite). v0
+DB-backed-enrollment, v1 flat-single-org, and old DB shapes are rejected (no
+import-time migration or loader broadening). Import extracts only under
+``<target>/orgs/_pending/<operation-id>`` and validates every member before
+publish: known format/policy/root inventory, exact hashes, pathname safety,
+duplicate names, symlink/hardlink/device/FIFO/nonregular rejection, SQLite
+integrity + FK checks, B2 custom-skill artifact-key/content-hash cross
+references, and legacy-skill identity/member/reference constraints. Any
+pre-publish error cleans only the private staging directory — the target org
+dir, loaded/broken registry, and queue are untouched. Every imported
+schedule's ``active`` flag is forced to ``0`` (status semantics unchanged);
+Slice C alone owns attach/rebind/rearm, so import never calls
+``DaemonState.add_org`` or attaches the imported org. Publish is a
+same-filesystem atomic ``os.rename`` (never clone/merge/overwrite/source
+deletion/credential transfer). A narrow receipt is persisted under the reserved
+``orgs/_archive`` namespace recording archive digest + slug + result +
+quarantined legacy-skill evidence; an exact digest+slug retry is idempotent, a
+different digest conflicts. Legacy skills are carried only as
+``legacy_portable_quarantined`` archive content — no eligibility, canonical-store
+entry, workspace symlink, materialization, execution, or activation.
 
 #### Transitions
 

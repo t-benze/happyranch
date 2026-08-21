@@ -355,6 +355,20 @@ Implementation: `runtime/orchestrator/run_step.py` —
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 
+## Org Portability (THR-187)
+
+Relocation of one quiescent org between schema-v2 multi-org runtimes is
+CLI-private and current-v2-only. The container marker (`happyranch.yaml`,
+`schema_version: 2`) is the only supported shape; v0 DB-backed-enrollment, v1
+flat-single-org, and old DB shapes are refused at import (no import-time
+migration). Reserved container names `orgs/_pending` (private import staging)
+and `orgs/_archive` (import receipts) are skipped by org enumeration
+(`runtime/runtime.py::RuntimeDir.iter_org_roots`). The per-org SQLite snapshot
+is taken with the `sqlite3` online-backup API — `happyranch.db-wal`/`-shm` are
+never copied. See `docs/agent-guides/features-and-invariants.md` (Org
+Portability), `docs/agent-guides/project-layout.md` (Runtime Container), and
+`protocol/05c-orchestrator.md` (Organization portability).
+
 ## Running The Daemon
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.

@@ -185,6 +185,9 @@
     "POST /api/v1/orgs/{slug}/skills/recover": "bearer-authenticated operator/CLI-only B2 canonical-package recovery; no browser client or consumer",
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",
     "GET /api/v1/orgs/{slug}/portability-preflight": "cli-only org-portability preflight — read-only, no browser/TS consumer (THR-187 Slice A)",
-    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)"
+    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)",
+    "POST /api/v1/orgs/{slug}/portability-export": "cli-only org-portability archive export — plaintext/unsigned, trust_acknowledged, no browser/TS consumer (THR-187 Slice B)",
+    "POST /api/v1/orgs/{slug}/portability-inspect": "cli-only org-portability archive inspection — read-only, no browser/TS consumer (THR-187 Slice B)",
+    "POST /api/v1/orgs/{slug}/portability-import": "cli-only org-portability import-relocation — plaintext/unsigned, trust_acknowledged, no browser/TS consumer (THR-187 Slice B)"
   }
 }

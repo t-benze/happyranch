@@ -87,18 +87,39 @@ configuration (status / init / register / repair) is served over four HTTP route
 There is no standalone `/assistant` web page, no xterm terminal, and no
 "Open full session" escape hatch — the dock is the sole assistant surface.
 
-### Org portability (Slice A)
+### Org portability (Slices A + B)
 
 CLI-only, relocation-only safety surfaces (no UI / TS client / browser
-contract). Slice A is preflight + reconciliation only — it creates no archive
-and performs no export/import.
+contract). Slice A is preflight + reconciliation only; Slice B adds plaintext/
+unsigned archive export / inspection / import-relocation (mutating requests
+require `trust_acknowledged: true`).
 
 ```bash
-# Read-only: classify every direct org-root child + report quiescence blockers
+# Slice A — read-only: classify every direct org-root child + report quiescence blockers
 happyranch orgs portability-preflight <slug>
 
-# Founder/master-bearer-only: reconcile exactly one confirmed zombie
+# Slice A — founder/master-bearer-only: reconcile exactly one confirmed zombie
 happyranch orgs reconcile-portability <slug> --from-file /tmp/reconcile.json
+
+# Slice B — archive-export a quiescent org (plaintext/unsigned; trust_acknowledged)
+happyranch orgs portability-export <slug> --from-file /tmp/export.json
+
+# Slice B — inspect a CLI-local archive (read-only)
+happyranch orgs portability-inspect <slug> --from-file /tmp/inspect.json
+
+# Slice B — import-relocate into an unused same-slug destination
+happyranch orgs portability-import <slug> --from-file /tmp/import.json
+```
+
+Slice-B request JSON shapes (all `--from-file` paths must be absolute):
+
+```json
+// export.json
+{"archive_path": "/abs/org.archive", "trust_acknowledged": true}
+// inspect.json
+{"archive_path": "/abs/org.archive"}
+// import.json
+{"archive_path": "/abs/org.archive", "target_runtime": "/abs/other-runtime", "trust_acknowledged": true}
 ```
 
 `reconcile-portability` request JSON names one candidate plus evidence and a
@@ -112,7 +133,11 @@ The `--from-file` path must be absolute. See `docs/agent-guides/features-and-inv
 (Org Portability) and `protocol/05c-orchestrator.md` (Organization portability)
 for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
 reporting, the conservative schedule policy (any armed or firing schedule
-refuses, with existing-control remedies only), and reconciliation limits.
+refuses, with existing-control remedies only), the transfer-fence/backup
+semantics, the protected `orgs/_pending` staging + `orgs/_archive` receipt,
+atomic-rename limitations (a clean preflight alone is not an atomic snapshot),
+the imported-schedule `active=0` rule, source preservation, and the Slice-C
+rebind/rearm exclusion.
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 

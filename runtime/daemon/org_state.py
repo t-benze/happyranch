@@ -27,6 +27,7 @@ from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.portability.fence import TransferFence
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,9 @@ class OrgState:
     schedule_queue: ScheduleQueue = field(default_factory=ScheduleQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
+    # THR-187 Slice B: per-org transfer fence held during an export capture.
+    # While held, admission seams refuse new dispatch/invocation/scheduler work.
+    transfer_fence: TransferFence = field(default_factory=TransferFence)
     # Dashboard projection: per-org durable last-known-good cache, refreshed
     # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
     # from this projection; it never calls compose_dashboard_summary directly.

@@ -107,3 +107,82 @@ def test_reconcile_requires_absolute_path(capsys, tmp_path) -> None:
             argparse.Namespace(slug="family", request_path="relative/req.json")
         )
     assert "absolute" in capsys.readouterr().err
+
+
+# ── Slice B: export / inspect / import-relocation CLI ───────────────────────
+
+
+def test_parser_export_inspect_import() -> None:
+    args = build_parser().parse_args(
+        ["orgs", "portability-export", "family", "--from-file", "/tmp/e.json"]
+    )
+    assert args.orgs_cmd == "portability-export"
+    assert args.request_path == "/tmp/e.json"
+
+    args = build_parser().parse_args(
+        ["orgs", "portability-inspect", "family", "--from-file", "/tmp/i.json"]
+    )
+    assert args.orgs_cmd == "portability-inspect"
+
+    args = build_parser().parse_args(
+        ["orgs", "portability-import", "family", "--from-file", "/tmp/m.json"]
+    )
+    assert args.orgs_cmd == "portability-import"
+
+
+def test_export_command_posts_and_prints(capsys, tmp_path) -> None:
+    from cli.commands.runtime import cmd_orgs_portability_export
+
+    req = tmp_path / "export.json"
+    req.write_text(json.dumps({
+        "archive_path": str(tmp_path / "org.archive"), "trust_acknowledged": True,
+    }))
+    client = MagicMock()
+    client.post.return_value = _response({
+        "slug": "family", "archive_digest": "a" * 64,
+        "archive_path": str(tmp_path / "org.archive"), "member_count": 3,
+        "legacy_skills_quarantined": [{"slug": "qa-scroll-test"}],
+    })
+
+    with patch("cli.commands.runtime.OpcClient.from_env", return_value=client):
+        cmd_orgs_portability_export(
+            argparse.Namespace(slug="family", request_path=str(req))
+        )
+
+    client.post.assert_called_once_with(
+        "/api/v1/orgs/family/portability-export",
+        json={"archive_path": str(tmp_path / "org.archive"),
+              "trust_acknowledged": True},
+    )
+    out = capsys.readouterr().out
+    assert "exported: family" in out
+    assert "quarantined legacy skill: qa-scroll-test" in out
+
+
+def test_import_command_requires_target_runtime(capsys, tmp_path) -> None:
+    from cli.commands.runtime import cmd_orgs_portability_import
+
+    req = tmp_path / "import.json"
+    req.write_text(json.dumps({
+        "archive_path": str(tmp_path / "org.archive"),
+        "trust_acknowledged": True,
+    }))
+    with pytest.raises(SystemExit, match="1"):
+        cmd_orgs_portability_import(
+            argparse.Namespace(slug="family", request_path=str(req))
+        )
+    assert "target_runtime" in capsys.readouterr().err
+
+
+def test_archive_request_requires_absolute_path(capsys, tmp_path) -> None:
+    from cli.commands.runtime import cmd_orgs_portability_export
+
+    req = tmp_path / "export.json"
+    req.write_text(json.dumps({
+        "archive_path": "relative/org.archive", "trust_acknowledged": True,
+    }))
+    with pytest.raises(SystemExit, match="1"):
+        cmd_orgs_portability_export(
+            argparse.Namespace(slug="family", request_path=str(req))
+        )
+    assert "absolute" in capsys.readouterr().err

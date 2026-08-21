@@ -56,6 +56,11 @@ def schedule_due_schedules(
     are recovered first via ``ScheduleStore.recover_firing()``, so the scheduler
     never re-fires an already-claimed row.
     """
+    # THR-187 Slice B: while an export capture holds the org transfer fence,
+    # admit no new schedule firing (claim/enqueue).
+    if getattr(org, "transfer_fence", None) is not None and org.transfer_fence.held:
+        return 0
+
     if startup:
         recovered = org.db.schedules.recover_firing()
         for schedule_id, agent_name in recovered:

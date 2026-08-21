@@ -95,6 +95,17 @@ Runtime container shape:
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}
     `-- artifacts/                     # org-shared blob store
+    |-- talks/                         # durable TALK-*.md records (portable)
+    |-- skills/                        # legacy user-authored packages (quarantined portable carry)
+    `-- workspaces/<agent>/memory/     # the sole portable workspace content
+`-- orgs/_pending/                     # reserved: private import staging (<operation-id>)
+`-- orgs/_archive/                     # reserved: portability import receipts
 ```
 
 HTTP routes are per org under `/api/v1/orgs/<slug>/...`; container routes are under `/api/v1/runtime` and `/api/v1/orgs`. Only `schema_version: 2` runtimes are supported.
+
+The reserved `orgs/_pending` and `orgs/_archive` names are skipped by org
+enumeration. Org-portability (THR-187) exports a quiescent org as a data-only
+archive and imports it into an unused same-slug destination under another
+schema-v2 runtime (staging under `_pending`, receipt under `_archive`); see
+`features-and-invariants.md` (Org Portability).

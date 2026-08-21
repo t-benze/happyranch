@@ -101,6 +101,9 @@ public struct SurfaceAllowList: Sendable {
             // Org-portability (CLI-only / founder-only — no browser consumer)
             ("GET", "/portability-preflight"),
             ("POST", "/reconcile-portability"),
+            ("POST", "/portability-export"),
+            ("POST", "/portability-inspect"),
+            ("POST", "/portability-import"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
