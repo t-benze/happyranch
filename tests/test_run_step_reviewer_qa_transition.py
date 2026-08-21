@@ -299,3 +299,111 @@ def test_late_terminal_handling_after_mismatch_cannot_spawn_qa(runtime, db):
     # Whatever is enqueued is never a QA child — only the idempotent parent wake.
     for slug, tid in orch._queue.drain():
         assert tid == "T-PAR"
+
+
+def test_reviewer_approve_duplicate_delivery_is_noop_while_qa_pending(runtime, db):
+    """(4) at-most-once terminal consumption: after an explicit reviewer
+    APPROVE advances to QA, a sequential DUPLICATE delivery of the SAME
+    reviewer terminal event — while QA is still pending — must be a NO-OP.
+
+    It must not reinterpret the old reviewer report as if it were the current
+    QA leg (which reaches verdict_mismatch and clears active_chain, later
+    letting QA bypass its PASS gate). After the duplicate: exactly one QA
+    child, one QA queue item, one chain_auto_advance audit, active_chain still
+    on the QA leg, and no parent wake/queue or new audit. QA PASS then
+    consumes through the normal final-leg path, clearing the chain and waking
+    the parent exactly once."""
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="APPROVE",
+                          summary="looks good")
+
+    orch = _make_orch(db, runtime)
+
+    # First delivery: advances to QA exactly once.
+    _enqueue_parent_if_waiting(orch, "T-REV")
+    qa_ids = _qa_children(db, "T-PAR")
+    assert len(qa_ids) == 1
+    qa = db.get_task(qa_ids[0])
+    assert qa.status == TaskStatus.PENDING
+    assert ChainState.deserialize(db.get_task("T-PAR").active_chain).step_index == 2
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == qa.id
+    assert len(_chain_advances(db, "T-PAR")) == 1
+
+    # Duplicate delivery of the SAME reviewer terminal event while QA pending.
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    # No-op: still exactly one QA child, active_chain STILL on the QA leg,
+    # no new audit, no parent wake/queue.
+    assert _qa_children(db, "T-PAR") == qa_ids
+    active_chain_after_dup = db.get_task("T-PAR").active_chain
+    assert active_chain_after_dup is not None, (
+        "duplicate reviewer delivery incorrectly cleared active_chain"
+    )
+    assert ChainState.deserialize(active_chain_after_dup).step_index == 2
+    assert len(_chain_advances(db, "T-PAR")) == 1
+    assert orch._queue.qsize() == 0  # duplicate produced no parent wake/queue
+
+    # Then QA PASS is consumed through the normal final-leg path.
+    db.update_task(qa.id, status=TaskStatus.COMPLETED, note="passed")
+    db.insert_task_result(
+        task_id=qa.id, agent="qa_engineer", session_id="s",
+        status="completed", confidence_score=95,
+        output_summary="passed", verdict="PASS",
+    )
+    _enqueue_parent_if_waiting(orch, qa.id)
+
+    # Final-leg path clears the chain and wakes the parent exactly once.
+    assert db.get_task("T-PAR").active_chain is None
+    assert len(_chain_advances(db, "T-PAR")) == 1  # still only reviewer->qa
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_late_reviewer_terminal_cannot_mutate_completed_chain(runtime, db):
+    """(5) an OLD reviewer terminal event delivered after the chain has fully
+    completed (QA PASS consumed, active_chain cleared) must not mutate the
+    completed terminal state — no re-spawned QA, no re-cleared/revived chain,
+    no new auto-advance audit. Only the idempotent parent wake is possible."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="APPROVE",
+                          summary="looks good")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")  # -> QA
+    qa = db.get_task(_qa_children(db, "T-PAR")[0])
+    orch._queue.drain()
+
+    # QA completes with PASS -> chain cleared, parent woken once.
+    db.update_task(qa.id, status=TaskStatus.COMPLETED, note="passed")
+    db.insert_task_result(
+        task_id=qa.id, agent="qa_engineer", session_id="s",
+        status="completed", confidence_score=95,
+        output_summary="passed", verdict="PASS",
+    )
+    _enqueue_parent_if_waiting(orch, qa.id)
+    assert db.get_task("T-PAR").active_chain is None
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+    # Late reviewer terminal delivery: cannot mutate the completed chain.
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert db.get_task("T-PAR").active_chain is None  # still cleared
+    assert len(_qa_children(db, "T-PAR")) == 1          # still exactly one QA
+    assert len(_chain_advances(db, "T-PAR")) == 1       # no new auto-advance
+    # Whatever is enqueued is never a QA child — only the idempotent parent wake.
+    for slug, tid in orch._queue.drain():
+        assert tid == "T-PAR"

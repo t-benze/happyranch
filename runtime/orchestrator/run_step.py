@@ -2092,8 +2092,26 @@ def _enqueue_parent_if_waiting(
     # parent has active_fanout), a verdict-mismatch or a failed leg fails
     # the whole carrier immediately — no partial-chain completion.
     child = orch._db.get_task(task_id)
+    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if child is not None and parent.active_chain is not None:
         if child.status == TaskStatus.COMPLETED:
+            # At-most-once terminal consumption: a terminal report may be
+            # consumed only while its child is the chain's actual in-flight
+            # leg. The chain advances one leg at a time, so the in-flight leg
+            # is the ONLY child that is not yet terminal (every earlier leg is
+            # COMPLETED/FAILED and no later leg exists until the advance this
+            # report triggers). If any OTHER sibling is still non-terminal,
+            # this child's leg has already been superseded by a later-spawned
+            # leg — a sequential duplicate/late delivery must be a no-op, never
+            # a wake/clear/reinterpretation (which would otherwise reach
+            # verdict_mismatch against the later leg's expectation and clear
+            # active_chain, letting the later leg bypass its gate).
+            if any(
+                s is not None and s.id != task_id
+                and s.status not in TERMINAL_STATES
+                for s in siblings
+            ):
+                return  # stale duplicate; a later leg is already in flight
             # Snapshot the chain BEFORE advance (which may clear it).
             chain_snapshot = parent.active_chain
             outcome = _advance_chain_for_completed_child(
@@ -2122,7 +2140,6 @@ def _enqueue_parent_if_waiting(
             # Carrier fail-closed is applied at that point, not here.
             pass
 
-    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
         return
 
