@@ -5221,6 +5221,38 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_started_invocations_for_agent(
+        self, agent_name: str,
+    ) -> list[tuple[str, str]]:
+        """Return (invocation_token, thread_id) for pending invocations that
+        have already started (``started_at`` is set) for ``agent_name``.
+        """
+        cursor = self._conn.execute(
+            "SELECT invocation_token, thread_id FROM thread_invocations "
+            "WHERE agent_name = ? AND status = 'pending' AND started_at IS NOT NULL",
+            (agent_name,),
+        )
+        return [(row["invocation_token"], row["thread_id"]) for row in cursor.fetchall()]
+
+    @_synchronized
+    def decline_unstarted_invocations_for_agent(
+        self, agent_name: str, *, decline_reason: str,
+    ) -> int:
+        """Decline all pending, not-yet-started invocations for ``agent_name``.
+
+        Returns the number of rows updated.
+        """
+        now = _now().isoformat()
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations "
+            "SET status = ?, decline_reason = ?, consumed_at = ? "
+            "WHERE agent_name = ? AND status = 'pending' AND started_at IS NULL",
+            (ThreadInvocationStatus.DECLINED.value, decline_reason, now, agent_name),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
     def list_invocations_for_thread_grouped_by_seq(
         self, thread_id: str
     ) -> dict[int, list[dict[str, object]]]:

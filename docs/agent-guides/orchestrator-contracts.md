@@ -24,9 +24,22 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 ``agent.yaml`` is no longer read or written by any org-agent path. See
 `docs/agent-guides/runtime-and-configuration.md#agent-configuration-single-source-of-truth-thr-095`.
 
-`runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, and `reject_agent`. Routes and orchestrator code should read through this module against the per-org root.
+`runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
+
+## Agent Lifecycle: Enrollment, Approval, and Termination
+
+- **Enrollment.** `manage-agent enroll` creates a pending agent file under `org/agents/_pending/<name>.md`. A founder (or team manager with an active session) may enroll agents only into their own team.
+- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
+- **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
+  - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
+  - archives the workspace `workspaces/<name>/` to `workspaces/_terminated/<name>/`;
+  - removes the worker from its team;
+  - cancels armed schedules, skips pending wakes/dreams, and declines not-yet-started thread invocations with reason `agent_terminated`.
+- **Historic records are retained.** Tasks, task results, audit rows, token-usage rows, thread messages/participants, schedules, wakes, dreams, and archived files are never deleted or rewritten. The agent name cannot be re-enrolled while a terminated record exists, so historical identity remains unambiguous.
+- **Fail-closed launch.** The orchestrator and thread runner refuse to launch an agent whose active `.md` file is missing or archived. There is no silent fallback to `claude` for an unknown/terminated agent.
+- **Enumeration.** `GET /agents` and the default `GET /agents/enrollments` return active agents only. `GET /agents/enrollments?status=terminated` returns archived enrollment metadata.
 
 ## Task Status Vocabularies
 
