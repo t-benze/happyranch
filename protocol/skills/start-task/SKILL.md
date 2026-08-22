@@ -209,7 +209,7 @@ Parameters:
      children targeted at regular **workers** are read-only (structured decisions ignored,
      complete with a summary). NO fan-out review gate at any width — the width cap (8)
      is a machine-resource limit only; control over what lands is the per-PR merge gate
-     (each mutating child opens its own PR needing code_reviewer APPROVE + qa PASS +
+     (each mutating child opens its own PR needing reviewer APPROVE + qa PASS +
      CI + founder/EM merge). Children own DISJOINT file sets; shared-file convergence
      routes through a serial follow-up delegate after join, never a fan-out child.
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`

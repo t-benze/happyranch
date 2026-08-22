@@ -436,7 +436,7 @@ cascade-failed. Instead:
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
 in parallel (2 ≤ N ≤ 8). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`).
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`; a configured reviewer leg additionally MUST declare `expect_verdict: "APPROVE"` — omitted is a HARD REJECT, THR-175).
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
    JSON metadata column). For pipeline carriers, the child's inline chain is
@@ -458,7 +458,7 @@ in parallel (2 ≤ N ≤ 8). The orchestrator:
 pure machine-resource limit — children are spawned immediately at any width
 2–8. The former `pending_review` status and `review_required` job gate are
 removed. The real control over what code lands is the per-PR merge gate:
-every mutating child opens its own PR requiring `code_reviewer` APPROVE +
+every mutating child opens its own PR requiring reviewer APPROVE +
 `qa_engineer` PASS + CI + founder/EM merge. The founder cannot add useful
 judgment to "6 vs 8 children" — it is a resource question for the runtime.
 
@@ -769,12 +769,21 @@ Permissions aren't static. As the system matures:
 
 ### Reviewer/QA verdict discipline
 
-Review and QA leg tasks (code_reviewer, qa_engineer) MUST complete their leg
-with a verdict (APPROVE / REVISE / PASS / FAIL) and MUST NOT self-block. A
-completion report with `status=blocked` and an EMPTY `waiting_on_job_ids` is a
-MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
-manager decision step (not cascade-failed). Self-blocked reviews that omit a
-verdict waste the delegation and burn a re-spawn round.
+Review and QA leg tasks MUST complete their leg with a verdict
+(APPROVE / REVISE / PASS / FAIL) and MUST NOT self-block. A completion report
+with `status=blocked` and an EMPTY `waiting_on_job_ids` is a MALFORMED report
+— the leg is treated as FAILED, and the parent wakes for a manager decision
+step (not cascade-failed). Self-blocked reviews that omit a verdict waste the
+delegation and burn a re-spawn round.
+
+Reviewer identities are configured per-org in the DB-backed `reviewer_agents`
+setting (default `["code_reviewer"]`, THR-175) — never hardcoded in the
+transition logic. A configured reviewer leg MUST declare
+`expect_verdict: "APPROVE"`; omission is a HARD REJECT at authoring. At the
+execution seam a configured reviewer leg with a downstream leg only
+auto-advances on an explicit `APPROVE` — a missing verdict or any non-approve
+verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` / equivalent) clears the chain
+and wakes the manager, so QA/downstream is never spawned after a failed review.
 
 ---
 

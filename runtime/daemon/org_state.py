@@ -153,9 +153,14 @@ class OrgState:
         # after the first run.
         try:
             from runtime.orchestrator.org_config import (
+                backfill_reviewer_agents_setting,
                 seed_org_settings_from_config,
             )
             seed_org_settings_from_config(paths, db)
+            # THR-175: reviewer_agents is a 5th knob orgs seeded before this
+            # change never received.  Backfill is idempotent (row-absent) and
+            # never overwrites an explicit setting.
+            backfill_reviewer_agents_setting(paths, db)
         except Exception as exc:
             logger.warning(
                 "org %r: org_settings seed skipped (non-fatal): %s", slug, exc

@@ -65,17 +65,40 @@ class AdvanceAction:
     next_leg: ChainLeg | None = None
     next_step_index: int | None = None
     # wake fields:
-    reason: str | None = None    # "child_blocked" | "verdict_mismatch" | "chain_complete"
+    reason: str | None = None    # "child_blocked" | "verdict_mismatch" | "reviewer_non_approve" | "chain_complete"
     expected: str | None = None
     actual: str | None = None
 
 
-def compute_advance_action(*, chain: ChainState, report: CompletionReport) -> AdvanceAction:
+def _current_leg_agent(chain: ChainState, completed_agent: str | None) -> str | None:
+    """The agent identity of the just-terminated leg.
+
+    ``step_index == 0`` is the implicit first leg (``decision.agent``), whose
+    agent name is NOT persisted in the chain payload — derive it from the
+    completed child's DB ``assigned_agent``.  Later legs carry their agent in
+    ``legs[step_index - 1].agent``.
+    """
+    if chain.step_index == 0:
+        return completed_agent
+    return chain.legs[chain.step_index - 1].agent
+
+
+def compute_advance_action(
+    *,
+    chain: ChainState,
+    report: CompletionReport,
+    completed_agent: str | None = None,
+    reviewer_agents: frozenset[str] = frozenset(),
+) -> AdvanceAction:
     """Decide whether to auto-advance to the next leg or wake the manager.
 
     Caller has already confirmed the child task is in a terminal COMPLETED
     state (failed/cancelled children take a separate cascade path). This
     function only handles the COMPLETED branch.
+
+    ``reviewer_agents`` is the org's configured reviewer identity set (THR-175);
+    ``completed_agent`` is the completed child's DB ``assigned_agent`` (used to
+    identify the first leg, which is not serialized in the chain payload).
     """
     if report.status == "blocked":
         return AdvanceAction(kind="wake", reason="child_blocked")
@@ -86,6 +109,21 @@ def compute_advance_action(*, chain: ChainState, report: CompletionReport) -> Ad
             kind="wake", reason="verdict_mismatch",
             expected=expected, actual=report.verdict,
         )
+
+    current_agent = _current_leg_agent(chain, completed_agent)
+    has_downstream = chain.step_index + 1 <= len(chain.legs)
+
+    # THR-175 reviewer fail-closed: a configured reviewer leg with a downstream
+    # leg advances ONLY on an explicit APPROVE verdict.  Omitted expectation,
+    # missing verdict, or any non-approve verdict (REQUEST_CHANGES / REVISE /
+    # BLOCK / equivalent) clears the chain and wakes the parent — QA/downstream
+    # is never spawned.  Ordinary verdict-less non-review legs are unaffected.
+    if has_downstream and current_agent is not None and current_agent in reviewer_agents:
+        if report.verdict != "APPROVE":
+            return AdvanceAction(
+                kind="wake", reason="reviewer_non_approve",
+                expected="APPROVE", actual=report.verdict,
+            )
 
     next_index = chain.step_index + 1
     # Total legs = 1 (first leg) + len(chain.legs). Next-leg index space is

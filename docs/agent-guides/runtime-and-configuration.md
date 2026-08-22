@@ -239,12 +239,12 @@ Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name`
 
 ## Org Settings Storage (THR-095)
 
-The 4 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
-`working_hours` — are stored in the **`org_settings`** SQLite table (same per-org DB
+The 5 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
+`working_hours`, `reviewer_agents` — are stored in the **`org_settings`** SQLite table (same per-org DB
 as `tasks` / `audit_log`). `org/config.yaml` is a **git-tracked seed file only**;
 the daemon **never** reads or writes these keys from the file once the one-shot
 seed migration has run (first daemon startup after upgrade).  The seed also
-**strips the 4 writable keys from config.yaml** (one-time mutation, atomic
+**strips the 5 writable keys from config.yaml** (one-time mutation, atomic
 write) so the file remains clean thereafter.  Every subsequent `PUT` routes
 solely through the DB — the daemon no longer touches `config.yaml` for these
 keys, preserving the #408 single-source-of-truth invariant.
@@ -253,7 +253,7 @@ keys, preserving the #408 single-source-of-truth invariant.
 
 ```sql
 CREATE TABLE IF NOT EXISTS org_settings (
-    section     TEXT NOT NULL PRIMARY KEY,  -- dreaming | threads | session_timeout_seconds | working_hours
+    section     TEXT NOT NULL PRIMARY KEY,  -- dreaming | threads | session_timeout_seconds | working_hours | reviewer_agents
     value_json  TEXT NOT NULL,             -- JSON blob for that section's subtree
     updated_at  TEXT NOT NULL,             -- ISO-8601 Z
     updated_by  TEXT DEFAULT 'founder'
@@ -268,6 +268,7 @@ Every consumer site resolves through a **single documented precedence ladder**:
 | --- | --- |
 | `session_timeout_seconds` | `tasks.session_timeout_seconds` (per-task override) → `org_settings` DB row → `Settings.session_timeout_seconds` |
 | `dreaming` / `threads` / `working_hours` | `org_settings` DB row → **dataclass code default** (OrgConfig field defaults, NOT config.yaml) |
+| `reviewer_agents` | `org_settings` DB row → **code default `["code_reviewer"]`** (THR-175). A JSON list of agent names; configures which chain legs are reviewer legs that gate auto-advance. Names are validated against the org's live active-agent roster; an unknown name resolves fail-closed to the code default (see below). |
 
 **Code-default tier**: the fallback is always the Python dataclass default
 (e.g. `DreamingConfig(enabled=False)`, `OrgConfig().threads_enabled=True`),
@@ -303,9 +304,24 @@ both back (no split-brain).
 
 A **one-shot, idempotent** seed runs on the first daemon startup after upgrade
 (`org/.org_settings_seeded` sentinel). It copies the current `config.yaml`
-values for the 4 writable keys into `org_settings`, then writes the sentinel.
+values for the 5 writable keys into `org_settings`, then writes the sentinel.
 On subsequent startups the sentinel makes the seed a no-op. After seeding,
 `config.yaml` values are ignored — the DB is the single authoritative store.
+
+`reviewer_agents` (THR-175) additionally has an idempotent **backfill** that
+runs on every startup for orgs whose seed sentinel already fired before the
+feature shipped: if the `reviewer_agents` row is absent it persists the
+config.yaml value (or the `["code_reviewer"]` code default), and it never
+overwrites an existing explicit row.
+
+`reviewer_agents` names are **validated against the org's live active-agent
+roster** (the file-based `org/agents/*.md` registry) at every surface that can
+seed, backfill, or persist them — not just `PUT /settings`. A configured name
+that is not a real active agent is never persisted as a reviewer setting (the
+code default is persisted instead), and an already-persisted malformed or
+unknown value resolves fail-closed to `["code_reviewer"]` at every read path.
+This guarantees an unknown reviewer string can never silently demote
+`code_reviewer` from the reviewer set and re-open the QA auto-advance hole.
 
 ## Bounded Failure-Recovery (TASK-573)
 
