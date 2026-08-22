@@ -129,6 +129,20 @@ def test_thread_skill_documents_attachment_flow() -> None:
     ) in body
 
 
+def test_thread_skill_requires_real_newlines_in_reply_body() -> None:
+    """THR-197: the reply body must use actual newline characters / valid
+    Markdown for visual line breaks, never a literal escaped `\n` sequence as a
+    line-break substitute (which renders as the literal text `\n`)."""
+    body = (SKILLS_ROOT / "thread" / "SKILL.md").read_text()
+    # Real-newline / valid-Markdown instruction.
+    assert "actual newline" in body.lower()
+    assert "valid markdown" in body.lower()
+    # Explicit prohibition of a literal escaped `\n` as a line-break substitute.
+    assert "line-break" in body.lower()
+    assert "substitute" in body.lower()
+    assert "never a literal" in body.lower()
+
+
 def test_skill_cli_commands_exist() -> None:
     """Every `happyranch <subcommand>` referenced by a skill must be a real subcommand."""
     from cli.main import build_parser
