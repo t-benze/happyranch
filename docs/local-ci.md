@@ -11,7 +11,8 @@ feedforward signal, not a substitute.
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Node.js 24+ and npm (for the `web` target)
+- Node.js 24.x (the GitHub `node-version: 24` contract) and npm (for the
+  `web` target)
 - An up-to-date `uv.lock` file (run `uv lock` if you've changed
   `pyproject.toml`; `uv sync --frozen` rejects a stale lock)
 - The `integration` target spawns an isolated daemon per test (tmp
@@ -120,3 +121,12 @@ publication-process requirements.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.
+- **Node 24.x contract (web).** The `web` target now fails fast with an
+  actionable message when the ambient Node major is not 24 (the GitHub
+  `node-version: 24` contract). On some Node 24.14.x hosts the Web Storage
+  globals (`localStorage`/`sessionStorage`) are undefined without a
+  `--localstorage-file` flag and can surface as a near-total `localStorage
+  undefined` vitest failure — but a **fresh `npm ci` under Node 24**
+  (never a stale or cross-worktree-symlinked `node_modules`) resolves this
+  deterministically, because the jsdom test environment provides those
+  globals. GitHub's clean-Node-24 CI is authoritative.
