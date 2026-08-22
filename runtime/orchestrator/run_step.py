@@ -1808,7 +1808,17 @@ def _carrier_fail_on_verdict_mismatch(
     if report is None:
         # No report for the completed child — fail-closed only when a verdict
         # expectation exists (pre-existing semantics).
-        return chain.current_expect_verdict() is not None
+        expected = chain.current_expect_verdict()
+        if expected is None:
+            return False
+        _fail(
+            orch, parent.id,
+            note=f"carrier verdict mismatch: expected {expected!r}, got None",
+        )
+        # Feed carrier failure into the fan-out parent's barrier.  Returning
+        # True without these side effects strands both carrier and parent.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
     action = compute_advance_action(

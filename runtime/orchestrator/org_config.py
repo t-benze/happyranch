@@ -1066,6 +1066,7 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
         raise
 
 
+
 # ── Executor profile config write (THR-052 PR-2) ───────────────────────
 # ── Org Settings seed (THR-095) ───────────────────────────────────────
 #
@@ -1472,7 +1473,12 @@ def _persistable_reviewer_agents(
     ``code_reviewer`` into a non-reviewer leg.
     """
     known = resolve_known_agent_names(paths)
-    if known and all(name in known for name in configured):
+    if (
+        configured
+        and len(set(configured)) == len(configured)
+        and known
+        and all(name in known for name in configured)
+    ):
         return list(configured)
     return list(DEFAULT_REVIEWER_AGENTS)
 
@@ -1506,8 +1512,10 @@ def resolve_org_setting_reviewer_agents(
         return tuple(code_default)
     if not isinstance(data, list):
         return tuple(code_default)
-    names = tuple(n for n in data if isinstance(n, str) and n.strip())
-    if not names:
+    if not data or not all(isinstance(n, str) and n.strip() for n in data):
+        return tuple(code_default)
+    names = tuple(data)
+    if len(set(names)) != len(names):
         return tuple(code_default)
     if any(n not in known_agents for n in names):
         return tuple(code_default)
@@ -1632,6 +1640,8 @@ def write_org_setting_to_db(
         # a HARD REJECT; this guards any direct write_org_setting_to_db caller).
         if key == "reviewer_agents" and isinstance(merged, list):
             known = resolve_known_agent_names(paths)
+            if len(set(merged)) != len(merged):
+                raise OrgConfigError("reviewer_agents entries must be unique")
             unknown = sorted(set(merged) - known)
             if unknown:
                 raise OrgConfigError(
@@ -1773,4 +1783,3 @@ def write_skill_eligibility_entry(
         except FileNotFoundError:
             pass
         raise
-

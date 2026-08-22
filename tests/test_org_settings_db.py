@@ -582,6 +582,25 @@ def test_reviewer_agents_malformed_row_falls_back_to_default(tmp_path: Path):
         assert resolve_org_setting_reviewer_agents(db, known_agents=known) == DEFAULT_REVIEWER_AGENTS, bad
 
 
+def test_reviewer_agents_duplicate_or_mixed_row_falls_back_to_default(tmp_path: Path):
+    """A persisted list must conform to the public unique-string contract.
+
+    It is a fail-closed boundary: malformed historical rows must not be
+    partially filtered into a different reviewer identity set.
+    """
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n",
+        config_yaml=None,
+        agents=("code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    known = resolve_known_agent_names(paths)
+    for bad in ('["code_reviewer", "code_reviewer"]', '["code_reviewer", 1]'):
+        db.upsert_org_setting("reviewer_agents", bad)
+        assert resolve_org_setting_reviewer_agents(db, known_agents=known) == DEFAULT_REVIEWER_AGENTS, bad
+
+
 def test_seed_persists_configured_reviewer_agents(tmp_path: Path):
     """The one-shot seed writes the org's configured reviewer_agents (5th knob)
     when every name is a real active agent."""
@@ -612,6 +631,20 @@ def test_seed_unknown_reviewer_agents_persists_default(tmp_path: Path):
     assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]
     # Sentinel still fires (one-time seed semantics preserved).
     assert (paths.root / _ORG_SETTINGS_SEED_SENTINEL).exists()
+
+
+def test_seed_duplicate_reviewer_agents_persists_default(tmp_path: Path):
+    """Config seed/backfill never persists a duplicate reviewer identity."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, code_reviewer]\n",
+        config_yaml="reviewer_agents: [code_reviewer, code_reviewer]\n",
+        agents=("code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    seeded = seed_org_settings_from_config(paths, db)
+    assert "reviewer_agents" in seeded
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]
 
 
 def test_backfill_persists_tourism_senior_dev_after_sentinel_fired(tmp_path: Path):
@@ -669,6 +702,22 @@ def test_write_org_setting_to_db_rejects_unknown_reviewer_agent(tmp_path: Path):
     with pytest.raises(OrgConfigError):
         write_org_setting_to_db(paths, db, {"reviewer_agents": ["ghost_agent"]})
     # Nothing persisted.
+    assert db.get_org_setting("reviewer_agents") is None
+
+
+def test_write_org_setting_to_db_rejects_duplicate_reviewer_agent(tmp_path: Path):
+    """The direct DB writer preserves the public unique-list contract."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, code_reviewer]\n",
+        config_yaml=None,
+        agents=("code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    with pytest.raises(OrgConfigError, match="unique"):
+        write_org_setting_to_db(paths, db, {"reviewer_agents": ["code_reviewer", "code_reviewer"]})
     assert db.get_org_setting("reviewer_agents") is None
 
 
