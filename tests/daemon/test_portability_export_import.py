@@ -667,6 +667,166 @@ def test_import_recovery_different_digest_conflicts(
     assert r3.json()["detail"]["code"] == "digest_conflict"
 
 
+# ── Finding: fault AFTER receipt write / BEFORE pending-marker cleanup ──────
+
+
+def test_import_fault_after_receipt_before_cleanup_converges_and_cleans_marker(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A fault AFTER the receipt is durably written but BEFORE the pending
+    marker is unlinked leaves the receipt + marker + published target. A
+    same-digest+slug retry takes the receipt fast path (``already_imported``)
+    AND removes the matching pending marker — never leaving stale recovery
+    state behind a successful receipt."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    dest = target / "orgs" / "alpha"
+
+    import runtime.daemon.routes.portability as proutes
+    real_receipt = proutes._write_receipt
+
+    def receipt_then_fault(*args, **kwargs):
+        # Simulate a fault in the finalize window: the receipt IS durably
+        # written, then the process dies before the pending-marker unlink.
+        real_receipt(*args, **kwargs)
+        raise OSError("simulated fault after receipt, before pending cleanup")
+
+    monkeypatch.setattr(proutes, "_write_receipt", receipt_then_fault)
+
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    assert r1.json()["detail"]["code"] == "import_failed"
+    # Fault boundary: receipt persisted, marker still present, target published.
+    receipt_path = target / "orgs" / "_archive" / "import-alpha.json"
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    assert receipt_path.exists()
+    assert pending_path.exists()
+    assert (dest / "org" / "teams.yaml").is_file()
+
+    # Restore finalize and retry the SAME digest: the idempotent fast path must
+    # converge to already_imported AND remove the matching pending marker.
+    monkeypatch.setattr(proutes, "_write_receipt", real_receipt)
+    before_mtime = (dest / "org" / "teams.yaml").stat().st_mtime_ns
+    r2 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["result"] == "already_imported"
+    assert (dest / "org" / "teams.yaml").stat().st_mtime_ns == before_mtime  # no re-publish
+    assert not pending_path.exists()  # matching marker cleaned up
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["digest"] == digest
+    assert receipt["result"] == "imported"  # original receipt untouched
+
+
+def test_import_fault_after_receipt_conflicting_digest_protects_state(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """After the same finalize-window fault, a DIFFERENT digest retry is an
+    explicit 409 ``digest_conflict`` and leaves target/receipt/marker
+    protected — the receipt fast path never mutates them."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    dest = target / "orgs" / "alpha"
+
+    import runtime.daemon.routes.portability as proutes
+    real_receipt = proutes._write_receipt
+
+    def receipt_then_fault(*args, **kwargs):
+        real_receipt(*args, **kwargs)
+        raise OSError("simulated fault after receipt, before pending cleanup")
+
+    monkeypatch.setattr(proutes, "_write_receipt", receipt_then_fault)
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    monkeypatch.setattr(proutes, "_write_receipt", real_receipt)
+
+    receipt_path = target / "orgs" / "_archive" / "import-alpha.json"
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    receipt_before = receipt_path.read_text()
+    marker_before = pending_path.read_text()
+    target_mtime = (dest / "org" / "teams.yaml").stat().st_mtime_ns
+
+    # A different archive (different digest) now conflicts and mutates nothing.
+    (state.orgs["alpha"].root / "talks").mkdir(parents=True, exist_ok=True)
+    (state.orgs["alpha"].root / "talks" / "TALK-2.md").write_text("# Talk 2\n")
+    archive2 = tmp_path / "alpha-2.archive"
+    r_exp = client.post(
+        "/api/v1/orgs/alpha/portability-export",
+        json={"archive_path": str(archive2), "trust_acknowledged": True},
+    )
+    assert r_exp.status_code == 200, r_exp.text
+    assert r_exp.json()["archive_digest"] != digest
+
+    r3 = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive2),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r3.status_code == 409
+    assert r3.json()["detail"]["code"] == "digest_conflict"
+    # Receipt/marker/target all byte-for-byte protected.
+    assert receipt_path.read_text() == receipt_before
+    assert pending_path.read_text() == marker_before
+    assert (dest / "org" / "teams.yaml").stat().st_mtime_ns == target_mtime
+
+
+def test_import_receipt_fast_path_never_unlinks_nonmatching_marker(
+    tmp_path: Path,
+) -> None:
+    """The idempotent receipt fast path removes a pending marker ONLY when its
+    durable identity (slug + digest + operation_id) exactly matches the
+    finalized receipt. A stale/nonmatching marker (foreign operation id,
+    different digest, or malformed JSON) is never unlinked by the fast path."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["result"] == "imported"
+
+    receipt_path = target / "orgs" / "_archive" / "import-alpha.json"
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    receipt = json.loads(receipt_path.read_text())
+    assert not pending_path.exists()  # normal import finalized the marker
+
+    nonmatching_markers = [
+        # same slug+digest but a foreign operation id
+        json.dumps({"slug": "alpha", "digest": digest, "operation_id": "foreign-op"}),
+        # same slug but a different digest
+        json.dumps(
+            {"slug": "alpha", "digest": "0" * 64, "operation_id": receipt["operation_id"]}
+        ),
+        # malformed JSON
+        "{not-json",
+    ]
+    for marker_bytes in nonmatching_markers:
+        pending_path.write_text(marker_bytes)
+        r = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+        assert r.status_code == 200, r.text
+        assert r.json()["result"] == "already_imported"
+        # Nonmatching/malformed marker is left untouched (never inferred).
+        assert pending_path.read_text() == marker_bytes
+
+
 # ── Repair findings: no-replace primitive, empty target, canonical shape,
 #    off-loop capture, and the pre-publish crash boundary ─────────────────────
 

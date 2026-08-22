@@ -545,6 +545,32 @@ def _write_receipt(
     os.replace(str(tmp), str(receipt_path))
 
 
+def _remove_matching_pending_after_receipt(
+    *, pending_path: Path, receipt: dict,
+) -> None:
+    """Owner-held receipt recovery: remove a pending marker left by a fault
+    that occurred after ``_write_receipt()`` but before ``pending_path.unlink()``.
+
+    The idempotent receipt fast path converges an exact digest+slug retry to
+    ``already_imported``. A crash in that finalize window persists the receipt
+    but strands the pending marker. This helper removes the marker ONLY when
+    its durable identity (slug + digest + operation_id) exactly matches the
+    finalized receipt — never by digest alone, and never when the marker is
+    malformed or carries a foreign identity. A malformed, missing, or
+    nonmatching marker is left untouched (fail closed): this path never infers
+    ownership of a marker it cannot positively match to the receipt.
+    """
+    pending = _read_json(pending_path)
+    if not pending:
+        return
+    if (
+        pending.get("slug") == receipt.get("slug")
+        and pending.get("digest") == receipt.get("digest")
+        and pending.get("operation_id") == receipt.get("operation_id")
+    ):
+        pending_path.unlink(missing_ok=True)
+
+
 def _rename_noreplace(src: Path, dst: Path) -> bool:
     """Atomically rename ``src`` to ``dst`` only if ``dst`` does not exist.
 
@@ -934,6 +960,14 @@ def _import_relocation(
             existing = {}
         existing_digest = existing.get("digest")
         if existing_digest == parsed.digest:
+            # Owner-held receipt recovery: a fault after _write_receipt() but
+            # before pending_path.unlink() strands the marker behind a durable
+            # receipt. Remove it only when its identity exactly matches this
+            # receipt (fail closed on a malformed/mismatched marker).
+            _remove_matching_pending_after_receipt(
+                pending_path=pending_path,
+                receipt=existing,
+            )
             return {
                 "slug": slug,
                 "archive_digest": parsed.digest,

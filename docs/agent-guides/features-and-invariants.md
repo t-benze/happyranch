@@ -142,7 +142,10 @@ for the full contract; the essentials:
   publish leaves no false success, a crash between publish and
   receipt finalize converges on an exact digest+slug retry, and a different
   digest conflicts whether the destination is absent or present; exact
-  digest+slug retry is idempotent. **Imports are serialized** — v1 refuses
+  digest+slug retry is idempotent and removes a leftover pending marker only
+  when its durable identity (slug + digest + operation) exactly matches the
+  finalized receipt — a malformed or nonmatching marker is never unlinked
+  (fail closed). **Imports are serialized** — v1 refuses
   concurrent imports rather than supporting them: one exclusive, durable
   per-(runtime, slug) claim is acquired before any staging/pending-identity/
   publication state mutates (nonblocking per-key in-process lock + nonblocking
