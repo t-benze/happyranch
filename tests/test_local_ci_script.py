@@ -59,11 +59,19 @@ def _fake_recorder(bin_dir: Path, name: str) -> None:
     )
 
 
-def _setup_fake_env(tmp_path: Path, node_version: str) -> tuple[Path, Path, Path]:
+def _setup_fake_env(
+    tmp_path: Path,
+    node_version: str,
+    *,
+    raw: bool = False,
+) -> tuple[Path, Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     version_file = tmp_path / "node-version"
-    version_file.write_text(node_version + "\n")
+    # ``raw`` writes the exact bytes (used for CRLF / lone-CR output forms that
+    # must be emitted verbatim); otherwise a single normal trailing LF is added
+    # to model a canonical ``node --version`` line.
+    version_file.write_text(node_version if raw else node_version + "\n")
     log_file = tmp_path / "invocations.log"
     _fake_node(bin_dir)
     for name in ("npm", "npx", "uv"):
@@ -227,6 +235,8 @@ def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
         "24 \n",  # trailing whitespace after the token
         "24\t\n",  # trailing tab after the token
         "24\n\n",  # whitespace beyond the line terminator (extra newline)
+        "24\r\n",  # CRLF line ending
+        "24\r",  # lone trailing carriage return
         None,  # missing .nvmrc
     ],
     ids=[
@@ -240,6 +250,8 @@ def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
         "trailing-whitespace",
         "trailing-tab",
         "extra-newline",
+        "crlf",
+        "lone-cr",
         "missing",
     ],
 )
@@ -257,36 +269,29 @@ def test_malformed_declaration_fails_closed(
 
 
 @pytest.mark.parametrize(
-    "node_version",
+    ("node_version", "raw"),
     [
-        "v24x",  # missing minor/patch separators
-        "v24.14garbage",  # junk after the patch component
-        "v24.14",  # missing patch component
-        "junk v24.0.0",  # leading junk before the version
-        " v24.0.0",  # leading whitespace before the version
-        "v24.0.0 ",  # trailing whitespace after the version
-        "v24.0.0\t",  # trailing tab after the version
-        "v24.0.0\n",  # extra newline (whitespace beyond line terminator)
-        "v22.0.0",  # non-24 major
-        "v26.0.0",  # non-24 major
-    ],
-    ids=[
-        "v24x",
-        "patch-junk",
-        "missing-patch",
-        "leading-junk",
-        "leading-whitespace",
-        "trailing-whitespace",
-        "trailing-tab",
-        "extra-newline",
-        "major-22",
-        "major-26",
+        pytest.param("v24x", False, id="v24x"),  # missing minor/patch separators
+        pytest.param("v24.14garbage", False, id="patch-junk"),  # junk after patch
+        pytest.param("v24.14", False, id="missing-patch"),  # missing patch
+        pytest.param("junk v24.0.0", False, id="leading-junk"),  # leading junk
+        pytest.param(" v24.0.0", False, id="leading-whitespace"),
+        pytest.param("v24.0.0 ", False, id="trailing-whitespace"),
+        pytest.param("v24.0.0\t", False, id="trailing-tab"),
+        # extra newline (whitespace beyond the line terminator)
+        pytest.param("v24.0.0\n", False, id="extra-newline"),
+        pytest.param("v22.0.0", False, id="major-22"),  # non-24 major
+        pytest.param("v26.0.0", False, id="major-26"),  # non-24 major
+        pytest.param("v24.14.0\r\n", True, id="crlf"),  # CRLF line ending
+        pytest.param("v24.14.0\r", True, id="lone-cr"),  # lone trailing CR
     ],
 )
 def test_malformed_effective_version_fails_closed(
-    tmp_path: Path, node_version: str
+    tmp_path: Path, node_version: str, raw: bool
 ) -> None:
-    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, node_version)
+    bin_dir, version_file, log_file = _setup_fake_env(
+        tmp_path, node_version, raw=raw
+    )
     result = _run_local_ci("web", bin_dir, version_file, log_file)
 
     assert result.returncode != 0

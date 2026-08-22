@@ -40,12 +40,14 @@ NODE_DECLARATION_FILE="${REPO_ROOT}/.nvmrc"
 
 node_declared_major() {
   # $1: raw .nvmrc content. Prints the declared major ("24") only when the
-  # declaration is the exact bare token "24" (a normal trailing newline is
-  # stripped). Any other value — empty, prefixed (">=24", "v24x"), suffixed
-  # ("24.x", "24garbage"), or whitespace-separated ("2 4") — prints empty.
+  # declaration is the exact bare token "24" with at most ONE trailing LF
+  # (that single LF is stripped). A CRLF line ending ("24\r\n"), a lone
+  # trailing CR ("24\r"), or any other value — empty, prefixed (">=24",
+  # "v24x"), suffixed ("24.x", "24garbage"), or whitespace-separated
+  # ("2 4") — prints empty. The CR is deliberately NOT stripped so CR
+  # forms fail the equality below.
   local raw="${1:-}"
   raw="${raw%$'\n'}"
-  raw="${raw%$'\r'}"
   if [ "$raw" = "24" ]; then
     printf '%s\n' "24"
   else
@@ -56,16 +58,18 @@ node_declared_major() {
 effective_node_major() {
   # Prints the effective `node --version` major (e.g. "24") only when the
   # output is canonical complete Node output — v<major>.<minor>.<patch> with
-  # all-numeric components and no extra tokens. Malformed output (v24x,
-  # v24.14garbage, v24.14, leading junk, trailing whitespace, extra newline)
-  # or a missing node prints empty.
+  # all-numeric components, no extra tokens, and at most ONE trailing LF.
+  # Malformed output (v24x, v24.14garbage, v24.14, leading junk, trailing
+  # whitespace, extra newline, CRLF "v24.0.0\r\n", lone trailing CR
+  # "v24.0.0\r") or a missing node prints empty.
   local ver
   # The trailing sentinel keeps any extra newlines so only a single normal
   # line terminator (not "v24.0.0\n\n" or trailing whitespace) is accepted.
+  # The CR is deliberately NOT stripped: a CRLF or lone-CR output leaves a
+  # trailing "\r" that the canonical regex rejects.
   ver="$(node --version 2>/dev/null || true; printf x)"
   ver="${ver%x}"
   ver="${ver%$'\n'}"
-  ver="${ver%$'\r'}"
   if [[ "$ver" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   else
