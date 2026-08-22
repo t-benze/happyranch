@@ -39,29 +39,38 @@ NC='\033[0m'
 NODE_DECLARATION_FILE="${REPO_ROOT}/.nvmrc"
 
 node_declared_major() {
-  # $1: raw .nvmrc content. Prints the declared major (leading integer) or
-  # an empty string when the declaration is absent/malformed.
+  # $1: raw .nvmrc content. Prints the declared major ("24") only when the
+  # declaration is the exact bare token "24" (a normal trailing newline is
+  # stripped). Any other value — empty, prefixed (">=24", "v24x"), suffixed
+  # ("24.x", "24garbage"), or whitespace-separated ("2 4") — prints empty.
   local raw="${1:-}"
-  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
-  case "$raw" in
-    v*) raw="${raw#v}" ;;
-  esac
-  case "$raw" in
-    [0-9]*) printf '%s\n' "${raw%%[^0-9]*}" ;;
-    *) printf '\n' ;;
-  esac
+  raw="${raw%$'\n'}"
+  raw="${raw%$'\r'}"
+  if [ "$raw" = "24" ]; then
+    printf '%s\n' "24"
+  else
+    printf '\n'
+  fi
 }
 
 effective_node_major() {
-  # Prints the effective `node --version` major (leading integer) or empty
-  # string when node is absent or its version is unparseable.
+  # Prints the effective `node --version` major (e.g. "24") only when the
+  # output is canonical complete Node output — v<major>.<minor>.<patch> with
+  # all-numeric components and no extra tokens. Malformed output (v24x,
+  # v24.14garbage, v24.14, leading junk, trailing whitespace, extra newline)
+  # or a missing node prints empty.
   local ver
-  ver="$(node --version 2>/dev/null || true)"
-  ver="${ver#v}"
-  case "$ver" in
-    [0-9]*) printf '%s\n' "${ver%%[^0-9]*}" ;;
-    *) printf '\n' ;;
-  esac
+  # The trailing sentinel keeps any extra newlines so only a single normal
+  # line terminator (not "v24.0.0\n\n" or trailing whitespace) is accepted.
+  ver="$(node --version 2>/dev/null || true; printf x)"
+  ver="${ver%x}"
+  ver="${ver%$'\n'}"
+  ver="${ver%$'\r'}"
+  if [[ "$ver" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf '\n'
+  fi
 }
 
 try_select_node() {
@@ -92,7 +101,11 @@ ensure_node_declared() {
   # Fail-fast Node runtime guard. Exits nonzero (before any uv/npm work) when
   # the effective Node major does not exactly match the repository declaration.
   local declared_major effective_major raw
-  raw="$(cat "$NODE_DECLARATION_FILE" 2>/dev/null || true)"
+  # The trailing sentinel keeps extra newlines so a declaration like "24\n\n"
+  # (whitespace beyond the line terminator) is rejected instead of being
+  # collapsed to "24" by command substitution.
+  raw="$(cat "$NODE_DECLARATION_FILE" 2>/dev/null || true; printf x)"
+  raw="${raw%x}"
   declared_major="$(node_declared_major "$raw")"
   if [ -z "$declared_major" ]; then
     echo -e "${RED}ERROR: repository Node declaration (${NODE_DECLARATION_FILE}) is missing or malformed.${NC}" >&2

@@ -22,6 +22,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "local_ci.sh"
 
@@ -89,6 +91,45 @@ def _run_local_ci(
     return subprocess.run(
         ["bash", str(SCRIPT), target],
         cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _build_tree(tmp_path: Path, declaration: str | None) -> Path:
+    """Build a standalone repo-like tree with a script copy and optional .nvmrc."""
+    tree = tmp_path / "repo"
+    (tree / "scripts").mkdir(parents=True)
+    script_copy = tree / "scripts" / "local_ci.sh"
+    script_copy.write_text(SCRIPT.read_text())
+    script_copy.chmod(0o755)
+    if declaration is not None:
+        (tree / ".nvmrc").write_text(declaration)
+    return tree
+
+
+def _run_in_tree(
+    tree: Path,
+    target: str,
+    bin_dir: Path,
+    version_file: Path,
+    log_file: Path,
+    env_extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the copied script inside a standalone tree with the fake toolchain."""
+    script_copy = tree / "scripts" / "local_ci.sh"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env[NODE_VERSION_FILE_VAR] = str(version_file)
+    env[INVOCATION_LOG_VAR] = str(log_file)
+    env["NVM_DIR"] = str(version_file.parent / "no-nvm-dir")
+    env["HOME"] = str(version_file.parent)
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
+        ["bash", str(script_copy), target],
+        cwd=str(tree),
         env=env,
         capture_output=True,
         text=True,
@@ -173,31 +214,92 @@ def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
     assert "npm ci" in log_file.read_text()
 
 
-def test_malformed_declaration_fails_closed(tmp_path: Path) -> None:
-    # Copy the script into a standalone repo-like tree with a malformed .nvmrc.
-    tree = tmp_path / "repo"
-    (tree / "scripts").mkdir(parents=True)
-    script_copy = tree / "scripts" / "local_ci.sh"
-    script_copy.write_text(SCRIPT.read_text())
-    script_copy.chmod(0o755)
-    (tree / ".nvmrc").write_text(">=24\n")  # not a bare numeric major
-
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "",  # empty file
+        ">=24\n",  # range operator prefix
+        "24garbage\n",  # trailing junk
+        "2 4\n",  # embedded whitespace
+        "24.x\n",  # wildcard suffix
+        "v24x\n",  # leading v + junk
+        " 24\n",  # leading whitespace before the token
+        "24 \n",  # trailing whitespace after the token
+        "24\t\n",  # trailing tab after the token
+        "24\n\n",  # whitespace beyond the line terminator (extra newline)
+        None,  # missing .nvmrc
+    ],
+    ids=[
+        "empty",
+        "range-operator",
+        "suffix-junk",
+        "embedded-space",
+        "suffix-wildcard",
+        "v-prefix-junk",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "trailing-tab",
+        "extra-newline",
+        "missing",
+    ],
+)
+def test_malformed_declaration_fails_closed(
+    tmp_path: Path, declaration: str | None
+) -> None:
+    tree = _build_tree(tmp_path, declaration)
     bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
-    env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-    env[NODE_VERSION_FILE_VAR] = str(version_file)
-    env[INVOCATION_LOG_VAR] = str(log_file)
-    env["NVM_DIR"] = str(tmp_path / "no-nvm-dir")
-    env["HOME"] = str(tmp_path)
-
-    result = subprocess.run(
-        ["bash", str(script_copy), "web"],
-        cwd=str(tree),
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_in_tree(tree, "web", bin_dir, version_file, log_file)
 
     assert result.returncode != 0
     assert "missing or malformed" in result.stderr
+    # No fake uv/npm/npx work may run before the declaration is rejected.
     assert not log_file.exists()
+
+
+@pytest.mark.parametrize(
+    "node_version",
+    [
+        "v24x",  # missing minor/patch separators
+        "v24.14garbage",  # junk after the patch component
+        "v24.14",  # missing patch component
+        "junk v24.0.0",  # leading junk before the version
+        " v24.0.0",  # leading whitespace before the version
+        "v24.0.0 ",  # trailing whitespace after the version
+        "v24.0.0\t",  # trailing tab after the version
+        "v24.0.0\n",  # extra newline (whitespace beyond line terminator)
+        "v22.0.0",  # non-24 major
+        "v26.0.0",  # non-24 major
+    ],
+    ids=[
+        "v24x",
+        "patch-junk",
+        "missing-patch",
+        "leading-junk",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "trailing-tab",
+        "extra-newline",
+        "major-22",
+        "major-26",
+    ],
+)
+def test_malformed_effective_version_fails_closed(
+    tmp_path: Path, node_version: str
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, node_version)
+    result = _run_local_ci("web", bin_dir, version_file, log_file)
+
+    assert result.returncode != 0
+    assert "does not match the repository declaration" in result.stderr
+    # No fake uv/npm/npx work may run before the effective version is rejected.
+    assert not log_file.exists()
+
+
+def test_web_permits_valid_node_24_with_nonzero_minor_patch(tmp_path: Path) -> None:
+    # A canonical v24.x.y with non-zero minor/patch must pass the strict
+    # parser (numeric components), matching a real `node --version` like v24.14.0.
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.14.0")
+    result = _run_local_ci("web", bin_dir, version_file, log_file)
+
+    assert result.returncode == 0, result.stderr
+    assert "npm ci" in log_file.read_text()
