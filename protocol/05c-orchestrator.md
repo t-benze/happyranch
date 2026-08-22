@@ -742,7 +742,11 @@ captures the allow-list. A failed second check returns a conflict and
 leaves the source untouched (no archive). The fence is released only after
 capture validation; exceptional paths release it. The SQLite snapshot is a
 ``sqlite3`` online backup into private staging — ``happyranch.db-wal``/
-``-shm`` are never copied.
+``-shm`` are never copied. The blocking capture (backup, tree enumeration,
+hashing, tar/gzip, and full archive reread) runs on a **worker thread**, not
+the daemon event loop, while the fence stays held — so the daemon stays
+responsive during a large export and no admission can land between the recheck
+and the capture (no capture window).
 
 **Archive format.** A standard-library, data-only ``tar.gz`` with a leading
 ``manifest.json`` and ``payload/...`` members. Member names are normalized
@@ -757,15 +761,22 @@ recursively claimed inside the archive's own bytes (per-member hashes are
 integrity, not identity).
 
 **Import.** Same source/destination slug only; the destination runtime must be
-schema-v2 and the destination slug must be **unused on disk** — loaded, broken,
+schema-v2 **and otherwise non-empty** (at least one *other* org must already
+exist — an empty v2 target is refused), and the destination slug must be
+**unused on disk** — loaded, broken,
 partial, or data-bearing occupancy refuses (never reclaim/overwrite). v0
 DB-backed-enrollment, v1 flat-single-org, and old DB shapes are rejected (no
-import-time migration or loader broadening). Import extracts only under
+import-time migration or loader broadening): the staged DB is validated
+against the **canonical current-v2 schema contract** (derived independently
+from the runtime's own schema bootstrap, not the attacker-controlled manifest
+fingerprint). Import extracts only under
 ``<target>/orgs/_pending/<operation-id>`` and validates every member before
 publish: known format/policy/root inventory, exact hashes, pathname safety,
 duplicate names, symlink/hardlink/device/FIFO/nonregular rejection, SQLite
 integrity + FK checks, B2 custom-skill artifact-key/content-hash cross
-references, and legacy-skill identity/member/reference constraints. The staged
+references (recomputed and **bound to the manifest evidence**), and legacy-skill
+identity/member/reference constraints (recomputed and **bound to the manifest
+evidence**). The staged
 payload is revalidated against the exact Slice-A allow-list BEFORE any SQLite
 is opened or any byte published — a self-consistent hostile archive carrying
 ``payload/credentials``, an unknown root, task output, workspace siblings, or a
@@ -776,15 +787,20 @@ dir, loaded/broken registry, and queue are untouched. Every imported
 schedule's ``active`` flag is forced to ``0`` (status semantics unchanged);
 Slice C alone owns attach/rebind/rearm, so import never calls
 ``DaemonState.add_org`` or attaches the imported org. Publish is a
-platform-correct same-filesystem **no-replace** primitive (the destination name
-is claimed with ``os.mkdir``, which fails if anything occupies it, then the
-validated payload is renamed over that empty claim) — never clone/merge/
+platform-correct same-filesystem **no-replace** primitive — a genuine
+no-overwrite rename (Linux ``renameat2(…, RENAME_NOREPLACE)`` / macOS
+``renamex_np(…, RENAME_EXCL)``), which fails with ``EEXIST`` if the destination
+exists (empty or not) — never clone/merge/
 overwrite/source deletion/credential transfer, and a competing destination
-created after validation is never overwritten. A narrow receipt is persisted
+created after validation (including an *empty* directory) is never overwritten.
+A narrow receipt is persisted
 under the reserved ``orgs/_archive`` namespace recording archive digest + slug
-+ result + quarantined legacy-skill evidence. A durable pending marker is
-written AFTER a successful publish and BEFORE receipt finalize: a crash in that
-window leaves the published org plus the marker, and an exact digest+slug retry
++ result + quarantined legacy-skill evidence. Durable import identity (digest +
+slug + operation) is prepared in a pending marker **BEFORE** publish, then the
+no-replace publish, then receipt finalize: a crash after preparation but before
+publish leaves no destination and no false success; a crash between publish and
+receipt finalize leaves the published org plus the marker, and an exact
+digest+slug retry
 converges by writing the missing receipt WITHOUT overwriting the org (a
 different digest conflicts); an exact digest+slug retry with a finalized
 receipt is idempotent. Legacy skills are carried only as

@@ -105,7 +105,8 @@ For per-org commands, HappyRanch resolves the org from `--org <slug>`,
 Relocation is a founder, CLI-only, current-v2 operation. It moves one
 **quiescent** org (no live tasks/sessions/jobs/invocations/dreams/work-hours and
 no armed or firing schedules) into an **unused** same-slug destination in
-another schema-v2 runtime. The archive is plaintext and unsigned: mutating
+another schema-v2 runtime that is **otherwise non-empty** (at least one other
+org already exists). The archive is plaintext and unsigned: mutating
 requests must acknowledge `trust_acknowledged: true`, and a checksum proves
 corruption, not sender identity.
 

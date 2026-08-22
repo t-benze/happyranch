@@ -16,11 +16,15 @@ They are mounted under ``/api/v1/orgs/{slug}`` like every other per-org route.
 """
 from __future__ import annotations
 
+import asyncio
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -48,11 +52,14 @@ from runtime.portability.archive import (
 )
 from runtime.portability.capture import (
     CaptureError,
+    canonical_v2_fingerprint,
     collect_source_files,
     compute_v2_fingerprint,
     deactivate_schedules,
     extract_archive,
     gather_legacy_skill_evidence,
+    validate_b2_match,
+    validate_legacy_evidence_match,
     verify_b2_custom_skills,
     verify_sqlite_integrity,
 )
@@ -411,9 +418,11 @@ def _write_pending_marker(
 ) -> None:
     """Record the in-flight import identity BEFORE publish.
 
-    Written atomically so a crash between publish and receipt finalize leaves
-    a durable, visible recovery marker that lets a same-digest retry converge
-    without overwriting the published org.
+    Written atomically (and durably, immediately before the no-replace publish)
+    so a crash at any point leaves a visible recovery marker: a same-digest
+    retry can converge, and a differing digest conflicts, without overwriting.
+    On a refused publish the caller removes the marker so a stale marker can
+    never falsely claim a destination was published by this archive.
     """
     pending_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = pending_path.with_name(pending_path.name + ".tmp")
@@ -448,32 +457,67 @@ def _write_receipt(
     os.replace(str(tmp), str(receipt_path))
 
 
+def _rename_noreplace(src: Path, dst: Path) -> bool:
+    """Atomically rename ``src`` to ``dst`` only if ``dst`` does not exist.
+
+    A platform-correct, genuine no-overwrite primitive: on Linux this is
+    ``renameat2(..., RENAME_NOREPLACE)``; on macOS it is
+    ``renamex_np(..., RENAME_EXCL)``. Both fail with ``EEXIST`` if the
+    destination already exists (file, directory, or symlink — empty or not),
+    leaving the competing destination intact. Returns ``True`` on success,
+    ``False`` when ``dst`` already exists, and raises ``OSError`` on any other
+    failure. On a platform without either primitive the operation fails closed
+    (``ENOSYS``) — it never falls back to an overwriting rename.
+    """
+    if sys.platform == "linux":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOSYS, "renameat2 unavailable", str(dst))
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                              ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        rc = renameat2(-100, os.fsencode(src), -100, os.fsencode(dst), 1)  # RENAME_NOREPLACE
+        if rc == 0:
+            return True
+        e = ctypes.get_errno()
+        if e == errno.EEXIST:
+            return False
+        raise OSError(e, os.strerror(e), str(dst))
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise OSError(errno.ENOSYS, "renamex_np unavailable", str(dst))
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        rc = renamex_np(os.fsencode(src), os.fsencode(dst), 0x00000004)  # RENAME_EXCL
+        if rc == 0:
+            return True
+        e = ctypes.get_errno()
+        if e == errno.EEXIST:
+            return False
+        raise OSError(e, os.strerror(e), str(dst))
+    raise OSError(errno.ENOSYS, "no no-replace rename primitive on this platform", str(dst))
+
+
 def _publish_no_replace(payload_dir: Path, dest: Path) -> None:
     """Atomically publish ``payload_dir`` to ``dest`` without replacing any
     existing destination (platform-correct same-filesystem no-replace).
 
-    ``os.mkdir`` atomically claims the name — it raises ``FileExistsError`` if
-    anything (file, directory, or symlink) already occupies ``dest`` — then
-    ``os.rename`` moves the payload over our own empty claim on the same
-    filesystem. There is no lexists-then-rename TOCTOU window: the only thing
-    ``os.rename`` can replace is the empty directory we just created, never a
-    competitor's sentinel or data.
+    ``_rename_noreplace`` is a single atomic no-overwrite rename: exactly one
+    caller can ever win the destination name, and a competitor that creates an
+    *empty* (or any) destination after validation is left intact — the publish
+    fails closed with ``destination_occupied`` rather than overwriting it.
     """
+    dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.mkdir(str(dest))
-    except FileExistsError:
+        ok = _rename_noreplace(payload_dir, dest)
+    except OSError:
         raise HTTPException(
             status_code=409, detail={"code": "destination_occupied", "slug": dest.name},
         )
-    try:
-        os.rename(str(payload_dir), str(dest))
-    except OSError:
-        # A competitor interfered with our empty claim (e.g. rmdir + recreate).
-        # Fail closed: never overwrite. Best-effort remove our empty claim.
-        try:
-            os.rmdir(str(dest))
-        except OSError:
-            pass
+    if not ok:
         raise HTTPException(
             status_code=409, detail={"code": "destination_occupied", "slug": dest.name},
         )
@@ -597,43 +641,59 @@ async def portability_export(
                     },
                 )
             staging = Path(tempfile.mkdtemp(prefix="hr-port-export-"))
-            staging_db = staging / "happyranch.db"
-            org.db.backup_to(staging_db)
 
-        included_paths = [
-            e.path for e in inventory.included if e.path != "happyranch.db"
-        ]
-        payload, counts = collect_source_files(org.root, included_paths)
-        payload["payload/happyranch.db"] = staging_db
-
-        manifest = _build_manifest(org, inventory, payload, staging_db, counts)
-        digest = build_archive(archive_path, manifest, payload)
-        parsed = read_archive(archive_path)
-        if parsed.digest != digest:
-            raise HTTPException(
-                status_code=500, detail={"code": "archive_digest_mismatch"},
-            )
-
-        return {
-            "slug": slug,
-            "archive_digest": digest,
-            "archive_path": str(archive_path),
-            "member_count": len(manifest.members),
-            "source_root_inventory": manifest.source_root_inventory,
-            "excluded_entries": manifest.excluded_entries,
-            "legacy_skills_quarantined": [
-                e.model_dump() for e in manifest.legacy_skills
-            ],
-            "b2_custom_skill_checks": [
-                c.model_dump() for c in manifest.b2_custom_skill_checks
-            ],
-        }
+        # The transfer fence is held: no new admission can mutate captured
+        # state. Run the blocking capture (SQLite backup → tree enumeration →
+        # hashing → tar/gzip → full archive reread) on a worker thread so the
+        # daemon event loop stays responsive. The Database RLock serializes the
+        # backup against any in-flight writer, and the fence guarantees no
+        # writer can start between recheck and capture (no capture window).
+        return await asyncio.to_thread(
+            _run_blocking_capture, org, inventory, staging, archive_path,
+        )
     finally:
         # Release the fence on every path (success or failure) so admission can
-        # resume; clean the private staging directory.
+        # resume; clean the private staging directory off the loop.
         await org.transfer_fence.release()
         if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, staging, True)
+
+
+def _run_blocking_capture(
+    org, inventory, staging: Path, archive_path: Path,
+) -> dict:
+    """Blocking capture pipeline (runs on a worker thread, never the loop)."""
+    staging_db = staging / "happyranch.db"
+    org.db.backup_to(staging_db)
+
+    included_paths = [
+        e.path for e in inventory.included if e.path != "happyranch.db"
+    ]
+    payload, counts = collect_source_files(org.root, included_paths)
+    payload["payload/happyranch.db"] = staging_db
+
+    manifest = _build_manifest(org, inventory, payload, staging_db, counts)
+    digest = build_archive(archive_path, manifest, payload)
+    parsed = read_archive(archive_path)
+    if parsed.digest != digest:
+        raise HTTPException(
+            status_code=500, detail={"code": "archive_digest_mismatch"},
+        )
+
+    return {
+        "slug": org.slug,
+        "archive_digest": digest,
+        "archive_path": str(archive_path),
+        "member_count": len(manifest.members),
+        "source_root_inventory": manifest.source_root_inventory,
+        "excluded_entries": manifest.excluded_entries,
+        "legacy_skills_quarantined": [
+            e.model_dump() for e in manifest.legacy_skills
+        ],
+        "b2_custom_skill_checks": [
+            c.model_dump() for c in manifest.b2_custom_skill_checks
+        ],
+    }
 
 
 class InspectBody(BaseModel):
@@ -719,6 +779,23 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
             detail={"code": "unsupported_target_runtime", "message": str(exc)},
         )
 
+    # Destination runtime must be schema-v2 (enforced above by RuntimeDir.load)
+    # AND otherwise non-empty: at least one *other* valid org must already
+    # exist. An empty v2 target is refused before any target mutation — this is
+    # an enforced contract, not a fixture convention.
+    other_orgs = [s for s, _ in target.iter_org_roots() if s != slug]
+    if not other_orgs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "empty_target_runtime",
+                "message": (
+                    "target runtime has no other org; relocation requires an "
+                    "otherwise non-empty schema-v2 destination"
+                ),
+            },
+        )
+
     # Idempotency: exact digest + slug retry is a no-op; a different digest
     # for the same slug conflicts. Checked BEFORE the collision check so an
     # already-published import is idempotent (the published org dir occupies
@@ -751,9 +828,12 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
     # (a) A finalized receipt was already handled above (idempotency).
     # (b) If the destination was published but the receipt write never
     #     finalized (crash between publish and finalize), the pending marker
-    #     records the digest of the archive that produced it. A retry of the
-    #     SAME digest+slug converges — it revalidates and writes the receipt
-    #     WITHOUT overwriting the published org. A different digest conflicts.
+    #     (written BEFORE publish) records the digest of the archive that
+    #     produced it. A retry of the SAME digest+slug converges — it
+    #     revalidates and writes the receipt WITHOUT overwriting the published
+    #     org (verified against the marker's digest AND the published org's
+    #     teams.yaml so a stale marker can never claim an unrelated dest).
+    #     A different digest conflicts.
     dest = target.orgs_dir / slug
     pending_path = receipt_dir / f".pending-import-{slug}.json"
     if os.path.lexists(str(dest)):
@@ -761,9 +841,14 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
         pending_digest = pending.get("digest")
         if pending.get("slug") == slug and pending_digest is not None:
             if pending_digest == parsed.digest:
-                # The marker only ever exists after a successful publish, so it
-                # proves dest was published by this exact archive. Converge by
-                # writing the missing receipt WITHOUT overwriting the org.
+                # Converge only if the destination is a published org (has the
+                # v2 teams.yaml marker); otherwise the destination belongs to a
+                # competitor and must not be claimed.
+                if not (dest / "org" / "teams.yaml").is_file():
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "destination_occupied", "slug": slug},
+                    )
                 _write_receipt(
                     receipt_path,
                     slug=slug,
@@ -816,8 +901,12 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                 detail={"code": "missing_db", "message": "payload lacks happyranch.db"},
             )
 
-        # v2 compatibility fingerprint + old-shape rejection (v0 enrollment /
-        # v1 flat / old DB shapes are refused — no import-time migration).
+        # Independently validate the staged DB against the canonical current-v2
+        # schema contract (derived from the runtime's own schema bootstrap in
+        # ``runtime/infrastructure/database.py``), NOT merely against the
+        # attacker-controlled manifest fingerprint. This refuses v0 enrollment,
+        # v1 flat-single-org, and any other old/unsupported DB shape — no
+        # import-time migration or RuntimeDir-loader broadening.
         conn = sqlite3.connect(str(db_path))
         try:
             actual_fp = compute_v2_fingerprint(conn)
@@ -830,10 +919,16 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
             )
         finally:
             conn.close()
-        if actual_fp != parsed.manifest.v2_fingerprint:
+        canonical_fp = canonical_v2_fingerprint()
+        if actual_fp != canonical_fp:
             raise HTTPException(
                 status_code=422,
-                detail={"code": "fingerprint_mismatch", "slug": slug},
+                detail={"code": "unsupported_db_shape", "slug": slug},
+            )
+        if parsed.manifest.v2_fingerprint != canonical_fp:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "manifest_fingerprint_mismatch", "slug": slug},
             )
         if has_v0_enrollment:
             raise HTTPException(
@@ -859,12 +954,18 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                     "checks": [c.model_dump() for c in invalid_b2],
                 },
             )
+        # Bind the manifest's declared B2 evidence to the recomputed checks
+        # (artifact key + content hash must agree; recomputed must be valid).
+        validate_b2_match(parsed.manifest.b2_custom_skill_checks, b2_checks)
 
-        # Re-validate quarantined legacy skills against the extracted bytes.
+        # Re-validate quarantined legacy skills against the extracted bytes,
+        # then bind the manifest's declared evidence to those bytes (identity,
+        # validation_result, member hashes, resolved local references).
         legacy_evidence = gather_legacy_skill_evidence(
             payload_dir / "skills",
             [e.slug for e in parsed.manifest.legacy_skills],
         )
+        validate_legacy_evidence_match(parsed.manifest.legacy_skills, legacy_evidence)
 
         # Force every imported schedule active=0 before publish (Slice C alone
         # owns attach/rebind/rearm). Never alters schedule status semantics.
@@ -877,15 +978,25 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                     detail={"code": "sqlite_sidecar_present", "name": sidecar},
                 )
 
-        # Publish: platform-correct same-filesystem no-replace. The pending
-        # marker is written AFTER a successful publish (and BEFORE the receipt)
-        # so its presence proves the destination was published by this archive.
+        # Publish: platform-correct same-filesystem no-replace. Durable import
+        # identity (digest + slug + operation) is prepared BEFORE publish so a
+        # crash at any boundary is recoverable: a crash after preparation but
+        # before publish leaves no destination and no false success; a crash
+        # after publish but before finalize converges on the same digest+slug
+        # via the marker WITHOUT overwrite; a differing digest conflicts.
         phase = "publish"
-        _publish_no_replace(payload_dir, dest)
-        published = True
         _write_pending_marker(
             pending_path, slug=slug, digest=parsed.digest, operation_id=op_id,
         )
+        try:
+            _publish_no_replace(payload_dir, dest)
+        except HTTPException:
+            # Publish refused (destination occupied): remove the marker so a
+            # later retry can never falsely converge on a destination this
+            # archive never published.
+            pending_path.unlink(missing_ok=True)
+            raise
+        published = True
         phase = "finalize"
 
         _write_receipt(
@@ -909,6 +1020,19 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                 e.model_dump() for e in legacy_evidence
             ],
         }
+    except ArchiveValidationError as exc:
+        # Hostile/inconsistent archive content (legacy-skill or B2 evidence
+        # binding, member-root/escapement failures) — fail closed as a client
+        # error, never a 500, and never after any target/source mutation.
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_archive_content", "message": str(exc)},
+        )
+    except CaptureError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_archive_content", "message": str(exc)},
+        )
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive

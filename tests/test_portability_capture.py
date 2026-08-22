@@ -14,14 +14,22 @@ import pytest
 from runtime.infrastructure.database import Database
 from runtime.portability.capture import (
     CaptureError,
+    canonical_v2_fingerprint,
     collect_source_files,
     compute_v2_fingerprint,
     deactivate_schedules,
     gather_legacy_skill_evidence,
+    validate_b2_match,
+    validate_legacy_evidence_match,
     verify_b2_custom_skills,
     verify_sqlite_integrity,
 )
-from runtime.portability.archive import sha256_bytes
+from runtime.portability.archive import (
+    ArchiveValidationError,
+    B2CustomSkillCheck,
+    LegacySkillEvidence,
+    sha256_bytes,
+)
 
 
 def _write(path: Path, content: str) -> Path:
@@ -210,3 +218,82 @@ def test_gather_legacy_skill_evidence_rejects_symlink(tmp_path: Path) -> None:
     (pkg / "references").symlink_to(tmp_path / "outside")
     with pytest.raises(CaptureError, match="symlink"):
         gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+
+
+def test_gather_legacy_skill_evidence_marks_invalid_identity(tmp_path: Path) -> None:
+    """A package with a non-conforming identity (wrong source) is gathered but
+    carries a non-'valid' validation_result (rather than being silently
+    accepted)."""
+    skills = tmp_path / "skills"
+    pkg = skills / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(pkg / "SKILL.md", "# QA\n\nbody\n")
+    _write(pkg / "skill.yaml",
+           "description: QA\nid: hr:qa-scroll-test\nname: QA\nowner: o\n"
+           "policy_class: standard_operational\nslug: qa-scroll-test\n"
+           "source: system_contract\nstatus: enabled\nversion: 0.1.0\n"
+           "when_to_use: ''\n")  # source is not user_authored
+    evidence = gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+    assert len(evidence) == 1
+    assert evidence[0].validation_result != "valid"
+
+
+def test_validate_legacy_evidence_match_rejects_mismatch(tmp_path: Path) -> None:
+    """The manifest's declared legacy-skill evidence must match the recomputed
+    bytes exactly; a content-hash disagreement is rejected."""
+    skills = tmp_path / "skills"
+    pkg = skills / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(pkg / "SKILL.md", "# QA\n\nbody\n")
+    _write(pkg / "skill.yaml",
+           "description: QA\nid: hr:qa-scroll-test\nname: QA\nowner: o\n"
+           "policy_class: standard_operational\nslug: qa-scroll-test\n"
+           "source: user_authored\nstatus: enabled\nversion: 0.1.0\nwhen_to_use: ''\n")
+    actual = gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+    claimed = [LegacySkillEvidence(
+        slug="qa-scroll-test",
+        metadata_hash=actual[0].metadata_hash,
+        content_hash="0" * 64,  # wrong content hash
+        member_hashes=actual[0].member_hashes,
+        validation_result="valid",
+        references_resolved=actual[0].references_resolved,
+    )]
+    with pytest.raises(ArchiveValidationError, match="content_hash mismatch"):
+        validate_legacy_evidence_match(claimed, actual)
+
+
+def test_validate_b2_match_rejects_mismatch() -> None:
+    """The manifest's declared B2 evidence must match the recomputed checks; a
+    differing content hash is rejected."""
+    claimed = [B2CustomSkillCheck(
+        skill_id="cs-1", slug="qa", version_id=1,
+        content_artifact_key="k", content_hash="aaaa", valid=True, reason=None,
+    )]
+    actual = [B2CustomSkillCheck(
+        skill_id="cs-1", slug="qa", version_id=1,
+        content_artifact_key="k", content_hash="bbbb", valid=True, reason=None,
+    )]
+    with pytest.raises(ArchiveValidationError, match="content hash mismatch"):
+        validate_b2_match(claimed, actual)
+
+
+def test_canonical_v2_fingerprint_matches_fresh_database(tmp_path: Path) -> None:
+    """The independent canonical fingerprint equals the schema shape of a
+    freshly initialized Database (the runtime's own current-v2 bootstrap)."""
+    db = Database(tmp_path / "happyranch.db")
+    canonical = canonical_v2_fingerprint()
+    assert canonical == compute_v2_fingerprint(db._conn)
+    assert len(canonical) == 64
+    db.close()
+
+
+def test_canonical_v2_fingerprint_differs_from_old_shape(tmp_path: Path) -> None:
+    """A v0-shaped DB (agent_enrollments table) produces a different schema
+    fingerprint than the current-v2 canonical value."""
+    old = tmp_path / "old.db"
+    conn = sqlite3.connect(str(old))
+    conn.execute("CREATE TABLE agent_enrollments (id TEXT PRIMARY KEY)")
+    conn.commit()
+    old_fp = compute_v2_fingerprint(conn)
+    conn.close()
+    assert old_fp != canonical_v2_fingerprint()

@@ -320,12 +320,15 @@ def validate_member_roots(manifest: Manifest, member_names: list[str]) -> None:
     byte is published. Every payload member must live under an approved root
     (``happyranch.db`` or one of the directory roots); ``workspaces`` members
     must be under the sole ``workspaces/<agent>/memory/**`` carve-out; and
-    ``skills`` members must belong to a manifest-declared *valid* legacy skill.
-    SQLite WAL/SHM sidecars are refused. Finally the manifest's
-    ``included_roots`` file counts must agree exactly with the actual member
-    counts (no missing/extra root claims).
+    ``skills`` members must belong to a manifest-declared *valid* legacy skill
+    (``validation_result == "valid"``, not merely a declared slug). SQLite
+    WAL/SHM sidecars are refused. The manifest's ``included_roots`` file counts
+    AND its ``source_root_inventory`` root set must agree exactly with the
+    actual member set (no missing/extra/mismatched root claims).
     """
-    skill_slugs = {e.slug for e in manifest.legacy_skills}
+    skill_slugs = {
+        e.slug for e in manifest.legacy_skills if e.validation_result == "valid"
+    }
     actual_counts: dict[str, int] = {}
     for name in member_names:
         rel = name[len(PAYLOAD_PREFIX):] if name.startswith(PAYLOAD_PREFIX) else name
@@ -357,3 +360,43 @@ def validate_member_roots(manifest: Manifest, member_names: list[str]) -> None:
             f"root inventory mismatch: manifest claimed "
             f"{sorted(claimed.items())}, actual {sorted(actual_counts.items())}"
         )
+
+    # Exact root-inventory agreement: the manifest's ``source_root_inventory``
+    # (the distinct top-level roots the exporter claims to have included) must
+    # be a subset of the canonical allowed roots AND cover every root actually
+    # present in the member set. A manifest that claims an unknown root, or that
+    # carries a member under a root it did not declare, is rejected. (Empty
+    # included roots — e.g. an ``artifacts/`` dir with no files — legitimately
+    # appear in ``source_root_inventory`` with a zero member count, so the
+    # containment is one-way on the root set: ``actual ⊆ claimed``.)
+    allowed_roots = set(_ALLOWED_DIR_ROOTS) | {"happyranch.db"}
+    actual_roots = set(actual_counts)
+    claimed_roots = set(manifest.source_root_inventory)
+    if not claimed_roots <= allowed_roots:
+        raise ArchiveValidationError(
+            f"source root inventory claims unknown root(s): "
+            f"{sorted(claimed_roots - allowed_roots)}"
+        )
+    if not actual_roots <= claimed_roots:
+        raise ArchiveValidationError(
+            f"source root inventory missing declared root(s): "
+            f"manifest claimed {sorted(claimed_roots)}, actual {sorted(actual_roots)}"
+        )
+
+    # Structural validation of the exclusion/rejection claims: every entry must
+    # be a {path, reason} mapping with string values. (A top-level root may
+    # legitimately appear in BOTH the included set and the excluded set — e.g.
+    # ``workspaces`` is included only for its ``memory`` carve-out while its
+    # other children are excluded — so the shape check is deliberately
+    # structural, not a root-level overlap assertion.)
+    for label, entries in (("excluded_entries", manifest.excluded_entries),
+                          ("rejected_entries", manifest.rejected_entries)):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ArchiveValidationError(f"{label} entry is not a mapping")
+            path = entry.get("path")
+            reason = entry.get("reason")
+            if not isinstance(path, str) or not path:
+                raise ArchiveValidationError(f"{label} entry missing string path")
+            if not isinstance(reason, str) or not reason:
+                raise ArchiveValidationError(f"{label} entry missing string reason")

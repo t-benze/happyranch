@@ -28,6 +28,32 @@ class CaptureError(ValueError):
     """A capture or verification failure (fail-closed)."""
 
 
+_canonical_v2_fp: str | None = None
+
+
+def canonical_v2_fingerprint() -> str:
+    """Independent canonical current-v2 schema fingerprint.
+
+    Derived from a freshly-initialized :class:`runtime.infrastructure.database
+    .Database` — the runtime's own current schema bootstrap (``CREATE TABLE``
+    DDL + migrations), NOT from any archive manifest. Import compares the
+    staged DB's fingerprint against this value, so an attacker cannot ship a
+    self-consistent old/unsupported DB shape whose fingerprint merely agrees
+    with its own (attacker-controlled) manifest.
+    """
+    global _canonical_v2_fp
+    if _canonical_v2_fp is None:
+        import tempfile as _tempfile
+        from runtime.infrastructure.database import Database
+        with _tempfile.TemporaryDirectory() as td:
+            db = Database(Path(td) / "canonical.db")
+            try:
+                _canonical_v2_fp = compute_v2_fingerprint(db._conn)
+            finally:
+                db.close()
+    return _canonical_v2_fp
+
+
 def compute_v2_fingerprint(conn: sqlite3.Connection) -> str:
     """Hash of the sorted (table, columns) schema shape.
 
@@ -237,16 +263,22 @@ def gather_legacy_skill_evidence(
     """Build per-package legacy-skill validation evidence (quarantined carry).
 
     ``package_slugs`` are the validated legacy package slugs (from the Slice-A
-    classifier's INCLUDE entries under ``skills/``). Every member is hashed;
+    classifier's INCLUDE entries under ``skills/``). Every member is hashed; the
+    package identity is independently re-validated against the canonical
+    legacy-skill contract (``roots._validate_legacy_skill_package``) and the
+    ``validation_result`` reflects that verdict ("valid" or the failure reason);
     local reference targets (``references/`` + ``assets/`` plain filenames) are
     resolved against the package's own member list. No package content is
     executed or materialized.
     """
+    from runtime.portability.roots import _validate_legacy_skill_package
+
     evidence: list[LegacySkillEvidence] = []
     for slug in sorted(package_slugs):
         pkg = skills_root / slug
         if not pkg.is_dir() or pkg.is_symlink():
             raise CaptureError(f"legacy skill package missing/unsafe: {slug}")
+        ok, reason = _validate_legacy_skill_package(pkg)
         member_hashes: dict[str, str] = {}
         for rel, abs_path in _walk_regular_only(pkg):
             member_hashes[rel] = sha256_file(abs_path)
@@ -263,10 +295,82 @@ def gather_legacy_skill_evidence(
             metadata_hash=metadata_hash,
             content_hash=content_hash,
             member_hashes=member_hashes,
-            validation_result="valid",
+            validation_result="valid" if ok else (reason or "invalid"),
             references_resolved=references_resolved,
         ))
     return evidence
+
+
+def validate_legacy_evidence_match(
+    manifest_evidence: list[LegacySkillEvidence],
+    extracted_evidence: list[LegacySkillEvidence],
+) -> None:
+    """Bind manifest legacy-skill evidence to the extracted bytes.
+
+    Rejects (fail-closed) any disagreement between the manifest's declared
+    evidence and the independently recomputed evidence from the extracted
+    package bytes: a differing/missing/extra slug, a non-``valid``
+    ``validation_result``, or any mismatch in identity/metadata/content/member
+    hashes or the resolved local-reference set. A legacy skill with invalid
+    identity, or a reference that escaped the package, is refused rather than
+    carried.
+    """
+    claimed = {e.slug: e for e in manifest_evidence}
+    actual = {e.slug: e for e in extracted_evidence}
+    if set(claimed) != set(actual):
+        raise ArchiveValidationError(
+            f"legacy skill set mismatch: manifest {sorted(claimed)}, "
+            f"extracted {sorted(actual)}"
+        )
+    for slug in sorted(claimed):
+        c = claimed[slug]
+        a = actual[slug]
+        if a.validation_result != "valid":
+            raise ArchiveValidationError(
+                f"legacy skill {slug!r} invalid: {a.validation_result}"
+            )
+        if c.validation_result != "valid":
+            raise ArchiveValidationError(
+                f"legacy skill {slug!r} declared non-valid in manifest"
+            )
+        if c.metadata_hash != a.metadata_hash:
+            raise ArchiveValidationError(f"legacy skill {slug!r} metadata_hash mismatch")
+        if c.content_hash != a.content_hash:
+            raise ArchiveValidationError(f"legacy skill {slug!r} content_hash mismatch")
+        if c.member_hashes != a.member_hashes:
+            raise ArchiveValidationError(f"legacy skill {slug!r} member hashes mismatch")
+        if c.references_resolved != a.references_resolved:
+            raise ArchiveValidationError(
+                f"legacy skill {slug!r} reference set mismatch"
+            )
+
+
+def validate_b2_match(
+    manifest_checks: list[B2CustomSkillCheck],
+    extracted_checks: list[B2CustomSkillCheck],
+) -> None:
+    """Bind manifest B2 custom-skill evidence to the extracted DB + artifacts.
+
+    The manifest's declared B2 cross-checks must exactly match the checks
+    recomputed from the extracted DB rows and artifact bytes: same skill set,
+    same artifact key/content hash, and the recomputed check must be ``valid``.
+    """
+    claimed = {c.skill_id: c for c in manifest_checks}
+    actual = {c.skill_id: c for c in extracted_checks}
+    if set(claimed) != set(actual):
+        raise ArchiveValidationError(
+            f"B2 custom-skill set mismatch: manifest {sorted(claimed)}, "
+            f"extracted {sorted(actual)}"
+        )
+    for skill_id in sorted(claimed):
+        c = claimed[skill_id]
+        a = actual[skill_id]
+        if not a.valid:
+            raise ArchiveValidationError(f"B2 custom-skill {skill_id} check invalid: {a.reason}")
+        if c.content_artifact_key != a.content_artifact_key:
+            raise ArchiveValidationError(f"B2 custom-skill {skill_id} artifact key mismatch")
+        if c.content_hash != a.content_hash:
+            raise ArchiveValidationError(f"B2 custom-skill {skill_id} content hash mismatch")
 
 
 def extract_archive(

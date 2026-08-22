@@ -122,19 +122,23 @@ for the full contract; the essentials:
   read-only; validates the archive and reports manifest + digest + quarantined
   legacy-skill evidence.
 - **`happyranch orgs portability-import <slug> --from-file <import.json>`** —
-  same-slug relocation into an **unused** slug in another schema-v2 runtime.
-  Rejects v0/v1/old DB shapes and any on-disk destination occupancy (loaded,
-  broken, partial, data-bearing). Extracts only under
+  same-slug relocation into an **unused** slug in another schema-v2 runtime
+  that is **otherwise non-empty** (at least one other org already exists).
+  Rejects v0/v1/old DB shapes (validated against the **canonical current-v2
+  schema**, not the manifest fingerprint) and any on-disk destination occupancy
+  (loaded, broken, partial, data-bearing). Extracts only under
   `orgs/_pending/<operation-id>`, validates every member (hashes, pathname
   safety, no symlink/hardlink/device/FIFO/nonregular, SQLite integrity + FK,
-  B2 artifact cross-checks, legacy-skill constraints), forces imported
-  schedules `active=0`, then publishes by a platform-correct same-filesystem
-  **no-replace** publish (claims the destination name; never overwrites a
-  competitor). Persists a receipt under `orgs/_archive` recording digest + slug
-  + result + quarantined legacy skills, with a durable pending marker written
-  after publish and before receipt finalize so a crash in that window converges
-  on an exact digest+slug retry; exact digest+slug retry is idempotent, a
-  different digest conflicts. Legacy skills stay `legacy_portable_quarantined` — never
+  B2 artifact cross-checks, legacy-skill constraints — each recomputed and
+  bound to the manifest evidence), forces imported
+  schedules `active=0`, then publishes by a genuine same-filesystem
+  **no-replace** rename (never overwrites even an empty competitor). Persists a
+  receipt under `orgs/_archive` recording digest + slug + result + quarantined
+  legacy skills, with a durable pending marker written **before** publish so a
+  crash before publish leaves no false success and a crash between publish and
+  receipt finalize converges on an exact digest+slug retry; exact digest+slug
+  retry is idempotent, a different digest conflicts. Legacy skills stay
+  `legacy_portable_quarantined` — never
   activated/materialized. Slice C (rebind/rearm) is out of scope here.
 
 ## Knowledge Base

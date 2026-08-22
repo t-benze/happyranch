@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from runtime.config import Settings
@@ -665,3 +665,265 @@ def test_import_recovery_different_digest_conflicts(
     )
     assert r3.status_code == 409
     assert r3.json()["detail"]["code"] == "digest_conflict"
+
+
+# ── Repair findings: no-replace primitive, empty target, canonical shape,
+#    off-loop capture, and the pre-publish crash boundary ─────────────────────
+
+
+def test_rename_noreplace_primitive_no_overwrite(tmp_path: Path) -> None:
+    """The platform no-replace primitive refuses an existing destination
+    (empty or not) and leaves it intact."""
+    import runtime.daemon.routes.portability as proutes
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "org").mkdir()
+    (src / "org" / "teams.yaml").write_text("teams: {}\n")
+    dst = tmp_path / "dst"
+    assert proutes._rename_noreplace(src, dst) is True
+    assert (dst / "org" / "teams.yaml").is_file()
+    # dst now exists — a second rename must refuse (no-overwrite) and leave it.
+    src2 = tmp_path / "src2"
+    src2.mkdir()
+    assert proutes._rename_noreplace(src2, dst) is False
+    assert (dst / "org" / "teams.yaml").is_file()  # intact
+    assert src2.is_dir()  # not consumed
+
+
+def test_publish_no_replace_refuses_empty_competitor(tmp_path: Path) -> None:
+    """A post-validation competitor that creates an EMPTY destination is left
+    intact; the no-replace publish refuses rather than overwriting it."""
+    import runtime.daemon.routes.portability as proutes
+    payload = tmp_path / "payload"
+    (payload / "org").mkdir(parents=True)
+    (payload / "org" / "teams.yaml").write_text("teams: {}\n")
+    dest = tmp_path / "orgs" / "alpha"
+    dest.mkdir(parents=True)  # competing EMPTY destination (the exact race)
+    with pytest.raises(HTTPException) as ei:
+        proutes._publish_no_replace(payload, dest)
+    assert ei.value.status_code == 409
+    assert ei.value.detail["code"] == "destination_occupied"
+    # The competing empty directory is intact; the payload was not moved over it.
+    assert dest.is_dir()
+    assert list(dest.iterdir()) == []
+    assert (payload / "org" / "teams.yaml").exists()
+
+
+def test_publish_no_replace_exactly_one_winner(tmp_path: Path) -> None:
+    """Concurrent publishes to one destination yield exactly one durable winner;
+    the losers are refused and no partial/mixed state results."""
+    import threading
+    import runtime.daemon.routes.portability as proutes
+    dest_parent = tmp_path / "orgs"
+    dest_parent.mkdir()
+    dest = dest_parent / "alpha"
+    winners: list[int] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(5, timeout=5.0)
+
+    def attempt(i: int) -> None:
+        payload = tmp_path / f"payload-{i}"
+        (payload / "org").mkdir(parents=True)
+        (payload / "org" / "teams.yaml").write_text(f"teams: {{winner: {i}}}\n")
+        barrier.wait()
+        try:
+            proutes._publish_no_replace(payload, dest)
+            with lock:
+                winners.append(i)
+        except HTTPException:
+            pass
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert len(winners) == 1
+    w = winners[0]
+    assert (dest / "org" / "teams.yaml").read_text() == f"teams: {{winner: {w}}}\n"
+
+
+def test_import_refuses_empty_v2_target(tmp_path: Path) -> None:
+    """An otherwise-empty schema-v2 destination runtime is refused before any
+    mutation (an enforced contract, not a fixture convention)."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path, with_beta=False)  # no other org
+    r = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "empty_target_runtime"
+    assert not (target / "orgs" / "alpha").exists()
+
+
+def test_import_rejects_self_consistent_old_shape_db(tmp_path: Path) -> None:
+    """A self-consistent archive (manifest fingerprint matches the shipped DB)
+    whose DB is an old/unsupported shape is rejected by the independent
+    canonical-v2 contract before any target mutation."""
+    from runtime.portability.archive import (
+        ARCHIVE_FORMAT_VERSION,
+        ARCHIVE_POLICY_VERSION,
+        ArchiveMember,
+        Manifest,
+        build_archive,
+        sha256_file,
+    )
+    from runtime.portability.capture import compute_v2_fingerprint
+
+    old_db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(old_db))
+    conn.execute("CREATE TABLE agent_enrollments (id TEXT PRIMARY KEY)")
+    conn.commit()
+    old_fp = compute_v2_fingerprint(conn)
+    conn.close()
+
+    teams = tmp_path / "org" / "teams.yaml"
+    teams.parent.mkdir(parents=True)
+    teams.write_text("teams: {}\n")
+
+    payload = {
+        "payload/org/teams.yaml": teams,
+        "payload/happyranch.db": old_db,
+    }
+    members = [
+        ArchiveMember(path="payload/org/teams.yaml", size=teams.stat().st_size,
+                      sha256=sha256_file(teams)),
+        ArchiveMember(path="payload/happyranch.db", size=old_db.stat().st_size,
+                      sha256=sha256_file(old_db)),
+    ]
+    manifest = Manifest(
+        format_version=ARCHIVE_FORMAT_VERSION,
+        policy_version=ARCHIVE_POLICY_VERSION,
+        source_slug="alpha",
+        v2_fingerprint=old_fp,  # self-consistent with the shipped old DB
+        members=members,
+        source_root_inventory=["org", "happyranch.db"],
+        included_roots={"org": 1, "happyranch.db": 1},
+        excluded_entries=[],
+        rejected_entries=[],
+    )
+    archive = tmp_path / "old-shape.archive"
+    build_archive(archive, manifest, payload)
+
+    state = _make_source_state(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    r = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unsupported_db_shape"
+    assert not (target / "orgs" / "alpha").exists()
+
+
+def test_import_prepublish_crash_leaves_no_false_success_and_does_not_block(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A fault BEFORE publish leaves no destination, no false success, and does
+    not block a subsequent safe import (the pre-publish boundary)."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+
+    import runtime.daemon.routes.portability as proutes
+    real_publish = proutes._publish_no_replace
+    monkeypatch.setattr(
+        proutes, "_publish_no_replace",
+        lambda payload_dir, dest: (_ for _ in ()).throw(
+            OSError("simulated pre-publish crash")
+        ),
+    )
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    assert r1.json()["detail"]["code"] == "import_failed"
+    dest = target / "orgs" / "alpha"
+    assert not dest.exists()  # nothing published
+    assert not (target / "orgs" / "_archive" / "import-alpha.json").exists()
+
+    # A subsequent import must succeed (the crashed attempt did not block it).
+    monkeypatch.setattr(proutes, "_publish_no_replace", real_publish)
+    r2 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["result"] == "imported"
+    assert (dest / "org" / "teams.yaml").is_file()
+
+
+def test_export_capture_runs_off_event_loop(tmp_path: Path) -> None:
+    """The blocking capture runs on a worker thread (not the daemon event
+    loop): while it is blocked, the loop still serves a concurrent request."""
+    import asyncio
+    import threading
+    from httpx import ASGITransport, AsyncClient
+    import runtime.daemon.routes.portability as proutes
+
+    state = _make_source_state(tmp_path)
+    _seed_full_roots(state)
+    app = _make_app(state)
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    archive = tmp_path / "big.archive"
+
+    entered = threading.Event()
+    release = threading.Event()
+    loop_thread: list[threading.Thread] = []
+    capture_thread: list[threading.Thread] = []
+
+    real_build = proutes.build_archive
+
+    def slow_build(dest_path, manifest, payload):
+        capture_thread.append(threading.current_thread())
+        entered.set()
+        if not release.wait(timeout=10):
+            raise AssertionError("timed out waiting for release")
+        return real_build(dest_path, manifest, payload)
+
+    proutes.build_archive = slow_build
+
+    async def scenario() -> None:
+        loop_thread.append(threading.current_thread())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            export_task = asyncio.create_task(client.post(
+                "/api/v1/orgs/alpha/portability-export",
+                json={"archive_path": str(archive), "trust_acknowledged": True},
+                headers=headers,
+            ))
+            for _ in range(500):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert entered.is_set(), "capture never entered the worker thread"
+            # The event loop is still responsive: a concurrent request returns
+            # while the capture is blocked inside its worker thread.
+            r = await client.post(
+                "/api/v1/orgs/alpha/portability-inspect",
+                json={"archive_path": str(archive)},
+                headers=headers,
+            )
+            assert r.status_code in (200, 404, 422)
+            release.set()
+            resp = await export_task
+            assert resp.status_code == 200, resp.text
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        proutes.build_archive = real_build
+
+    assert capture_thread and loop_thread
+    assert capture_thread[0] is not loop_thread[0]

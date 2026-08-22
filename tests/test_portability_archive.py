@@ -293,3 +293,73 @@ def test_rejects_legacy_skill_member_not_declared_valid(tmp_path: Path) -> None:
     archive = _archive_with_member(tmp_path, "skills/evil/SKILL.md")
     with pytest.raises(ArchiveValidationError, match="not declared valid"):
         read_archive(archive)
+
+
+def test_rejects_source_root_inventory_unknown_root(tmp_path: Path) -> None:
+    """A manifest whose source_root_inventory claims a root outside the
+    canonical allowed set is rejected (extra root claim)."""
+    archive = _archive_with_member(tmp_path, "org/teams.yaml")
+    # Rebuild with an unknown claimed root in the inventory.
+    src = tmp_path / "src2"
+    f1 = src / "org" / "teams.yaml"
+    f1.parent.mkdir(parents=True)
+    f1.write_text("teams: {}\n")
+    arcname = f"{PAYLOAD_PREFIX}org/teams.yaml"
+    manifest = _manifest([ArchiveMember(
+        path=arcname, size=f1.stat().st_size, sha256=sha256_file(f1),
+    )])
+    manifest.source_root_inventory = ["org", "credentials"]
+    manifest.included_roots = {"org": 1}
+    bad = tmp_path / "unknown-root.archive"
+    build_archive(bad, manifest, {arcname: f1})
+    with pytest.raises(ArchiveValidationError, match="unknown root"):
+        read_archive(bad)
+
+
+def test_rejects_source_root_inventory_missing_actual_root(tmp_path: Path) -> None:
+    """A manifest whose source_root_inventory omits a root it actually carries
+    is rejected (missing root claim)."""
+    archive = _archive_with_member(tmp_path, "org/teams.yaml")
+    src = tmp_path / "src3"
+    f1 = src / "org" / "teams.yaml"
+    f1.parent.mkdir(parents=True)
+    f1.write_text("teams: {}\n")
+    arcname = f"{PAYLOAD_PREFIX}org/teams.yaml"
+    manifest = _manifest([ArchiveMember(
+        path=arcname, size=f1.stat().st_size, sha256=sha256_file(f1),
+    )])
+    manifest.source_root_inventory = []
+    manifest.included_roots = {"org": 1}
+    bad = tmp_path / "missing-root.archive"
+    build_archive(bad, manifest, {arcname: f1})
+    with pytest.raises(ArchiveValidationError, match="missing declared root"):
+        read_archive(bad)
+
+
+def test_rejects_legacy_skill_evidence_not_valid(tmp_path: Path) -> None:
+    """A manifest that declares a legacy skill slug whose validation_result is
+    not 'valid' cannot back a skills/<slug> member (the slug is not admitted as
+    declared-valid)."""
+    from runtime.portability.archive import LegacySkillEvidence
+    src = tmp_path / "src4"
+    f1 = src / "skills" / "qa-scroll-test" / "SKILL.md"
+    f1.parent.mkdir(parents=True)
+    f1.write_text("# QA\n")
+    arcname = f"{PAYLOAD_PREFIX}skills/qa-scroll-test/SKILL.md"
+    manifest = _manifest([ArchiveMember(
+        path=arcname, size=f1.stat().st_size, sha256=sha256_file(f1),
+    )])
+    manifest.source_root_inventory = ["skills"]
+    manifest.included_roots = {"skills": 1}
+    manifest.legacy_skills = [LegacySkillEvidence(
+        slug="qa-scroll-test",
+        metadata_hash="m",
+        content_hash="c",
+        member_hashes={},
+        validation_result="missing skill.yaml",  # NOT valid
+        references_resolved=[],
+    )]
+    bad = tmp_path / "invalid-evidence.archive"
+    build_archive(bad, manifest, {arcname: f1})
+    with pytest.raises(ArchiveValidationError, match="not declared valid"):
+        read_archive(bad)
