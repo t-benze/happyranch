@@ -53,6 +53,14 @@ Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
 Then single-line:
 happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
+`body_markdown` renders as Markdown. Use **actual newline characters** and
+valid Markdown (blank lines, list items, hard breaks) for visual line breaks —
+never a literal `\n` (backslash-n) two-character sequence as a line-break
+substitute; that renders as the text `\n`, not a line break. In the JSON
+payload file, `\n` escapes inside a string are transport encoding only: they
+decode to real newlines. The decoded `body_markdown` value must contain real
+newlines, never literal backslash-n text.
+
 Reply when:
 - You have material to add that others haven't covered (correction, missing
   context, substantive input). See the invocation prompt's "Decline-by-Default"
