@@ -194,14 +194,6 @@ def _append_pending_review_thread_message(
 
 @router.post("/jobs/submit", status_code=201)
 async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
-    # THR-187 Slice B transfer fence: refuse new job admission while an export
-    # capture holds the org transfer fence.
-    if org.transfer_fence.held:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "transfer_in_progress", "slug": slug},
-        )
-
     # §5.1 validation order. Task-path auth only.
     # SubmitBody validator guarantees both task_id and session_id.
     assert body.task_id is not None and body.session_id is not None
@@ -285,24 +277,28 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         effective_max_runtime = _DEFAULT_BOUNDED_RUNTIME_SECONDS
 
     # Effect: allocate id, insert row, audit.
-    async with org.db_lock:
-        job_id = org.db.next_job_id()
-        record = JobRecord(
-            id=job_id,
-            task_id=scope_id,
-            agent_name=agent,
-            title=title,
-            rationale=rationale,
-            script_text=body.script,
-            interpreter=JobInterpreter(body.interpreter),
-            cwd_hint=cwd_hint,
-            status=JobStatus.PENDING,
-            review_required=body.review_required,
-            persistent=body.persistent,
-            max_runtime_seconds=effective_max_runtime,
-            created_at=_now_iso(),
-        )
-        org.db.insert_job(record)
+    # THR-187 Slice B: the durable job insert is an admission critical section
+    # (transfer-fence reader lease) so an export cannot acquire the fence
+    # between the session/status checks and the insert.
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            job_id = org.db.next_job_id()
+            record = JobRecord(
+                id=job_id,
+                task_id=scope_id,
+                agent_name=agent,
+                title=title,
+                rationale=rationale,
+                script_text=body.script,
+                interpreter=JobInterpreter(body.interpreter),
+                cwd_hint=cwd_hint,
+                status=JobStatus.PENDING,
+                review_required=body.review_required,
+                persistent=body.persistent,
+                max_runtime_seconds=effective_max_runtime,
+                created_at=_now_iso(),
+            )
+            org.db.insert_job(record)
 
     audit = AuditLogger(org.db)
     audit.log_job_submitted(

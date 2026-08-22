@@ -268,38 +268,45 @@ def test_export_requires_trust_acknowledgement(tmp_path: Path) -> None:
 
 
 def test_export_fence_rejects_admission_and_race(tmp_path: Path) -> None:
+    """A second export cannot acquire the fence while a capture is in progress
+    (transfer_in_progress); after release, admission resumes."""
+    import asyncio
+    from httpx import ASGITransport, AsyncClient
+
     state = _make_source_state(tmp_path)
     org = state.orgs["alpha"]
-    client = _client(state)
     archive = tmp_path / "x.archive"
+    app = _make_app(state)
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    # Acquire the fence directly (simulates an in-progress capture).
-    assert org.transfer_fence.acquire() is True
-    try:
-        # A second export cannot acquire the fence.
-        r = client.post(
-            "/api/v1/orgs/alpha/portability-export",
-            json={"archive_path": str(archive), "trust_acknowledged": True},
-        )
-        assert r.status_code == 409
-        assert r.json()["detail"]["code"] == "transfer_in_progress"
+    async def scenario() -> None:
+        # Acquire the fence directly (simulates an in-progress capture).
+        assert await org.transfer_fence.acquire() is True
+        try:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # A second export cannot acquire the fence.
+                r = await client.post(
+                    "/api/v1/orgs/alpha/portability-export",
+                    json={"archive_path": str(archive), "trust_acknowledged": True},
+                    headers=headers,
+                )
+            assert r.status_code == 409
+            assert r.json()["detail"]["code"] == "transfer_in_progress"
 
-        # The real production admission seam refuses new task admission.
-        from runtime.daemon.runner import enqueue_task
-        from runtime.portability.fence import TransferFenceHeld
-        db = org.db
-        db.insert_task(TaskRecord(
-            id="T-NEW", brief="t", team="engineering",
-            assigned_agent="dev_agent", status=TaskStatus.PENDING,
-        ))
-        with pytest.raises(TransferFenceHeld):
-            enqueue_task(state, "alpha", "T-NEW")
-    finally:
-        org.transfer_fence.release()
+            # The real admission lease refuses new task admission while held.
+            from runtime.portability.fence import TransferFenceHeld
+            with pytest.raises(TransferFenceHeld):
+                async with org.transfer_fence.admission():
+                    pass  # pragma: no cover
+        finally:
+            await org.transfer_fence.release()
 
-    # Once released, admission resumes.
-    from runtime.daemon.runner import enqueue_task
-    enqueue_task(state, "alpha", "T-NEW")
+        # Once released, admission resumes.
+        async with org.transfer_fence.admission():
+            pass
+
+    asyncio.run(scenario())
 
 
 def test_export_recheck_conflict_leaves_source_untouched(tmp_path: Path) -> None:
@@ -513,3 +520,148 @@ def test_import_requires_bearer(tmp_path: Path) -> None:
               "trust_acknowledged": True},
     )
     assert r.status_code == 401
+
+
+# ── Finding #3: no-replace publish (TOCTOU) ────────────────────────────────
+
+
+def test_import_competitor_sentinel_fails_clean_and_keeps_staging_pending(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A competitor that occupies the destination *after* validation but
+    before publish makes the import fail cleanly (no overwrite); the private
+    staging directory stays under _pending as visible recovery state."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    dest = target / "orgs" / "alpha"
+
+    import runtime.daemon.routes.portability as proutes
+    real_publish = proutes._publish_no_replace
+
+    def competitor_publish(payload_dir, dest_path):
+        # Simulate a post-validation competitor that claims the destination.
+        dest_path.mkdir(parents=True, exist_ok=True)
+        (dest_path / "sentinel.txt").write_text("occupied")
+        return real_publish(payload_dir, dest_path)  # must refuse (no-replace)
+
+    monkeypatch.setattr(proutes, "_publish_no_replace", competitor_publish)
+
+    r = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "destination_occupied"
+    # The competitor's sentinel is intact; nothing was published over it.
+    assert (dest / "sentinel.txt").exists()
+    assert not (dest / "org" / "teams.yaml").exists()
+    # Staging stays under _pending (visible recovery), not silently deleted.
+    pending = target / "orgs" / "_pending"
+    assert pending.exists()
+    assert len(list(pending.iterdir())) == 1
+
+
+# ── Finding #4: prepare/publish/finalize/recovery (filesystem-only) ─────────
+
+
+def test_import_postpublish_receipt_fault_recovers_idempotently(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A fault between publish and receipt finalize leaves the published org +
+    a pending marker (visible recovery). A same-digest+slug retry revalidates
+    and converges by writing the receipt WITHOUT overwriting the org; the
+    marker is then cleaned up."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    dest = target / "orgs" / "alpha"
+
+    import runtime.daemon.routes.portability as proutes
+    real_receipt = proutes._write_receipt
+
+    def failing_receipt(*args, **kwargs):
+        raise OSError("simulated finalize crash")
+
+    monkeypatch.setattr(proutes, "_write_receipt", failing_receipt)
+
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    assert r1.json()["detail"]["code"] == "import_failed"
+    # Publish happened: exactly one target exists; receipt missing; marker present.
+    assert dest.exists()
+    assert (dest / "org" / "teams.yaml").is_file()
+    receipt_path = target / "orgs" / "_archive" / "import-alpha.json"
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    assert not receipt_path.exists()
+    assert pending_path.exists()
+
+    # Restore finalize and retry the SAME archive: converge, never overwrite.
+    monkeypatch.setattr(proutes, "_write_receipt", real_receipt)
+    before_mtime = (dest / "org" / "teams.yaml").stat().st_mtime_ns
+    r2 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["result"] == "imported"
+    assert r2.json()["recovered"] is True
+    assert (dest / "org" / "teams.yaml").stat().st_mtime_ns == before_mtime  # no overwrite
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["digest"] == digest
+    assert receipt["recovery"] is True
+    assert not pending_path.exists()
+
+
+def test_import_recovery_different_digest_conflicts(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """In the recovery state (published dest + pending marker, no receipt), a
+    DIFFERENT digest for the same slug conflicts rather than overwriting."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+
+    import runtime.daemon.routes.portability as proutes
+    real_receipt = proutes._write_receipt
+    monkeypatch.setattr(
+        proutes, "_write_receipt", lambda *a, **k: (_ for _ in ()).throw(
+            OSError("simulated finalize crash")
+        ),
+    )
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    monkeypatch.setattr(proutes, "_write_receipt", real_receipt)
+
+    # A different archive (different digest) for the same slug now conflicts.
+    (state.orgs["alpha"].root / "talks").mkdir(parents=True, exist_ok=True)
+    (state.orgs["alpha"].root / "talks" / "TALK-2.md").write_text("# Talk 2\n")
+    archive2 = tmp_path / "alpha-2.archive"
+    r_exp = client.post(
+        "/api/v1/orgs/alpha/portability-export",
+        json={"archive_path": str(archive2), "trust_acknowledged": True},
+    )
+    assert r_exp.status_code == 200, r_exp.text
+    assert r_exp.json()["archive_digest"] != digest
+
+    r3 = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive2),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r3.status_code == 409
+    assert r3.json()["detail"]["code"] == "digest_conflict"

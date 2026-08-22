@@ -728,11 +728,17 @@ checksums prove corruption, not sender identity.
 **Export.** Source must be ready by the Slice-A predicate (no rejections, no
 live work — including armed *and* firing schedules, with exactly the existing
 remedies). Export never terminalizes/cancels work. It acquires a per-org
-transfer fence (rejecting new dispatch/invocation/scheduler admission while
-held — wired through ``enqueue_task``, job submit, thread dispatch, and the
-dream/wake/schedule schedulers), re-gathers and rechecks every Slice-A
-quiescence fact under ``org.db_lock`` immediately before the SQLite backup,
-and captures the allow-list. A failed second check returns a conflict and
+transfer fence — an admission **lease**, not a checkable flag — via
+``acquire()``: every durable producer (task dispatch, thread composition /
+invocation mint / task enqueue, job submit, schedule / dream / work-hour
+admission, escalation continuation) holds a *reader lease* around its
+insert+enqueue critical section, and ``acquire()`` sets ``held`` then *waits*
+for all in-flight admissions to drain before returning. Any admission that
+started before ``acquire()`` has therefore committed and is observed by the
+recheck; any admission after it raises ``TransferFenceHeld`` (HTTP 409) and
+lands nothing. The exporter then re-gathers and rechecks every Slice-A
+quiescence fact under ``org.db_lock`` immediately before the SQLite backup and
+captures the allow-list. A failed second check returns a conflict and
 leaves the source untouched (no archive). The fence is released only after
 capture validation; exceptional paths release it. The SQLite snapshot is a
 ``sqlite3`` online backup into private staging — ``happyranch.db-wal``/
@@ -759,17 +765,29 @@ import-time migration or loader broadening). Import extracts only under
 publish: known format/policy/root inventory, exact hashes, pathname safety,
 duplicate names, symlink/hardlink/device/FIFO/nonregular rejection, SQLite
 integrity + FK checks, B2 custom-skill artifact-key/content-hash cross
-references, and legacy-skill identity/member/reference constraints. Any
+references, and legacy-skill identity/member/reference constraints. The staged
+payload is revalidated against the exact Slice-A allow-list BEFORE any SQLite
+is opened or any byte published — a self-consistent hostile archive carrying
+``payload/credentials``, an unknown root, task output, workspace siblings, or a
+WAL/SHM sidecar is rejected, and a manifest whose root inventory disagrees with
+the actual members is rejected. Any
 pre-publish error cleans only the private staging directory — the target org
 dir, loaded/broken registry, and queue are untouched. Every imported
 schedule's ``active`` flag is forced to ``0`` (status semantics unchanged);
 Slice C alone owns attach/rebind/rearm, so import never calls
 ``DaemonState.add_org`` or attaches the imported org. Publish is a
-same-filesystem atomic ``os.rename`` (never clone/merge/overwrite/source
-deletion/credential transfer). A narrow receipt is persisted under the reserved
-``orgs/_archive`` namespace recording archive digest + slug + result +
-quarantined legacy-skill evidence; an exact digest+slug retry is idempotent, a
-different digest conflicts. Legacy skills are carried only as
+platform-correct same-filesystem **no-replace** primitive (the destination name
+is claimed with ``os.mkdir``, which fails if anything occupies it, then the
+validated payload is renamed over that empty claim) — never clone/merge/
+overwrite/source deletion/credential transfer, and a competing destination
+created after validation is never overwritten. A narrow receipt is persisted
+under the reserved ``orgs/_archive`` namespace recording archive digest + slug
++ result + quarantined legacy-skill evidence. A durable pending marker is
+written AFTER a successful publish and BEFORE receipt finalize: a crash in that
+window leaves the published org plus the marker, and an exact digest+slug retry
+converges by writing the missing receipt WITHOUT overwriting the org (a
+different digest conflicts); an exact digest+slug retry with a finalized
+receipt is idempotent. Legacy skills are carried only as
 ``legacy_portable_quarantined`` archive content — no eligibility, canonical-store
 entry, workspace symlink, materialization, execution, or activation.
 

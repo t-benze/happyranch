@@ -18,6 +18,7 @@ from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot
 from runtime.daemon.wake_queue import WakeJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import WorkHourRecord, WorkHourStatus
+from runtime.portability.fence import TransferFenceHeld
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
@@ -264,10 +265,6 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     startup honor ``catch_up_on_startup`` (false -> record a ``skipped`` row so
     the steady-state loop won't re-pick the slot today).
     """
-    # THR-187 Slice B: while an export capture holds the org transfer fence,
-    # admit no new work-hour wake scheduling.
-    if getattr(org, "transfer_fence", None) is not None and org.transfer_fence.held:
-        return 0
 
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
@@ -344,7 +341,12 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
             try:
-                schedule_due_wakes(org=org, now=now, startup=startup)
+                # THR-187 Slice B: the whole per-org wake pass (insert
+                # work_hour row → enqueue) is one admission critical section.
+                async with org.transfer_fence.admission():
+                    schedule_due_wakes(org=org, now=now, startup=startup)
+            except TransferFenceHeld:
+                continue
             except OrgConfigError:
                 logger.exception(
                     "work-hours scheduling skipped for org %s: invalid working_hours config",

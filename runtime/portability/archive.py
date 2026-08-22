@@ -24,11 +24,27 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from runtime.portability.roots import ALLOWED_ROOTS as _CANONICAL_ALLOWED_ROOTS
+
 ARCHIVE_FORMAT_VERSION = 1
 ARCHIVE_POLICY_VERSION = 1
 MANIFEST_MEMBER = "manifest.json"
 PAYLOAD_PREFIX = "payload/"
 _MAX_MEMBER_PATH = 4096
+
+# Directory roots admitted by the archive validator are DERIVED from Slice A's
+# canonical policy source (``roots.ALLOWED_ROOTS``) rather than re-declared as a
+# second unbound static allow-list. The derivation is: every canonical
+# allow-listed root except the SQLite file itself (``happyranch.db`` is handled
+# as the sole file root and backed up separately), plus the two *conditional*
+# roots — ``skills`` and ``workspaces`` — which Slice A admits only under their
+# own validation gates. Each conditional root is gated again at member level in
+# ``validate_member_roots`` (declared-valid legacy skill / memory carve-out).
+_ALLOWED_DIR_ROOTS = frozenset(
+    (set(_CANONICAL_ALLOWED_ROOTS) - {"happyranch.db"}) | {"skills", "workspaces"}
+)
+_MEMORY_DIR_NAME = "memory"
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
 
 
 class ArchiveValidationError(ValueError):
@@ -281,8 +297,63 @@ def read_archive(archive_path: Path) -> ParsedArchive:
         if member.sha256 != digest_val:
             raise ArchiveValidationError(f"hash mismatch for member {path!r}")
 
+    # Enforce the exact allow-listed root contract BEFORE any caller opens the
+    # staged SQLite or publishes bytes. This rejects a *self-consistent*
+    # hostile archive (manifest + member hashes all agree) whose members live
+    # under a forbidden root (credentials, unknown roots, task output,
+    # workspace siblings/repos, daemon-local data) and a manifest whose root
+    # inventory disagrees with the actual member set.
+    validate_member_roots(manifest, sorted(member_map))
+
     return ParsedArchive(
         manifest=manifest,
         digest=digest,
         member_names=sorted(member_map),
     )
+
+
+def validate_member_roots(manifest: Manifest, member_names: list[str]) -> None:
+    """Enforce the exact allow-listed root contract on the archive members.
+
+    Called by :func:`read_archive` so inspection and import both reject a
+    self-consistent-but-forbidden archive before any SQLite is opened or any
+    byte is published. Every payload member must live under an approved root
+    (``happyranch.db`` or one of the directory roots); ``workspaces`` members
+    must be under the sole ``workspaces/<agent>/memory/**`` carve-out; and
+    ``skills`` members must belong to a manifest-declared *valid* legacy skill.
+    SQLite WAL/SHM sidecars are refused. Finally the manifest's
+    ``included_roots`` file counts must agree exactly with the actual member
+    counts (no missing/extra root claims).
+    """
+    skill_slugs = {e.slug for e in manifest.legacy_skills}
+    actual_counts: dict[str, int] = {}
+    for name in member_names:
+        rel = name[len(PAYLOAD_PREFIX):] if name.startswith(PAYLOAD_PREFIX) else name
+        if rel == "happyranch.db":
+            actual_counts["happyranch.db"] = actual_counts.get("happyranch.db", 0) + 1
+            continue
+        if rel.endswith(_SQLITE_SIDECAR_SUFFIXES[0]) or rel.endswith(_SQLITE_SIDECAR_SUFFIXES[1]):
+            raise ArchiveValidationError(f"sqlite sidecar member rejected: {name!r}")
+        root = rel.split("/", 1)[0]
+        if root not in _ALLOWED_DIR_ROOTS:
+            raise ArchiveValidationError(f"member root not allow-listed: {name!r}")
+        if root == "workspaces":
+            parts = rel.split("/")
+            if len(parts) < 3 or parts[2] != _MEMORY_DIR_NAME:
+                raise ArchiveValidationError(
+                    f"workspace member outside memory carve-out: {name!r}"
+                )
+        if root == "skills":
+            parts = rel.split("/")
+            if len(parts) < 2 or parts[1] not in skill_slugs:
+                raise ArchiveValidationError(
+                    f"legacy skill member not declared valid: {name!r}"
+                )
+        actual_counts[root] = actual_counts.get(root, 0) + 1
+
+    claimed = dict(manifest.included_roots)
+    if claimed != actual_counts:
+        raise ArchiveValidationError(
+            f"root inventory mismatch: manifest claimed "
+            f"{sorted(claimed.items())}, actual {sorted(actual_counts.items())}"
+        )

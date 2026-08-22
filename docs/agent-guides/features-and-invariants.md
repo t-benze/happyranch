@@ -109,7 +109,10 @@ for the full contract; the essentials:
 
 - **`happyranch orgs portability-export <slug> --from-file <export.json>`** —
   requires Slice-A readiness (no rejections, no live work, no armed/firing
-  schedule). Acquires a per-org transfer fence, rechecks quiescence under
+  schedule). Acquires a per-org transfer fence (an admission **lease** — durable
+  producers hold a reader lease around their insert+enqueue; the exporter's
+  acquire drains in-flight admissions before the recheck), rechecks quiescence
+  under
   `org.db_lock` immediately before a `sqlite3` online backup (never WAL/SHM),
   captures the allow-list, and writes a data-only `tar.gz` with a sorted
   member/size/SHA-256 manifest plus format/policy version, source slug, v2
@@ -125,10 +128,13 @@ for the full contract; the essentials:
   `orgs/_pending/<operation-id>`, validates every member (hashes, pathname
   safety, no symlink/hardlink/device/FIFO/nonregular, SQLite integrity + FK,
   B2 artifact cross-checks, legacy-skill constraints), forces imported
-  schedules `active=0`, then publishes by same-filesystem atomic rename.
-  Persists a receipt under `orgs/_archive` recording digest + slug + result +
-  quarantined legacy skills; exact digest+slug retry is idempotent, a different
-  digest conflicts. Legacy skills stay `legacy_portable_quarantined` — never
+  schedules `active=0`, then publishes by a platform-correct same-filesystem
+  **no-replace** publish (claims the destination name; never overwrites a
+  competitor). Persists a receipt under `orgs/_archive` recording digest + slug
+  + result + quarantined legacy skills, with a durable pending marker written
+  after publish and before receipt finalize so a crash in that window converges
+  on an exact digest+slug retry; exact digest+slug retry is idempotent, a
+  different digest conflicts. Legacy skills stay `legacy_portable_quarantined` — never
   activated/materialized. Slice C (rebind/rearm) is out of scope here.
 
 ## Knowledge Base

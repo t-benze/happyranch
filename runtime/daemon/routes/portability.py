@@ -398,6 +398,87 @@ async def reconcile_portability(
 _IMPORT_RECEIPT_DIR = "_archive"
 
 
+def _read_json(path: Path) -> dict:
+    """Read a JSON file, returning ``{}`` on any missing/corrupt read."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_pending_marker(
+    pending_path: Path, *, slug: str, digest: str, operation_id: str,
+) -> None:
+    """Record the in-flight import identity BEFORE publish.
+
+    Written atomically so a crash between publish and receipt finalize leaves
+    a durable, visible recovery marker that lets a same-digest retry converge
+    without overwriting the published org.
+    """
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = pending_path.with_name(pending_path.name + ".tmp")
+    tmp.write_text(json.dumps(
+        {"slug": slug, "digest": digest, "operation_id": operation_id},
+        sort_keys=True,
+    ))
+    os.replace(str(tmp), str(pending_path))
+
+
+def _write_receipt(
+    receipt_path: Path, *, slug: str, digest: str, archive_path: str,
+    operation_id: str, deactivated: int | None,
+    legacy_evidence: list, recovery: bool,
+) -> None:
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "slug": slug,
+        "digest": digest,
+        "archive_path": archive_path,
+        "result": "imported",
+        "operation_id": operation_id,
+        "schedules_deactivated": deactivated,
+        "legacy_skills_quarantined": [
+            e.model_dump() if hasattr(e, "model_dump") else e for e in legacy_evidence
+        ],
+        "recovery": recovery,
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = receipt_path.with_name(receipt_path.name + ".tmp")
+    tmp.write_text(json.dumps(receipt, sort_keys=True, indent=2))
+    os.replace(str(tmp), str(receipt_path))
+
+
+def _publish_no_replace(payload_dir: Path, dest: Path) -> None:
+    """Atomically publish ``payload_dir`` to ``dest`` without replacing any
+    existing destination (platform-correct same-filesystem no-replace).
+
+    ``os.mkdir`` atomically claims the name — it raises ``FileExistsError`` if
+    anything (file, directory, or symlink) already occupies ``dest`` — then
+    ``os.rename`` moves the payload over our own empty claim on the same
+    filesystem. There is no lexists-then-rename TOCTOU window: the only thing
+    ``os.rename`` can replace is the empty directory we just created, never a
+    competitor's sentinel or data.
+    """
+    try:
+        os.mkdir(str(dest))
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409, detail={"code": "destination_occupied", "slug": dest.name},
+        )
+    try:
+        os.rename(str(payload_dir), str(dest))
+    except OSError:
+        # A competitor interfered with our empty claim (e.g. rmdir + recreate).
+        # Fail closed: never overwrite. Best-effort remove our empty claim.
+        try:
+            os.rmdir(str(dest))
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=409, detail={"code": "destination_occupied", "slug": dest.name},
+        )
+
+
 def _inventory_sets(inventory) -> tuple[list[dict], list[dict]]:
     excluded = [{"path": e.path, "reason": e.reason} for e in inventory.excluded]
     rejected = [{"path": e.path, "reason": e.reason} for e in inventory.rejected]
@@ -491,10 +572,12 @@ async def portability_export(
             },
         )
 
-    # Acquire the per-org transfer fence. While held, dispatch/invocation/
-    # scheduler admission is refused, so the recheck → backup → capture window
-    # is consistent.
-    if not org.transfer_fence.acquire():
+    # Acquire the per-org transfer fence (writer lease). ``acquire`` waits for
+    # every in-flight admission to drain before returning, so the recheck →
+    # backup → capture window is linearizable: an admission that started before
+    # this call has committed and will be observed by the recheck; any admission
+    # after this call raises TransferFenceHeld and lands nothing.
+    if not await org.transfer_fence.acquire():
         raise HTTPException(
             status_code=409, detail={"code": "transfer_in_progress", "slug": slug},
         )
@@ -548,7 +631,7 @@ async def portability_export(
     finally:
         # Release the fence on every path (success or failure) so admission can
         # resume; clean the private staging directory.
-        org.transfer_fence.release()
+        await org.transfer_fence.release()
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -664,10 +747,49 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
             },
         )
 
-    # Collision: ANY on-disk occupancy of the destination slug refuses —
-    # loaded, broken, partial, or data-bearing. Never reclaim/overwrite.
+    # Recovery + collision: the destination name may already be occupied.
+    # (a) A finalized receipt was already handled above (idempotency).
+    # (b) If the destination was published but the receipt write never
+    #     finalized (crash between publish and finalize), the pending marker
+    #     records the digest of the archive that produced it. A retry of the
+    #     SAME digest+slug converges — it revalidates and writes the receipt
+    #     WITHOUT overwriting the published org. A different digest conflicts.
     dest = target.orgs_dir / slug
+    pending_path = receipt_dir / f".pending-import-{slug}.json"
     if os.path.lexists(str(dest)):
+        pending = _read_json(pending_path)
+        pending_digest = pending.get("digest")
+        if pending.get("slug") == slug and pending_digest is not None:
+            if pending_digest == parsed.digest:
+                # The marker only ever exists after a successful publish, so it
+                # proves dest was published by this exact archive. Converge by
+                # writing the missing receipt WITHOUT overwriting the org.
+                _write_receipt(
+                    receipt_path,
+                    slug=slug,
+                    digest=parsed.digest,
+                    archive_path=str(archive_path),
+                    operation_id=pending.get("operation_id", ""),
+                    deactivated=None,
+                    legacy_evidence=parsed.manifest.legacy_skills,
+                    recovery=True,
+                )
+                pending_path.unlink(missing_ok=True)
+                return {
+                    "slug": slug,
+                    "archive_digest": parsed.digest,
+                    "result": "imported",
+                    "recovered": True,
+                }
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "digest_conflict",
+                    "slug": slug,
+                    "existing_digest": pending_digest,
+                    "new_digest": parsed.digest,
+                },
+            )
         raise HTTPException(
             status_code=409,
             detail={"code": "destination_occupied", "slug": slug},
@@ -675,6 +797,8 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
 
     op_id = uuid.uuid4().hex
     staging = target.orgs_dir / "_pending" / op_id
+    phase = "prepare"
+    published = False
     try:
         staging.mkdir(parents=True)
         extract_archive(parsed, archive_path, staging)
@@ -753,26 +877,28 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                     detail={"code": "sqlite_sidecar_present", "name": sidecar},
                 )
 
-        # Publish: same-filesystem atomic rename of the validated payload. os.
-        # rename never overwrites an existing destination.
-        os.rename(str(payload_dir), str(dest))
+        # Publish: platform-correct same-filesystem no-replace. The pending
+        # marker is written AFTER a successful publish (and BEFORE the receipt)
+        # so its presence proves the destination was published by this archive.
+        phase = "publish"
+        _publish_no_replace(payload_dir, dest)
+        published = True
+        _write_pending_marker(
+            pending_path, slug=slug, digest=parsed.digest, operation_id=op_id,
+        )
+        phase = "finalize"
 
-        receipt_dir.mkdir(parents=True, exist_ok=True)
-        receipt = {
-            "slug": slug,
-            "digest": parsed.digest,
-            "archive_path": str(archive_path),
-            "result": "imported",
-            "operation_id": op_id,
-            "schedules_deactivated": deactivated,
-            "legacy_skills_quarantined": [
-                e.model_dump() for e in legacy_evidence
-            ],
-            "imported_at": datetime.now(timezone.utc).isoformat(),
-        }
-        tmp_receipt = receipt_path.with_name(receipt_path.name + ".tmp")
-        tmp_receipt.write_text(json.dumps(receipt, sort_keys=True, indent=2))
-        os.replace(str(tmp_receipt), str(receipt_path))
+        _write_receipt(
+            receipt_path,
+            slug=slug,
+            digest=parsed.digest,
+            archive_path=str(archive_path),
+            operation_id=op_id,
+            deactivated=deactivated,
+            legacy_evidence=legacy_evidence,
+            recovery=False,
+        )
+        pending_path.unlink(missing_ok=True)
 
         return {
             "slug": slug,
@@ -791,7 +917,12 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
             detail={"code": "import_failed", "message": str(exc)},
         )
     finally:
-        # Clean only the private staging directory on any pre-publish fault.
-        # The target org dir, loaded/broken registry, and queue are untouched.
-        if staging.exists():
+        # Pre-publish validation faults clean the private staging directory. A
+        # publish conflict leaves staging under _pending as visible recovery
+        # state (the no-replace publish refused a competitor's occupancy). The
+        # target org dir, loaded/broken registry, and queue are never touched.
+        if phase == "prepare":
+            shutil.rmtree(staging, ignore_errors=True)
+        elif published:
+            # Payload was renamed out; remove the now-empty staging dir.
             shutil.rmtree(staging, ignore_errors=True)

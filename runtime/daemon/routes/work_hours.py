@@ -178,83 +178,89 @@ async def spawn_work_hour(
 
     created: list[str] = []
     partial_error: str | None = None
-    async with org.db_lock:
-        wh = org.db.work_hours.get(work_hour_id)
-        if wh is None:
-            raise HTTPException(status_code=404, detail={"code": "not_found", "work_hour_id": work_hour_id})
-        # Single-use / slot-scoped guard: only a `running` wake may spawn, so the
-        # endpoint can't be reused as a generic root-task backdoor.
-        if wh.status != WorkHourStatus.RUNNING:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "work_hour_not_running", "status": wh.status.value},
-            )
+    # THR-187 Slice B: the durable insert + enqueue + audit is one atomic
+    # admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            wh = org.db.work_hours.get(work_hour_id)
+            if wh is None:
+                raise HTTPException(status_code=404, detail={"code": "not_found", "work_hour_id": work_hour_id})
+            # Single-use / slot-scoped guard: only a `running` wake may spawn, so the
+            # endpoint can't be reused as a generic root-task backdoor.
+            if wh.status != WorkHourStatus.RUNNING:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "work_hour_not_running", "status": wh.status.value},
+                )
 
-        agent = wh.agent_name
-        # Self-team-only (structural): the spawned tasks are always created on the
-        # waking agent's own team and targeted to the waking agent as executor.
-        # There is no per-routine team selector — no cross-team path from a wake.
-        team = registry.team_for_agent(agent) or registry.team_for_manager(agent)
-        if team is None:
-            raise HTTPException(
-                status_code=409, detail={"code": "agent_team_unresolved", "agent": agent},
-            )
+            agent = wh.agent_name
+            # Self-team-only (structural): the spawned tasks are always created on the
+            # waking agent's own team and targeted to the waking agent as executor.
+            # There is no per-routine team selector — no cross-team path from a wake.
+            team = registry.team_for_agent(agent) or registry.team_for_manager(agent)
+            if team is None:
+                raise HTTPException(
+                    status_code=409, detail={"code": "agent_team_unresolved", "agent": agent},
+                )
 
-        # Validate-then-create: Pydantic has already validated the whole payload
-        # (summary non-empty, >=1 routine, each brief non-empty) before any task
-        # is born. If creation still fails partway, already-created root tasks are
-        # real work and are NOT rolled back (settled no-rollback ruling).
-        try:
-            for routine in body.routines:
-                task_id = org.db.next_task_id()
-                org.db.insert_task(TaskRecord(
-                    id=task_id,
-                    brief=routine.brief,
-                    team=team,
-                    assigned_agent=agent,
-                ))
-                created.append(task_id)
-        except Exception as exc:  # pragma: no cover - exercised via monkeypatch in tests
-            partial_error = f"partial_spawn: {exc}"
+            # Validate-then-create: Pydantic has already validated the whole payload
+            # (summary non-empty, >=1 routine, each brief non-empty) before any task
+            # is born. If creation still fails partway, already-created root tasks are
+            # real work and are NOT rolled back (settled no-rollback ruling).
+            try:
+                for routine in body.routines:
+                    task_id = org.db.next_task_id()
+                    org.db.insert_task(TaskRecord(
+                        id=task_id,
+                        brief=routine.brief,
+                        team=team,
+                        assigned_agent=agent,
+                    ))
+                    created.append(task_id)
+            except Exception as exc:  # pragma: no cover - exercised via monkeypatch in tests
+                partial_error = f"partial_spawn: {exc}"
 
-        now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            if partial_error is None:
+                transcript_path = _write_wake_transcript(
+                    org.root, wh, summary=body.summary, spawned_task_ids=created,
+                )
+                org.db.work_hours.update(
+                    work_hour_id,
+                    status=WorkHourStatus.COMPLETED,
+                    ended_at=now,
+                    summary=body.summary,
+                    spawned_task_ids=created,
+                    spawned_task_count=len(created),
+                    transcript_path=str(transcript_path),
+                )
+            else:
+                org.db.work_hours.update(
+                    work_hour_id,
+                    status=WorkHourStatus.FAILED,
+                    ended_at=now,
+                    summary=body.summary,
+                    spawned_task_ids=created,
+                    spawned_task_count=len(created),
+                    error=partial_error,
+                )
+
+        # Enqueue + audit inside the admission. Already-created tasks are enqueued
+        # even on partial failure — they are real work that should proceed.
+        for task_id in created:
+            enqueue_task(state, org.slug, task_id)
+        audit = AuditLogger(org.db)
+        if created:
+            audit.log_work_hour_spawned(work_hour_id, agent, task_ids=created)
         if partial_error is None:
-            transcript_path = _write_wake_transcript(
-                org.root, wh, summary=body.summary, spawned_task_ids=created,
-            )
-            org.db.work_hours.update(
-                work_hour_id,
-                status=WorkHourStatus.COMPLETED,
-                ended_at=now,
-                summary=body.summary,
-                spawned_task_ids=created,
-                spawned_task_count=len(created),
-                transcript_path=str(transcript_path),
+            audit.log_work_hour_completed(
+                work_hour_id, agent, spawned_task_count=len(created), routine_count=wh.routine_count,
             )
         else:
-            org.db.work_hours.update(
-                work_hour_id,
-                status=WorkHourStatus.FAILED,
-                ended_at=now,
-                summary=body.summary,
-                spawned_task_ids=created,
-                spawned_task_count=len(created),
-                error=partial_error,
-            )
+            audit.log_work_hour_failed(work_hour_id, agent, reason="partial_spawn")
 
-    # Enqueue + audit outside the db lock. Already-created tasks are enqueued even
-    # on partial failure — they are real work that should proceed.
-    for task_id in created:
-        enqueue_task(state, org.slug, task_id)
-    audit = AuditLogger(org.db)
-    if created:
-        audit.log_work_hour_spawned(work_hour_id, agent, task_ids=created)
     if partial_error is None:
-        audit.log_work_hour_completed(
-            work_hour_id, agent, spawned_task_count=len(created), routine_count=wh.routine_count,
-        )
         return {"work_hour_id": work_hour_id, "status": "completed", "spawned_task_ids": created}
-    audit.log_work_hour_failed(work_hour_id, agent, reason="partial_spawn")
     return {
         "work_hour_id": work_hour_id,
         "status": "failed",
