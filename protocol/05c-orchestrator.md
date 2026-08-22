@@ -651,14 +651,15 @@ TEXT`` (NULL default). No new ``TaskStatus``, ``block_kind``, or overload of
 any existing column — all founder-gated. Flagged via ``zombie_flagged_at``;
 cancel = the existing ``cancelled`` transition.
 
-#### Organization portability — preflight & reconciliation (THR-187 Slice A)
+#### Organization portability — preflight, reconciliation, export/import (THR-187)
 
 **Slice A is preflight/reconciliation only.** It adds a read-only CLI
 ``happyranch orgs portability-preflight <slug>`` and a distinct founder-only
 ``happyranch orgs reconcile-portability <slug> --from-file <request.json>``.
 There is **no** archive, export, import, staging, transfer fence, source
 retirement, cancellation-of-live-work, or other transfer side effect in this
-slice. Export/import/rebind are later, separately authorized slices.
+slice. Export/import are the separately authorized Slice B below; rebind/rearm
+is the still-later Slice C.
 
 **Exhaustive root classification.** The preflight classifies every direct
 child of a source org root exactly once as `include`, a *named* `exclude`
@@ -712,6 +713,107 @@ disposition, and before/after state under the ordinary ``task_id`` scope. A
 delegated/job-blocked task is never a zombie merely because it is old.
 Preflight never calls reconciliation; reconciliation offers no export
 cancellation path. CLI-private only — no UI, TS client, or browser contract.
+
+#### Organization portability — archive export, inspection, import (THR-187 Slice B)
+
+**Slice B is CLI-private archive export / inspection / import-relocation.**
+It adds ``happyranch orgs portability-export <slug> --from-file <abs.json>``,
+``happyranch orgs portability-inspect <slug> --from-file <abs.json>``, and
+``happyranch orgs portability-import <slug> --from-file <abs.json>``. All three
+use the existing master-bearer pattern unchanged; the mutating export/import
+requests require an affirmative plaintext/unsigned trust acknowledgement
+(``trust_acknowledged: true``) — the archive is never signed or encrypted, and
+checksums prove corruption, not sender identity.
+
+**Export.** Source must be ready by the Slice-A predicate (no rejections, no
+live work — including armed *and* firing schedules, with exactly the existing
+remedies). Export never terminalizes/cancels work. It acquires a per-org
+transfer fence — an admission **lease**, not a checkable flag — via
+``acquire()``: every durable producer (task dispatch, thread composition /
+invocation mint / task enqueue, job submit, schedule / dream / work-hour
+admission, escalation continuation) holds a *reader lease* around its
+insert+enqueue critical section, and ``acquire()`` sets ``held`` then *waits*
+for all in-flight admissions to drain before returning. Any admission that
+started before ``acquire()`` has therefore committed and is observed by the
+recheck; any admission after it raises ``TransferFenceHeld`` (HTTP 409) and
+lands nothing. The exporter then re-gathers and rechecks every Slice-A
+quiescence fact under ``org.db_lock`` immediately before the SQLite backup and
+captures the allow-list. A failed second check returns a conflict and
+leaves the source untouched (no archive). The fence is released only after
+capture validation; exceptional paths release it. The SQLite snapshot is a
+``sqlite3`` online backup into private staging — ``happyranch.db-wal``/
+``-shm`` are never copied. The blocking capture (backup, tree enumeration,
+hashing, tar/gzip, and full archive reread) runs on a **worker thread**, not
+the daemon event loop, while the fence stays held — so the daemon stays
+responsive during a large export and no admission can land between the recheck
+and the capture (no capture window).
+
+**Archive format.** A standard-library, data-only ``tar.gz`` with a leading
+``manifest.json`` and ``payload/...`` members. Member names are normalized
+relative POSIX paths; the manifest carries format/policy version, source slug,
+a v2 compatibility fingerprint (hash of the sorted table/column schema shape),
+a sorted member path/size/SHA-256 inventory, the source-root inventory, and
+explicit included/excluded/rejected sets, plus legacy-skill and B2 custom-skill
+validation evidence. Nothing inside the archive is ever executed or
+dereferenced. The whole-archive digest is the archive's *identity* and is
+returned in the export response / recorded in the import receipt — never
+recursively claimed inside the archive's own bytes (per-member hashes are
+integrity, not identity).
+
+**Import.** Same source/destination slug only; the destination runtime must be
+schema-v2 **and otherwise non-empty** (at least one *other* org must already
+exist — an empty v2 target is refused), and the destination slug must be
+**unused on disk** — loaded, broken,
+partial, or data-bearing occupancy refuses (never reclaim/overwrite). v0
+DB-backed-enrollment, v1 flat-single-org, and old DB shapes are rejected (no
+import-time migration or loader broadening): the staged DB is validated
+against the **canonical current-v2 schema contract** (derived independently
+from the runtime's own schema bootstrap, not the attacker-controlled manifest
+fingerprint). Import extracts only under
+``<target>/orgs/_pending/<operation-id>`` and validates every member before
+publish: known format/policy/root inventory, exact hashes, pathname safety,
+duplicate names, symlink/hardlink/device/FIFO/nonregular rejection, SQLite
+integrity + FK checks, B2 custom-skill artifact-key/content-hash cross
+references (recomputed and **bound to the manifest evidence**), and legacy-skill
+identity/member/reference constraints (recomputed and **bound to the manifest
+evidence**). Each legacy skill's local Markdown/YAML references are parsed and
+resolved against the package's own member set — only normalized same-package,
+manifest-listed files are permitted; ``file:`` URIs, absolute paths, ``..``
+traversal, backslash paths, and missing/unhashed targets are refused; HTTP(S)
+and fragment-only anchors are inert. The staged
+payload is revalidated against the exact Slice-A allow-list BEFORE any SQLite
+is opened or any byte published — a self-consistent hostile archive carrying
+``payload/credentials``, an unknown root, task output, workspace siblings, or a
+WAL/SHM sidecar is rejected, and a manifest whose root inventory disagrees with
+the actual members is rejected. Any
+pre-publish error cleans only the private staging directory — the target org
+dir, loaded/broken registry, and queue are untouched. Every imported
+schedule's ``active`` flag is forced to ``0`` (status semantics unchanged);
+Slice C alone owns attach/rebind/rearm, so import never calls
+``DaemonState.add_org`` or attaches the imported org. Publish is a
+platform-correct same-filesystem **no-replace** primitive — a genuine
+no-overwrite rename (Linux ``renameat2(…, RENAME_NOREPLACE)`` / macOS
+``renamex_np(…, RENAME_EXCL)``), which fails with ``EEXIST`` if the destination
+exists (empty or not) — never clone/merge/
+overwrite/source deletion/credential transfer, and a competing destination
+created after validation (including an *empty* directory) is never overwritten.
+A narrow receipt is persisted
+under the reserved ``orgs/_archive`` namespace recording archive digest + slug
++ result + quarantined legacy-skill evidence. Durable import identity (digest +
+slug + operation) is prepared in a pending marker **BEFORE** publish, then the
+no-replace publish, then receipt finalize; the pending identity is **reconciled
+before the destination-existence branch**, so a crash after preparation but
+before publish leaves no destination and no false success (a different digest
+conflicts even though the destination is absent, and never overwrites/reuses
+the marker or publishes); a crash between publish and receipt finalize leaves
+the published org plus the marker, and an exact digest+slug retry
+converges by writing the missing receipt WITHOUT overwriting the org (a
+different digest conflicts); an exact digest+slug retry with a finalized
+receipt is idempotent and removes a leftover pending marker only when its
+durable identity (slug + digest + operation) exactly matches the finalized
+receipt — a malformed or nonmatching marker is never unlinked (fail closed). **Serialization (v1 refuses concurrent imports, not supports them).** Import acquires one exclusive, durable per-(runtime, slug) claim *before* any staging/pending-identity/publication state mutates: a nonblocking per-key in-process lock (threadpool coordination, mirroring the existing per-key lock precedent) plus a nonblocking POSIX ``fcntl.flock`` (``LOCK_EX | LOCK_NB``) on a stable lock file under the reserved receipt namespace (``orgs/_archive/.import-claim-<slug>.lock``), so a second daemon/process targeting the same runtime is refused too. A competing same runtime+slug invocation returns ``import_in_progress`` (409) and MUST NOT read/infer ownership of, or write/replace/unlink, the owner's marker, staging, target, or receipt; different slugs or runtimes proceed independently. The claim (in-process lock + held flock FD) is held across check → prepare → pending identity → publish → receipt/recovery/finalize and released on every ordinary and error path; the lock file is never unlinked (a process crash releases ``flock`` implicitly), and the persistent pending marker + receipt remain the sole single-owner recovery record. After an owner crash a competing invocation acquires the claim and performs the normal persisted-marker recovery. Legacy skills are carried only as
+``legacy_portable_quarantined`` archive content — no eligibility, canonical-store
+entry, workspace symlink, materialization, execution, or activation.
 
 #### Transitions
 

@@ -20,6 +20,7 @@ This module is pure: it imports no daemon/DB state and reads only the filesystem
 """
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from pathlib import Path
 
@@ -207,6 +208,160 @@ def _classify_skills(skills_dir: Path) -> list[ClassifiedEntry]:
     return entries
 
 
+# ── legacy skill local-reference resolution (Slice B) ────────────────────────
+#
+# A carried legacy skill's SKILL.md (Markdown) and skill.yaml (YAML) may contain
+# local file references. Those must be resolved against the package's own member
+# set and hash-bound before publish: only normalized same-package, manifest-listed
+# files are permitted; anything else — ``file:`` URIs, absolute paths, ``..``
+# traversal, backslash paths (and therefore any cross-package / archive-root /
+# workspace / repository escape) — is refused, and a reference to a missing or
+# unhashed target is refused. Remote URLs (``http``/``https``/``mailto``/…) and
+# fragment-only anchors are inert (not local file references).
+
+_MD_INLINE_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)")
+_MD_REF_DEF_RE = re.compile(r"^\s*\[[^\]]+\]:\s*<?(\S+)", re.MULTILINE)
+_MD_AUTOLINK_RE = re.compile(r"<([^>\s]+)>")
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+
+# File extensions that mark a YAML string value as a plausible local reference.
+_KNOWN_REFERENCE_EXTENSIONS = frozenset({
+    ".md", ".markdown", ".yaml", ".yml", ".txt", ".json", ".py", ".sh",
+    ".js", ".ts", ".tsx", ".jsx", ".svg", ".png", ".jpg", ".jpeg", ".gif",
+    ".pdf", ".html", ".css", ".csv", ".toml", ".rst",
+})
+
+
+def _markdown_reference_targets(md_text: str) -> list[str]:
+    """Extract link/reference/autolink targets from Markdown source."""
+    targets: list[str] = []
+    for m in _MD_INLINE_LINK_RE.finditer(md_text):
+        targets.append(m.group(1))
+    for m in _MD_REF_DEF_RE.finditer(md_text):
+        targets.append(m.group(1))
+    for m in _MD_AUTOLINK_RE.finditer(md_text):
+        targets.append(m.group(1))
+    return targets
+
+
+def _looks_like_local_path(s: str) -> bool:
+    """Heuristic: does a YAML string value plausibly name a local file?"""
+    lower = s.lower()
+    return (
+        "/" in s
+        or "\\" in s
+        or s.startswith(".")
+        or s.startswith("/")
+        or ".." in s
+        or any(lower.endswith(ext) for ext in _KNOWN_REFERENCE_EXTENSIONS)
+    )
+
+
+def _yaml_reference_targets(meta: object) -> list[str]:
+    """Recursively collect plausible local-reference strings from parsed YAML."""
+    out: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            s = node.strip()
+            if not s:
+                return
+            # Any scheme (to catch ``file:``) or a path-like value is a candidate;
+            # the classifier below refuses ``file:`` and ignores http(s)/mailto/etc.
+            if _SCHEME_RE.match(s) or _looks_like_local_path(s):
+                out.append(s)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+
+    walk(meta)
+    return out
+
+
+def _classify_local_reference(target: str) -> str:
+    """Classify one reference target.
+
+    Returns the normalized same-package relative path, or ``""`` when the target
+    is inert (a remote URL scheme or a fragment-only anchor). Raises ``ValueError``
+    for any refused form: a ``file:`` URI, an absolute/backslash path, or a
+    ``..`` traversal.
+    """
+    t = target.strip()
+    if not t:
+        raise ValueError("empty reference target")
+    if t.startswith("#"):
+        return ""  # fragment-only anchor — inert
+    m = _SCHEME_RE.match(t)
+    if m:
+        scheme = m.group(0)[:-1].lower()
+        if scheme == "file":
+            raise ValueError("file: URI reference")
+        # http / https / mailto / data / … — remote or non-file scheme, inert.
+        return ""
+    if "\\" in t:
+        raise ValueError("backslash path reference")
+    if t.startswith("/") or (len(t) >= 2 and t[1] == ":"):
+        raise ValueError("absolute path reference")
+    # Reject any '..' segment even when it would normalize back inside the
+    # package — the brief forbids '..' traversal outright.
+    segments = [seg for seg in t.split("/") if seg not in ("", ".")]
+    if any(seg == ".." for seg in segments):
+        raise ValueError("parent-traversal reference")
+    if not segments:
+        raise ValueError("empty reference target")
+    return "/".join(segments)
+
+
+def _legacy_package_member_paths(pkg_dir: Path) -> set[str]:
+    """Package-relative regular-file paths (SKILL.md, skill.yaml, and the flat
+    ``references/`` + ``assets/`` files the structural gate admits)."""
+    paths = {"SKILL.md", "skill.yaml"}
+    for sub in ("references", "assets"):
+        sp = pkg_dir / sub
+        if sp.is_dir() and not sp.is_symlink():
+            for f in sp.iterdir():
+                if f.is_file() and not f.is_symlink():
+                    paths.add(f"{sub}/{f.name}")
+    return paths
+
+
+def resolve_legacy_skill_references(
+    pkg_dir: Path, member_paths: set[str],
+) -> list[str]:
+    """Parse and resolve local Markdown/YAML references in a legacy skill package.
+
+    Returns the sorted normalized package-relative paths actually referenced.
+    Raises ``ValueError`` (or ``OSError``/``UnicodeDecodeError``/``yaml.YAMLError``)
+    on any refused reference — ``file:`` URI, absolute/backslash path, ``..``
+    traversal, or a target not present in ``member_paths`` (missing/unhashed).
+    Remote URLs and fragment anchors are inert and omitted.
+    """
+    skill_md = pkg_dir / "SKILL.md"
+    skill_yaml = pkg_dir / "skill.yaml"
+    if skill_md.is_symlink() or skill_yaml.is_symlink():
+        raise ValueError("skill.yaml or SKILL.md is a symlink")
+    md_text = skill_md.read_text(encoding="utf-8")
+    yaml_text = skill_yaml.read_text(encoding="utf-8")
+    meta = yaml.safe_load(yaml_text) or {}
+
+    targets = _markdown_reference_targets(md_text)
+    if isinstance(meta, dict):
+        targets.extend(_yaml_reference_targets(meta))
+
+    resolved: list[str] = []
+    for target in targets:
+        norm = _classify_local_reference(target)
+        if norm == "":  # inert (remote URL or fragment)
+            continue
+        if norm not in member_paths:
+            raise ValueError(f"missing/unhashed local reference {norm!r}")
+        resolved.append(norm)
+    return sorted(set(resolved))
+
+
 def _validate_legacy_skill_package(pkg_dir: Path) -> tuple[bool, str | None]:
     """Structural validity of a legacy user-authored skill package.
 
@@ -274,6 +429,13 @@ def _validate_legacy_skill_package(pkg_dir: Path) -> tuple[bool, str | None]:
             for f in sp.iterdir():
                 if f.is_symlink() or not f.is_file():
                     return False, f"{sub} member {f.name!r} is not a regular file"
+        # Resolve the package's actual local Markdown/YAML references: refuse
+        # ``file:`` URIs, absolute/backslash paths, ``..`` traversal, and any
+        # missing/unhashed target. Remote URLs and fragment anchors are inert.
+        try:
+            resolve_legacy_skill_references(pkg_dir, _legacy_package_member_paths(pkg_dir))
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
+            return False, f"unsafe reference: {exc}"
         return True, None
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         return False, f"unreadable package: {exc}"

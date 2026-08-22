@@ -261,3 +261,41 @@ def test_org_root_must_be_directory(tmp_path: Path) -> None:
     not_a_dir.write_text("x")
     with pytest.raises(ValueError):
         classify_root_entries(not_a_dir)
+
+
+@pytest.mark.parametrize(
+    "md_body",
+    [
+        "# QA\n\n[leak](file:references/guide.md)\n",
+        "# QA\n\n[leak](/etc/passwd)\n",
+        "# QA\n\n[leak](../other/secret.md)\n",
+        "# QA\n\n[leak](../../org/teams.yaml)\n",
+    ],
+    ids=["file-uri", "absolute", "dotdot", "cross-package"],
+)
+def test_unsafe_legacy_reference_rejected_at_classification(
+    tmp_path: Path, md_body: str,
+) -> None:
+    """An unsafe local reference (file:/absolute/../) makes the legacy skill
+    package REJECT at classification time (preflight refuses the source org)."""
+    root = _build_full_org(tmp_path / "org")
+    pkg = root / "skills" / "qa-scroll-test"
+    _write(pkg / "SKILL.md", md_body)
+    _write(pkg / "references" / "guide.md", "# Guide\n")
+    inventory = classify_root_entries(root)
+    assert any(
+        e.path == "skills/qa-scroll-test" and e.reason == REJECT_INVALID_SKILL
+        for e in inventory.rejected
+    )
+
+
+def test_remote_reference_is_inert_at_classification(tmp_path: Path) -> None:
+    """A remote URL reference does not reject a valid legacy skill package."""
+    root = _build_full_org(tmp_path / "org")
+    pkg = root / "skills" / "qa-scroll-test"
+    _write(pkg / "SKILL.md", "# QA\n\nSee [remote](https://example.com/x).\n")
+    inventory = classify_root_entries(root)
+    assert not any(
+        e.path == "skills/qa-scroll-test" for e in inventory.rejected
+    )
+    assert "skills/qa-scroll-test" in _paths(inventory, RootClassification.INCLUDE)

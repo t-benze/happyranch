@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from runtime.daemon.dream_queue import DreamJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import DreamRecord, DreamStatus
+from runtime.portability.fence import TransferFenceHeld
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
@@ -125,6 +126,7 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
+
     org_cfg = load_org_config(OrgPaths(root=org.root))
     # THR-095 F2: resolve dreaming from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())
@@ -199,7 +201,12 @@ async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
             try:
-                schedule_due_dreams(org=org, now=now, startup=startup)
+                # THR-187 Slice B: the whole per-org dream pass (insert dream
+                # row → enqueue) is one admission critical section.
+                async with org.transfer_fence.admission():
+                    schedule_due_dreams(org=org, now=now, startup=startup)
+            except TransferFenceHeld:
+                continue
             except OrgConfigError:
                 # A misconfigured org (e.g. unknown include/exclude agent) must
                 # not halt scheduling for every other org. Surface loudly.

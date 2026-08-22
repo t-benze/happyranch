@@ -466,94 +466,97 @@ async def _compose_thread_multipart(
             detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
         )
 
-    async with org.db_lock:
-        thread_id = org.db.next_thread_id()
-        org.db.insert_thread(ThreadRecord(
-            id=thread_id, subject=subject, turn_cap=turn_cap,
-            forwarded_from_id=body.forwarded_from_id,
-            forwarded_from_kind=body.forwarded_from_kind,
-        ))
-        for name in body.recipients:
-            org.db.add_thread_participant(thread_id, name, added_by="founder")
+    # THR-187 Slice B: thread create + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            thread_id = org.db.next_thread_id()
+            org.db.insert_thread(ThreadRecord(
+                id=thread_id, subject=subject, turn_cap=turn_cap,
+                forwarded_from_id=body.forwarded_from_id,
+                forwarded_from_kind=body.forwarded_from_kind,
+            ))
+            for name in body.recipients:
+                org.db.add_thread_participant(thread_id, name, added_by="founder")
 
-        # Store uploaded files in thread-scoped store.
-        thread_attachments: list[ThreadAttachment] = []
-        for file_field in file_fields:
-            content = await file_field.read()
-            if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail={
-                        "code": "attachment_too_large",
-                        "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
-                    },
+            # Store uploaded files in thread-scoped store.
+            thread_attachments: list[ThreadAttachment] = []
+            for file_field in file_fields:
+                content = await file_field.read()
+                if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "code": "attachment_too_large",
+                            "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+                        },
+                    )
+                display_name = (
+                    file_field.filename if hasattr(file_field, "filename") else "attachment"
+                ) or "attachment"
+                _validate_display_name(display_name)
+                content_type = (
+                    file_field.content_type
+                    if hasattr(file_field, "content_type")
+                    else None
+                ) or mimetypes.guess_type(display_name)[0]
+                attachment_id = org.db.next_thread_attachment_id()
+                size_bytes = _attachment_store(org).put(
+                    thread_id, attachment_id, content,
                 )
-            display_name = (
-                file_field.filename if hasattr(file_field, "filename") else "attachment"
-            ) or "attachment"
-            _validate_display_name(display_name)
-            content_type = (
-                file_field.content_type
-                if hasattr(file_field, "content_type")
-                else None
-            ) or mimetypes.guess_type(display_name)[0]
-            attachment_id = org.db.next_thread_attachment_id()
-            size_bytes = _attachment_store(org).put(
-                thread_id, attachment_id, content,
-            )
-            org.db.insert_thread_scoped_attachment(
-                attachment_id=attachment_id,
-                thread_id=thread_id,
-                display_name=display_name,
-                size_bytes=size_bytes,
-                content_type=content_type,
-                uploaded_by=uploaded_by,
-            )
-            thread_attachments.append(
-                ThreadAttachment(
-                    artifact_name="",
+                org.db.insert_thread_scoped_attachment(
+                    attachment_id=attachment_id,
+                    thread_id=thread_id,
                     display_name=display_name,
                     size_bytes=size_bytes,
                     content_type=content_type,
                     uploaded_by=uploaded_by,
-                    thread_attachment_id=attachment_id,
                 )
-            )
+                thread_attachments.append(
+                    ThreadAttachment(
+                        artifact_name="",
+                        display_name=display_name,
+                        size_bytes=size_bytes,
+                        content_type=content_type,
+                        uploaded_by=uploaded_by,
+                        thread_attachment_id=attachment_id,
+                    )
+                )
 
-        all_attachments = shared_attachments + thread_attachments
-        body_text = _normalize_message_body(body.body_markdown, all_attachments)
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker="founder",
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=all_attachments,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_started(
-            thread_id,
-            subject=subject,
-            initial_recipients=body.recipients,
-            forwarded_from_id=body.forwarded_from_id,
-        )
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker="founder", kind="message",
-            attachment_names=[
-                a.artifact_name or a.thread_attachment_id or ""
-                for a in all_attachments
-            ],
-        )
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            all_attachments = shared_attachments + thread_attachments
+            body_text = _normalize_message_body(body.body_markdown, all_attachments)
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker="founder",
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=all_attachments,
             )
-            tokens_to_enqueue.append(inv.invocation_token)
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_started(
+                thread_id,
+                subject=subject,
+                initial_recipients=body.recipients,
+                forwarded_from_id=body.forwarded_from_id,
+            )
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker="founder", kind="message",
+                attachment_names=[
+                    a.artifact_name or a.thread_attachment_id or ""
+                    for a in all_attachments
+                ],
+            )
+            tokens_to_enqueue: list[str] = []
+            for name in addressed_agents:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(inv.invocation_token)
 
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(
-            ThreadJob(org_slug=slug, invocation_token=token),
-        )
+        for token in tokens_to_enqueue:
+            await org.thread_queue.put(
+                ThreadJob(org_slug=slug, invocation_token=token),
+            )
 
     await _publish_thread_event(
         org, slug,
@@ -639,44 +642,47 @@ async def compose_thread(
     # not in recipients).
     addressed_agents = list(body.recipients)
 
-    async with org.db_lock:
-        thread_id = org.db.next_thread_id()
-        org.db.insert_thread(ThreadRecord(
-            id=thread_id, subject=subject, turn_cap=turn_cap,
-            forwarded_from_id=body.forwarded_from_id,
-            forwarded_from_kind=body.forwarded_from_kind,
-        ))
-        for name in body.recipients:
-            org.db.add_thread_participant(thread_id, name, added_by="founder")
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker="founder",
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=attachments,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_started(
-            thread_id,
-            subject=subject,
-            initial_recipients=body.recipients,
-            forwarded_from_id=body.forwarded_from_id,
-        )
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker="founder", kind="message",
-            attachment_names=[a.artifact_name for a in attachments],
-        )
-        # Broadcast: mint REPLY for every recipient (participant). The founder
-        # is the speaker and is not in recipients, so she is never minted.
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+    # THR-187 Slice B: thread create + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            thread_id = org.db.next_thread_id()
+            org.db.insert_thread(ThreadRecord(
+                id=thread_id, subject=subject, turn_cap=turn_cap,
+                forwarded_from_id=body.forwarded_from_id,
+                forwarded_from_kind=body.forwarded_from_kind,
+            ))
+            for name in body.recipients:
+                org.db.add_thread_participant(thread_id, name, added_by="founder")
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker="founder",
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=attachments,
             )
-            tokens_to_enqueue.append(inv.invocation_token)
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_started(
+                thread_id,
+                subject=subject,
+                initial_recipients=body.recipients,
+                forwarded_from_id=body.forwarded_from_id,
+            )
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker="founder", kind="message",
+                attachment_names=[a.artifact_name for a in attachments],
+            )
+            # Broadcast: mint REPLY for every recipient (participant). The founder
+            # is the speaker and is not in recipients, so she is never minted.
+            tokens_to_enqueue: list[str] = []
+            for name in addressed_agents:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(inv.invocation_token)
 
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+        for token in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
     await _publish_thread_event(
         org, slug,
@@ -815,99 +821,102 @@ async def _compose_agent_thread_multipart(
         name for name in recipients if name != FOUNDER_LITERAL and name != body.composer
     ]
 
-    async with org.db_lock:
-        thread_id = org.db.next_thread_id()
-        org.db.insert_thread(ThreadRecord(
-            id=thread_id, subject=subject, turn_cap=turn_cap,
-            composed_by=body.composer,
-            composed_from_task_id=body.task_id,
-        ))
-        org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
-        for name in recipients:
-            if name == FOUNDER_LITERAL or name == body.composer:
-                continue
-            org.db.add_thread_participant(thread_id, name, added_by=body.composer)
+    # THR-187 Slice B: thread create + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            thread_id = org.db.next_thread_id()
+            org.db.insert_thread(ThreadRecord(
+                id=thread_id, subject=subject, turn_cap=turn_cap,
+                composed_by=body.composer,
+                composed_from_task_id=body.task_id,
+            ))
+            org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
+            for name in recipients:
+                if name == FOUNDER_LITERAL or name == body.composer:
+                    continue
+                org.db.add_thread_participant(thread_id, name, added_by=body.composer)
 
-        # Store uploaded files in thread-scoped store.
-        thread_attachments: list[ThreadAttachment] = []
-        for file_field in file_fields:
-            content = await file_field.read()
-            if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail={
-                        "code": "attachment_too_large",
-                        "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
-                    },
+            # Store uploaded files in thread-scoped store.
+            thread_attachments: list[ThreadAttachment] = []
+            for file_field in file_fields:
+                content = await file_field.read()
+                if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "code": "attachment_too_large",
+                            "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+                        },
+                    )
+                display_name = (
+                    file_field.filename if hasattr(file_field, "filename") else "attachment"
+                ) or "attachment"
+                _validate_display_name(display_name)
+                content_type = (
+                    file_field.content_type
+                    if hasattr(file_field, "content_type")
+                    else None
+                ) or mimetypes.guess_type(display_name)[0]
+                attachment_id = org.db.next_thread_attachment_id()
+                size_bytes = _attachment_store(org).put(
+                    thread_id, attachment_id, content,
                 )
-            display_name = (
-                file_field.filename if hasattr(file_field, "filename") else "attachment"
-            ) or "attachment"
-            _validate_display_name(display_name)
-            content_type = (
-                file_field.content_type
-                if hasattr(file_field, "content_type")
-                else None
-            ) or mimetypes.guess_type(display_name)[0]
-            attachment_id = org.db.next_thread_attachment_id()
-            size_bytes = _attachment_store(org).put(
-                thread_id, attachment_id, content,
-            )
-            org.db.insert_thread_scoped_attachment(
-                attachment_id=attachment_id,
-                thread_id=thread_id,
-                display_name=display_name,
-                size_bytes=size_bytes,
-                content_type=content_type,
-                uploaded_by=body.composer,
-            )
-            thread_attachments.append(
-                ThreadAttachment(
-                    artifact_name="",
+                org.db.insert_thread_scoped_attachment(
+                    attachment_id=attachment_id,
+                    thread_id=thread_id,
                     display_name=display_name,
                     size_bytes=size_bytes,
                     content_type=content_type,
                     uploaded_by=body.composer,
-                    thread_attachment_id=attachment_id,
                 )
+                thread_attachments.append(
+                    ThreadAttachment(
+                        artifact_name="",
+                        display_name=display_name,
+                        size_bytes=size_bytes,
+                        content_type=content_type,
+                        uploaded_by=body.composer,
+                        thread_attachment_id=attachment_id,
+                    )
+                )
+
+            all_attachments = shared_attachments + thread_attachments
+            body_text = _normalize_message_body(body.body_markdown, all_attachments)
+
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker=body.composer,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=all_attachments,
+            )
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_started(
+                thread_id,
+                subject=subject,
+                initial_recipients=recipients,
+                forwarded_from_id=None,
+                composed_by=body.composer,
+                composed_from_task_id=body.task_id,
+            )
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker=body.composer, kind="message",
+                attachment_names=[
+                    a.artifact_name or a.thread_attachment_id or ""
+                    for a in all_attachments
+                ],
             )
 
-        all_attachments = shared_attachments + thread_attachments
-        body_text = _normalize_message_body(body.body_markdown, all_attachments)
+            tokens_to_enqueue: list[str] = []
+            for name in addressed_agents:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(inv.invocation_token)
 
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.composer,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=all_attachments,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_started(
-            thread_id,
-            subject=subject,
-            initial_recipients=recipients,
-            forwarded_from_id=None,
-            composed_by=body.composer,
-            composed_from_task_id=body.task_id,
-        )
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.composer, kind="message",
-            attachment_names=[
-                a.artifact_name or a.thread_attachment_id or ""
-                for a in all_attachments
-            ],
-        )
-
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
-
-    for tok in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
+        for tok in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
 
     await _publish_thread_event(
         org, slug,
@@ -1016,20 +1025,23 @@ async def compose_thread_as_agent(
 
     composed_from_task_id = body.task_id
 
-    async with org.db_lock:
-        thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
-            org,
-            composer=body.composer,
-            subject=subject,
-            body_text=body_text,
-            recipients=recipients,
-            turn_cap=turn_cap,
-            attachments=attachments,
-            composed_from_task_id=composed_from_task_id,
-        )
+    # THR-187 Slice B: thread create + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
+                org,
+                composer=body.composer,
+                subject=subject,
+                body_text=body_text,
+                recipients=recipients,
+                turn_cap=turn_cap,
+                attachments=attachments,
+                composed_from_task_id=composed_from_task_id,
+            )
 
-    for tok in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
+        for tok in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
 
     await _publish_thread_event(
         org, slug,
@@ -1400,33 +1412,36 @@ async def reply_thread_endpoint(
     # any message as long as they hold a valid invocation token.
 
     tokens_to_enqueue: list[str] = []
-    async with org.db_lock:
-        inv = org.db.get_pending_invocation(body.invocation_token)
-        if inv is None:
-            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.speaker,
-            kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
-            attachments=attachments,
-        )
-        org.db.consume_invocation(body.invocation_token)
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.speaker, kind="message",
-            attachment_names=[a.artifact_name for a in attachments],
-        )
-        # Broadcast: mint REPLY for every participant except the speaker.
-        for p in org.db.list_thread_participants(thread_id):
-            if p.agent_name == body.speaker:
-                continue
-            new_inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=p.agent_name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+    # THR-187 Slice B: message append + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            inv = org.db.get_pending_invocation(body.invocation_token)
+            if inv is None:
+                raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker=body.speaker,
+                kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
+                attachments=attachments,
             )
-            tokens_to_enqueue.append(new_inv.invocation_token)
+            org.db.consume_invocation(body.invocation_token)
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker=body.speaker, kind="message",
+                attachment_names=[a.artifact_name for a in attachments],
+            )
+            # Broadcast: mint REPLY for every participant except the speaker.
+            for p in org.db.list_thread_participants(thread_id):
+                if p.agent_name == body.speaker:
+                    continue
+                new_inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=p.agent_name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(new_inv.invocation_token)
 
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+        for token in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
     await _publish_thread_event(
         org, slug,
@@ -1613,54 +1628,57 @@ async def dispatch_from_thread_endpoint(
                         "predecessor_status": predecessor.status.value},
             )
 
-    async with org.db_lock:
-        cur_inv = org.db.get_pending_invocation(body.invocation_token)
-        if cur_inv is None or cur_inv.dispatched_task_id is not None:
-            raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
-        task_id = org.db.next_task_id()
-        org.db.insert_task(TaskRecord(
-            id=task_id, brief=brief, team=effective_team,
-            assigned_agent=effective_target,
-            dispatched_from_thread_id=thread_id,
-        ))
-        sys_seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=dispatcher,
-            kind=ThreadMessageKind.SYSTEM,
-            system_payload={
-                "kind_tag": "task_dispatched",
-                "task_id": task_id,
-                "dispatcher": dispatcher,
-                "target_agent": effective_target,
-                "team": effective_team,
-                "brief_preview": brief[:160],
-            },
-        )
-        org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
-        audit = AuditLogger(org.db)
-        audit.log_thread_dispatch(
-            thread_id, task_id=task_id, dispatcher=dispatcher,
-            target_agent=effective_target, team=effective_team,
-        )
-        # Canonical supersede tail shared with resolve_escalation_in_process
-        # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
-        # and emits thread followups.
-        family_closed: list[str] = []
-        if resolves and predecessor is not None:
-            from runtime.daemon.routes.tasks import (
-                _close_predecessor_family_and_run_tail,
+    # THR-187 Slice B: insert + enqueue is one atomic admission critical
+    # section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            cur_inv = org.db.get_pending_invocation(body.invocation_token)
+            if cur_inv is None or cur_inv.dispatched_task_id is not None:
+                raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
+            task_id = org.db.next_task_id()
+            org.db.insert_task(TaskRecord(
+                id=task_id, brief=brief, team=effective_team,
+                assigned_agent=effective_target,
+                dispatched_from_thread_id=thread_id,
+            ))
+            sys_seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker=dispatcher,
+                kind=ThreadMessageKind.SYSTEM,
+                system_payload={
+                    "kind_tag": "task_dispatched",
+                    "task_id": task_id,
+                    "dispatcher": dispatcher,
+                    "target_agent": effective_target,
+                    "team": effective_team,
+                    "brief_preview": brief[:160],
+                },
             )
-            family_closed = _close_predecessor_family_and_run_tail(
-                org, audit,
-                predecessor=predecessor,
-                successor_root=task_id,
-                pred_block_kind=pred_block_kind,
-                actor="thread-dispatch",
-                note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                thread_id=thread_id,
-                close_revisit_family=True,
+            org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
+            audit = AuditLogger(org.db)
+            audit.log_thread_dispatch(
+                thread_id, task_id=task_id, dispatcher=dispatcher,
+                target_agent=effective_target, team=effective_team,
             )
+            # Canonical supersede tail shared with resolve_escalation_in_process
+            # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+            # and emits thread followups.
+            family_closed: list[str] = []
+            if resolves and predecessor is not None:
+                from runtime.daemon.routes.tasks import (
+                    _close_predecessor_family_and_run_tail,
+                )
+                family_closed = _close_predecessor_family_and_run_tail(
+                    org, audit,
+                    predecessor=predecessor,
+                    successor_root=task_id,
+                    pred_block_kind=pred_block_kind,
+                    actor="thread-dispatch",
+                    note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                    thread_id=thread_id,
+                    close_revisit_family=True,
+                )
 
-    enqueue_task(state, slug, task_id)
+        enqueue_task(state, slug, task_id)
 
     await _publish_thread_event(
         org, slug,
@@ -2104,26 +2122,29 @@ async def resolve_escalation_from_thread(
             "queue_intent": {"task_id": task.id, "claimed": False},
         }
         note = f"{dispatcher} autonomous bounded continuation (THR-166)"
-        async with org.db_lock:
-            committed = org.db.continue_escalation_from_followup(
-                task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
-                invocation_token=body.invocation_token, max_steps=max_steps,
-                max_revise_rounds=max_revise_rounds,
-                note=note, audit_payload=audit_payload,
-            )
-        if not committed:
-            if org.db.autonomous_continuation_budget_exhausted(
-                task.id,
-                max_steps=max_steps,
-                max_revise_rounds=max_revise_rounds,
-            ):
-                _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
-            _continuation_reject(org, task.id, dispatcher, "continuation_state_changed")
-        # This is intentionally after the durable queue intent.  If process
-        # delivery fails, a recovery delivery is safe because run_step's CAS
-        # admits at most one manager session; cancellation wins its own CAS.
-        if state.queue is not None:
-            state.queue.put_nowait(org.slug, task.id)
+        # THR-187 Slice B: the PENDING transition + re-enqueue is one atomic
+        # admission critical section (transfer-fence reader lease).
+        async with org.transfer_fence.admission():
+            async with org.db_lock:
+                committed = org.db.continue_escalation_from_followup(
+                    task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
+                    invocation_token=body.invocation_token, max_steps=max_steps,
+                    max_revise_rounds=max_revise_rounds,
+                    note=note, audit_payload=audit_payload,
+                )
+            if not committed:
+                if org.db.autonomous_continuation_budget_exhausted(
+                    task.id,
+                    max_steps=max_steps,
+                    max_revise_rounds=max_revise_rounds,
+                ):
+                    _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
+                _continuation_reject(org, task.id, dispatcher, "continuation_state_changed")
+            # This is intentionally after the durable queue intent.  If process
+            # delivery fails, a recovery delivery is safe because run_step's CAS
+            # admits at most one manager session; cancellation wins its own CAS.
+            if state.queue is not None:
+                state.queue.put_nowait(org.slug, task.id)
         return {"ok": True, "task_id": task.id, "new_status": "pending"}
 
     new_status = await resolve_escalation_in_process(
@@ -2295,28 +2316,31 @@ async def _send_thread_message_inprocess(
         )
 
     tokens_to_enqueue: list[str] = []
-    async with org.db_lock:
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=speaker,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=normalized_attachments,
-            sent_from_task_id=sent_from_task_id,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=speaker, kind="message",
-            attachment_names=[a.artifact_name for a in normalized_attachments],
-        )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+    # THR-187 Slice B: message append + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker=speaker,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=normalized_attachments,
+                sent_from_task_id=sent_from_task_id,
             )
-            tokens_to_enqueue.append(inv.invocation_token)
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker=speaker, kind="message",
+                attachment_names=[a.artifact_name for a in normalized_attachments],
+            )
+            for name in addressed:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(inv.invocation_token)
 
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+        for token in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
     await _publish_thread_event(
         org, slug,
@@ -2348,28 +2372,31 @@ async def _post_agent_message(
     `addressed` (participants to mint REPLY for) excludes the speaker.
     """
     tokens_to_enqueue: list[str] = []
-    async with org.db_lock:
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=speaker,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=attachments,
-            sent_from_task_id=task_id,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=speaker, kind="message",
-            attachment_names=[a.artifact_name for a in attachments],
-        )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+    # THR-187 Slice B: message append + REPLY-invocation mint + enqueue is one
+    # atomic admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            seq = org.db.append_thread_message(
+                thread_id=thread_id, speaker=speaker,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=attachments,
+                sent_from_task_id=task_id,
             )
-            tokens_to_enqueue.append(inv.invocation_token)
+            org.db.increment_thread_turns_used(thread_id, by=1)
+            AuditLogger(org.db).log_thread_message_sent(
+                thread_id, seq=seq, speaker=speaker, kind="message",
+                attachment_names=[a.artifact_name for a in attachments],
+            )
+            for name in addressed:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+                )
+                tokens_to_enqueue.append(inv.invocation_token)
 
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+        for token in tokens_to_enqueue:
+            await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
     await _publish_thread_event(
         org, slug,

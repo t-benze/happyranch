@@ -31,6 +31,18 @@ run_python() {
 
 run_web() {
   echo -e "${GREEN}=== Web CI ===${NC}"
+  # Node 24 is the declared Web CI contract (.github/workflows/ci.yml uses
+  # setup-node node-version: 24). Fail fast on an off-contract Node rather
+  # than emitting unrelated test failures (e.g. the Node 24.14 Web Storage
+  # quirk that surfaces as localStorage/sessionStorage undefined on some
+  # hosts). GitHub CI remains authoritative.
+  local node_major
+  node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 'unknown')"
+  if [[ "${node_major}" != "24" ]]; then
+    echo -e "${RED}Web CI requires Node 24.x; found $(node -v 2>/dev/null || echo 'no node').${NC}" >&2
+    echo -e "${RED}Select Node 24 (e.g. 'nvm use 24') and re-run. GitHub CI (Node 24) remains authoritative.${NC}" >&2
+    exit 1
+  fi
   cd web
   npm ci
   echo -e "${YELLOW}--- Lint ---${NC}"

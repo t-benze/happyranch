@@ -5,6 +5,7 @@ import time as _time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from runtime.config import settings
 from runtime.daemon.dispatcher import Dispatcher
@@ -324,6 +325,19 @@ def create_app(state: DaemonState) -> FastAPI:
     app.state.daemon = state
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry
+
+    # THR-187 Slice B: map the per-org transfer-fence rejection to a clean 409
+    # conflict so any admission seam that surfaces it (enqueue_task → founder /
+    # thread / schedule / work-hour dispatch) fails explicitly instead of 500.
+    from runtime.portability.fence import TransferFenceHeld
+
+    @app.exception_handler(TransferFenceHeld)
+    async def _transfer_fence_handler(request: Request, exc: TransferFenceHeld):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": {"code": "transfer_in_progress", "message": str(exc)}},
+        )
+
 
     @app.middleware("http")
     async def _metrics_timing_middleware(request: Request, call_next):

@@ -6022,3 +6022,18 @@ class Database:
     @_synchronized
     def close(self) -> None:
         self._conn.close()
+
+    @_synchronized
+    def backup_to(self, dest_path: Path) -> None:
+        """Coordinated SQLite backup snapshot into ``dest_path``.
+
+        Uses the sqlite3 online-backup API so the snapshot is consistent even
+        under WAL, and never copies the ``-wal``/``-shm`` sidecars. The
+        destination is a self-contained database file.
+        """
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(dest_path))
+        try:
+            self._conn.backup(dest)
+        finally:
+            dest.close()

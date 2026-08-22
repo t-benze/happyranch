@@ -17,6 +17,7 @@ from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot
 from runtime.daemon.schedule_queue import ScheduleJob
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleStatus
+from runtime.portability.fence import TransferFenceHeld
 from runtime.orchestrator.schedule_rules import (
     next_schedule_occurrence,
     recurrence_until_exhausted,
@@ -171,7 +172,13 @@ async def schedule_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
             try:
-                schedule_due_schedules(org=org, now=now, startup=startup)
+                # THR-187 Slice B: the whole per-org firing pass (claim →
+                # enqueue) is one admission critical section so an export
+                # cannot acquire the fence mid-pass.
+                async with org.transfer_fence.admission():
+                    schedule_due_schedules(org=org, now=now, startup=startup)
+            except TransferFenceHeld:
+                continue
             except Exception:
                 logger.exception(
                     "schedule scheduling skipped for org %s",

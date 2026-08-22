@@ -100,6 +100,45 @@ happyranch orgs unload my-other-org
 For per-org commands, HappyRanch resolves the org from `--org <slug>`,
 `HAPPYRANCH_ORG_SLUG`, or the only org in the active runtime.
 
+## Relocating An Org (Org Portability)
+
+Relocation is a founder, CLI-only, current-v2 operation. It moves one
+**quiescent** org (no live tasks/sessions/jobs/invocations/dreams/work-hours and
+no armed or firing schedules) into an **unused** same-slug destination in
+another schema-v2 runtime that is **otherwise non-empty** (at least one other
+org already exists). The archive is plaintext and unsigned: mutating
+requests must acknowledge `trust_acknowledged: true`, and a checksum proves
+corruption, not sender identity.
+
+```bash
+# 1. Read-only readiness check (fix every blocker before continuing)
+happyranch orgs portability-preflight my-company
+
+# 2. Export (writes a data-only archive to an absolute path)
+happyranch orgs portability-export my-company --from-file /tmp/export.json
+#   /tmp/export.json: {"archive_path": "/abs/my-company.archive", "trust_acknowledged": true}
+
+# 3. Inspect the archive (optional)
+happyranch orgs portability-inspect my-company --from-file /tmp/inspect.json
+#   /tmp/inspect.json: {"archive_path": "/abs/my-company.archive"}
+
+# 4. Import into an unused same-slug destination in another runtime
+happyranch orgs portability-import my-company --from-file /tmp/import.json
+#   /tmp/import.json: {"archive_path": "/abs/my-company.archive",
+#                      "target_runtime": "/abs/another-runtime",
+#                      "trust_acknowledged": true}
+```
+
+The source org is never deleted or modified by export. Import never overwrites
+an existing slug, never runs migrated content, forces imported schedules
+inactive (`active=0`), and does not attach/rebind/rearm the imported org (that
+is a separate, later step). Receipts are recorded under the reserved
+`orgs/_archive` namespace; retrying the same archive digest is a no-op, while a
+different digest for the same slug is refused. Imports are serialized: one
+import per destination runtime + slug at a time — a concurrent import of the
+same slug is refused with `import_in_progress`, and different slugs or
+runtimes proceed independently.
+
 ## Next
 
 Go to [04 - Connect an Agentic CLI](04-connect-an-agentic-cli.md).

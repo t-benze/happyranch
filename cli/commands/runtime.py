@@ -201,6 +201,87 @@ def cmd_orgs_reconcile_portability(args: argparse.Namespace) -> None:
     print(f"request_hash: {body['request_hash']}")
 
 
+def _portability_mutation(slug: str, route: str, payload: dict) -> None:
+    """Shared body for the three Slice-B mutating/reading archive commands."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/orgs/{slug}/{route}", json=payload)
+    if not _ok(r):
+        return
+    return r.json()
+
+
+def _read_archive_request(path: str, *, kind: str) -> dict:
+    import json as _json
+    from cli._shared import require_absolute_payload_path
+
+    abs_path = require_absolute_payload_path(path, kind=kind)
+    try:
+        payload = _json.loads(Path(abs_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: cannot read {kind} request: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(payload, dict):
+        print(f"Error: {kind} request must be a JSON object", file=sys.stderr)
+        sys.exit(1)
+    if not payload.get("archive_path"):
+        print(f"Error: {kind} request must name an archive_path", file=sys.stderr)
+        sys.exit(1)
+    if not Path(payload["archive_path"]).is_absolute():
+        print(f"Error: {kind} archive_path must be absolute", file=sys.stderr)
+        sys.exit(1)
+    return payload
+
+
+def cmd_orgs_portability_export(args: argparse.Namespace) -> None:
+    """Archive-export a quiescent org (plaintext, unsigned; trust_acknowledged)."""
+    payload = _read_archive_request(args.request_path, kind="portability-export")
+    body = _portability_mutation(args.slug, "portability-export", payload)
+    if body is None:
+        return
+    print(f"exported: {body['slug']}")
+    print(f"archive_digest: {body['archive_digest']}")
+    print(f"archive_path: {body['archive_path']}")
+    print(f"members: {body['member_count']}")
+    for e in body.get("legacy_skills_quarantined") or []:
+        print(f"  quarantined legacy skill: {e['slug']}")
+
+
+def cmd_orgs_portability_inspect(args: argparse.Namespace) -> None:
+    """Inspect a CLI-local archive (read-only; reports manifest + digest)."""
+    payload = _read_archive_request(args.request_path, kind="portability-inspect")
+    body = _portability_mutation(args.slug, "portability-inspect", payload)
+    if body is None:
+        return
+    print(f"archive_digest: {body['archive_digest']}")
+    print(f"source_slug: {body['source_slug']}")
+    print(f"format_version: {body['format_version']}")
+    print(f"member_count: {body['member_count']}")
+    print(f"source_root_inventory: {', '.join(body['source_root_inventory'])}")
+    for e in body.get("legacy_skills_quarantined") or []:
+        print(f"  quarantined legacy skill: {e['slug']}")
+
+
+def cmd_orgs_portability_import(args: argparse.Namespace) -> None:
+    """Import-relocate an archive into an unused same-slug destination."""
+    payload = _read_archive_request(args.request_path, kind="portability-import")
+    if not payload.get("target_runtime"):
+        print("Error: portability-import request must name a target_runtime",
+              file=sys.stderr)
+        sys.exit(1)
+    body = _portability_mutation(args.slug, "portability-import", payload)
+    if body is None:
+        return
+    print(f"imported: {body['slug']} ({body['result']})")
+    print(f"archive_digest: {body['archive_digest']}")
+    print(f"schedules_deactivated: {body.get('schedules_deactivated')}")
+    for e in body.get("legacy_skills_quarantined") or []:
+        print(f"  quarantined legacy skill: {e['slug']}")
+
+
 
 def cmd_web(args: argparse.Namespace) -> None:
     """Open the HappyRanch web UI in the default browser."""
@@ -457,6 +538,39 @@ def register(sub) -> None:
         help="absolute path to the reconcile request JSON",
     )
     p_orgs_reconcile.set_defaults(func=cmd_orgs_reconcile_portability)
+
+    p_orgs_export = orgs_sub.add_parser(
+        "portability-export",
+        help="archive-export a quiescent org (plaintext/unsigned, trust_acknowledged)",
+    )
+    p_orgs_export.add_argument("slug")
+    p_orgs_export.add_argument(
+        "--from-file", dest="request_path", required=True,
+        help="absolute path to the export request JSON",
+    )
+    p_orgs_export.set_defaults(func=cmd_orgs_portability_export)
+
+    p_orgs_inspect = orgs_sub.add_parser(
+        "portability-inspect",
+        help="inspect a CLI-local archive (read-only)",
+    )
+    p_orgs_inspect.add_argument("slug")
+    p_orgs_inspect.add_argument(
+        "--from-file", dest="request_path", required=True,
+        help="absolute path to the inspect request JSON",
+    )
+    p_orgs_inspect.set_defaults(func=cmd_orgs_portability_inspect)
+
+    p_orgs_import = orgs_sub.add_parser(
+        "portability-import",
+        help="import-relocate an archive into an unused same-slug destination",
+    )
+    p_orgs_import.add_argument("slug")
+    p_orgs_import.add_argument(
+        "--from-file", dest="request_path", required=True,
+        help="absolute path to the import request JSON",
+    )
+    p_orgs_import.set_defaults(func=cmd_orgs_portability_import)
 
     p_web = sub.add_parser("web", help="Open the HappyRanch web UI in the default browser")
     p_web.add_argument(

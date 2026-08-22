@@ -212,72 +212,76 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                 "content_type": content_type,
             })
 
-    async with org.db_lock:
-        task_id = org.db.next_task_id()
+    # THR-187 Slice B: the durable insert + enqueue is one atomic admission
+    # critical section (transfer-fence reader lease) so an export cannot acquire
+    # the fence between the insert and the enqueue.
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            task_id = org.db.next_task_id()
 
-        # Re-check claimability INSIDE the lock — the pre-validation outside
-        # is a fast-path hint; the authoritative claim gate is the
-        # UNIQUE(storage_key) constraint enforced during the single
-        # transaction below.
-        if prevalidated_attachments:
-            store = _task_attachment_store(org)
-            attachment_params: list[dict] = []
-            for idx, pva in enumerate(prevalidated_attachments):
-                ref = pva["ref"]
-                path = store.path_for(ref.storage_key)
-                if not path.exists():
-                    # File disappeared between upload and link — reject.
+            # Re-check claimability INSIDE the lock — the pre-validation outside
+            # is a fast-path hint; the authoritative claim gate is the
+            # UNIQUE(storage_key) constraint enforced during the single
+            # transaction below.
+            if prevalidated_attachments:
+                store = _task_attachment_store(org)
+                attachment_params: list[dict] = []
+                for idx, pva in enumerate(prevalidated_attachments):
+                    ref = pva["ref"]
+                    path = store.path_for(ref.storage_key)
+                    if not path.exists():
+                        # File disappeared between upload and link — reject.
+                        raise HTTPException(
+                            status_code=404,
+                            detail={
+                                "code": "task_attachment_not_found",
+                                "storage_key": ref.storage_key,
+                            },
+                        )
+                    size_bytes = path.stat().st_size
+                    attachment_params.append({
+                        "ordinal": idx,
+                        "storage_key": ref.storage_key,
+                        "display_name": pva["display_name"],
+                        "size_bytes": size_bytes,
+                        "content_type": pva["content_type"],
+                    })
+
+                try:
+                    org.db.insert_task_with_attachments(
+                        TaskRecord(
+                            id=task_id,
+                            brief=body.brief,
+                            team=team,
+                            assigned_agent=assigned,
+                        ),
+                        attachments=attachment_params,
+                        uploaded_by=uploaded_by,
+                    )
+                except sqlite3.IntegrityError:
+                    # UNIQUE(storage_key) violation — another concurrent request
+                    # claimed this key within the serialized boundary.
                     raise HTTPException(
-                        status_code=404,
+                        status_code=409,
                         detail={
-                            "code": "task_attachment_not_found",
-                            "storage_key": ref.storage_key,
+                            "code": "attachment_already_claimed",
+                            "message": (
+                                "One or more attachments were claimed by another "
+                                "task after validation. Retry with a fresh upload."
+                            ),
                         },
                     )
-                size_bytes = path.stat().st_size
-                attachment_params.append({
-                    "ordinal": idx,
-                    "storage_key": ref.storage_key,
-                    "display_name": pva["display_name"],
-                    "size_bytes": size_bytes,
-                    "content_type": pva["content_type"],
-                })
-
-            try:
-                org.db.insert_task_with_attachments(
+            else:
+                org.db.insert_task(
                     TaskRecord(
                         id=task_id,
                         brief=body.brief,
                         team=team,
                         assigned_agent=assigned,
-                    ),
-                    attachments=attachment_params,
-                    uploaded_by=uploaded_by,
+                    )
                 )
-            except sqlite3.IntegrityError:
-                # UNIQUE(storage_key) violation — another concurrent request
-                # claimed this key within the serialized boundary.
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "attachment_already_claimed",
-                        "message": (
-                            "One or more attachments were claimed by another "
-                            "task after validation. Retry with a fresh upload."
-                        ),
-                    },
-                )
-        else:
-            org.db.insert_task(
-                TaskRecord(
-                    id=task_id,
-                    brief=body.brief,
-                    team=team,
-                    assigned_agent=assigned,
-                )
-            )
 
-    enqueue_task(state, org.slug, task_id)
+        enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": assigned}
 
 
@@ -783,51 +787,54 @@ async def resolve_escalation_in_process(
                     "status": task.status.value,
                 },
             )
-        async with org.db_lock:
-            audit = AuditLogger(org.db)
-            successor_id = org.db.next_task_id()
-            org.db.insert_task(TaskRecord(
-                id=successor_id,
-                brief=successor_brief,
-                team=task.team,
-                assigned_agent=task.assigned_agent,
-                parent_task_id=task.parent_task_id,
-                dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
-            ))
-            note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
-            if trimmed:
-                note_suffix += f" — {trimmed}"
-            # Canonical supersede tail: closes predecessor + revisit family,
-            # wakes parents, emits thread followups (THR-080 #4).
-            # Replaces the old manual _supersede_predecessor_locked + tail.
-            _close_predecessor_family_and_run_tail(
-                org, audit,
-                predecessor=task,
-                successor_root=successor_id,
-                pred_block_kind=pred_block_kind,
-                actor=actor,
-                note_suffix=note_suffix,
-                thread_id=thread_id,
-                close_revisit_family=True,
-            )
-            # Also log escalation_resolved for the audit trail.
-            audit.log_escalation_resolved(
-                task_id=task_id,
-                decision=decision,
-                rationale=rationale,
-                actor=actor,
-                thread_id=thread_id, resolution_path=resolution_path,
-            )
-            # Best-effort: consume any open notification rows not already
-            # consumed by _supersede_predecessor_locked inside the helper.
-            for nrow in org.db.list_open_notifications_for_task(task_id):
-                org.db.consume_escalation_notification(
-                    nrow["feishu_message_id"], consumed_by="superseded",
+        # THR-187 Slice B: the successor insert + enqueue is one atomic
+        # admission critical section (transfer-fence reader lease).
+        async with org.transfer_fence.admission():
+            async with org.db_lock:
+                audit = AuditLogger(org.db)
+                successor_id = org.db.next_task_id()
+                org.db.insert_task(TaskRecord(
+                    id=successor_id,
+                    brief=successor_brief,
+                    team=task.team,
+                    assigned_agent=task.assigned_agent,
+                    parent_task_id=task.parent_task_id,
+                    dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
+                ))
+                note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
+                if trimmed:
+                    note_suffix += f" — {trimmed}"
+                # Canonical supersede tail: closes predecessor + revisit family,
+                # wakes parents, emits thread followups (THR-080 #4).
+                # Replaces the old manual _supersede_predecessor_locked + tail.
+                _close_predecessor_family_and_run_tail(
+                    org, audit,
+                    predecessor=task,
+                    successor_root=successor_id,
+                    pred_block_kind=pred_block_kind,
+                    actor=actor,
+                    note_suffix=note_suffix,
+                    thread_id=thread_id,
+                    close_revisit_family=True,
                 )
-        # Post-tail specifics: kill jobs and enqueue the successor.
-        _kill_jobs_for_terminating_task(org.orchestrator, task_id)
-        if state.queue is not None:
-            state.queue.put_nowait(org.slug, successor_id)
+                # Also log escalation_resolved for the audit trail.
+                audit.log_escalation_resolved(
+                    task_id=task_id,
+                    decision=decision,
+                    rationale=rationale,
+                    actor=actor,
+                    thread_id=thread_id, resolution_path=resolution_path,
+                )
+                # Best-effort: consume any open notification rows not already
+                # consumed by _supersede_predecessor_locked inside the helper.
+                for nrow in org.db.list_open_notifications_for_task(task_id):
+                    org.db.consume_escalation_notification(
+                        nrow["feishu_message_id"], consumed_by="superseded",
+                    )
+            # Post-tail specifics: kill jobs and enqueue the successor.
+            _kill_jobs_for_terminating_task(org.orchestrator, task_id)
+            if state.queue is not None:
+                state.queue.put_nowait(org.slug, successor_id)
         return TaskStatus.SUPERSEDED.value
 
     # --- continue ---
@@ -845,23 +852,26 @@ async def resolve_escalation_in_process(
     # continue sends the task back to PENDING with the rationale on `note`.
     verb = "continued"
     resolved_note = f"{actor} {verb}: {trimmed}" if trimmed else f"{actor} {verb}"
-    async with org.db_lock:
-        new_status = TaskStatus.PENDING
-        org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
-        AuditLogger(org.db).log_escalation_resolved(
-            task_id=task_id, decision=decision, rationale=rationale,
-            actor=actor, thread_id=thread_id, resolution_path=resolution_path,
-        )
-        # Best-effort: mark any open notification rows for this task
-        # consumed, so they don't dangle.
-        for nrow in org.db.list_open_notifications_for_task(task_id):
-            org.db.consume_escalation_notification(
-                nrow["feishu_message_id"], consumed_by="cli-fallback",
+    # THR-187 Slice B: the PENDING transition + re-enqueue is one atomic
+    # admission critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            new_status = TaskStatus.PENDING
+            org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
+            AuditLogger(org.db).log_escalation_resolved(
+                task_id=task_id, decision=decision, rationale=rationale,
+                actor=actor, thread_id=thread_id, resolution_path=resolution_path,
             )
-    # Re-enqueue self. The manager's next step sees the rationale via the
-    # escalation-resolved prompt header.
-    if state.queue is not None:
-        state.queue.put_nowait(org.slug, task_id)
+            # Best-effort: mark any open notification rows for this task
+            # consumed, so they don't dangle.
+            for nrow in org.db.list_open_notifications_for_task(task_id):
+                org.db.consume_escalation_notification(
+                    nrow["feishu_message_id"], consumed_by="cli-fallback",
+                )
+        # Re-enqueue self. The manager's next step sees the rationale via the
+        # escalation-resolved prompt header.
+        if state.queue is not None:
+            state.queue.put_nowait(org.slug, task_id)
     return new_status.value
 
 
@@ -1289,80 +1299,83 @@ async def revisit_from_notification(
         if session_timeout_seconds is not None
         else predecessor.session_timeout_seconds
     )
-    async with org.db_lock:
-        new_id = org.db.next_task_id()
-        # Track family tasks closed during the db lock so tail handling
-        # (parent-wake, thread-followup) can be applied after release.
-        family_closed: list[str] = []
-        org.db.insert_task(TaskRecord(
-            id=new_id,
-            brief=predecessor.brief,
-            team=predecessor.team,
-            assigned_agent=predecessor.assigned_agent,
-            status=TaskStatus.PENDING,
-            parent_task_id=None,
-            revisit_of_task_id=predecessor.id,
-            session_timeout_seconds=new_timeout,
-        ))
-        audit = AuditLogger(org.db)
-        audit.log_revisit_of(
-            task_id=new_id,
-            predecessor_root=predecessor.id,
-            flagged=task_id,
-            cascade=cascade,
-            prior_status=prior_status,
-            founder_note=founder_note,
-            actor=actor,
-        )
-        audit.log_revisit_spawned(
-            predecessor_task_id=predecessor.id, new_root=new_id,
-        )
-        # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
-        # auto-resolved to the terminal SUPERSEDED — block_kind
-        # cleared, audit citing the new continuation root (the maker-checker
-        # evidence). It is NOT re-enqueued (that would spawn a wasted manager
-        # session); parent-wake is preserved below. Distinct from the founder's
-        # manual `resolve-escalation continue`, which intentionally re-runs work.
-        if prior_status in ("blocked-escalated", "blocked-delegated"):
-            prior_block_kind = (
-                "escalated" if prior_status == "blocked-escalated" else "delegated"
-            )
-            _supersede_predecessor_locked(
-                org, audit,
-                predecessor_id=predecessor.id,
-                successor_root=new_id,
-                prior_block_kind=prior_block_kind,
+    # THR-187 Slice B: revisit insert + enqueue is one atomic admission
+    # critical section (transfer-fence reader lease).
+    async with org.transfer_fence.admission():
+        async with org.db_lock:
+            new_id = org.db.next_task_id()
+            # Track family tasks closed during the db lock so tail handling
+            # (parent-wake, thread-followup) can be applied after release.
+            family_closed: list[str] = []
+            org.db.insert_task(TaskRecord(
+                id=new_id,
+                brief=predecessor.brief,
+                team=predecessor.team,
+                assigned_agent=predecessor.assigned_agent,
+                status=TaskStatus.PENDING,
+                parent_task_id=None,
+                revisit_of_task_id=predecessor.id,
+                session_timeout_seconds=new_timeout,
+            ))
+            audit = AuditLogger(org.db)
+            audit.log_revisit_of(
+                task_id=new_id,
+                predecessor_root=predecessor.id,
+                flagged=task_id,
+                cascade=cascade,
+                prior_status=prior_status,
+                founder_note=founder_note,
                 actor=actor,
-                note_suffix=founder_note,
             )
-            # THR-046 msg127: broader revisit-family closure — also supersede
-            # eligible sibling/ancestor revisits in the same revisit family.
-            for family_task in _collect_eligible_revisit_family(
-                org,
-                explicit_predecessor_id=predecessor.id,
-                successor_root=new_id,
-            ):
-                family_block_kind = _eligible_supersede_block_kind(org, family_task)
+            audit.log_revisit_spawned(
+                predecessor_task_id=predecessor.id, new_root=new_id,
+            )
+            # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
+            # auto-resolved to the terminal SUPERSEDED — block_kind
+            # cleared, audit citing the new continuation root (the maker-checker
+            # evidence). It is NOT re-enqueued (that would spawn a wasted manager
+            # session); parent-wake is preserved below. Distinct from the founder's
+            # manual `resolve-escalation continue`, which intentionally re-runs work.
+            if prior_status in ("blocked-escalated", "blocked-delegated"):
+                prior_block_kind = (
+                    "escalated" if prior_status == "blocked-escalated" else "delegated"
+                )
                 _supersede_predecessor_locked(
                     org, audit,
-                    predecessor_id=family_task.id,
+                    predecessor_id=predecessor.id,
                     successor_root=new_id,
-                    prior_block_kind=family_block_kind,
+                    prior_block_kind=prior_block_kind,
                     actor=actor,
                     note_suffix=founder_note,
                 )
-                family_closed.append(family_task.id)
-        # When the founder revisits via CLI, any open failure notification row
-        # for this task is implicitly resolved — consume it with cli-fallback
-        # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
-        if actor == "cli":
-            for nrow in org.db.list_open_notifications_for_task(task_id):
-                if nrow.get("kind") == "failure":
-                    org.db.consume_escalation_notification(
-                        nrow["feishu_message_id"], consumed_by="cli-fallback",
+                # THR-046 msg127: broader revisit-family closure — also supersede
+                # eligible sibling/ancestor revisits in the same revisit family.
+                for family_task in _collect_eligible_revisit_family(
+                    org,
+                    explicit_predecessor_id=predecessor.id,
+                    successor_root=new_id,
+                ):
+                    family_block_kind = _eligible_supersede_block_kind(org, family_task)
+                    _supersede_predecessor_locked(
+                        org, audit,
+                        predecessor_id=family_task.id,
+                        successor_root=new_id,
+                        prior_block_kind=family_block_kind,
+                        actor=actor,
+                        note_suffix=founder_note,
                     )
+                    family_closed.append(family_task.id)
+            # When the founder revisits via CLI, any open failure notification row
+            # for this task is implicitly resolved — consume it with cli-fallback
+            # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
+            if actor == "cli":
+                for nrow in org.db.list_open_notifications_for_task(task_id):
+                    if nrow.get("kind") == "failure":
+                        org.db.consume_escalation_notification(
+                            nrow["feishu_message_id"], consumed_by="cli-fallback",
+                        )
 
-    enqueue_task(state, org.slug, new_id)
+        enqueue_task(state, org.slug, new_id)
 
     # Preserve parent-wake: the superseded predecessor just reached a terminal,
     # so a delegated parent (if any) must learn its branch is done. Mirrors the
