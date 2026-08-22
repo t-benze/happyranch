@@ -30,6 +30,21 @@ from runtime.portability.archive import (
     LegacySkillEvidence,
     sha256_bytes,
 )
+from runtime.portability.roots import resolve_legacy_skill_references
+
+
+_VALID_SKILL_YAML = (
+    "description: QA\n"
+    "id: hr:qa-scroll-test\n"
+    "name: QA\n"
+    "owner: operator\n"
+    "policy_class: standard_operational\n"
+    "slug: qa-scroll-test\n"
+    "source: user_authored\n"
+    "status: enabled\n"
+    "version: 0.1.0\n"
+    "when_to_use: ''\n"
+)
 
 
 def _write(path: Path, content: str) -> Path:
@@ -193,7 +208,7 @@ def test_gather_legacy_skill_evidence(tmp_path: Path) -> None:
     skills = tmp_path / "skills"
     pkg = skills / "qa-scroll-test"
     pkg.mkdir(parents=True)
-    _write(pkg / "SKILL.md", "# QA\n\nbody\n")
+    _write(pkg / "SKILL.md", "# QA\n\nSee [the guide](references/guide.md).\n")
     _write(pkg / "skill.yaml",
            "description: QA\nid: hr:qa-scroll-test\nname: QA\nowner: o\n"
            "policy_class: standard_operational\nslug: qa-scroll-test\n"
@@ -297,3 +312,87 @@ def test_canonical_v2_fingerprint_differs_from_old_shape(tmp_path: Path) -> None
     old_fp = compute_v2_fingerprint(conn)
     conn.close()
     assert old_fp != canonical_v2_fingerprint()
+
+
+# ── Legacy-skill local reference parsing/resolution (repair) ───────────────
+
+
+@pytest.mark.parametrize(
+    "md_body, expect_reason",
+    [
+        ("# QA\n\n[leak](file:references/guide.md)\n", "file: URI"),
+        ("# QA\n\n[leak](/etc/passwd)\n", "absolute path"),
+        ("# QA\n\n[leak](../other/secret.md)\n", "parent-traversal"),
+        ("# QA\n\n[leak](../../org/teams.yaml)\n", "parent-traversal"),
+        ("# QA\n\n[leak](references/missing.md)\n", "missing/unhashed"),
+        ("# QA\n\n[leak](..\\other\\secret.md)\n", "backslash"),
+    ],
+    ids=["file-uri", "absolute", "dotdot", "cross-package", "missing", "backslash"],
+)
+def test_gather_legacy_skill_evidence_rejects_unsafe_reference(
+    tmp_path: Path, md_body: str, expect_reason: str,
+) -> None:
+    """A local reference that escapes the package (file:/absolute/../backslash)
+    or targets a missing/unhashed file is refused — the package is gathered but
+    marked non-valid (never carried as valid quarantine)."""
+    skills = tmp_path / "skills"
+    pkg = skills / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(pkg / "SKILL.md", md_body)
+    _write(pkg / "skill.yaml", _VALID_SKILL_YAML)
+    _write(pkg / "references" / "guide.md", "# Guide\n")
+    evidence = gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+    assert len(evidence) == 1
+    assert evidence[0].validation_result != "valid"
+    assert expect_reason in evidence[0].validation_result
+
+
+def test_gather_legacy_skill_evidence_remote_and_fragment_inert(tmp_path: Path) -> None:
+    """Remote URLs (http/https/mailto) and fragment-only anchors are inert —
+    they are not local references and do not reject a valid package."""
+    skills = tmp_path / "skills"
+    pkg = skills / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(
+        pkg / "SKILL.md",
+        "# QA\n\nSee [remote](https://example.com/x), [mail](mailto:a@b.c), "
+        "[anchor](#sec), and [guide](references/guide.md).\n",
+    )
+    _write(pkg / "skill.yaml", _VALID_SKILL_YAML)
+    _write(pkg / "references" / "guide.md", "# Guide\n")
+    evidence = gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+    assert evidence[0].validation_result == "valid"
+    assert evidence[0].references_resolved == ["references/guide.md"]
+
+
+def test_gather_legacy_skill_evidence_rejects_yaml_file_uri(tmp_path: Path) -> None:
+    """A file: URI embedded in a skill.yaml string value is a local reference
+    and is refused (validation_result != valid)."""
+    skills = tmp_path / "skills"
+    pkg = skills / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(pkg / "SKILL.md", "# QA\n\nbody\n")
+    _write(pkg / "skill.yaml", _VALID_SKILL_YAML + "extra_ref: file:///etc/passwd\n")
+    evidence = gather_legacy_skill_evidence(skills, ["qa-scroll-test"])
+    assert evidence[0].validation_result != "valid"
+    assert "file: URI" in evidence[0].validation_result
+
+
+def test_resolve_legacy_skill_references_direct(tmp_path: Path) -> None:
+    """The resolver returns only normalized same-package, listed references and
+    raises on escape/missing targets."""
+    pkg = tmp_path / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    _write(pkg / "SKILL.md", "# QA\n\n[a](references/a.md) [b](assets/b.svg)\n")
+    _write(pkg / "skill.yaml", _VALID_SKILL_YAML)
+    _write(pkg / "references" / "a.md", "# A\n")
+    _write(pkg / "assets" / "b.svg", "<svg/>\n")
+    members = {"SKILL.md", "skill.yaml", "references/a.md", "assets/b.svg"}
+    assert resolve_legacy_skill_references(pkg, members) == [
+        "assets/b.svg", "references/a.md",
+    ]
+    # missing target
+    with pytest.raises(ValueError, match="missing/unhashed"):
+        resolve_legacy_skill_references(
+            pkg, {"SKILL.md", "skill.yaml", "references/a.md"},
+        )

@@ -267,11 +267,16 @@ def gather_legacy_skill_evidence(
     package identity is independently re-validated against the canonical
     legacy-skill contract (``roots._validate_legacy_skill_package``) and the
     ``validation_result`` reflects that verdict ("valid" or the failure reason);
-    local reference targets (``references/`` + ``assets/`` plain filenames) are
-    resolved against the package's own member list. No package content is
-    executed or materialized.
+    the package's actual local Markdown/YAML references are parsed and resolved
+    against the member set (``roots.resolve_legacy_skill_references``) — only
+    normalized same-package, manifest-listed files are permitted, and any
+    ``file:``/absolute/``..``/missing reference is refused. No package content
+    is executed or materialized.
     """
-    from runtime.portability.roots import _validate_legacy_skill_package
+    from runtime.portability.roots import (
+        _validate_legacy_skill_package,
+        resolve_legacy_skill_references,
+    )
 
     evidence: list[LegacySkillEvidence] = []
     for slug in sorted(package_slugs):
@@ -286,10 +291,12 @@ def gather_legacy_skill_evidence(
         yaml_bytes = (pkg / "skill.yaml").read_bytes()
         metadata_hash = sha256_bytes(yaml_bytes)
         content_hash = sha256_bytes(md_bytes)
-        references_resolved = sorted(
-            rel for rel in member_hashes
-            if rel.startswith("references/") or rel.startswith("assets/")
-        )
+        if ok:
+            references_resolved = resolve_legacy_skill_references(
+                pkg, set(member_hashes),
+            )
+        else:
+            references_resolved = []
         evidence.append(LegacySkillEvidence(
             slug=slug,
             metadata_hash=metadata_hash,

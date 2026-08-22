@@ -776,7 +776,11 @@ duplicate names, symlink/hardlink/device/FIFO/nonregular rejection, SQLite
 integrity + FK checks, B2 custom-skill artifact-key/content-hash cross
 references (recomputed and **bound to the manifest evidence**), and legacy-skill
 identity/member/reference constraints (recomputed and **bound to the manifest
-evidence**). The staged
+evidence**). Each legacy skill's local Markdown/YAML references are parsed and
+resolved against the package's own member set — only normalized same-package,
+manifest-listed files are permitted; ``file:`` URIs, absolute paths, ``..``
+traversal, backslash paths, and missing/unhashed targets are refused; HTTP(S)
+and fragment-only anchors are inert. The staged
 payload is revalidated against the exact Slice-A allow-list BEFORE any SQLite
 is opened or any byte published — a self-consistent hostile archive carrying
 ``payload/credentials``, an unknown root, task output, workspace siblings, or a
@@ -797,10 +801,12 @@ A narrow receipt is persisted
 under the reserved ``orgs/_archive`` namespace recording archive digest + slug
 + result + quarantined legacy-skill evidence. Durable import identity (digest +
 slug + operation) is prepared in a pending marker **BEFORE** publish, then the
-no-replace publish, then receipt finalize: a crash after preparation but before
-publish leaves no destination and no false success; a crash between publish and
-receipt finalize leaves the published org plus the marker, and an exact
-digest+slug retry
+no-replace publish, then receipt finalize; the pending identity is **reconciled
+before the destination-existence branch**, so a crash after preparation but
+before publish leaves no destination and no false success (a different digest
+conflicts even though the destination is absent, and never overwrites/reuses
+the marker or publishes); a crash between publish and receipt finalize leaves
+the published org plus the marker, and an exact digest+slug retry
 converges by writing the missing receipt WITHOUT overwriting the org (a
 different digest conflicts); an exact digest+slug retry with a finalized
 receipt is idempotent. Legacy skills are carried only as

@@ -927,3 +927,199 @@ def test_export_capture_runs_off_event_loop(tmp_path: Path) -> None:
 
     assert capture_thread and loop_thread
     assert capture_thread[0] is not loop_thread[0]
+
+
+# ── Repair: pending-marker reconciliation BEFORE destination existence ─────
+
+
+def test_import_pending_marker_no_dest_different_digest_conflicts(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A pre-publish crash leaves a pending marker + NO destination. A retry
+    with a DIFFERENT digest for the same slug must conflict deterministically
+    (reconciled BEFORE the destination branch) — it must not overwrite/reuse
+    the marker or publish."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+
+    import runtime.daemon.routes.portability as proutes
+    real_publish = proutes._publish_no_replace
+    monkeypatch.setattr(
+        proutes, "_publish_no_replace",
+        lambda payload_dir, dest: (_ for _ in ()).throw(OSError("simulated pre-publish crash")),
+    )
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    monkeypatch.setattr(proutes, "_publish_no_replace", real_publish)
+
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    assert pending_path.exists()
+    pending = json.loads(pending_path.read_text())
+    assert pending["digest"] == digest
+    assert not (target / "orgs" / "alpha").exists()  # no destination created
+
+    # A different archive (different digest) for the same slug now conflicts
+    # even though the destination is absent.
+    (state.orgs["alpha"].root / "talks").mkdir(parents=True, exist_ok=True)
+    (state.orgs["alpha"].root / "talks" / "TALK-2.md").write_text("# Talk 2\n")
+    archive2 = tmp_path / "alpha-2.archive"
+    r_exp = client.post(
+        "/api/v1/orgs/alpha/portability-export",
+        json={"archive_path": str(archive2), "trust_acknowledged": True},
+    )
+    assert r_exp.status_code == 200, r_exp.text
+    assert r_exp.json()["archive_digest"] != digest
+
+    r2 = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive2),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r2.status_code == 409
+    assert r2.json()["detail"]["code"] == "digest_conflict"
+    # Marker unchanged (digest X) and no destination was published.
+    assert json.loads(pending_path.read_text())["digest"] == digest
+    assert not (target / "orgs" / "alpha").exists()
+    # No receipt written.
+    assert not (target / "orgs" / "_archive" / "import-alpha.json").exists()
+
+
+def test_import_pending_marker_no_dest_same_digest_resumes(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A pre-publish crash leaves a pending marker + NO destination. A retry of
+    the SAME digest+slug resumes (converges) and publishes exactly once."""
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+
+    import runtime.daemon.routes.portability as proutes
+    real_publish = proutes._publish_no_replace
+    monkeypatch.setattr(
+        proutes, "_publish_no_replace",
+        lambda payload_dir, dest: (_ for _ in ()).throw(OSError("simulated pre-publish crash")),
+    )
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+    r1 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r1.status_code == 500
+    monkeypatch.setattr(proutes, "_publish_no_replace", real_publish)
+
+    pending_path = target / "orgs" / "_archive" / ".pending-import-alpha.json"
+    assert pending_path.exists()
+    assert not (target / "orgs" / "alpha").exists()
+
+    r2 = client.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["result"] == "imported"
+    assert (target / "orgs" / "alpha" / "org" / "teams.yaml").is_file()
+    # Marker finalized away; a final receipt exists.
+    assert not pending_path.exists()
+    assert (target / "orgs" / "_archive" / "import-alpha.json").exists()
+
+
+def test_import_adversarial_legacy_reference_refused_no_mutation(
+    tmp_path: Path,
+) -> None:
+    """A self-consistent archive whose legacy skill's SKILL.md carries an
+    escaping ``file:`` reference is refused at import (the manifest claims the
+    skill valid, but the extracted bytes resolve the unsafe reference) with no
+    target / receipt / queue mutation."""
+    from runtime.infrastructure.database import Database
+    from runtime.portability.archive import (
+        ARCHIVE_FORMAT_VERSION,
+        ARCHIVE_POLICY_VERSION,
+        ArchiveMember,
+        LegacySkillEvidence,
+        Manifest,
+        build_archive,
+        sha256_bytes,
+        sha256_file,
+    )
+    from runtime.portability.capture import canonical_v2_fingerprint
+
+    # A real current-v2 DB.
+    db = Database(tmp_path / "src.db")
+    db.backup_to(tmp_path / "happyranch.db")
+    db.close()
+
+    teams = tmp_path / "org" / "teams.yaml"
+    teams.parent.mkdir(parents=True)
+    teams.write_text("teams: {}\n")
+
+    pkg = tmp_path / "skills" / "qa-scroll-test"
+    pkg.mkdir(parents=True)
+    skill_md = pkg / "SKILL.md"
+    skill_md.write_text("# QA\n\n[leak](file:references/guide.md)\n")
+    skill_yaml = pkg / "skill.yaml"
+    skill_yaml.write_text(_VALID_SKILL_YAML)
+    guide = pkg / "references" / "guide.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text("# Guide\n")
+
+    db_file = tmp_path / "happyranch.db"
+    payload = {
+        "payload/org/teams.yaml": teams,
+        "payload/happyranch.db": db_file,
+        "payload/skills/qa-scroll-test/SKILL.md": skill_md,
+        "payload/skills/qa-scroll-test/skill.yaml": skill_yaml,
+        "payload/skills/qa-scroll-test/references/guide.md": guide,
+    }
+    members = [
+        ArchiveMember(path=p, size=Path(f).stat().st_size, sha256=sha256_file(f))
+        for p, f in sorted(payload.items())
+    ]
+    manifest = Manifest(
+        format_version=ARCHIVE_FORMAT_VERSION,
+        policy_version=ARCHIVE_POLICY_VERSION,
+        source_slug="alpha",
+        v2_fingerprint=canonical_v2_fingerprint(),
+        members=members,
+        source_root_inventory=["org", "happyranch.db", "skills"],
+        included_roots={"org": 1, "happyranch.db": 1, "skills": 3},
+        excluded_entries=[],
+        rejected_entries=[],
+        legacy_skills=[LegacySkillEvidence(
+            slug="qa-scroll-test",
+            metadata_hash=sha256_bytes(skill_yaml.read_bytes()),
+            content_hash=sha256_bytes(skill_md.read_bytes()),
+            member_hashes={
+                "SKILL.md": sha256_file(skill_md),
+                "skill.yaml": sha256_file(skill_yaml),
+                "references/guide.md": sha256_file(guide),
+            },
+            validation_result="valid",
+            references_resolved=[],
+        )],
+    )
+    archive = tmp_path / "hostile.archive"
+    build_archive(archive, manifest, payload)
+
+    state = _make_source_state(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    r = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] in ("invalid_archive_content", "invalid_archive")
+    # No target / receipt / queue mutation.
+    assert not (target / "orgs" / "alpha").exists()
+    assert not (target / "orgs" / "_archive" / "import-alpha.json").exists()

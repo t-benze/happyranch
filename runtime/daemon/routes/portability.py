@@ -802,6 +802,7 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
     # the destination, which would otherwise be misread as a collision).
     receipt_dir = target.orgs_dir / _IMPORT_RECEIPT_DIR
     receipt_path = receipt_dir / f"import-{slug}.json"
+    pending_path = receipt_dir / f".pending-import-{slug}.json"
     if receipt_path.exists():
         try:
             existing = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -824,61 +825,66 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
             },
         )
 
-    # Recovery + collision: the destination name may already be occupied.
-    # (a) A finalized receipt was already handled above (idempotency).
-    # (b) If the destination was published but the receipt write never
-    #     finalized (crash between publish and finalize), the pending marker
-    #     (written BEFORE publish) records the digest of the archive that
-    #     produced it. A retry of the SAME digest+slug converges — it
-    #     revalidates and writes the receipt WITHOUT overwriting the published
-    #     org (verified against the marker's digest AND the published org's
-    #     teams.yaml so a stale marker can never claim an unrelated dest).
-    #     A different digest conflicts.
+    # Reconcile the pending receipt identity BEFORE branching on destination
+    # existence. A pending marker records the durable in-flight import identity
+    # (slug + digest + operation) written before publish. A DIFFERENT digest for
+    # the same slug must conflict whether the destination is absent (a crash
+    # after identity preparation but before publish) or present (a crash after
+    # publish but before finalize) — it must never overwrite/reuse the marker
+    # or publish. Only an exact digest+slug may resume/converge.
     dest = target.orgs_dir / slug
-    pending_path = receipt_dir / f".pending-import-{slug}.json"
+    pending = _read_json(pending_path)
+    pending_digest = pending.get("digest") if pending.get("slug") == slug else None
+    if pending_digest is not None and pending_digest != parsed.digest:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "digest_conflict",
+                "slug": slug,
+                "existing_digest": pending_digest,
+                "new_digest": parsed.digest,
+            },
+        )
+
     if os.path.lexists(str(dest)):
-        pending = _read_json(pending_path)
-        pending_digest = pending.get("digest")
-        if pending.get("slug") == slug and pending_digest is not None:
-            if pending_digest == parsed.digest:
-                # Converge only if the destination is a published org (has the
-                # v2 teams.yaml marker); otherwise the destination belongs to a
-                # competitor and must not be claimed.
-                if not (dest / "org" / "teams.yaml").is_file():
-                    raise HTTPException(
-                        status_code=409,
-                        detail={"code": "destination_occupied", "slug": slug},
-                    )
-                _write_receipt(
-                    receipt_path,
-                    slug=slug,
-                    digest=parsed.digest,
-                    archive_path=str(archive_path),
-                    operation_id=pending.get("operation_id", ""),
-                    deactivated=None,
-                    legacy_evidence=parsed.manifest.legacy_skills,
-                    recovery=True,
+        if pending_digest is not None:
+            # Same digest + slug, destination present (published but unfinalized
+            # crash): converge by writing the missing receipt WITHOUT overwriting
+            # the published org. Verify the destination is a published v2 org
+            # (teams.yaml) so a stale marker can never claim a competitor's dest.
+            if not (dest / "org" / "teams.yaml").is_file():
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "destination_occupied", "slug": slug},
                 )
-                pending_path.unlink(missing_ok=True)
-                return {
-                    "slug": slug,
-                    "archive_digest": parsed.digest,
-                    "result": "imported",
-                    "recovered": True,
-                }
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "digest_conflict",
-                    "slug": slug,
-                    "existing_digest": pending_digest,
-                    "new_digest": parsed.digest,
-                },
+            _write_receipt(
+                receipt_path,
+                slug=slug,
+                digest=parsed.digest,
+                archive_path=str(archive_path),
+                operation_id=pending.get("operation_id", ""),
+                deactivated=None,
+                legacy_evidence=parsed.manifest.legacy_skills,
+                recovery=True,
             )
+            pending_path.unlink(missing_ok=True)
+            return {
+                "slug": slug,
+                "archive_digest": parsed.digest,
+                "result": "imported",
+                "recovered": True,
+            }
+        # Destination occupied without a matching pending marker → collision.
         raise HTTPException(
             status_code=409,
             detail={"code": "destination_occupied", "slug": slug},
         )
+
+    # Destination absent: fresh import. If a pending marker carried the same
+    # digest (a pre-publish crash left identity but no destination), the import
+    # resumes here and rewrites the marker with a fresh operation id during
+    # publish prep — same digest, so no conflict, and no destination was ever
+    # created by the prior attempt.
 
     op_id = uuid.uuid4().hex
     staging = target.orgs_dir / "_pending" / op_id
