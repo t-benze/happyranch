@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,9 +27,11 @@ from runtime.orchestrator.workspace_adapters import (
     _compute_dir_hash,
 )
 from runtime.platform.isolation import (
+    _LinuxPlatformIsolation,
     PlatformIsolation,
     PlatformIsolationError,
     _MacOSPlatformIsolation,
+    detect_platform_isolation as _production_detect,
 )
 # Use module-attribute access so the conftest monkeypatch on
 # runtime.platform.isolation.detect_platform_isolation takes effect
@@ -117,6 +120,67 @@ class TestPlatformDetection:
         """detect_platform_isolation returns a working implementation."""
         iso = isolation.detect_platform_isolation()
         assert isinstance(iso, PlatformIsolation)
+
+    def test_production_detector_supports_linux(self):
+        """Linux selects the explicit production Linux implementation."""
+        with patch.object(isolation.sys, "platform", "linux"):
+            assert isinstance(_production_detect(), _LinuxPlatformIsolation)
+
+    def test_production_detector_supports_darwin(self):
+        """macOS continues to select its explicit implementation."""
+        with patch.object(isolation.sys, "platform", "darwin"):
+            assert isinstance(_production_detect(), _MacOSPlatformIsolation)
+
+    def test_production_detector_rejects_unknown_platform(self):
+        """Unknown platforms fail closed without a POSIX fallback."""
+        with patch.object(isolation.sys, "platform", "win32"):
+            with pytest.raises(PlatformIsolationError) as exc_info:
+                _production_detect()
+        assert exc_info.value.code == "unsupported_platform"
+
+
+class TestLinuxPlatformOperations:
+    """Evidence against the real Linux same-owner adapter."""
+
+    def test_relative_link_validation_rejects_external_substitution(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        canonical_root = tmp_path / "canonical"
+        expected = canonical_root / "pkg"
+        expected.mkdir(parents=True)
+        external = tmp_path / "external"
+        external.mkdir()
+        link = tmp_path / "workspace" / "skill"
+        link.parent.mkdir()
+
+        iso.create_relative_symlink(
+            Path(os.path.relpath(expected, link.parent)), link,
+        )
+        assert iso.verify_workspace_link(link, expected, canonical_root)
+
+        link.unlink()
+        os.symlink(os.path.relpath(external, link.parent), link)
+        assert not iso.verify_workspace_link(link, expected, canonical_root)
+
+    def test_launches_directly_with_merged_environment(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        proc = iso.launch_executor(
+            [sys.executable, "-c", "import os; print(os.environ['HR_TEST_MARKER'])"],
+            cwd=tmp_path,
+            env={"HR_TEST_MARKER": "linux-launch-ok"},
+        )
+        stdout, stderr = proc.communicate(timeout=10)
+        assert proc.returncode == 0, stderr
+        assert stdout.strip() == "linux-launch-ok"
+
+    def test_launch_error_is_named_and_fail_closed(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        with pytest.raises(PlatformIsolationError) as exc_info:
+            iso.launch_executor(
+                [str(tmp_path / "missing-executor")],
+                cwd=tmp_path,
+                env={},
+            )
+        assert exc_info.value.code == "executor_launch_failed"
 
 
 class TestSymlinkOperations:
@@ -802,13 +866,13 @@ class TestImportSeamCoverage:
         # path through canonical_store → detect_platform_isolation used
         # the scoped double and did NOT raise PlatformIsolationError.
 
-    def test_real_detector_still_rejects_non_darwin(self):
-        """The real detect_platform_isolation rejects non-darwin platforms.
+    def test_real_detector_supports_only_explicit_platforms(self):
+        """The detector supports darwin/linux and rejects everything else.
 
         Even though the conftest monkeypatches detect_platform_isolation
         in every runtime.* module, the original function (captured as
         _real_detect in conftest before patching) must still reject
-        non-darwin with the named error.  We verify this by auditing
+        unknown platforms with the named error. We verify this by auditing
         the production source code for the invariant checks.
 
         This is a code-audit test, not a runtime test — the real function
@@ -825,10 +889,12 @@ class TestImportSeamCoverage:
             "'unsupported_platform' error code — has someone removed it?"
         )
 
-        # 2. The production code must check sys.platform == darwin
+        # 2. The production code must check both supported platforms explicitly.
         assert 'sys.platform == "darwin"' in src, (
-            "Production isolation module must check sys.platform == darwin "
-            "— has someone added a Linux fallback?"
+            "Production isolation module must check sys.platform == darwin"
+        )
+        assert 'sys.platform == "linux"' in src, (
+            "Production isolation module must check sys.platform == linux"
         )
 
         # 3. The production code must raise PlatformIsolationError on

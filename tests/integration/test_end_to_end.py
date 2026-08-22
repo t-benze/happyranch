@@ -37,9 +37,26 @@ def _register_runtime(global_base: str, container: Path) -> None:
 
 
 def _write_agent_config(runtime: Path, agent: str, executor: str) -> None:
-    workspace = runtime / "workspaces" / agent
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "agent.yaml").write_text(f"repos: {{}}\nexecutor: {executor}\n")
+    """Write current AgentDef frontmatter (agent.yaml is legacy-only)."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+    agents_dir = runtime / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    agent_def = AgentDef(
+        name=agent,
+        team="engineering",
+        role="manager" if agent == "engineering_head" else "worker",
+        executor=executor,
+        allow_rules=(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=None,
+        system_prompt=f"You are {agent}.",
+        description="Integration test agent.",
+        model=None,
+    )
+    (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
 
 
 def _write_plan(path: Path, body: str) -> None:

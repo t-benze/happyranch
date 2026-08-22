@@ -5,18 +5,9 @@ the local daemon, CLI, and web UI.
 
 ## What You Need
 
-<!--
-MAINTAINER NOTE (engineering reconciliation, TASK-2738):
-- Node.js floor of 24 is set per founder ruling THR-089 (msg35, decision 1).
-- CODE DISCREPANCY at time of writing: the repo has no `engines` field in
-  `web/package.json` and no `.nvmrc`; the only Node pin is the web CI job in
-  `.github/workflows/ci.yml` (`node-version: 20`). Founder to reconcile the CI
-  pin (20) with the documented floor (24). Manual states 24 per the ruling.
-- Python floor verified against `pyproject.toml`: `requires-python = ">=3.12,<3.15"`.
--->
-
 | Requirement | Minimum / status | Why it matters |
 |---|---|---|
+| Operating system | macOS or Linux | Runs canonical skill delivery and executor sessions; Windows is unsupported |
 | Python | 3.12–3.14 | Runs the HappyRanch daemon and CLI |
 | uv | Recent version | Installs Python dependencies into the local environment |
 | Git | Recent version | Clones the repo and lets agents clone managed repos |
@@ -31,6 +22,12 @@ HappyRanch supports these built-in executor profiles:
 
 You can install HappyRanch before choosing an executor, but the first real task
 will not run until at least one supported agentic CLI is available.
+
+HappyRanch uses the same same-owner canonical skill-store model on macOS and
+Linux. Integrity checks detect mismatches and fail closed before launch; they
+do not prevent another process running as the daemon user from changing files
+or racing validation. Windows and unknown platforms are unsupported and have no
+legacy copy fallback.
 
 ## Install
 

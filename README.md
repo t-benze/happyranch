@@ -20,6 +20,9 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 
 ## Requirements
 
+- macOS or Linux. Both use the same same-owner canonical skill-store model;
+  Windows and unknown platforms fail closed before agent materialization or
+  launch.
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - At least one supported agent CLI installed and authenticated:
