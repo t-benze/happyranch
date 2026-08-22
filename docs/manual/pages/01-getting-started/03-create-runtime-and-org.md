@@ -134,7 +134,10 @@ an existing slug, never runs migrated content, forces imported schedules
 inactive (`active=0`), and does not attach/rebind/rearm the imported org (that
 is a separate, later step). Receipts are recorded under the reserved
 `orgs/_archive` namespace; retrying the same archive digest is a no-op, while a
-different digest for the same slug is refused.
+different digest for the same slug is refused. Imports are serialized: one
+import per destination runtime + slug at a time — a concurrent import of the
+same slug is refused with `import_in_progress`, and different slugs or
+runtimes proceed independently.
 
 ## Next
 

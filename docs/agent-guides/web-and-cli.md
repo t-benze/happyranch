@@ -134,7 +134,9 @@ The `--from-file` path must be absolute. See `docs/agent-guides/features-and-inv
 for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
 reporting, the conservative schedule policy (any armed or firing schedule
 refuses, with existing-control remedies only), the transfer-fence/backup
-semantics, the protected `orgs/_pending` staging + `orgs/_archive` receipt,
+semantics, per-(runtime, slug) import serialization (concurrent imports are
+refused with `import_in_progress`; single-owner crash recovery only), the
+protected `orgs/_pending` staging + `orgs/_archive` receipt,
 atomic-rename limitations (a clean preflight alone is not an atomic snapshot),
 the imported-schedule `active=0` rule, source preservation, and the Slice-C
 rebind/rearm exclusion.

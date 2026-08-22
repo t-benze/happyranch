@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -403,6 +405,92 @@ async def reconcile_portability(
 # corruption, not sender identity).
 
 _IMPORT_RECEIPT_DIR = "_archive"
+
+# Per-(runtime, slug) in-process import locks — the threadpool coordination half
+# of the import claim. Mirrors ``_acquire_profile_lock`` (executors.py) and
+# ``_invocation_lock`` (thread_runner.py): a per-key ``threading.Lock`` created
+# lazily under a creation lock so two threads never race to insert it.
+_import_claim_locks: dict[str, threading.Lock] = {}
+_import_claim_locks_guard = threading.Lock()
+
+
+def _import_claim_thread_lock(key: str) -> threading.Lock:
+    """Return the shared per-key in-process lock, creating it on first use."""
+    with _import_claim_locks_guard:
+        lock = _import_claim_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _import_claim_locks[key] = lock
+    return lock
+
+
+class ImportClaim:
+    """Exclusive, durable same-(runtime, slug) import claim.
+
+    Serializes imports of one slug into one destination runtime — v1 REFUSES
+    concurrent imports rather than supporting them. The claim is two halves:
+
+    * **In-process** — a nonblocking per-key ``threading.Lock`` coordinates
+      concurrent ``portability_import`` calls that FastAPI runs on its sync-route
+      threadpool (the demonstrated read-modify-write race in the pending
+      marker).
+    * **Cross-process** — a nonblocking POSIX ``fcntl.flock`` (``LOCK_EX |
+      LOCK_NB``) on a *stable* lock file inside the reserved receipt namespace
+      (``<target>/orgs/_archive/.import-claim-<slug>.lock``), so a second
+      daemon/process targeting the same runtime gets ``import_in_progress``
+      instead of racing.
+
+    ``acquire()`` returns ``False`` (without touching any import state) when
+    either half is already held, which the route maps to HTTP 409
+    ``import_in_progress``. The caller MUST hold the claim across check →
+    prepare → pending identity → publish → receipt/recovery/finalize and call
+    ``release()`` on every ordinary and error path (a ``try``/``finally`` in the
+    route guarantees this). ``release()`` unlocks and closes the FD but NEVER
+    unlinks the lock file: a future caller opens the same path, and a process
+    crash releases ``flock`` implicitly. The persistent pending marker/receipt
+    remains the sole single-owner recovery record.
+    """
+
+    def __init__(self, orgs_dir: Path, slug: str) -> None:
+        key = f"{os.path.realpath(str(orgs_dir))}:{slug}"
+        self._thread_lock = _import_claim_thread_lock(key)
+        self._lock_path = orgs_dir / _IMPORT_RECEIPT_DIR / f".import-claim-{slug}.lock"
+        self._fd: int | None = None
+
+    def acquire(self) -> bool:
+        # In-process half first: refuse immediately if another thread in this
+        # process already holds the same (runtime, slug) claim.
+        if not self._thread_lock.acquire(blocking=False):
+            return False
+        # Cross-process half: a nonblocking flock on a stable lock file. On
+        # contention flock raises OSError (EWOULDBLOCK/EAGAIN) rather than
+        # blocking, so a second process gets a refusal, not a race.
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(self._lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            self._thread_lock.release()
+            return False
+        self._fd = fd
+        return True
+
+    def release(self) -> None:
+        # Never unlink the lock file: the open FD (not the path entry) is the
+        # claim, and a future caller must open the same stable path. Unlocking
+        # + closing releases flock; a process crash releases it implicitly.
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        self._thread_lock.release()
 
 
 def _read_json(path: Path) -> dict:
@@ -795,6 +883,42 @@ def portability_import(slug: str, body: ImportBody, request: Request) -> dict:
                 ),
             },
         )
+
+    # Acquire the exclusive per-(runtime, slug) import claim BEFORE any
+    # state-dependent read (receipt idempotency / pending marker / destination
+    # existence) or mutation. v1 serializes imports to one destination: a
+    # competing same runtime+slug invocation is refused with
+    # ``import_in_progress`` and MUST NOT read/infer ownership of, or write/
+    # replace/unlink, the owner's marker, staging, target, or receipt. The
+    # claim is held across check -> prepare -> pending identity -> publish ->
+    # receipt/recovery/finalize and released on every ordinary and error path.
+    claim = ImportClaim(target.orgs_dir, slug)
+    if not claim.acquire():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "import_in_progress", "slug": slug},
+        )
+    try:
+        return _import_relocation(
+            slug=slug, parsed=parsed, archive_path=archive_path, target=target,
+        )
+    finally:
+        # Release the claim on every path (success, refusal, validation
+        # failure, crash-fault). Never unlinks the stable lock file.
+        claim.release()
+
+
+def _import_relocation(
+    *,
+    slug: str,
+    parsed,
+    archive_path: Path,
+    target: RuntimeDir,
+) -> dict:
+    """Run the import-relocation critical section under the held exclusive
+    per-(runtime, slug) claim: receipt idempotency, pending-marker
+    reconciliation, destination-collision refusal, staged validation, no-replace
+    publish, and receipt finalize/recovery."""
 
     # Idempotency: exact digest + slug retry is a no-op; a different digest
     # for the same slug conflicts. Checked BEFORE the collision check so an

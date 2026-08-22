@@ -880,7 +880,11 @@ workspaces/
 > captures only the allow-list plus the SQLite backup (never WAL/SHM), carries
 > valid legacy ``skills/`` packages as ``legacy_portable_quarantined`` content
 > (no eligibility/materialization/activation), and persists import receipts
-> under the reserved ``orgs/_archive`` namespace; see 05c-orchestrator
+> under the reserved ``orgs/_archive`` namespace. Slice-B imports are
+> **serialized** per-(runtime, slug) by an exclusive claim (nonblocking
+> per-key in-process lock + POSIX ``fcntl.flock`` on a stable lock file); a
+> competing same runtime+slug invocation is refused with ``import_in_progress``
+> and never touches the owner's marker/receipt. See 05c-orchestrator
 > §Organization portability.
 
 ### Three layers of memory

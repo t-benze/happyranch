@@ -142,7 +142,18 @@ for the full contract; the essentials:
   publish leaves no false success, a crash between publish and
   receipt finalize converges on an exact digest+slug retry, and a different
   digest conflicts whether the destination is absent or present; exact
-  digest+slug retry is idempotent. Legacy skills stay
+  digest+slug retry is idempotent. **Imports are serialized** — v1 refuses
+  concurrent imports rather than supporting them: one exclusive, durable
+  per-(runtime, slug) claim is acquired before any staging/pending-identity/
+  publication state mutates (nonblocking per-key in-process lock + nonblocking
+  POSIX `fcntl.flock` on a stable lock file under `orgs/_archive`), so a
+  competing same runtime+slug invocation returns `import_in_progress` (409)
+  and never touches the owner's marker/staging/target/receipt; different slugs
+  or runtimes proceed independently. The claim is held across check → prepare
+  → pending identity → publish → receipt/recovery/finalize and released on
+  every path (the lock file is never unlinked; a crash releases `flock`), with
+  the persistent pending marker + receipt remaining the sole single-owner
+  recovery record. Legacy skills stay
   `legacy_portable_quarantined` — never
   activated/materialized. Slice C (rebind/rearm) is out of scope here.
 

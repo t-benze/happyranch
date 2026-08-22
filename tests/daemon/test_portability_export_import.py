@@ -1123,3 +1123,250 @@ def test_import_adversarial_legacy_reference_refused_no_mutation(
     # No target / receipt / queue mutation.
     assert not (target / "orgs" / "alpha").exists()
     assert not (target / "orgs" / "_archive" / "import-alpha.json").exists()
+
+
+# ── Slice B replacement: exclusive per-(runtime, slug) import claim ────────
+#
+# v1 serializes imports to one destination (refuses concurrency) rather than
+# supporting concurrent imports. A competing same runtime+slug invocation gets
+# ``import_in_progress`` and must not touch the owner's marker/staging/target/
+# receipt. Different slugs or runtimes proceed independently.
+
+
+def test_import_claim_exclusive_same_runtime_slug(tmp_path: Path) -> None:
+    """The claim primitive refuses a second acquire for the same runtime+slug
+    while held, releases, and re-acquires; the stable lock file is never
+    unlinked by release."""
+    import runtime.daemon.routes.portability as proutes
+    orgs_dir = tmp_path / "target" / "orgs"
+    orgs_dir.mkdir(parents=True)
+
+    c1 = proutes.ImportClaim(orgs_dir, "alpha")
+    assert c1.acquire() is True
+    c2 = proutes.ImportClaim(orgs_dir, "alpha")
+    assert c2.acquire() is False          # refused while held
+    c1.release()
+    c3 = proutes.ImportClaim(orgs_dir, "alpha")
+    assert c3.acquire() is True           # re-acquirable after release
+    c3.release()
+    # release() never unlinks the stable lock file (the FD is the claim).
+    assert (orgs_dir / "_archive" / ".import-claim-alpha.lock").exists()
+
+
+def test_import_claim_different_slug_or_runtime_nonblocking(tmp_path: Path) -> None:
+    """Claims for different slugs (same runtime) or different runtimes (same
+    slug) proceed independently — neither blocks the other."""
+    import runtime.daemon.routes.portability as proutes
+    orgs_a = tmp_path / "a" / "orgs"
+    orgs_b = tmp_path / "b" / "orgs"
+    orgs_a.mkdir(parents=True)
+    orgs_b.mkdir(parents=True)
+
+    # different slug, same runtime
+    ca = proutes.ImportClaim(orgs_a, "alpha")
+    cb = proutes.ImportClaim(orgs_a, "beta")
+    assert ca.acquire() is True
+    assert cb.acquire() is True
+    ca.release()
+    cb.release()
+    # different runtime, same slug
+    c1 = proutes.ImportClaim(orgs_a, "alpha")
+    c2 = proutes.ImportClaim(orgs_b, "alpha")
+    assert c1.acquire() is True
+    assert c2.acquire() is True
+    c1.release()
+    c2.release()
+
+
+def test_import_refused_import_in_progress_when_claim_held(tmp_path: Path) -> None:
+    """While an owner holds the claim, a competing import is refused with
+    ``import_in_progress`` and writes nothing; after release it imports."""
+    import runtime.daemon.routes.portability as proutes
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    orgs_dir = target / "orgs"
+
+    holder = proutes.ImportClaim(orgs_dir, "alpha")
+    assert holder.acquire() is True
+    try:
+        r = client.post(
+            "/api/v1/orgs/alpha/portability-import",
+            json={
+                "archive_path": str(archive),
+                "target_runtime": str(target),
+                "trust_acknowledged": True,
+            },
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "import_in_progress"
+        # The refused competitor wrote nothing: no target/receipt/marker.
+        assert not (target / "orgs" / "alpha").exists()
+        assert not (orgs_dir / "_archive" / "import-alpha.json").exists()
+        assert not (orgs_dir / "_archive" / ".pending-import-alpha.json").exists()
+    finally:
+        holder.release()
+
+    r2 = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["result"] == "imported"
+
+
+def test_import_competitor_does_not_touch_owner_marker(tmp_path: Path) -> None:
+    """A competing same runtime+slug import is refused ``import_in_progress``
+    and MUST NOT unlink/replace the owner's pending marker or receipt."""
+    import runtime.daemon.routes.portability as proutes
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    orgs_dir = target / "orgs"
+    pending_path = orgs_dir / "_archive" / ".pending-import-alpha.json"
+    receipt_path = orgs_dir / "_archive" / "import-alpha.json"
+
+    holder = proutes.ImportClaim(orgs_dir, "alpha")
+    assert holder.acquire() is True
+    try:
+        # The owner has already durably recorded its in-flight identity.
+        proutes._write_pending_marker(
+            pending_path, slug="alpha", digest=digest, operation_id="owner-op",
+        )
+        r = client.post(
+            "/api/v1/orgs/alpha/portability-import",
+            json={
+                "archive_path": str(archive),
+                "target_runtime": str(target),
+                "trust_acknowledged": True,
+            },
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "import_in_progress"
+        # Owner marker byte-for-byte intact: competitor inferred no ownership.
+        marker = json.loads(pending_path.read_text())
+        assert marker["digest"] == digest
+        assert marker["operation_id"] == "owner-op"
+        assert not receipt_path.exists()
+        assert not (target / "orgs" / "alpha").exists()
+    finally:
+        holder.release()
+
+
+def test_import_concurrent_two_requests_exactly_one_winner(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A forced two-request interleaving yields exactly one durable winner and
+    one explicit ``import_in_progress`` refusal — never a second
+    ``already_imported``/``imported`` while the owner is live, and the loser
+    damages nothing."""
+    import threading
+    import runtime.daemon.routes.portability as proutes
+
+    state, archive, digest = _exported_archive(tmp_path)
+    target = _target_runtime(tmp_path)
+    payload = {
+        "archive_path": str(archive),
+        "target_runtime": str(target),
+        "trust_acknowledged": True,
+    }
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_marker = proutes._write_pending_marker
+
+    def blocking_marker(pending_path, *, slug, digest, operation_id):
+        # Inside the held claim (marker write is under the claim). Signal the
+        # main thread that the owner is live, then block until released.
+        entered.set()
+        if not release.wait(timeout=10):
+            raise AssertionError("timed out waiting for release")
+        return real_marker(
+            pending_path, slug=slug, digest=digest, operation_id=operation_id,
+        )
+
+    monkeypatch.setattr(proutes, "_write_pending_marker", blocking_marker)
+
+    first_result: dict = {}
+
+    def run_first() -> None:
+        c = _client(state)
+        r = c.post("/api/v1/orgs/alpha/portability-import", json=payload)
+        first_result["status"] = r.status_code
+        first_result["body"] = r.json()
+
+    t = threading.Thread(target=run_first)
+    t.start()
+    assert entered.wait(timeout=10), "first request never entered the claim"
+
+    # Owner is live inside the claim; the second request must be refused.
+    client2 = _client(state)
+    r2 = client2.post("/api/v1/orgs/alpha/portability-import", json=payload)
+    release.set()
+    t.join(timeout=10)
+
+    assert r2.status_code == 409
+    assert r2.json()["detail"]["code"] == "import_in_progress"
+    assert first_result["status"] == 200, first_result
+    assert first_result["body"]["result"] == "imported"
+
+    # Exactly one durable winner: one published target + one receipt; the
+    # loser never deleted the winner's marker (finalized cleanly).
+    dest = target / "orgs" / "alpha"
+    assert (dest / "org" / "teams.yaml").is_file()
+    receipt_path = target / "orgs" / "_archive" / "import-alpha.json"
+    assert receipt_path.exists()
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["digest"] == digest
+    assert not (target / "orgs" / "_archive" / ".pending-import-alpha.json").exists()
+
+
+def test_import_cross_process_flock_refusal(tmp_path: Path) -> None:
+    """A separate process holding the stable lock file (simulated by an
+    independent open+flock — exactly what a second daemon does) refuses the
+    import with ``import_in_progress`` via the flock half, with no in-process
+    lock involved."""
+    import fcntl
+    import runtime.daemon.routes.portability as proutes
+
+    state, archive, digest = _exported_archive(tmp_path)
+    client = _client(state)
+    target = _target_runtime(tmp_path)
+    orgs_dir = target / "orgs"
+
+    lock_path = orgs_dir / "_archive" / ".import-claim-alpha.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        r = client.post(
+            "/api/v1/orgs/alpha/portability-import",
+            json={
+                "archive_path": str(archive),
+                "target_runtime": str(target),
+                "trust_acknowledged": True,
+            },
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "import_in_progress"
+        assert not (target / "orgs" / "alpha").exists()
+        assert not (orgs_dir / "_archive" / "import-alpha.json").exists()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+    # After the competing process releases, the import proceeds normally.
+    r2 = client.post(
+        "/api/v1/orgs/alpha/portability-import",
+        json={
+            "archive_path": str(archive),
+            "target_runtime": str(target),
+            "trust_acknowledged": True,
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["result"] == "imported"
