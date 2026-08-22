@@ -38,6 +38,25 @@ NC='\033[0m'
 
 NODE_DECLARATION_FILE="${REPO_ROOT}/.nvmrc"
 
+file_contains_nul() {
+  # Byte-safe NUL detection. Bash command substitution ($(...)) silently
+  # drops embedded NUL bytes, so a value that has already passed through a
+  # shell variable can no longer reveal a NUL. This helper scans a FILE's
+  # raw byte stream (via ``tr`` + ``wc -c`` in a pipe — never a shell
+  # variable) and returns 0 (success) when a NUL byte is present, 1
+  # otherwise. Every caller must reject NUL-bearing input BEFORE any command
+  # substitution normalizes it.
+  #
+  # $1: path to the file to scan.
+  local path="$1"
+  [ -f "$path" ] || return 1
+  # Compare the raw byte count against the byte count after deleting NUL
+  # (\000). If they differ, at least one NUL byte was present. Both counts
+  # come from raw byte streams (no command substitution), so an embedded NUL
+  # is never silently discarded.
+  [ "$(wc -c < "$path")" -gt "$(tr -d '\000' < "$path" | wc -c)" ]
+}
+
 node_declared_major() {
   # $1: raw .nvmrc content. Prints the declared major ("24") only when the
   # declaration is the exact bare token "24" with at most ONE trailing LF
@@ -61,13 +80,26 @@ effective_node_major() {
   # all-numeric components, no extra tokens, and at most ONE trailing LF.
   # Malformed output (v24x, v24.14garbage, v24.14, leading junk, trailing
   # whitespace, extra newline, CRLF "v24.0.0\r\n", lone trailing CR
-  # "v24.0.0\r") or a missing node prints empty.
-  local ver
+  # "v24.0.0\r", or an embedded NUL byte) or a missing node prints empty.
+  local ver tmp
+  # Capture `node --version` to a FILE first so its raw bytes can be scanned
+  # for an embedded NUL before Bash command substitution would silently
+  # discard it (turning "v24.14.0\0\n" into "v24.14.0\n"). The file
+  # write/read is byte-exact; only after the NUL scan does the content enter
+  # a Bash variable.
+  tmp="$(mktemp "${TMPDIR:-/tmp}/node-version.XXXXXX")" || { printf '\n'; return 0; }
+  node --version >"$tmp" 2>/dev/null || true
+  if file_contains_nul "$tmp"; then
+    rm -f "$tmp"
+    printf '\n'
+    return 0
+  fi
   # The trailing sentinel keeps any extra newlines so only a single normal
   # line terminator (not "v24.0.0\n\n" or trailing whitespace) is accepted.
   # The CR is deliberately NOT stripped: a CRLF or lone-CR output leaves a
   # trailing "\r" that the canonical regex rejects.
-  ver="$(node --version 2>/dev/null || true; printf x)"
+  ver="$(cat "$tmp"; printf x)"
+  rm -f "$tmp"
   ver="${ver%x}"
   ver="${ver%$'\n'}"
   if [[ "$ver" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -105,6 +137,15 @@ ensure_node_declared() {
   # Fail-fast Node runtime guard. Exits nonzero (before any uv/npm work) when
   # the effective Node major does not exactly match the repository declaration.
   local declared_major effective_major raw
+  # Reject an embedded NUL at the byte level BEFORE command substitution would
+  # silently discard it (turning a declaration of "24\0\n" into "24\n" that
+  # would then pass). The scan reads the file's raw bytes directly, so a NUL
+  # anywhere in the declaration fails closed here.
+  if file_contains_nul "$NODE_DECLARATION_FILE"; then
+    echo -e "${RED}ERROR: repository Node declaration (${NODE_DECLARATION_FILE}) is missing or malformed.${NC}" >&2
+    echo "Expected a single Node major (e.g. \"24\")." >&2
+    exit 1
+  fi
   # The trailing sentinel keeps extra newlines so a declaration like "24\n\n"
   # (whitespace beyond the line terminator) is rejected instead of being
   # collapsed to "24" by command substitution.

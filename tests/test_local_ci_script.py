@@ -36,6 +36,17 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Write raw bytes to a file (binary-capable; can embed a real NUL byte).
+
+    Distinct from ``Path.write_text``, which encodes a Python ``str`` and can
+    only produce text — a literal backslash-zero escape would be written as the
+    two characters ``\\0``, never a real ``\\x00`` byte. Embedded-NUL fixtures
+    must go through this helper.
+    """
+    path.write_bytes(data)
+
+
 def _fake_node(bin_dir: Path) -> None:
     """A fake ``node`` whose ``--version`` is read from an env-controlled file."""
     _write_executable(
@@ -61,17 +72,21 @@ def _fake_recorder(bin_dir: Path, name: str) -> None:
 
 def _setup_fake_env(
     tmp_path: Path,
-    node_version: str,
+    node_version: str | bytes,
     *,
     raw: bool = False,
 ) -> tuple[Path, Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     version_file = tmp_path / "node-version"
-    # ``raw`` writes the exact bytes (used for CRLF / lone-CR output forms that
+    # ``raw`` writes the exact text (used for CRLF / lone-CR output forms that
     # must be emitted verbatim); otherwise a single normal trailing LF is added
-    # to model a canonical ``node --version`` line.
-    version_file.write_text(node_version if raw else node_version + "\n")
+    # to model a canonical ``node --version`` line. A ``bytes`` value is always
+    # written verbatim so embedded-NUL output fixtures emit a real ``\x00``.
+    if isinstance(node_version, bytes):
+        version_file.write_bytes(node_version)
+    else:
+        version_file.write_text(node_version if raw else node_version + "\n")
     log_file = tmp_path / "invocations.log"
     _fake_node(bin_dir)
     for name in ("npm", "npx", "uv"):
@@ -105,7 +120,7 @@ def _run_local_ci(
     )
 
 
-def _build_tree(tmp_path: Path, declaration: str | None) -> Path:
+def _build_tree(tmp_path: Path, declaration: str | bytes | None) -> Path:
     """Build a standalone repo-like tree with a script copy and optional .nvmrc."""
     tree = tmp_path / "repo"
     (tree / "scripts").mkdir(parents=True)
@@ -113,7 +128,11 @@ def _build_tree(tmp_path: Path, declaration: str | None) -> Path:
     script_copy.write_text(SCRIPT.read_text())
     script_copy.chmod(0o755)
     if declaration is not None:
-        (tree / ".nvmrc").write_text(declaration)
+        nvmrc = tree / ".nvmrc"
+        if isinstance(declaration, bytes):
+            nvmrc.write_bytes(declaration)
+        else:
+            nvmrc.write_text(declaration)
     return tree
 
 
@@ -237,6 +256,9 @@ def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
         "24\n\n",  # whitespace beyond the line terminator (extra newline)
         "24\r\n",  # CRLF line ending
         "24\r",  # lone trailing carriage return
+        b"24\0\n",  # embedded NUL after the token + LF
+        b"24\0",  # embedded NUL after the token, no trailing LF
+        b"\0 24\n",  # leading NUL before the token
         None,  # missing .nvmrc
     ],
     ids=[
@@ -252,11 +274,14 @@ def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:
         "extra-newline",
         "crlf",
         "lone-cr",
+        "nul-after-token-lf",
+        "nul-after-token",
+        "nul-leading",
         "missing",
     ],
 )
 def test_malformed_declaration_fails_closed(
-    tmp_path: Path, declaration: str | None
+    tmp_path: Path, declaration: str | bytes | None
 ) -> None:
     tree = _build_tree(tmp_path, declaration)
     bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
@@ -284,10 +309,12 @@ def test_malformed_declaration_fails_closed(
         pytest.param("v26.0.0", False, id="major-26"),  # non-24 major
         pytest.param("v24.14.0\r\n", True, id="crlf"),  # CRLF line ending
         pytest.param("v24.14.0\r", True, id="lone-cr"),  # lone trailing CR
+        pytest.param(b"v24.14.0\0\n", False, id="nul-terminal"),
+        pytest.param(b"v24\0.14.0\n", False, id="nul-non-terminal"),
     ],
 )
 def test_malformed_effective_version_fails_closed(
-    tmp_path: Path, node_version: str, raw: bool
+    tmp_path: Path, node_version: str | bytes, raw: bool
 ) -> None:
     bin_dir, version_file, log_file = _setup_fake_env(
         tmp_path, node_version, raw=raw
@@ -305,6 +332,19 @@ def test_web_permits_valid_node_24_with_nonzero_minor_patch(tmp_path: Path) -> N
     # parser (numeric components), matching a real `node --version` like v24.14.0.
     bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.14.0")
     result = _run_local_ci("web", bin_dir, version_file, log_file)
+
+    assert result.returncode == 0, result.stderr
+    assert "npm ci" in log_file.read_text()
+
+
+@pytest.mark.parametrize("declaration", ["24", "24\n"], ids=["bare-24", "24-lf"])
+def test_valid_declaration_accepted(tmp_path: Path, declaration: str) -> None:
+    # The declaration accepts only the bare byte token "24" or "24\n"; both
+    # must pass the guard and let the web target run the fake npm/npx shims.
+    tree = _build_tree(tmp_path, declaration)
+    (tree / "web").mkdir()
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    result = _run_in_tree(tree, "web", bin_dir, version_file, log_file)
 
     assert result.returncode == 0, result.stderr
     assert "npm ci" in log_file.read_text()
