@@ -71,8 +71,21 @@ class _SlugQueue:
         return out
 
 
+def _seed_agents(runtime: OrgPaths, names: tuple[str, ...]) -> None:
+    """Write active AgentDef files so the live roster knows these names."""
+    from tests.conftest import seed_test_agents
+    seed_test_agents(runtime, names)
+
+
 def _make_orch(db: Database, runtime: OrgPaths):
     from runtime.orchestrator.orchestrator import Orchestrator
+    # THR-175: the reviewer_agents resolver validates names against the live
+    # active-agent roster, so tests that touch reviewer identity need real
+    # agent files (not just teams.yaml).
+    _seed_agents(runtime, (
+        "engineering_head", "product_manager", "dev_agent",
+        "code_reviewer", "qa_engineer", "senior_dev", "payment_agent",
+    ))
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),
@@ -514,3 +527,83 @@ def test_code_reviewer_not_reviewer_when_setting_overridden(runtime, db):
 
     qa_ids = _qa_children(db, "T-PAR")
     assert len(qa_ids) == 1  # advanced — code_reviewer is not a reviewer here
+
+
+# ---------------------------------------------------------------------------
+# THR-175 fix-forward: reviewer_agents must validate membership in the real
+# live agent roster wherever config can seed/backfill/persist it, and an
+# unknown persisted value must resolve fail-closed to DEFAULT_REVIEWER_AGENTS.
+# ---------------------------------------------------------------------------
+
+
+def test_fired_sentinel_unknown_config_backfill_does_not_persist_ghost(runtime, db):
+    """The reviewer's HIGH finding: with the .org_settings_seeded sentinel
+    already fired and config.yaml ``reviewer_agents: [ghost_agent]``, the
+    backfill must NOT persist the unknown name. It persists the code default
+    ([code_reviewer]), so a code_reviewer reviewer leg with omitted
+    expectation returning REQUEST_CHANGES fails closed (no QA child, no
+    queue, no chain_auto_advance audit; active chain clears; parent woken)."""
+    import json
+
+    from runtime.orchestrator.org_config import (
+        _ORG_SETTINGS_SEED_SENTINEL,
+        backfill_reviewer_agents_setting,
+    )
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    # Fired sentinel + config.yaml carrying an unknown reviewer agent.
+    (runtime.root / _ORG_SETTINGS_SEED_SENTINEL).write_text("")
+    runtime.org_config_path.write_text("reviewer_agents: [ghost_agent]\n")
+
+    # Real roster — ghost_agent is genuinely absent.
+    _seed_agents(runtime, (
+        "engineering_head", "dev_agent", "code_reviewer", "qa_engineer", "senior_dev",
+    ))
+
+    # Bootstrap backfill (the one-time 5-knob seed is a sentinel no-op here).
+    value = backfill_reviewer_agents_setting(runtime, db)
+    assert json.loads(value) == ["code_reviewer"]
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]
+
+    # code_reviewer reviewer leg (omitted expectation) completing REQUEST_CHANGES.
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="REQUEST_CHANGES",
+                          summary="needs changes")
+
+    orch = _make_orch(db, runtime)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_persisted_unknown_reviewer_agents_resolves_to_default_fail_closed(runtime, db):
+    """An ALREADY-persisted unknown reviewer_agents value (e.g. from a config
+    persisted before this fix) resolves fail-closed to DEFAULT_REVIEWER_AGENTS
+    — code_reviewer is never silently treated as a non-reviewer, so a
+    REQUEST_CHANGES from a code_reviewer leg cannot bypass the QA gate."""
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    _set_reviewer_agents(db, ["ghost_agent"])  # already-persisted unknown value
+
+    _seed_parent(db)
+    db.update_task_active_chain("T-PAR", _dev_review_qa_chain_omitted(step_index=1).serialize())
+    _seed_completed_child(db, child_id="T-REV", parent_id="T-PAR",
+                          agent="code_reviewer", verdict="REQUEST_CHANGES",
+                          summary="needs changes")
+
+    orch = _make_orch(db, runtime)  # seeds the real roster (code_reviewer, ...)
+    _enqueue_parent_if_waiting(orch, "T-REV")
+
+    assert _qa_children(db, "T-PAR") == []
+    assert db.get_task("T-PAR").active_chain is None
+    assert _chain_advances(db, "T-PAR") == []
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"

@@ -836,11 +836,17 @@ def _reviewer_agents_for(orch: "Orchestrator") -> frozenset[str]:
     """The org's configured reviewer identities as a frozenset (THR-175).
 
     Resolved from the DB-backed ``reviewer_agents`` org setting (code default
-    ``code_reviewer``) at the real Database seam.  Callers use this to decide
-    which chain legs are reviewer legs whose verdicts gate auto-advance.
+    ``code_reviewer``) at the real Database seam, validated against the live
+    active-agent roster — an unknown persisted name resolves fail-closed to
+    the code default so ``code_reviewer`` is never silently demoted.
     """
-    from runtime.orchestrator.org_config import resolve_org_setting_reviewer_agents
-    return frozenset(resolve_org_setting_reviewer_agents(orch._db))
+    from runtime.orchestrator.org_config import (
+        resolve_known_agent_names,
+        resolve_org_setting_reviewer_agents,
+    )
+    return frozenset(resolve_org_setting_reviewer_agents(
+        orch._db, known_agents=resolve_known_agent_names(orch._paths),
+    ))
 
 
 def _reviewer_omitted_expectation_error(agent: str) -> str:

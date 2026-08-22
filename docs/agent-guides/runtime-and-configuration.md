@@ -268,7 +268,7 @@ Every consumer site resolves through a **single documented precedence ladder**:
 | --- | --- |
 | `session_timeout_seconds` | `tasks.session_timeout_seconds` (per-task override) → `org_settings` DB row → `Settings.session_timeout_seconds` |
 | `dreaming` / `threads` / `working_hours` | `org_settings` DB row → **dataclass code default** (OrgConfig field defaults, NOT config.yaml) |
-| `reviewer_agents` | `org_settings` DB row → **code default `["code_reviewer"]`** (THR-175). A JSON list of agent names; configures which chain legs are reviewer legs that gate auto-advance. |
+| `reviewer_agents` | `org_settings` DB row → **code default `["code_reviewer"]`** (THR-175). A JSON list of agent names; configures which chain legs are reviewer legs that gate auto-advance. Names are validated against the org's live active-agent roster; an unknown name resolves fail-closed to the code default (see below). |
 
 **Code-default tier**: the fallback is always the Python dataclass default
 (e.g. `DreamingConfig(enabled=False)`, `OrgConfig().threads_enabled=True`),
@@ -313,6 +313,15 @@ runs on every startup for orgs whose seed sentinel already fired before the
 feature shipped: if the `reviewer_agents` row is absent it persists the
 config.yaml value (or the `["code_reviewer"]` code default), and it never
 overwrites an existing explicit row.
+
+`reviewer_agents` names are **validated against the org's live active-agent
+roster** (the file-based `org/agents/*.md` registry) at every surface that can
+seed, backfill, or persist them — not just `PUT /settings`. A configured name
+that is not a real active agent is never persisted as a reviewer setting (the
+code default is persisted instead), and an already-persisted malformed or
+unknown value resolves fail-closed to `["code_reviewer"]` at every read path.
+This guarantees an unknown reviewer string can never silently demote
+`code_reviewer` from the reviewer set and re-open the QA auto-advance hole.
 
 ## Bounded Failure-Recovery (TASK-573)
 

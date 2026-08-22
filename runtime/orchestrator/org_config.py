@@ -1141,9 +1141,9 @@ def seed_org_settings_from_config(
     db.upsert_org_setting("working_hours", wh_json)
     seeded["working_hours"] = wh_json
 
-    # THR-175: reviewer identities (5th writable knob). Stored as a JSON list
-    # of agent names; the code default is DEFAULT_REVIEWER_AGENTS.
-    reviewer_json = json.dumps(list(org_cfg.reviewer_agents))
+    # THR-175: reviewer identities (5th writable knob). Validated against the
+    # live roster — an unknown name is never persisted (fail-closed default).
+    reviewer_json = json.dumps(_persistable_reviewer_agents(paths, org_cfg.reviewer_agents))
     db.upsert_org_setting("reviewer_agents", reviewer_json)
     seeded["reviewer_agents"] = reviewer_json
 
@@ -1175,7 +1175,9 @@ def backfill_reviewer_agents_setting(paths: OrgPaths, db) -> str | None:
     if db.get_org_setting("reviewer_agents") is not None:
         return None
     org_cfg = load_org_config(paths)
-    value_json = json.dumps(list(org_cfg.reviewer_agents))
+    # THR-175: persist only names that are real active agents (fail-closed to
+    # the code default when the config names an unknown agent).
+    value_json = json.dumps(_persistable_reviewer_agents(paths, org_cfg.reviewer_agents))
     db.upsert_org_setting("reviewer_agents", value_json)
     return value_json
 
@@ -1446,10 +1448,40 @@ def resolve_org_setting_working_hours(db, *, code_default) -> "WorkingHoursConfi
     )
 
 
+def resolve_known_agent_names(paths: OrgPaths) -> frozenset[str]:
+    """The live active-agent roster (excludes ``_pending/`` and ``_terminated/``).
+
+    This is the single source of truth for "is this agent name real in this
+    org" — the same file-based registry the settings routes already use via
+    ``prompt_loader.list_agents``.  Used to validate ``reviewer_agents``
+    against actually-deployed agents rather than a hardcoded allowlist.
+    """
+    from runtime.orchestrator.prompt_loader import list_agents
+    return frozenset(agent.name for agent in list_agents(paths))
+
+
+def _persistable_reviewer_agents(
+    paths: OrgPaths, configured: tuple[str, ...],
+) -> list[str]:
+    """The ``reviewer_agents`` list that is safe to persist (THR-175 fail-closed).
+
+    The configured value is persisted only when EVERY name is a real active
+    agent in this org.  An unknown name (e.g. ``ghost_agent``) means the
+    config is stale relative to the live roster — fall back to the code
+    default so an unknown reviewer string can never silently turn
+    ``code_reviewer`` into a non-reviewer leg.
+    """
+    known = resolve_known_agent_names(paths)
+    if known and all(name in known for name in configured):
+        return list(configured)
+    return list(DEFAULT_REVIEWER_AGENTS)
+
+
 def resolve_org_setting_reviewer_agents(
     db,
     *,
     code_default: tuple[str, ...] = DEFAULT_REVIEWER_AGENTS,
+    known_agents: frozenset[str] | set[str],
 ) -> tuple[str, ...]:
     """DB → code-default resolved reviewer identities (THR-175).
 
@@ -1458,6 +1490,12 @@ def resolve_org_setting_reviewer_agents(
     whose verdicts gate downstream auto-advance.  A malformed row (non-list,
     empty, non-string entries) falls back to the code default rather than
     raising — resolution must never break the read path.
+
+    A row naming an UNKNOWN agent (one outside ``known_agents``, the live
+    active-agent roster) also falls back to the code default — a persisted
+    reviewer string that names no real agent must never be trusted to define
+    which legs are reviewer legs, or it would silently demote ``code_reviewer``
+    to a non-reviewer and re-open the QA auto-advance hole.
     """
     raw = db.get_org_setting("reviewer_agents")
     if raw is None:
@@ -1470,6 +1508,8 @@ def resolve_org_setting_reviewer_agents(
         return tuple(code_default)
     names = tuple(n for n in data if isinstance(n, str) and n.strip())
     if not names:
+        return tuple(code_default)
+    if any(n not in known_agents for n in names):
         return tuple(code_default)
     return names
 
@@ -1569,7 +1609,9 @@ def write_org_setting_to_db(
             raw = db.get_org_setting(key)
             before = json.loads(raw) if raw is not None else org_cfg.session_timeout_seconds
         elif key == "reviewer_agents":
-            before = list(resolve_org_setting_reviewer_agents(db))
+            before = list(resolve_org_setting_reviewer_agents(
+                db, known_agents=resolve_known_agent_names(paths),
+            ))
         else:
             before = _effective_dict(key)
 
@@ -1584,6 +1626,18 @@ def write_org_setting_to_db(
         candidate.pop(key, None)
         candidate[key] = merged
         _build_org_config(candidate, str(paths.org_config_path))
+
+        # THR-175: a reviewer_agents write must name only real active agents
+        # (defense-in-depth — the PUT route already rejects unknown names with
+        # a HARD REJECT; this guards any direct write_org_setting_to_db caller).
+        if key == "reviewer_agents" and isinstance(merged, list):
+            known = resolve_known_agent_names(paths)
+            unknown = sorted(set(merged) - known)
+            if unknown:
+                raise OrgConfigError(
+                    "reviewer_agents references unknown agent(s): "
+                    + ", ".join(unknown)
+                )
 
         # Build before/after audit dicts.
         if key == "session_timeout_seconds":

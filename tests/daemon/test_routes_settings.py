@@ -1189,3 +1189,20 @@ def test_put_settings_rejects_non_string_reviewer_agent(
         json={"reviewer_agents": ["senior_dev", 123]},
     )
     assert r.status_code == 422
+
+
+def test_get_settings_unknown_persisted_reviewer_agents_resolves_default(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """The GET settings read path resolves an already-persisted UNKNOWN
+    reviewer_agents value fail-closed to the code default — never exposes the
+    unknown name that would demote code_reviewer from the reviewer set."""
+    _seed_reviewer_agents_agents(org_state)
+    import json as _json
+    org_state.db.upsert_org_setting("reviewer_agents", _json.dumps(["ghost_agent"]))
+    client = TestClient(app)
+    r = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["org"]["reviewer_agents"] == ["code_reviewer"]

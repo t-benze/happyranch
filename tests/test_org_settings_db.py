@@ -29,6 +29,7 @@ from runtime.orchestrator.org_config import (
     WorkingHoursConfig,
     backfill_reviewer_agents_setting,
     load_org_config,
+    resolve_known_agent_names,
     resolve_org_setting_dreaming,
     resolve_org_setting_reviewer_agents,
     resolve_org_setting_session_timeout,
@@ -503,29 +504,71 @@ def test_audit_transactional_atomicity_still_green(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _make_org(root: Path, *, teams: str, config_yaml: str | None) -> OrgPaths:
+def _make_org(
+    root: Path,
+    *,
+    teams: str,
+    config_yaml: str | None,
+    agents: tuple[str, ...] = (),
+) -> OrgPaths:
     root.mkdir(parents=True, exist_ok=True)
     (root / "org").mkdir(parents=True, exist_ok=True)
     (root / "org" / "teams.yaml").write_text(teams)
     if config_yaml is not None:
         (root / "org" / "config.yaml").write_text(config_yaml)
-    return OrgPaths(root=root)
+    paths = OrgPaths(root=root)
+    if agents:
+        from tests.conftest import seed_test_agents
+        seed_test_agents(paths, agents)
+    return paths
 
 
 def test_reviewer_agents_resolves_default_when_no_row(tmp_path: Path):
     """With no DB row, reviewer_agents resolves to DEFAULT_REVIEWER_AGENTS."""
     paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
     db = Database(paths.db_path)
-    assert resolve_org_setting_reviewer_agents(db) == ("code_reviewer",)
-    assert resolve_org_setting_reviewer_agents(db) == DEFAULT_REVIEWER_AGENTS
+    assert resolve_org_setting_reviewer_agents(
+        db, known_agents=frozenset({"code_reviewer"}),
+    ) == ("code_reviewer",)
+    assert resolve_org_setting_reviewer_agents(
+        db, known_agents=frozenset({"code_reviewer"}),
+    ) == DEFAULT_REVIEWER_AGENTS
 
 
 def test_reviewer_agents_resolves_db_row(tmp_path: Path):
-    """A DB row wins over the code default."""
-    paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
+    """A DB row naming a real agent wins over the code default."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, senior_dev]\n",
+        config_yaml=None,
+        agents=("senior_dev", "code_reviewer"),
+    )
     db = Database(paths.db_path)
     db.upsert_org_setting("reviewer_agents", json.dumps(["senior_dev"]))
-    assert resolve_org_setting_reviewer_agents(db) == ("senior_dev",)
+    assert resolve_org_setting_reviewer_agents(
+        db, known_agents=resolve_known_agent_names(paths),
+    ) == ("senior_dev",)
+
+
+def test_reviewer_agents_unknown_name_resolves_to_default(tmp_path: Path):
+    """A DB row naming an UNKNOWN agent (not in the live roster) resolves
+    fail-closed to DEFAULT_REVIEWER_AGENTS — never trusted as the reviewer set."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, code_reviewer]\n",
+        config_yaml=None,
+        agents=("code_reviewer", "qa_engineer"),
+    )
+    db = Database(paths.db_path)
+    db.upsert_org_setting("reviewer_agents", json.dumps(["ghost_agent"]))
+    assert resolve_org_setting_reviewer_agents(
+        db, known_agents=resolve_known_agent_names(paths),
+    ) == DEFAULT_REVIEWER_AGENTS
+    # A mixed known+unknown list is also rejected (fail-closed), not filtered.
+    db.upsert_org_setting("reviewer_agents", json.dumps(["code_reviewer", "ghost_agent"]))
+    assert resolve_org_setting_reviewer_agents(
+        db, known_agents=resolve_known_agent_names(paths),
+    ) == DEFAULT_REVIEWER_AGENTS
 
 
 def test_reviewer_agents_malformed_row_falls_back_to_default(tmp_path: Path):
@@ -533,22 +576,42 @@ def test_reviewer_agents_malformed_row_falls_back_to_default(tmp_path: Path):
     path — it falls back to the code default."""
     paths = _make_org(tmp_path / "org", teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n", config_yaml=None)
     db = Database(paths.db_path)
+    known = resolve_known_agent_names(paths)
     for bad in ("not-json", "[]", '[""]', '{"x": 1}', "[1, 2]"):
         db.upsert_org_setting("reviewer_agents", bad)
-        assert resolve_org_setting_reviewer_agents(db) == DEFAULT_REVIEWER_AGENTS, bad
+        assert resolve_org_setting_reviewer_agents(db, known_agents=known) == DEFAULT_REVIEWER_AGENTS, bad
 
 
 def test_seed_persists_configured_reviewer_agents(tmp_path: Path):
-    """The one-shot seed writes the org's configured reviewer_agents (5th knob)."""
+    """The one-shot seed writes the org's configured reviewer_agents (5th knob)
+    when every name is a real active agent."""
     paths = _make_org(
         tmp_path / "org",
-        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, senior_dev]\n",
         config_yaml="reviewer_agents: [senior_dev]\n",
+        agents=("senior_dev", "dev"),
     )
     db = Database(paths.db_path)
     seeded = seed_org_settings_from_config(paths, db)
     assert "reviewer_agents" in seeded
     assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+
+def test_seed_unknown_reviewer_agents_persists_default(tmp_path: Path):
+    """A seed config naming an unknown reviewer agent is NOT persisted — the
+    code default is persisted instead (fail-closed, sentinel still fires)."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, code_reviewer]\n",
+        config_yaml="reviewer_agents: [ghost_agent]\n",
+        agents=("code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    seeded = seed_org_settings_from_config(paths, db)
+    assert "reviewer_agents" in seeded
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]
+    # Sentinel still fires (one-time seed semantics preserved).
+    assert (paths.root / _ORG_SETTINGS_SEED_SENTINEL).exists()
 
 
 def test_backfill_persists_tourism_senior_dev_after_sentinel_fired(tmp_path: Path):
@@ -559,6 +622,7 @@ def test_backfill_persists_tourism_senior_dev_after_sentinel_fired(tmp_path: Pat
         tmp_path / "hk-tourism",
         teams="teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent, senior_dev, qa_engineer]\n",
         config_yaml="reviewer_agents: [senior_dev]\n",
+        agents=("dev_agent", "senior_dev", "qa_engineer", "engineering_head"),
     )
     # Simulate a pre-THR-175 org: sentinel already fired, no reviewer_agents row.
     (paths.root / _ORG_SETTINGS_SEED_SENTINEL).write_text("")
@@ -571,6 +635,54 @@ def test_backfill_persists_tourism_senior_dev_after_sentinel_fired(tmp_path: Pat
 
     # Idempotent: a second run is a no-op and does NOT overwrite.
     assert backfill_reviewer_agents_setting(paths, db) is None
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+
+def test_backfill_unknown_reviewer_agents_persists_default(tmp_path: Path):
+    """A fired-sentinel org whose config names an unknown reviewer agent gets
+    the code default persisted (not the unknown name) by the backfill."""
+    paths = _make_org(
+        tmp_path / "hk-tourism",
+        teams="teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent, code_reviewer, qa_engineer]\n",
+        config_yaml="reviewer_agents: [ghost_agent]\n",
+        agents=("dev_agent", "code_reviewer", "qa_engineer", "engineering_head"),
+    )
+    (paths.root / _ORG_SETTINGS_SEED_SENTINEL).write_text("")
+    db = Database(paths.db_path)
+    value = backfill_reviewer_agents_setting(paths, db)
+    assert json.loads(value) == ["code_reviewer"]
+    assert json.loads(db.get_org_setting("reviewer_agents")) == ["code_reviewer"]
+
+
+def test_write_org_setting_to_db_rejects_unknown_reviewer_agent(tmp_path: Path):
+    """The DB write path itself (not just the PUT route) rejects a
+    reviewer_agents list that names an unknown agent — defense-in-depth."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, code_reviewer]\n",
+        config_yaml=None,
+        agents=("code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    with pytest.raises(OrgConfigError):
+        write_org_setting_to_db(paths, db, {"reviewer_agents": ["ghost_agent"]})
+    # Nothing persisted.
+    assert db.get_org_setting("reviewer_agents") is None
+
+
+def test_write_org_setting_to_db_valid_reviewer_agent_persists(tmp_path: Path):
+    """The DB write path persists a reviewer_agents list of real agents and
+    does not overwrite an unrelated explicit setting."""
+    paths = _make_org(
+        tmp_path / "org",
+        teams="teams:\n  engineering:\n    manager: eng_head\n    workers: [dev, senior_dev, code_reviewer]\n",
+        config_yaml=None,
+        agents=("senior_dev", "code_reviewer", "dev"),
+    )
+    db = Database(paths.db_path)
+    write_org_setting_to_db(paths, db, {"reviewer_agents": ["senior_dev"]})
     assert json.loads(db.get_org_setting("reviewer_agents")) == ["senior_dev"]
 
 

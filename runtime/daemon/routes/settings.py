@@ -276,7 +276,10 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
     threads_kwargs = resolve_org_setting_threads(org.db, code_default=OrgConfig())
     sto = resolve_org_setting_session_timeout(org.db, code_default=None)
     wh_cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
-    reviewer_agents = resolve_org_setting_reviewer_agents(org.db)
+    paths = OrgPaths(root=org.root)
+    reviewer_agents = resolve_org_setting_reviewer_agents(
+        org.db, known_agents=_resolve_agent_names(paths),
+    )
     return SettingsResponse(
         system=SystemSettingsView.from_settings(global_settings),
         org=_org_config_to_view_from_resolved(
