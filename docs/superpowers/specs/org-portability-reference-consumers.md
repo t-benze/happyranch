@@ -171,15 +171,43 @@ write site) to filesystem bytes under the org root.
   artifact key (e.g. `reports/2026/q2.pdf`). `database.py` lines ~923–937.
 - **Resolver:** `runtime/infrastructure/artifact_store.py`
   `ArtifactStore.path_for(name)` → `self._root / name`; `validate_name`
-  rejects absolute/trailing `/`, `//`, `\`, empty/`..`/dot-leading segments,
-  and asserts `is_relative_to(root.resolve())`.
+  rejects absolute/trailing `/`, `//`, `\`, empty/`..`/dot-leading segments.
+  `path_for` then resolves the target and asserts the **resolved** target stays
+  inside the store root (`artifact_store.py:55–75`).
 - **Call sites:** `runtime/daemon/routes/threads.py` `_normalize_attachments`
   (line ~243 `store = ArtifactStore(OrgPaths(org.root).artifacts_dir)`,
-  line ~257 `store.path_for(artifact_name)`).
+  line ~257 `store.path_for(artifact_name)`; line ~270 `path.exists()` and
+  line ~278 `path.stat()` then follow the resolved path to build the
+  attachment record).
 - **Root:** `<org>/artifacts/<nested key>`.
-- **Disposition:** `include` — `artifacts` is allow-listed; keys are validated
-  and contained.
-- **Fixtures:** FX-C2-OK, FX-C2-MISSING, FX-C2-ESCAPE, FX-C2-SYMLINK.
+- **Traversal/symlink containment (actual current behavior):**
+  `validate_name` rejects traversal at the string level; `path_for` resolves
+  and asserts in-root containment. This rejects a symlink whose resolved target
+  escapes the root (`path_traversal` → `escape`), but it does **not** reject
+  symlinks as such: an **in-root symlink** (a link whose target is another file
+  inside `artifacts/`) passes containment, and `path.exists()` / `path.stat()`
+  subsequently follow it (`threads.py:270,278`). The org-root classifier
+  (`roots.py:122–155`) inspects only direct org children, so a nested symlink
+  or nonregular member under `artifacts/` is not caught there either.
+- **Validation/integrity (required future portability validation — not present
+  today):** capture/import must reject **every** symlink and every nonregular
+  (FIFO/socket/device) member at any depth under `artifacts/`, fail closed
+  (`nonregular`), **before any capture/import effect**; the string-shape +
+  in-root containment check is insufficient for that boundary. This is the same
+  recursive regular-file/no-symlink rule C1 requires; it is not enforced by the
+  current resolver.
+- **Recoverability:** missing file → `artifact_not_found` (404); invalid name →
+  `invalid_artifact_name` (400; `path_traversal` for an outside-root resolved
+  link, `invalid_name` for a string-shape violation).
+- **Disposition:** `conditional` / **reject-until-staged-validation** —
+  `artifacts` is allow-listed, but current containment does **not** protect
+  nested members, so an in-root symlink is admitted and followed today. The
+  include is valid **only after** the future recursive regular-file/no-symlink
+  validation rejects every in-root symlink and nonregular member before any
+  capture/import effect; until then a staged symlink/nonregular member must be
+  treated as a refusal (`nonregular`), not included.
+- **Fixtures:** FX-C2-OK, FX-C2-MISSING, FX-C2-ESCAPE, FX-C2-SYMLINK,
+  FX-C2-INROOT-SYMLINK, FX-C2-NONREGULAR.
 
 ### C3 — `thread_scoped_attachments.attachment_id` → `ThreadScopedAttachmentStore`
 
@@ -253,17 +281,47 @@ write site) to filesystem bytes under the org root.
 
 ### C5 — `jobs.cwd_hint` / `jobs.cwd_resolved` → workspace cwd
 
-- **Producer:** `jobs.cwd_hint` (TEXT, *relative*, validated by
-  `_validate_cwd_hint` at `routes/jobs.py:89` — rejects absolute and `..`);
-  `jobs.cwd_resolved` (TEXT, absolute, display/inspection only).
-- **Resolver:** `routes/jobs.py:669` `(workspace_root / cwd_hint).resolve()`,
-  re-derived at spawn time (line ~719 `_resolve_cwd`).
-- **Root:** `<org>/workspaces/<agent>/<cwd_hint>` — **workspace data**.
-- **Disposition:** `exclude` — workspace non-memory data is excluded
-  (`EXCLUDE_WORKSPACE_NON_MEMORY`). The relative `cwd_hint` string is carried
-  harmlessly but points into excluded bytes; `cwd_resolved` is a stale-able
-  absolute display field.
-- **Fixtures:** FX-C5-REL (adversarial absolute/dotdot rejected at input).
+- **Producer:** `jobs.cwd_hint` (TEXT; **relative** only when the route-input
+  validation actually fired) and `jobs.cwd_resolved` (TEXT, absolute,
+  display/inspection only). Same `jobs` table as C4 (`database.py` lines
+  ~995–1027).
+- **Resolver:** `runtime/daemon/routes/jobs.py` `_resolve_cwd` (`:661–670`) →
+  `(workspace_root / cwd_hint).resolve()` when `cwd_hint` is set; re-derived at
+  spawn time (`_run_job_core` line ~719) from `record.cwd_hint` read out of the
+  DB, **not** from the submit-route body.
+- **Containment/validation (actual current behavior):**
+  `_validate_cwd_hint` (`routes/jobs.py:89–104`) rejects absolute
+  (`startswith("/")`) and `..` segments — but it runs **only** on the submit
+  path (`:263`), where the value is first accepted. `_resolve_cwd` itself
+  performs **no** containment check: `(workspace_root / cwd_hint).resolve()`
+  with an absolute `cwd_hint` replaces `workspace_root` (path division with an
+  absolute right-hand operand), and a `..`-bearing `cwd_hint` resolves above
+  `workspace_root`; `.resolve()` only normalizes, it never asserts
+  `is_relative_to(workspace_root)`. A **staged/imported DB** is therefore not
+  protected by route-input validation: a malicious absolute or dotdot
+  `cwd_hint` injected into the staged DB reaches `_resolve_cwd` unvalidated
+  before a job is launched.
+- **Root:** `<org>/workspaces/<agent>/<cwd_hint>` — **workspace data**
+  (excluded), but a malicious absolute/`..` value resolves *outside* it.
+- **Validation/integrity (required future portability validation — not present
+  today):** before any imported `jobs` row can run, `cwd_hint` must be validated
+  as a **single relative safe segment** (nonempty, no `/`, `\`, NUL, no `..`,
+  no leading `.`, not absolute) and the fully-resolved cwd must remain within
+  `<org>/workspaces/<agent>/`; an absolute or dotdot `cwd_hint` in a staged DB
+  is a refusal (`escape`) **before any capture/import effect**. This holds even
+  though the workspace bytes themselves are excluded — the *string* is
+  resolution-bearing and is executed by `_resolve_cwd` at spawn time.
+- **Recoverability:** an absolute/`..` `cwd_hint` is **not** rejected today at
+  run time (only at submit) and would resolve outside `workspace_root` before a
+  job is launched.
+- **Disposition:** `conditional` / **reject-until-staged-validation** — the
+  workspace bytes are excluded (`EXCLUDE_WORKSPACE_NON_MEMORY`), but the
+  `cwd_hint` string is **not harmless**: it is a resolution-bearing value
+  executed by `_resolve_cwd` before a job runs. `cwd_resolved` remains a
+  stale-able absolute display/inspection field and **cannot redeem an unsafe
+  `cwd_hint`**. Do **not** describe an invalid `cwd_hint` as "carried
+  harmlessly."
+- **Fixtures:** FX-C5-REL, FX-C5-ABS, FX-C5-DOTDOT.
 
 ### C6 — `dreams.transcript_path` → `DreamStore` (display-only; re-derived)
 
@@ -345,12 +403,33 @@ write site) to filesystem bytes under the org root.
 - **Write site:** `runtime/daemon/routes/custom_skills.py:27`
   `ArtifactStore(artifacts_dir).put(f"custom-skills/{slug}/{digest}/SKILL.md", …)`.
 - **Root:** `<org>/artifacts/custom-skills/<slug>/<digest>/SKILL.md`.
+- **Traversal/symlink containment (actual current behavior):**
+  `ArtifactStore.read()` (`artifact_store.py:112–118`) resolves `path_for`
+  (containment) then `Path.read_bytes()`, which **follows an in-root symlink**.
+  The bytes reached through such a link can hash-match `content_hash`, so the
+  hash binding does **not** establish regular-file portability. The org-root
+  classifier (`roots.py:122–155`) inspects only direct org children and does
+  not recurse under `artifacts/`, so a nested symlink/nonregular member is not
+  caught there either. An outside-root resolved link is rejected by `path_for`
+  (`path_traversal` → `escape`).
 - **Validation/integrity:** `content_hash` must equal the SHA-256 of the
-  artifact bytes (asserted at recovery, `skills.py:1193`); the machine-global
-  canonical package is rebuilt from this artifact + hash.
-- **Disposition:** `include` — `artifacts` is allow-listed; the hash↔bytes
-  binding is the import-time integrity check.
-- **Fixtures:** FX-C11-OK, FX-C11-HASHMISMATCH, FX-C11-MISSING.
+  artifact bytes (asserted at recovery `skills.py:1193` and at materialization
+  `workspace_adapters.py:831`) — retained as the import-time integrity check,
+  but it is **not** sufficient on its own: because the read follows an in-root
+  symlink, hash equality does not prove the referenced artifact subtree is
+  regular-file and symlink-free. Required: the same recursive
+  regular-file/no-symlink validation C1/C2 require, applied to the referenced
+  `custom-skills/<slug>/<digest>/` subtree, **before any archive read/import
+  effect**.
+- **Disposition:** `conditional` / **reject-until-staged-validation** —
+  `artifacts` is allow-listed, but `content_hash` alone does **not** make the
+  include safe: it verifies byte content, not that the referenced artifact is a
+  regular file reached without symlinks. The include is valid only once the
+  recursive no-symlink/regular-file validation above is enforced before any
+  effect; until then an in-root symlink/nonregular member must be treated as a
+  refusal (`nonregular`).
+- **Fixtures:** FX-C11-OK, FX-C11-HASHMISMATCH, FX-C11-MISSING,
+  FX-C11-OUTROOT-SYMLINK, FX-C11-INROOT-SYMLINK, FX-C11-NONREGULAR.
 
 ### C12 — `custom_skill_versions.skill_md_cache` / `references_manifest` / `assets_manifest` → inline / no filesystem reference
 
@@ -477,8 +556,10 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C1-NONREGULAR | C1 | row with `storage_key="fifo1"` | `task-attachments/fifo1` (FIFO/special) | nonregular member | `nonregular` — required capture/import must refuse | no | no |
 | FX-C2-OK | C2 | `thread_message_attachments(artifact_name="reports/q2.pdf")` | `artifacts/reports/q2.pdf` (regular) | — | none (included) | no | no |
 | FX-C2-MISSING | C2 | same row | file absent | missing-file | `missing` | no | no |
-| FX-C2-ESCAPE | C2 | `artifact_name="../../etc/passwd"` | — | escaped-path | `escape` (validate_name rejects) | no | no |
-| FX-C2-SYMLINK | C2 | `artifact_name="reports/x"` | `artifacts/reports/x → outside` | symlink/nonregular | `nonregular` | no | no |
+| FX-C2-ESCAPE | C2 | `artifact_name="../../etc/passwd"` | — | escaped-path | `escape` (validate_name rejects `..`) | no | no |
+| FX-C2-SYMLINK | C2 | `artifact_name="reports/x"` | `artifacts/reports/x → /etc/passwd` (outside root) | symlink (resolved target escapes root) | `escape` (`path_for` containment rejects resolved target) | no | no |
+| FX-C2-INROOT-SYMLINK | C2 | `artifact_name="reports/x"` | `artifacts/reports/x → artifacts/reports/y` (in-root) | in-root symlink | `nonregular` — current code **admits** (containment passes, `stat()` follows); required capture/import must refuse fail-closed | no | no |
+| FX-C2-NONREGULAR | C2 | `artifact_name="reports/fifo"` | `artifacts/reports/fifo` (FIFO/special) | nonregular member | `nonregular` — required capture/import must refuse | no | no |
 | FX-C3-OK | C3 | `thread_scoped_attachments(attachment_id="att-1", thread_id="THR-1")` | `threads/THR-1/attachments/att-1` | — | none (included) | no | no |
 | FX-C3-MISSING | C3 | same row | file absent | missing-file | `missing` | no | no |
 | FX-C3-ESCAPE | C3 | `thread_scoped_attachments(thread_id="../..", attachment_id="att-1")` | — | staged-DB escape identifier | `escape` — no validation today (would resolve outside root); required segment validation refuses | no | no |
@@ -486,15 +567,20 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C3-NONREGULAR | C3 | same row | `threads/THR-1/attachments/att-1` (FIFO/special) | nonregular member | `nonregular` — required capture/import refuses | no | no |
 | FX-C4-ABS | C4 | `jobs(id="JOB-9", stdout_path="<src>/jobs/JOB-9.out", stderr_path="<src>/jobs/JOB-9.err")` | `jobs/JOB-9.out`, `jobs/JOB-9.err` | **absolute path re-resolution** | import-time rebase (target-local) — see §9 | read-only | yes (rebase) |
 | FX-C4-MISSING | C4 | same row | files absent | missing-file | `missing` (empty stream) | no | no |
-| FX-C5-REL | C5 | `jobs(cwd_hint="../escape")` | — | escaped-path (input) | `escape` (`_validate_cwd_hint` rejects `..`) | no | no |
+| FX-C5-REL | C5 | `jobs(cwd_hint="subdir")` | — | valid relative (submit path) | none (excluded bytes; resolves under `workspace_root`) | no | no |
+| FX-C5-ABS | C5 | `jobs(cwd_hint="/etc")` (staged DB, bypasses submit validation) | — | staged-DB absolute | `escape` — `_resolve_cwd` resolves outside `workspace_root`; required staged-DB validation refuses, no effect | no | no |
+| FX-C5-DOTDOT | C5 | `jobs(cwd_hint="../../outside")` (staged DB) | — | staged-DB dotdot | `escape` — `_resolve_cwd` resolves above `workspace_root`; required staged-DB validation refuses, no effect | no | no |
 | FX-C6-ABS | C6 | `dreams(id="DREAM-1", transcript_path="<src>/dreams/DREAM-1.md")` | `dreams/DREAM-1.md` | stale absolute (display-only) | none — re-derived from `dream_id` | read-only | no |
 | FX-C7-ABS | C7 | `threads(id="THR-1", transcript_path="<src>/threads/THR-1.md")` | `threads/THR-1.md` | stale absolute (derived) | none — regenerable | read-only | no |
 | FX-C8-ABS | C8 | `schedules(id="SCHEDULE-1", transcript_path="<src>/schedules/SCHEDULE-1.md")` | `schedules/SCHEDULE-1.md` | stale absolute (display-only) | none | read-only | no |
 | FX-C9-ABS | C9 | `work_hours(id="WORKHOUR-1", transcript_path="<src>/work_hours/WORKHOUR-1.md")` | `work_hours/WORKHOUR-1.md` | stale absolute (display-only) | none | read-only | no |
 | FX-C10-REL | C10 | `tasks(id="T-1", final_output_dir="output/T-1")` | `workspaces/a/output/T-1/*` | excluded workspace output | `missing`-after-import (dangling relative ref) | no | no |
-| FX-C11-OK | C11 | `custom_skill_versions(content_artifact_key="custom-skills/s/digest/SKILL.md", content_hash=<sha256>)` | `artifacts/custom-skills/s/digest/SKILL.md` matching hash | — | none (included; hash verified) | read-only | no |
+| FX-C11-OK | C11 | `custom_skill_versions(content_artifact_key="custom-skills/s/digest/SKILL.md", content_hash=<sha256>)` | `artifacts/custom-skills/s/digest/SKILL.md` matching hash (regular file, no symlink) | — | none (included; hash verified) | read-only | no |
 | FX-C11-HASHMISMATCH | C11 | same row, `content_hash=<wrong>` | file bytes differ | hash/content mismatch | `integrity` (refusal) | no | no |
 | FX-C11-MISSING | C11 | same row | file absent | missing-file | `missing` (refusal) | no | no |
+| FX-C11-OUTROOT-SYMLINK | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md → /etc/passwd` (outside root) | symlink (resolved target escapes root) | `escape` (`path_for` containment rejects resolved target) | no | no |
+| FX-C11-INROOT-SYMLINK | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md → artifacts/other` (in-root) | in-root symlink | `nonregular` — current `read()` **follows** and bytes may hash-match `content_hash`; required recursive validation refuses fail-closed | no | no |
+| FX-C11-NONREGULAR | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md` (FIFO/special) | nonregular member | `nonregular` — required recursive validation refuses | no | no |
 | FX-C12-INLINE | C12 | `custom_skill_versions(skill_md_cache="…", references_manifest=null, assets_manifest=null)` | none | inline only | none (no fs ref) | no | no |
 | FX-C13-ABSENT | C13 | no `skill_lifecycle_%` table (current-v2 DB) | none | — | none (no consumer; proceed) | no | no |
 | FX-C13-ESCAPE | C13 | `skill_lifecycle_packages(content_artifact_key="../../etc/passwd")` | — | invalid/escape key | `escape` — read-only detector refuses **before** any `Database(...)` (were the retire to run, `InvalidArtifactName` would crash the constructor) | no | no |
