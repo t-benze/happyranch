@@ -1,27 +1,31 @@
 # 01 - Requirements & Install
 
-**Purpose:** Get the HappyRanch repo installed and confirm your machine can run
-the local daemon, CLI, and web UI.
+**Purpose:** Get the HappyRanch repo installed and confirm your machine has the
+tooling needed for development or an operational macOS runtime.
 
 ## What You Need
 
-<!--
-MAINTAINER NOTE (engineering reconciliation, TASK-2738):
-- Node.js floor of 24 is set per founder ruling THR-089 (msg35, decision 1).
-- CODE DISCREPANCY at time of writing: the repo has no `engines` field in
-  `web/package.json` and no `.nvmrc`; the only Node pin is the web CI job in
-  `.github/workflows/ci.yml` (`node-version: 20`). Founder to reconcile the CI
-  pin (20) with the documented floor (24). Manual states 24 per the ruling.
-- Python floor verified against `pyproject.toml`: `requires-python = ">=3.12,<3.15"`.
--->
-
 | Requirement | Minimum / status | Why it matters |
 |---|---|---|
+| Operating system | macOS for operational use | Canonical skill delivery fails closed on Linux and Windows |
 | Python | 3.12–3.14 | Runs the HappyRanch daemon and CLI |
 | uv | Recent version | Installs Python dependencies into the local environment |
 | Git | Recent version | Clones the repo and lets agents clone managed repos |
 | Agentic CLI | At least one | Runs the actual agent sessions |
 | Node.js | 24 or newer | Needed for the web UI path |
+
+## Platform Support
+
+HappyRanch currently supports **macOS (darwin) only for operational use**. Its
+canonical skill store and workspace-symlink delivery path explicitly fails
+closed on Linux and Windows, so those systems cannot launch end-to-end agent
+sessions.
+
+Linux remains a supported development and CI environment. You can install the
+dependencies, run the Python test suite, develop and build the web UI, and use
+non-executor CLI paths on Linux. Passing those checks does not make the host an
+operational HappyRanch deployment. Continue through the runtime and first-task
+workflow only on macOS.
 
 HappyRanch supports these built-in executor profiles:
 - Claude Code (`claude`)

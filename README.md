@@ -20,6 +20,10 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 
 ## Requirements
 
+- **macOS (darwin) for operational use.** HappyRanch's canonical skill store
+  and workspace-symlink delivery path is macOS-only and fails closed on Linux
+  and Windows. Linux is supported for development and CI (Python tests, web
+  development, and builds), but it cannot run end-to-end agent sessions.
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - At least one supported agent CLI installed and authenticated:
@@ -29,6 +33,9 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
   - Pi CLI
 
 ## Setup
+
+These commands set up either a macOS runtime checkout or a Linux development
+checkout. The Quick Start that follows requires macOS.
 
 ```bash
 git clone https://github.com/t-benze/happyranch.git
