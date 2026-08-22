@@ -127,20 +127,43 @@ write site) to filesystem bytes under the org root.
   Validated first by `validate_storage_key` (regex `^[A-Za-z0-9._@+-]+$`,
   max 256 chars, rejects `..`, `/`, `\`, NUL).
 - **Direct production call sites:**
-  - upload/download: `runtime/daemon/routes/tasks.py` (task attachment routes);
+  - upload/download: `runtime/daemon/routes/tasks.py:1583`
+    (`TaskAttachmentStore(OrgPaths(org.root).task_attachments_dir)`);
   - decision-attachment validation: `validate_task_attachment_refs`
-    (`task_attachment_store.py`) called from orchestrator delegate/chain/fanout.
+    (`task_attachment_store.py`) called from orchestrator
+    delegate/chain/fanout (`run_step.py:894,943,1727,2778`);
+  - **materialization read:** `Orchestrator._materialize_task_attachments`
+    (`orchestrator.py:426`) constructs `TaskAttachmentStore` at `:473` and
+    reads each persisted `storage_key` via `store.read(att.storage_key)` at
+    `:484`.
 - **Root/path rule:** `<org>/task-attachments/<storage_key>` via
   `OrgPaths.task_attachments_dir`.
-- **Traversal/symlink containment:** `validate_storage_key` rejects separators
-  and `..`; `path_for` additionally resolves and asserts in-root containment.
-- **Validation/integrity:** storage-key token shape + existence on disk +
-  "not already claimed" (DB lookup) at claim time.
+- **Traversal/symlink containment (actual current behavior):**
+  `validate_storage_key` rejects separators and `..` at the string level.
+  `path_for` then resolves the target and asserts the **resolved** target stays
+  inside the store root (`task_attachment_store.py:177,184–199`). This rejects
+  a symlink whose resolved target escapes the root, but it does **not** reject
+  symlinks as such: an **in-root symlink** (a link whose target is another file
+  inside `task-attachments/`) passes containment, and `read()` subsequently
+  follows it (`:224–230`). The org-root classifier (`roots.py:122–155`)
+  inspects only direct org children, so a nested symlink/nonregular member is
+  not caught there either.
+- **Validation/integrity (required future portability validation — not present
+  today):** capture/import must reject **every** symlink and every nonregular
+  (FIFO/socket/device) member at any depth under `task-attachments/`, fail
+  closed (`nonregular`), before any read; the token-shape + in-root containment
+  check is insufficient for that boundary. The runtime integrity rules (token
+  shape + existence on disk + "not already claimed" DB lookup at claim time)
+  remain unchanged.
 - **Recoverability:** missing file → `TaskAttachmentNotFound` / structured
   `task_attachment_not_found`; invalid key → `TaskAttachmentInvalidStorageKey`.
 - **Disposition:** `include` — `task-attachments` is an allow-listed root; the
-  key is a flat safe token (no absolute path, no traversal vector).
-- **Fixtures:** FX-C1-OK, FX-C1-MISSING, FX-C1-ESCAPE, FX-C1-SYMLINK.
+  key is a flat safe token (no absolute path, no traversal vector). **Gated:**
+  the include is valid only once the future capture/import validation rejects
+  in-root symlinks and nonregular members (today an in-root symlink is
+  admitted, so current behavior ≠ required portability boundary).
+- **Fixtures:** FX-C1-OK, FX-C1-MISSING, FX-C1-ESCAPE, FX-C1-SYMLINK,
+  FX-C1-INROOT-SYMLINK, FX-C1-NONREGULAR.
 
 ### C2 — `thread_message_attachments.artifact_name` → shared `ArtifactStore`
 
@@ -160,20 +183,46 @@ write site) to filesystem bytes under the org root.
 
 ### C3 — `thread_scoped_attachments.attachment_id` → `ThreadScopedAttachmentStore`
 
-- **Producer:** `thread_scoped_attachments.attachment_id` (TEXT UNIQUE); an
-  opaque token, scoped by `thread_id`. `database.py` lines ~940–951.
+- **Producer:** `thread_scoped_attachments.attachment_id` (TEXT UNIQUE) plus
+  `thread_id` (TEXT, FK → `threads.id`); both are DB-held identifiers that are
+  concatenated into a path. `database.py` lines ~940–951.
 - **Resolver:** `runtime/infrastructure/thread_scoped_attachment_store.py`
   `ThreadScopedAttachmentStore.path_for(thread_id, attachment_id)` →
-  `<threads_root>/<thread_id>/attachments/<attachment_id>`.
+  `_attachments_dir(thread_id) / attachment_id` =
+  `<threads_root>/<thread_id>/attachments/<attachment_id>` (`:26–32`);
+  `_attachments_dir` also `mkdir(parents=True)`s the resulting path.
 - **Call sites:** `runtime/daemon/routes/threads.py` `_attachment_store(org)`
   (line ~2810 constructs the store at `OrgPaths(org.root).threads_dir`);
-  reads at line ~2909, writes at ~2960.
+  reads at line ~2909 (`store.read(thread_id, attachment_id)` → `:54–60`
+  follows the path), writes at ~2960.
 - **Root:** `<org>/threads/<thread_id>/attachments/<attachment_id>`.
-- **Traversal:** `thread_id` is a DB PK (`THR-NNN` shape); `attachment_id` is a
-  store-generated token (`org.db.next_thread_attachment_id()`). No independent
-  regex in this store — containment relies on those two identifiers.
-- **Disposition:** `include` — `threads` is allow-listed.
-- **Fixtures:** FX-C3-OK, FX-C3-MISSING.
+- **Containment/identifier validation (actual current behavior):** **none.**
+  `path_for` concatenates the two DB values and returns the path with no
+  segment validation, no separator/`..`/absolute rejection, and no
+  symlink/nonregular check; `read()` follows it. Route-created `thread_id`
+  (`THR-NNN`) and `attachment_id` (`org.db.next_thread_attachment_id()`) are
+  generated, **but a staged/imported DB is the trust boundary this document
+  covers, and route generation does not secure it**. The org-root classifier
+  only inspects direct org children, so it does not catch a malicious nested
+  identifier.
+- **Validation/integrity (required future portability validation — not present
+  today):** before any `include`, `thread_id` and `attachment_id` must each be
+  validated as a **single safe path segment** — nonempty, matching a safe-token
+  regex (no `/`, `\`, NUL, no `..`, no leading `.`), not absolute — and the
+  fully-resolved path must remain within `<org>/threads/<thread_id>/attachments/`;
+  additionally the target must be a regular file (reject symlink and nonregular)
+  at capture/import, fail closed.
+- **Recoverability:** missing file → `KeyError` (`attachment … not found in
+  thread …`) at read; an escaping identifier is **not** rejected today and
+  would resolve outside the root.
+- **Disposition:** `conditional` / **reject-until-staged-validation** — `threads`
+  is allow-listed, but the DB identifiers are unvalidated today. The row is
+  portable **only after** the staged-DB containment/segment + symlink/nonregular
+  validation above is enforced; until then a malicious DB identifier must be
+  treated as a refusal (`escape`/`nonregular`), not included. Do **not** claim
+  route-generated IDs secure an imported DB.
+- **Fixtures:** FX-C3-OK, FX-C3-MISSING, FX-C3-ESCAPE, FX-C3-SYMLINK,
+  FX-C3-NONREGULAR.
 
 ### C4 — `jobs.stdout_path` / `jobs.stderr_path` → direct `open()` by **absolute** path
 
@@ -319,6 +368,55 @@ write site) to filesystem bytes under the org root.
   manifests re-enters the map.
 - **Fixtures:** FX-C12-INLINE.
 
+### C13 — `skill_lifecycle_packages.content_artifact_key` → `ArtifactStore.delete` (legacy, constructor-time)
+
+- **Producer table/field/shape:** legacy `skill_lifecycle_packages` table
+  (retired; **not** created by current `_create_tables`), column
+  `content_artifact_key` (TEXT, nullable) — a **nested artifact key** (relative
+  path in the org artifact store, e.g. `custom-skills/<slug>/<digest>/SKILL.md`)
+  written by `ArtifactStore.put(...)` under the pre-canonical skill-lifecycle
+  pilot (THR-055). Distinct from `custom_skill_versions.content_artifact_key`
+  (C11).
+- **Resolver + direct production call site:** `Database.__init__`
+  (`database.py:153`) calls `self._retire_skill_lifecycle_if_present()` at
+  `:170` — **before** `self._create_tables()` at `:171`, and after
+  `_migrate_jobs_table_if_needed` / `_migrate_drop_talk_surface_if_needed`
+  (`:167–168`). The retire routine (`:199–240`) selects every non-null
+  `content_artifact_key` (`:212–218`), drops the `skill_lifecycle_%` tables in
+  one transaction (`:220–230`), then constructs
+  `store = ArtifactStore(self.db_path.parent / "artifacts")` (`:235`) and calls
+  `store.delete(artifact_key)` per key (`:236–239`), swallowing only
+  `ArtifactNotFound`.
+- **Action/path semantics:** this is a **destructive delete** (unlink of the
+  artifact blob under `<org>/artifacts/<key>`), not a read, and it fires on
+  **every** `Database(...)` construction whenever a legacy
+  `skill_lifecycle_%` table is still present. It therefore mutates the source
+  DB (drops tables) and the source artifact tree (deletes blobs) as a
+  constructor side effect.
+- **Validation/integrity (actual current behavior):** `ArtifactStore.delete`
+  runs `validate_name` + `path_for` (so an escaping/absolute key raises
+  `InvalidArtifactName`, which is **not** caught here and would crash the
+  constructor), then `unlink()`s whatever regular-or-symlink path passes
+  containment (an in-root symlink is unlinked; an out-of-root symlink raises
+  `path_traversal`). A missing artifact raises `ArtifactNotFound`, which is
+  swallowed (no-op). No symlink/nonregular distinction beyond
+  `validate_name`/containment is made.
+- **Recoverability:** missing artifact → `ArtifactNotFound` (swallowed, no-op);
+  invalid/escape key → `InvalidArtifactName` escapes the constructor (crash
+  vector); symlink → unlinked (the link removed, its target untouched).
+- **Disposition/detection requirement:** `reject`-until-retired. A legacy
+  `skill_lifecycle_%` table must be detected by a **read-only pre-connection
+  schema inspection** (e.g. `SELECT name FROM sqlite_master WHERE name LIKE
+  'skill_lifecycle_%'` on a read-only connection, or equivalent raw-file
+  inspection) **before any `Database(...)` construction** — never by
+  constructing a `Database`, because that would itself fire the destructive
+  retire (see §5's detect-before-any-constructor rule). If a legacy table with
+  any non-null `content_artifact_key` is present, the exporter refuses
+  (`legacy_skill_lifecycle_unretired`); the source must be retired by the normal
+  daemon (or deliberately) before export. On any healthy DB the table is
+  already dropped and the referenced blobs already deleted.
+- **Fixtures:** FX-C13-ABSENT, FX-C13-ESCAPE, FX-C13-MISSING, FX-C13-SYMLINK.
+
 ---
 
 ## 3. "No consumer found" — tables/fields inspected without a filesystem resolver
@@ -347,6 +445,14 @@ prevent a future implementer from assuming a path dependency exists.
 | Direct-connect authority DB | `<runtime_root>/direct_connect_authority.db` (`state.py:67–68`) | Machine-global. |
 | Daemon home | `daemon.pid`, `daemon.port`, `daemon.token`, `runtimes.yaml`, `config.yaml` | Machine-specific lifecycle/credential files. |
 
+**Accounting note — `skill_lifecycle_packages` is a consumer, not "no
+consumer".** The legacy `skill_lifecycle_packages.content_artifact_key` column
+*does* resolve DB-held data to filesystem bytes (via `ArtifactStore.delete` at
+`Database.__init__`), so it is mapped as **C13 in §2**, not listed here. A
+future implementer must not assume the legacy lifecycle tables are inert — they
+carry a destructive constructor-side-effect consumer (see C13). The distinct
+current-v2 `custom_skill_versions.content_artifact_key` is C11.
+
 ---
 
 ## 4. Fixture registry
@@ -366,13 +472,18 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C1-OK | C1 | `task_attachments(task_id=T-1, storage_key="abc123", …)` | `task-attachments/abc123` (regular) | — | none (included) | no | no |
 | FX-C1-MISSING | C1 | same row | file absent | missing-file | `missing` (refusal/empty on read) | no | no |
 | FX-C1-ESCAPE | C1 | row with `storage_key="../evil"` | — | escaped-path | `escape` (validate_storage_key rejects `..`) | no | no |
-| FX-C1-SYMLINK | C1 | row with `storage_key="link"` | `task-attachments/link → /etc/passwd` | symlink/nonregular | `nonregular` (in-root resolve rejects symlink) | no | no |
+| FX-C1-SYMLINK | C1 | row with `storage_key="link"` | `task-attachments/link → /etc/passwd` (outside root) | symlink (resolved target escapes root) | `escape` (path_for containment rejects resolved target) | no | no |
+| FX-C1-INROOT-SYMLINK | C1 | row with `storage_key="link"` | `task-attachments/link → task-attachments/other` (in-root) | in-root symlink | `nonregular` — current code **admits** (containment passes, `read()` follows); required capture/import must refuse fail-closed | no | no |
+| FX-C1-NONREGULAR | C1 | row with `storage_key="fifo1"` | `task-attachments/fifo1` (FIFO/special) | nonregular member | `nonregular` — required capture/import must refuse | no | no |
 | FX-C2-OK | C2 | `thread_message_attachments(artifact_name="reports/q2.pdf")` | `artifacts/reports/q2.pdf` (regular) | — | none (included) | no | no |
 | FX-C2-MISSING | C2 | same row | file absent | missing-file | `missing` | no | no |
 | FX-C2-ESCAPE | C2 | `artifact_name="../../etc/passwd"` | — | escaped-path | `escape` (validate_name rejects) | no | no |
 | FX-C2-SYMLINK | C2 | `artifact_name="reports/x"` | `artifacts/reports/x → outside` | symlink/nonregular | `nonregular` | no | no |
 | FX-C3-OK | C3 | `thread_scoped_attachments(attachment_id="att-1", thread_id="THR-1")` | `threads/THR-1/attachments/att-1` | — | none (included) | no | no |
 | FX-C3-MISSING | C3 | same row | file absent | missing-file | `missing` | no | no |
+| FX-C3-ESCAPE | C3 | `thread_scoped_attachments(thread_id="../..", attachment_id="att-1")` | — | staged-DB escape identifier | `escape` — no validation today (would resolve outside root); required segment validation refuses | no | no |
+| FX-C3-SYMLINK | C3 | same row, `attachment_id="att-1"` | `threads/THR-1/attachments/att-1 → outside` | symlink/nonregular | `nonregular` — required capture/import refuses | no | no |
+| FX-C3-NONREGULAR | C3 | same row | `threads/THR-1/attachments/att-1` (FIFO/special) | nonregular member | `nonregular` — required capture/import refuses | no | no |
 | FX-C4-ABS | C4 | `jobs(id="JOB-9", stdout_path="<src>/jobs/JOB-9.out", stderr_path="<src>/jobs/JOB-9.err")` | `jobs/JOB-9.out`, `jobs/JOB-9.err` | **absolute path re-resolution** | import-time rebase (target-local) — see §9 | read-only | yes (rebase) |
 | FX-C4-MISSING | C4 | same row | files absent | missing-file | `missing` (empty stream) | no | no |
 | FX-C5-REL | C5 | `jobs(cwd_hint="../escape")` | — | escaped-path (input) | `escape` (`_validate_cwd_hint` rejects `..`) | no | no |
@@ -385,6 +496,10 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C11-HASHMISMATCH | C11 | same row, `content_hash=<wrong>` | file bytes differ | hash/content mismatch | `integrity` (refusal) | no | no |
 | FX-C11-MISSING | C11 | same row | file absent | missing-file | `missing` (refusal) | no | no |
 | FX-C12-INLINE | C12 | `custom_skill_versions(skill_md_cache="…", references_manifest=null, assets_manifest=null)` | none | inline only | none (no fs ref) | no | no |
+| FX-C13-ABSENT | C13 | no `skill_lifecycle_%` table (current-v2 DB) | none | — | none (no consumer; proceed) | no | no |
+| FX-C13-ESCAPE | C13 | `skill_lifecycle_packages(content_artifact_key="../../etc/passwd")` | — | invalid/escape key | `escape` — read-only detector refuses **before** any `Database(...)` (were the retire to run, `InvalidArtifactName` would crash the constructor) | no | no |
+| FX-C13-MISSING | C13 | `skill_lifecycle_packages(content_artifact_key="custom-skills/s/digest/SKILL.md")` | artifact file absent | missing-file | `missing` — `ArtifactNotFound` swallowed (no-op) if the retire ran; detector still refuses before any construction | no | no |
+| FX-C13-SYMLINK | C13 | same row | `artifacts/custom-skills/s/digest/SKILL.md` → in-root symlink | symlink/nonregular | `nonregular` — detector refuses (or, were the retire to run, `unlink()` removes the link only) | no | no |
 
 Every consumer-map row in §2 has at least one fixture; every fixture names a
 specific consumer.
