@@ -2,7 +2,7 @@
 
 > **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
 > now uses the **canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. The executor
+> (macOS and Linux). The legacy per-session copy model is REMOVED. The executor
 > and daemon share the same OS identity — linked, validated relative skill
 > links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
 > user-facing and executor-facing guidance surface names both roots.
@@ -11,7 +11,8 @@
 > See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
 > symlinks" for ownership, provenance, link validation, refusal/withdrawal/
 > retention semantics, integrity verification, and the compatibility-fallback
-> boundary. Linux and Windows are NOT supported — explicitly fail closed.
+> boundary. Windows and unknown platforms are NOT supported — explicitly fail
+> closed.
 >
 > **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
 > protected, or claim write/chmod/ACL denial. The prompt guard is operational
@@ -26,6 +27,15 @@
 > custom artifacts has occurred outside the compromised same-owner local
 > source before recovery can safely materialize again. Policy withdrawal
 > and atomic link repair remain safe.
+
+**Supported host contract:** macOS (darwin) and native Linux use the same
+same-owner POSIX adapter: relative symlinks, same-directory ``os.replace``,
+cosmetic chmod hardening, and direct ``subprocess.Popen`` launch. Linux hosts
+must provide those filesystem/process semantics; missing primitives fail
+through the existing named refusal paths. Containers and network filesystems
+are supported only when they preserve those semantics. Windows and unknown
+platforms have no fallback. See the current Linux design in
+``docs/superpowers/specs/2026-08-22-linux-canonical-store-design.md``.
 
 # Agent Executors And Permissions
 

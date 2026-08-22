@@ -35,11 +35,12 @@ def seed_test_agents(paths: OrgPaths, names: tuple[str, ...] | None = None) -> N
 
 
 # ── Test-mode platform isolation ──────────────────────────────────────
-# Test environments may not have distinct macOS executor accounts.
+# Test environments use a same-owner launch double so subprocess mocks remain
+# interceptable on both supported platforms.
 # This fixture monkeypatches detect_platform_isolation to return a
 # test-mode isolation that permits same-owner launches (the user running
-# the tests IS both daemon and executor). Real isolation tests against
-# available accounts live in test_canonical_production_bound.py.
+# the tests IS both daemon and executor). Direct platform evidence lives in
+# test_canonical_production_bound.py and the Linux platform operation tests.
 
 _TEST_ISOLATION_FIXTURE_ACTIVE = True
 
@@ -48,33 +49,28 @@ _TEST_ISOLATION_FIXTURE_ACTIVE = True
 def _test_mode_platform_isolation(monkeypatch):
     """Install a test-mode platform detector that permits same-owner launches.
 
-    Real isolation tests in test_canonical_production_bound.py call
-    detect_platform_isolation directly (bypassing the monkeypatch) or
-    are skipped on non-provisioned hosts.
+    Set HAPPYRANCH_TEST_REAL_PLATFORM=1 in platform-specific CI to exercise
+    the production adapter throughout the canonical-store suites.
     """
-    if not _TEST_ISOLATION_FIXTURE_ACTIVE:
+    import os
+
+    if (
+        not _TEST_ISOLATION_FIXTURE_ACTIVE
+        or os.environ.get("HAPPYRANCH_TEST_REAL_PLATFORM") == "1"
+    ):
         yield
         return
 
     from runtime.platform.isolation import (
         PlatformIsolation,
         PlatformIsolationError,
-        _MacOSPlatformIsolation as _RealMacOSIsolation,
         detect_platform_isolation as _real_detect,
     )
-    import os
     import subprocess
     import sys
 
-    # Try to get the real isolation; if it fails (unsupported platform),
-    # create a test-only stub.
-    try:
-        _real_isolation = _real_detect()
-    except PlatformIsolationError:
-        _real_isolation = None
-
-    class _TestMacOSIsolation(PlatformIsolation):
-        """Test-mode macOS isolation for unit tests.
+    class _TestPlatformIsolation(PlatformIsolation):
+        """Test-mode same-owner isolation for unit tests.
 
         The test process runs as both daemon and executor — the executor
         and daemon share the same OS identity.
@@ -160,10 +156,7 @@ def _test_mode_platform_isolation(monkeypatch):
             )
 
     def _test_detect():
-        if sys.platform == "darwin":
-            return _TestMacOSIsolation()
-        else:
-            return _TestMacOSIsolation()  # fallback for test environments
+        return _TestPlatformIsolation()
 
     monkeypatch.setattr(
         "runtime.platform.isolation.detect_platform_isolation",

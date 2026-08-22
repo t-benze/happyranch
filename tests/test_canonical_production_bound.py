@@ -7,9 +7,8 @@ Addresses TASK-4001 findings:
 - Finding 6: ORG_SLUG handling with session/task org-context mechanism
 - Finding 7: B2 manifest provenance + canonical integration
 
-Tests in this file represent the production-bound expectation. Some tests
-require real OS-level same-owner operation validation (macOS only) and will
-report their prerequisite gap rather than manufacturing a false pass.
+Tests in this file represent the production-bound expectation for the shared
+same-owner macOS/Linux model.
 """
 
 from __future__ import annotations

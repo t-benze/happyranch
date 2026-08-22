@@ -13,8 +13,8 @@
 > share the same OS identity — integrity is enforced by synchronous pre-launch
 > hash detection against ledger-declared member hashes with DETECTION-ONLY,
 > FAIL-CLOSED refusal (no automatic repair from same-UID local source).
-> **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections
-> below are preserved for historical reference.
+> **macOS (darwin) and Linux**; Windows and unknown platforms fail closed. The
+> legacy sections below are preserved for historical reference.
 
 The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 

@@ -185,6 +185,13 @@ def live_daemon(
     # Disable executor launch spacing (issue #85) so integration runs stay fast
     # and deterministic — the 1.5s default would serialize same-provider launches.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
+    # Executor launch is registration-only. Pin the test binaries in the
+    # isolated machine-local registry before the daemon starts.
+    from runtime.orchestrator.executor_binary_registry import save_registry
+    save_registry({
+        "claude": str(fake_claude),
+        "codex": str(fake_codex),
+    })
     from runtime.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)

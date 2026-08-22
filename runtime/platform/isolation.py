@@ -1,15 +1,15 @@
-"""macOS platform isolation for the canonical skill store.
+"""POSIX platform operations for the canonical skill store.
 
 Provides narrowly scoped platform operations for the canonical skill store
 and workspace link architecture.
 
-**SUPPORTED: macOS (darwin) only.**
-Linux and Windows are NOT supported in this release; attempts to use them
-fail closed with an explicit error.
+**SUPPORTED: macOS (darwin) and Linux.**
+Windows and unknown platforms are NOT supported; attempts to use them fail
+closed with an explicit error.
 
 **Delivery model:**
 
-The executor and daemon share the same OS identity on macOS. Linked,
+The executor and daemon share the same OS identity. Linked,
 validated relative skill links live under BOTH ``.claude/skills`` and
 ``.agents/skills``. Every user-facing and executor-facing guidance surface
 names both roots. Guidance is operational, not a technical security boundary.
@@ -74,7 +74,7 @@ class PlatformIsolationError(Exception):
 class PlatformIsolation(ABC):
     """Abstract platform isolation layer.
 
-    macOS implementation provides:
+    Supported POSIX implementations provide:
     - Workspace symlink creation and validation
     - Executor process launch
     """
@@ -131,11 +131,11 @@ class PlatformIsolation(ABC):
         ...
 
 
-# ── macOS implementation ────────────────────────────────────────────
+# ── Same-owner POSIX implementation ─────────────────────────────────
 
 
-class _MacOSPlatformIsolation(PlatformIsolation):
-    """macOS platform isolation.
+class _PosixSameOwnerIsolation(PlatformIsolation):
+    """Shared same-owner implementation for supported POSIX platforms.
 
     The executor and daemon share the same OS identity — there is NO
     OS-level isolation. An agent-controlled executor process can
@@ -151,7 +151,7 @@ class _MacOSPlatformIsolation(PlatformIsolation):
     def create_relative_symlink(
         self, target: Path, link_path: Path,
     ) -> None:
-        """Create a validated relative symlink on macOS.
+        """Create a validated relative symlink on a supported POSIX host.
 
         Validates:
         - target is not absolute (relative symlinks only)
@@ -238,7 +238,7 @@ class _MacOSPlatformIsolation(PlatformIsolation):
         stderr=subprocess.PIPE,
         text: bool = True,
     ) -> subprocess.Popen:
-        """Launch a subprocess as the executor on macOS.
+        """Launch a subprocess directly under the daemon's identity.
 
         The executor launches DIRECTLY under the daemon's own identity —
         there is NO OS-level isolation. The executor can read, write, or
@@ -262,32 +262,48 @@ class _MacOSPlatformIsolation(PlatformIsolation):
                 text=text,
                 env=base_env,
             )
-        except subprocess.SubprocessError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             raise PlatformIsolationError(
                 "executor_launch_failed",
                 f"Failed to launch executor process: {exc}",
             ) from exc
 
 
+class _MacOSPlatformIsolation(_PosixSameOwnerIsolation):
+    """macOS same-owner canonical-store operations."""
+
+
+class _LinuxPlatformIsolation(_PosixSameOwnerIsolation):
+    """Linux same-owner canonical-store operations.
+
+    Requires native POSIX relative-symlink, same-directory ``os.replace``,
+    chmod, and direct subprocess semantics. These primitives provide atomic
+    publication and detection-only integrity checks; they do not isolate the
+    canonical store from another process running under the daemon UID.
+    """
+
+
 # ── Detection ───────────────────────────────────────────────────────
 
 # Canonical platform names for error messages
-_SUPPORTED_PLATFORMS = frozenset({"darwin"})
+_SUPPORTED_PLATFORMS = frozenset({"darwin", "linux"})
 
 
 def detect_platform_isolation() -> PlatformIsolation:
     """Detect and return the platform isolation implementation.
 
-    **macOS (darwin) only.** Linux and Windows are NOT supported in this
-    release. Attempts to instantiate isolation on unsupported platforms
-    raise PlatformIsolationError with an explicit failure message.
+    macOS (darwin) and Linux use the explicit same-owner POSIX
+    implementations. Windows and unknown platforms raise
+    PlatformIsolationError with an explicit failure message; there is no
+    fallback.
     """
     if sys.platform == "darwin":
         return _MacOSPlatformIsolation()
-    else:
-        raise PlatformIsolationError(
-            "unsupported_platform",
-            f"Canonical skill store isolation requires macOS (darwin). "
-            f"Current platform '{sys.platform}' is not supported. "
-            "Linux and Windows must explicitly fail closed — no fallback.",
-        )
+    if sys.platform == "linux":
+        return _LinuxPlatformIsolation()
+    raise PlatformIsolationError(
+        "unsupported_platform",
+        "Canonical skill store operations require macOS (darwin) or Linux. "
+        f"Current platform '{sys.platform}' is not supported. "
+        "Unsupported platforms fail closed — no fallback.",
+    )

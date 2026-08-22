@@ -450,7 +450,7 @@ unioned across all ordinary session contexts so a later single-context launch
 never withdraws a valid link belonging to another context; release-managed and
 B2 custom-skill links remain policy-reconciled and withdrawable.
 
-#### Canonical skill store + workspace symlinks (macOS-only)
+#### Canonical skill store + workspace symlinks (macOS and Linux)
 
 As of TASK-4009/TASK-4012, skill materialization uses a **canonical skill store**
 outside executor workspaces. Skills are built once into hash-addressed packages
@@ -458,12 +458,13 @@ and workspace entries are **validated relative symlinks** to exact approved
 package versions under both `.claude/skills` and `.agents/skills` roots
 (including Codex, Opencode, Pi, and mapped custom profiles).
 
-**Supported platform:** macOS (darwin) only. Linux and Windows explicitly fail
-closed before launch/materialization with a named `PlatformIsolationError`.
+**Supported platforms:** macOS (darwin) and Linux. Windows and unknown platforms
+explicitly fail closed before launch/materialization with a named
+`PlatformIsolationError`.
 
 **Delivery model (same-owner):**
 
-The executor and daemon share the same OS identity on macOS. Linked,
+The executor and daemon share the same OS identity on macOS and Linux. Linked,
 validated relative skill links live under BOTH ``.claude/skills`` and
 ``.agents/skills`` (including Codex, Opencode, Pi, and mapped custom
 profiles). Every user-facing and executor-facing guidance surface names
@@ -530,7 +531,11 @@ same-UID process may also tamper with artifact bytes. This is
 detection-only with fail-closed refusal; it is NOT an attacker-independent
 external attestation authority.
 
-**Isolation contract (macOS):**
+**Platform contract (macOS and Linux):**
+- Both platforms use native POSIX relative symlinks, same-directory
+``os.replace`` publication, cosmetic chmod hardening, and direct same-identity
+``subprocess.Popen`` launch. Linux support assumes filesystems preserve those
+semantics; missing primitives fail through the existing named refusal paths.
 - The executor launches directly under the daemon's identity. The prompt
 guard directs agents not to edit managed skill links and states that
 integrity verification is not a security boundary.
