@@ -1,11 +1,16 @@
-# Offline organization relocation — founder-operated runbook (THR-187)
+# Offline organization relocation — founder-operated staging runbook (THR-187)
 
-> **Status:** manual runbook for a **one-time, founder-operated, maintenance-window
-> move**. It is **not** the deferred archive/import/activation product (THR-187
-> Slice B/C), and it is not an authorization to build that automation. The
-> current `runtime/` head implements only **Slice A** (read-only preflight +
-> founder-only zombie reconciliation, PR #680). Everything else below is a manual
-> procedure performed with ordinary `sqlite3`, `tar`, and checksum tooling.
+> **Status:** manual runbook for the **staging phase only** of a one-time,
+> founder-operated, maintenance-window move. It covers **export, transfer,
+> verification, and private staging/validation of a candidate payload** — and
+> then **stops before destination publication or destination-daemon start**.
+> Publication, import admission, and activation are **deferred** to the
+> separately reviewed Slice B and Slice C procedures (§13). It is **not** an
+> authorization to build that automation, and it does **not** complete a
+> relocation. The current `runtime/` head implements only **Slice A**
+> (read-only preflight + founder-only zombie reconciliation, PR #680).
+> Everything else below is a manual procedure performed with ordinary
+> `sqlite3`, `tar`, and checksum tooling.
 >
 > Evidence for every statement here is the shipped code at the current head and
 > the Step-0 evidence gate at
@@ -13,18 +18,26 @@
 
 ## 1. Product boundary — what this procedure is and is not
 
-This runbook relocates **one existing current-v2 org, under the same slug, into
-an absent destination slug** on another (or the same) runtime, during a
-founder-maintained offline window.
+This runbook prepares **one existing current-v2 org, under the same slug**, for
+relocation into an absent destination slug on another (or the same) runtime,
+during a founder-maintained offline window. It **exports** the org's portable
+roots, **transfers** them over a secure channel, and **privately stages and
+validates** a candidate payload on the destination — then **stops before
+destination publication or destination-daemon start**.
 
-It is **only** that. It is **not** any of the following, and you must not
-attempt any of them as part of this move:
+It is **only** that staging work. It is **not** any of the following, and you
+must not attempt any of them as part of this move:
 
+- destination publication — placing the staged payload at the live
+  `<dest-runtime>/orgs/<source-slug>` path (deferred **Slice B**, §13);
+- starting the destination daemon after staging (a destination may only ever be
+  started after a safely published, **admitted** target — neither ships today);
 - a clone, a source deletion, or a merge/overwrite of two orgs;
 - credential or daemon-token transfer;
 - an online fence, a retry/receipt protocol, or an automatic rebind;
 - automatic schedule rearm or any activation of the imported org (that is
   **Slice C**, a separately reviewed future procedure — §13);
+- import admission / no-replace publication (that is **Slice B**, §13);
 - a v0/v1 layout conversion (every non-current-v2 layout is a named refusal,
   never an auto-upgrade).
 
@@ -65,9 +78,10 @@ On **both** the source and destination machines you need:
   portable — use `cd <dir> && pwd -P`). Reject any path that is a symlink or
   contains a symlink component.
 
-The source org root is `<source-runtime>/orgs/<source-slug>`; the destination
-publish target is `<dest-runtime>/orgs/<source-slug>` (same slug). The
-destination slug must be **absent** (§11).
+The source org root is `<source-runtime>/orgs/<source-slug>`; the **future**
+destination publish target is `<dest-runtime>/orgs/<source-slug>` (same slug) —
+this runbook stages a candidate payload but does **not** publish to it (§11).
+The destination slug must be **absent** (§11).
 
 ## 4. Portable roots — the allow-list (derived from the shipped classifier)
 
@@ -120,16 +134,18 @@ populated `custom_skill_versions.references_manifest` / `assets_manifest`
 
 ## 5. The inactive marker (`org/.happyranch-imported-inactive.json`)
 
-Exactly one durable, target-only handoff record exists. It is a regular file
-named `org/.happyranch-imported-inactive.json`, and it is:
+Exactly one durable, target-only handoff record is defined for the future
+import path. It is a regular file named
+`org/.happyranch-imported-inactive.json`, and it is:
 
 - **excluded on export** — never copied from a source org; if a source org
   somehow contains one, treat the presence as an anomaly and stop;
 - **rejected on import** — any archive that supplies this path is refused, no
   matter what its manifest/digest says;
-- **created by you, in private destination staging, immediately before publish**
-  (§11), restrictive permissions (`chmod 600`), regular file, derived only from
-  locally verified inputs;
+- **optionally constructed and validated by you in private destination staging**
+  as a candidate handoff record (§11) — restrictive permissions (`chmod 600`),
+  regular file, derived only from locally verified inputs — but **never
+  published** by this runbook;
 - **never source authority** — it is destination handoff evidence, not portable
   source data.
 
@@ -144,10 +160,18 @@ Content (single JSON object):
 }
 ```
 
-The current runtime does **not** yet read this marker; the `imported_inactive`
-admission classifier that honors it is a deferred Slice B deliverable. Until
-that lands, the marker is a signal to every human operator and to the future
-rearm procedure that this org is imported and must stay non-operational (§13).
+The current runtime does **not** read this marker at org admission: discovery
+accepts any non-reserved slug whenever `org/teams.yaml` exists
+(`RuntimeDir.iter_org_roots`), with **no** marker admission check. The
+`imported_inactive` admission classifier that would honor this marker is a
+deferred **Slice B** deliverable and does **not** ship today.
+
+Because the marker is not enforced, it **cannot** keep a published org inactive
+or non-operational, and it does **not** make a staged tree authoritative or
+admitted. A staged marker is only a candidate handoff record for the future
+Slice-B admission step. This is why the runbook stops before publication and
+before any destination-daemon start (§11): a started destination would operate
+the imported org regardless of any marker you staged.
 
 ## 6. Phase A — Deploy and calibrate Slice-A preflight on both instances
 
@@ -285,9 +309,9 @@ shasum -a 256 "$STAGE/org-archive.tar.gz"                  # record this value
 ```
 
 **Source is preserved fully.** Source deletion is a **separate** decision made
-only after destination validation succeeds (§12); do nothing to the source org
-here. Leave the source daemon stopped until you have finished validating the
-destination.
+only after a published, admitted, and validated destination exists (Slice B,
+then §13); do nothing to the source org here. Leave the source daemon stopped
+for the remainder of this runbook — no step restarts it.
 
 ## 10. Phase E — Transfer
 
@@ -299,7 +323,7 @@ your chosen **secure** channel. The archive is unsigned, unencrypted plaintext
 shasum -a 256 org-archive.tar.gz   # must equal the recorded value
 ```
 
-## 11. Phase F — Import (verify → stage → validate → publish → marker)
+## 11. Phase F — Staging (verify → extract → validate → STOP before publication)
 
 Run this on the destination machine. `$DST=<dest-runtime>/orgs/<source-slug>`;
 staging is `<dest-runtime>/orgs/_pending/<operation-id>` (the `_pending` name is
@@ -316,7 +340,9 @@ scripts/daemon.sh status                        # "not running"
 test ! -e "$DST" && test ! -L "$DST" && echo "slug absent"
 ```
 
-The slug must be absent including any symlink or broken entry.
+The slug must be absent including any symlink or broken entry. (This confirms
+the future publish target is still clear; this runbook does **not** publish to
+it.)
 
 **3. Extract into private staging and reject unsafe members.** Extract into
 `<dest-runtime>/orgs/_pending/<operation-id>/`, then reject before doing
@@ -340,66 +366,80 @@ Step-0 map (C1–C13) resolves to a staged regular file with no symlink/escape;
 treat any missing, escaping, symlinked, or data-shaped refusal (C12b/C12c/C13)
 as a stop. If you cannot confirm a consumer resolves, escalate — do not guess.
 
-**5. Publish with a same-filesystem, no-replace primitive.** Staging
-(`_pending/`) is on the destination filesystem, a sibling of the publish target,
-so publication is a same-filesystem operation. The no-replace primitive is
-`mkdir`, which fails atomically if the name already exists in any form:
+**5. Optionally construct the marker in staging — never publish it.** If you
+want to retain a candidate handoff record for the future Slice-B admission
+step, write the §5 JSON (slug + validated archive SHA-256 +
+`state: imported_inactive`) as
+`<dest-runtime>/orgs/_pending/<operation-id>/org/.happyranch-imported-inactive.json`,
+`chmod 600`, regular file, then validate it parses and its `archive_sha256`
+matches the recorded value. This staged marker is **not** published, does
+**not** make the staged tree authoritative, and does **not** keep anything
+inactive — the current runtime does not read it (§5).
 
-```bash
-mkdir "$DST"                     # EEXIST ⇒ stop; the name is now reserved
-# then rename the staged tree's contents into the freshly-created, empty dir
-```
+**6. STOP before destination publication and before destination-daemon start.**
+This runbook ends here. There is **no publication step and no destination
+start**: a destination daemon may only ever be started after a safely
+published, **admitted** target, and neither the Slice-B import-admission nor
+the no-replace publication capability ships today (§13). Do **not** use
+`mkdir "$DST"` then move contents, do **not** use `mv`/`cp -r` onto a
+pre-existing path, and do **not** use `os.replace` — there is no documented
+atomic no-replace publication in this runbook, and inventing one risks a
+partially populated, discoverable org. Leave both daemons stopped and the
+staged payload inside its own `_pending/<operation-id>` directory. Proceed to
+§12 for the bounded post-staging cleanup and escalation rules.
 
-Do **not** use `mv`/`cp -r` onto a pre-existing path, do **not** use
-`os.replace`, and do **not** use an overwrite fallback. If `mkdir` fails, the
-slug is not absent — inspect and stop.
+## 12. Phase G — Post-staging: bounded cleanup, escalation, and end state
 
-**6. Create the marker in staging, then publish it with the tree.** Write the
-§5 JSON (slug + validated archive SHA-256 + `state: imported_inactive`) as
-`$DST/org/.happyranch-imported-inactive.json`, `chmod 600`, regular file —
-before the tree is considered published. (In the deferred automation this is
-generated in staging immediately before publish; in the manual run it must be
-present before you start the destination daemon.)
+There is **no publication step** in this runbook, so there is no
+post-publication state to reconcile and the staged tree is **not**
+authoritative. Every failure or inconsistency is a **staging failure**: there
+is **no retry and no overwrite**. Inspect and clean **only** the exact
+operation staging path you created
+(`<dest-runtime>/orgs/_pending/<operation-id>`), after inspection, with both
+daemons stopped. Never `rm -rf` broadly, and never touch `_pending` beyond your
+own operation directory. Re-run from the top after fixing the cause.
 
-**7. Start the destination daemon only after publish:**
+If the staged candidate payload validates but you cannot proceed to publication
+because Slice B has not shipped (the normal end of this runbook), **escalate**
+— do not improvise a publication command, and do not start either daemon. There
+is no invented platform command for atomic no-replace publication in this
+runbook, and none is documented until the separately reviewed Slice-B
+capability lands.
 
-```bash
-scripts/daemon.sh start
-```
+This runbook makes **no automatic rollback claim** and does **not** complete a
+relocation: the org is exported and staged, but not published, not admitted, and
+not activated. The source is preserved intact; both daemons remain stopped.
 
-## 12. Phase G — Validation and failure handling
+**Source deletion** is a separate, later decision made only after a published,
+admitted, and validated destination exists (Slice B, then §13). It is out of
+scope for this runbook's success criteria.
 
-**Pre-publication failure** (anything before §11 step 5): there is **no retry
-and no overwrite**. Inspect and clean **only** the exact operation staging path
-you created (`<dest-runtime>/orgs/_pending/<operation-id>`), with both daemons
-stopped. Never `rm -rf` broadly, and never touch `_pending` beyond your own
-operation directory. Re-run from the top after fixing the cause.
+## 13. Deferred: publication, admission, and rearm (Slice B then Slice C — out of scope)
 
-**Post-publication failure or inconsistency**: the destination is now
-**authoritative**. Do not rerun, merge, or remove. Verify the marker parses as
-valid and its `archive_sha256` matches the value you recorded, and that
-admission (§5) would classify it `imported_inactive`. If anything is
-inconsistent, **escalate** — do not "fix" it by deleting or rewriting the
-published tree. This runbook makes **no automatic rollback claim**.
+The one-way ordering is: a destination daemon may **only** ever be started after
+a **safely published, admitted** target exists. Neither precondition ships
+today, so **no destination start occurs in this runbook** and the staged org is
+**not** an imported, authoritative org.
 
-**Source deletion** is a separate, later decision made only after the
-destination has been validated. It is out of scope for this runbook's success
-criteria.
+- **Slice B (import admission + no-replace publication)** — a separately
+  reviewed future deliverable that performs the atomic, no-replace publication
+  of a staged payload into the live destination tree **and** enforces the
+  `imported_inactive` marker at org admission, so a published imported org is
+  actually refused/non-operational until rearmed. Until Slice B ships, do
+  **not** publish and do **not** start.
+- **Slice C (rebind and rearm)** — a separately reviewed future procedure that,
+  after admission, validates and rebinds all activation dependencies (layout,
+  marker/slug/hash, reference-map fixtures, destination-local bindings and
+  credentials, executor configuration, and an explicit schedule-rearm plan) and
+  then **explicitly rearms** eligible schedules before removing the marker.
 
-## 13. Deferred: rebind and rearm (Slice C — out of scope)
-
-The imported org **remains inactive and non-operational**. Schedules on the
-imported org must remain non-operational until a **separately reviewed**
-procedure (Slice C) validates and rebinds all activation dependencies (layout,
-marker/slug/hash, reference-map fixtures, destination-local bindings and
-credentials, executor configuration, and an explicit schedule-rearm plan) and
-then **explicitly rearms** eligible schedules before removing the marker.
-
-Do **not** treat `schedules.active=0` as a safety control — it is inert receipt
-data, not a firing control, and this runbook does not mutate it. The safety
-mechanism is that the imported root carries the inactive marker and is not
-operated. If validation or rearm fails, the marker stays and the org stays
-inactive.
+The imported org must remain non-operational throughout. Do **not** treat
+`schedules.active=0` as a safety control — it is inert receipt data, not a
+firing control, and this runbook does not mutate it. The safety mechanism is
+shipped Slice-B admission keeping an imported org non-operational, plus this
+runbook's hard stop before publication; the marker file alone is not a control
+(§5). If admission, validation, or rearm fails, the org stays non-operational
+and the destination daemon stays stopped.
 
 ## Source-of-truth references
 
