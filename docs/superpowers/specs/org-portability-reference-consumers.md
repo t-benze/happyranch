@@ -444,20 +444,34 @@ write site) to filesystem bytes under the org root.
 - **Fixtures:** FX-C11-OK, FX-C11-HASHMISMATCH, FX-C11-MISSING,
   FX-C11-OUTROOT-SYMLINK, FX-C11-INROOT-SYMLINK, FX-C11-NONREGULAR.
 
-### C12 — `custom_skill_versions.skill_md_cache` / `references_manifest` / `assets_manifest` → inline / no filesystem reference
+### C12 — `custom_skill_versions.skill_md_cache` / `references_manifest` / `assets_manifest` → inline text + active (currently-unpopulated) manifest metadata
 
-- **Producer:** `custom_skill_versions.skill_md_cache` (inline SKILL.md text),
-  `references_manifest` (TEXT JSON), `assets_manifest` (TEXT JSON).
-  `database.py` lines ~1083–1102.
-- **Resolver:** none to filesystem bytes. `skill_md_cache` is a denormalized
-  inline copy used for diff/validation display. `references_manifest` /
-  `assets_manifest` are persisted/relayed by `runtime/skills/custom_store.py`
-  but have **no resolver that reads them to filesystem bytes** on current main
-  (the canonical-store/materializer path builds from the `content_artifact_key`
-  artifact, not from these manifests).
-- **Disposition:** `include` (rows are portable DB data with no path
-  dependency). Recorded here so a future resolver that *does* dereference these
-  manifests re-enters the map.
+- **Producer:** `custom_skill_versions.skill_md_cache` (inline SKILL.md text,
+  `TEXT`), `references_manifest` (`TEXT`, JSON), `assets_manifest` (`TEXT`,
+  JSON) — all three are **active current persisted metadata** columns declared
+  in `Database._create_tables()` (`database.py:1089–1091`), **not** dormant
+  legacy fields. `references_manifest` / `assets_manifest` are accepted as
+  optional parameters by `custom_store.create_skill_with_first_version`
+  (`runtime/skills/custom_store.py:74–75, 118–119`); the production
+  `service.create_version` writer (`runtime/skills/custom/service.py:38–70`)
+  does **not** populate them today, and no current resolver reads them to
+  filesystem bytes (the canonical-store/materializer path builds from the
+  `content_artifact_key` artifact, C11, not from these manifests).
+- **Population (reproducible read-only observation, recorded live):** type
+  `TEXT` (nullable) per `PRAGMA table_info(custom_skill_versions)`; the live
+  org DB holds **8 rows, 0 non-empty `references_manifest`, 0 non-empty
+  `assets_manifest`** (contrast `skill_md_cache` = 8 non-empty,
+  `content_artifact_key` = 8 non-null). This is a **currently-zero-population
+  observation**, not a dormant-emptiness invariant: a non-null value must
+  **not** falsely trip the §2A dormant-empty control merely because the column
+  exists.
+- **Disposition:** `include` as portable DB data (rows are inline text / JSON
+  metadata with no direct path dependency). **If** a future producer writes
+  manifest JSON that *embeds* a DB→filesystem reference, that reference is
+  subject to the export-time default refusal (§2A / §6): any actual unresolved
+  or out-of-policy reference observed during validation **refuses** before
+  capture/import effects — it is **never** silently included merely because it
+  is embedded in an active manifest value.
 - **Fixtures:** FX-C12-INLINE.
 
 ### C13 — `skill_lifecycle_packages.content_artifact_key` → `ArtifactStore.delete` (legacy, constructor-time)
@@ -507,12 +521,16 @@ write site) to filesystem bytes under the org root.
   vector); non-dangling in-root symlink → unlinked (the link removed, its target
   untouched).
 - **Disposition/detection requirement:** `reject`-until-retired. A legacy
-  `skill_lifecycle_%` table must be detected by a **read-only pre-connection
-  schema inspection** (e.g. `SELECT name FROM sqlite_master WHERE name LIKE
-  'skill_lifecycle_%'` on a read-only connection, or equivalent raw-file
-  inspection) **before any `Database(...)` construction** — never by
-  constructing a `Database`, because that would itself fire the destructive
-  retire (see §5's detect-before-any-constructor rule). If a legacy table with
+  `skill_lifecycle_%` table must be detected **before any `Database(...)`
+  construction** — never by constructing a `Database`, because that would
+  itself fire the destructive retire. Detection follows the fixed source
+  ordering (§5/§6): **first** filesystem/layout validation and the DB-parent
+  `-wal`/`-shm` scan (an existing sidecar → `source_sidecar_present` refusal,
+  connection spy at **zero** source SQLite connections); **only after** that
+  clean scan may a **raw read-only SQLite connection** inspect `sqlite_master`
+  for legacy `skill_lifecycle_%` tables (`SELECT name FROM sqlite_master WHERE
+  name LIKE 'skill_lifecycle_%'`); that read-only inspection is **still
+  strictly before every `Database(...)` construction**. If a legacy table with
   any non-null `content_artifact_key` is present, the exporter refuses
   (`legacy_skill_lifecycle_unretired`); the source must be retired by the normal
   daemon (or deliberately) before export. On any healthy DB the table is
@@ -542,6 +560,34 @@ not transcription**: the inventory is emitted by a reproducible command, every
 emitted column must be classified exactly once, an unmapped column fails, and
 no human-authored candidate list may claim completeness. The reviewer checks
 the generator and its output — never a hand-typed table.
+
+**Finite Step-0 proof boundary (founder-resolved bounded re-scope, THR-187 seq
+238–240).** The reviewer's request for individual source/call-site evidence for
+each of the 331 `no-fs-consumer` rows is **not** an acceptance condition and is
+**not** implemented here as an unbounded negative trace. Proving “no code path
+resolves this column to filesystem bytes” per scalar/inline/ref/hash column is
+a universal negative over the codebase; its only implementable form is a grep
+for known resolver shapes — a pattern, the exact construct that failed prior
+rounds. The ledger's taxonomy tags (`identity`, `inline`, `json`, `ref`,
+`scalar`, `flag`, `integrity-hash`, …) are **classification buckets**, not
+per-row source/call-site proof, and this document does **not** assert that
+every `no-fs-consumer` column has an individually demonstrated negative source
+trace.
+
+The finite Step-0 proof boundary is instead: **(1)** trace every actual
+DB→filesystem resolver/consumer and its producer (§2 — the 20 consumer
+columns); **(2)** maintain the active-versus-dormant population proof (§2A — a
+`dormant-legacy` field whose population proof is absent/nonzero fails closed;
+an active currently-unpopulated column is recorded as an observation, not an
+invariant); **(3)** default-refuse actual unresolved/out-of-policy file
+references during export/import validation, before effects (every reference
+classified file-bearing is resolved at export time and must land inside an
+included, hash-validated root; anything else refuses); **(4)** STOP on a newly
+discovered unclassified actual consumer (§9). The reproducible 351-column
+generator + one-classification ledger remains the **exhaustiveness backstop** —
+no column silently escapes the map — not a negative-trace proof. The named,
+evidence-backed no-consumer categories are retained at this bounded policy
+level only.
 
 ### Reproducible generator (command + recorded result)
 
@@ -616,6 +662,12 @@ readers only: `database.py:1441–1444` (fold `final_output_summary` → `note`)
 `routes/tasks.py`, `routes/threads.py`, `__main__.py:168` for `output_summary`.
 They matched the old `…output…` pattern but are not consumers; under full
 enumeration they are classified, not filtered.
+
+The `no-fs-consumer:<tag>` tags are **classification buckets** (exhaustiveness
+backstop), **not** per-row source/call-site proof: each tag records the column's
+shape category, not an individually demonstrated negative resolver trace. The
+finite proof boundary at the top of this section governs; a column may carry a
+`no-fs-consumer` tag without an individually demonstrated negative trace.
 
 ### Coverage ledger (generated output — table | column | type | class | reconciliation)
 
@@ -984,8 +1036,9 @@ the command, not by hand.
 A pre-retirement DB contains tables beyond the 28 `_create_tables()` tables.
 They are **not** in the 351-column emission (the fresh generator has already
 dropped/renamed them), so the harness enumerates them **separately** by a
-read-only pre-connection `sqlite_master` inspection and classifies each column
-`dormant-legacy`:
+read-only `sqlite_master` inspection — performed **after** the clean DB-parent
+sidecar scan and **still strictly before** any `Database(...)` construction
+(see §5/§6) — and classifies each column `dormant-legacy`:
 
 | Legacy table | Present in live DB | Disposition | Column(s) of concern |
 | --- | --- | --- | --- |
@@ -994,12 +1047,22 @@ read-only pre-connection `sqlite_master` inspection and classifies each column
 | `talks` (+ talk id columns on tasks/jobs/threads/session_token_usage) | no (dropped by `_migrate_drop_talk_surface_if_needed`, database.py:353–433) | `dormant-legacy`; dropped | talk id columns — no filesystem resolver |
 | `script_requests` | no (renamed to `jobs` by `_migrate_jobs_table_if_needed`, database.py:242–340) | `dormant-legacy`; renamed | path columns map to C4/C5 (`stdout_path` / `stderr_path` / `cwd_hint`) |
 
-**Dormant population proof (binding).** The dormant columns carry a
-**live-population proof of empty** (recorded read-only on the live org DB):
-`agent_enrollments.repos` = 0 rows; `custom_skill_versions.references_manifest`
-= 0 non-null of 8; `custom_skill_versions.assets_manifest` = 0 non-null of 8.
-A `dormant`/`dormant-legacy` classification whose live-population proof is
-**absent or nonzero** fails the gate (§2A harness).
+**Dormant population proof (binding, dormant-legacy only).** A field explicitly
+classified `dormant-legacy` (a legacy table not created by `_create_tables()`)
+carries a **live-population proof of empty** (recorded read-only on the live
+org DB): `agent_enrollments.repos` = 0 rows. A `dormant-legacy` classification
+whose live-population proof is **absent or nonzero** fails the gate (§2A
+harness) — the refusal fires **before any capture/import effect**.
+
+**Active-versus-dormant distinction (binding).**
+`custom_skill_versions.references_manifest` and `assets_manifest` are
+**active** current persisted metadata columns (declared in `_create_tables()`,
+`database.py:1090–1091`), **not** dormant legacy fields. Their current
+zero-population is an **observation**, not a dormant-emptiness invariant: a
+non-null active value does **not** trip the dormant-empty control merely
+because the column exists. If they ever become populated, the embedded
+references (if any) are subject to the export-time default refusal (§2A / §6),
+**not** to a dormant-stays-empty rule.
 
 ### Harness/check definition (the controls must fire)
 
@@ -1019,10 +1082,14 @@ additionally prove **each control fires** (not merely describe it). The check
    path-bearing column (or populate a `dormant-legacy` path column) and assert
    the check fails. **Default-refuse fires before any capture/import effect** —
    never a silent portable classification.
-5. **Dormant classification whose live-population proof is absent or nonzero** —
-   populate a column classified dormant (e.g. a non-null `references_manifest`
-   or an `agent_enrollments.repos` row) and assert the check fails, forcing
-   reclassification. **Default-refuse fires before any capture/import effect.**
+5. **Dormant-legacy classification whose live-population proof is absent or
+   nonzero** — populate a column classified `dormant-legacy` (e.g. an
+   `agent_enrollments.repos` row in a legacy DB) and assert the check fails,
+   forcing reclassification. **Default-refuse fires before any capture/import
+   effect.** Active columns with currently-zero population (e.g.
+   `references_manifest` / `assets_manifest`) are **not** subject to this
+   control: a non-null active value is handled by the export-time default
+   refusal (§2A / §6), not a dormant-emptiness assertion.
 
 The §4 harness requirements add the two behavioral firing proofs (an unsafe
 physical object → named refusal with **zero** source connections and no archive;
@@ -1068,7 +1135,11 @@ authoritative reconciliation.
 
 The following were inspected and **do not** resolve DB-held data to filesystem
 bytes (or the reference is a slug/id, not a path). They are documented to
-prevent a future implementer from assuming a path dependency exists.
+prevent a future implementer from assuming a path dependency exists. This table
+states the **bounded policy-level** no-consumer categories (with the evidence
+behind each); it is **not** a claim that every `no-fs-consumer` column has an
+individually demonstrated negative resolver trace — that obligation is out of
+Step-0 scope per the finite proof boundary in §2A.
 
 > **Authoritative enumeration is §2A.** This table is a *prose summary* of the
 > `no-fs-consumer` / `dormant-legacy` classifications; the complete 351-column
@@ -1182,12 +1253,21 @@ The registry above describes the shape; the Slice B/C harness must additionally
   (`unclassified_consumer`) **before any capture/import effect** — never a
   silent portable classification.
 - **(ii) Populated-dormant default refusal (firing proof).** A **populated**
-  dormant / no-resolver column (e.g. a non-null `agent_enrollments.repos` in a
-  legacy DB, or a non-null `references_manifest` / `assets_manifest`) triggers
-  its named default refusal and **fails the §2A dormant-stays-empty
+  `dormant-legacy` column (e.g. a non-null `agent_enrollments.repos` in a legacy
+  DB) triggers its named default refusal and **fails the §2A dormant-stays-empty
   assertion**, forcing reclassification — rather than being silently treated
-  portable. The dormant columns carry a recorded live-population proof of empty
-  (§2A legacy enumeration); a nonzero population fails the gate.
+  portable. The dormant-legacy columns carry a recorded live-population proof of
+  empty (§2A legacy enumeration); a nonzero population fails the gate. **Active**
+  currently-unpopulated columns (`references_manifest` / `assets_manifest`) are
+  **excluded** from this dormant control: a non-null active value must not trip
+  it.
+- **(ii-b) Active-manifest reference default refusal (firing proof).** If an
+  **active** manifest/metadata column (`references_manifest` / `assets_manifest`)
+  is ever populated with a value that embeds a DB→filesystem reference, the
+  export-time validation resolves it against the included, hash-validated roots
+  and **default-refuses** any actual unresolved or out-of-policy reference before
+  capture/import effects — it is never silently included merely because it sits
+  inside an active manifest value.
 - **(iii) Observable unsafe-object refusal.** At least one in-root symlink, one
   dangling link, and one nonregular member (dir/device/FIFO), as applicable per
   consumer, produces its named refusal (`nonregular` / `dangling` / `escape`)
@@ -1208,10 +1288,18 @@ statement of `(now)` vs `(req)`.
 
 ## 5. Source & destination compatibility detection matrix
 
-Detection order is **fixed and precedes every effect**: classify/detect
-*before* any `Database(...)` constructor/connection, migration, org-state load,
-archive extraction, staging mutation, or conversion. Every non-current case is
-a **named refusal** — never auto-upgrade, conversion, or best effort.
+Detection order is **fixed and precedes every effect**. The source-side scan is
+explicitly ordered (see §6): **filesystem/layout validation and the DB-parent
+`-wal`/`-shm` scan come first** — an existing sidecar is a
+`source_sidecar_present` refusal with the connection spy at **zero** source
+SQLite connections; **only after** that clean scan may a **raw read-only SQLite
+connection** inspect `sqlite_master` (for legacy `skill_lifecycle_%` tables,
+C13); that read-only inspection is **still strictly before every
+`Database(...)` construction** — the constructor itself opens a connection and
+can destructively retire legacy artifacts, so it must never be the detection
+vehicle. Detection precedes every migration, org-state load, archive
+extraction, staging mutation, or conversion. Every non-current case is a
+**named refusal** — never auto-upgrade, conversion, or best effort.
 
 ### Verified fact vs proposed seam
 
@@ -1272,7 +1360,14 @@ production or test code.
 - **Connection-spy seam:** a `sqlite3.connect`-level spy (monkeypatched at the
   `Database.__init__` / `sqlite3.connect` boundary in the harness) that counts
   every source-DB connection opened during an export attempt. Fixtures (a) and
-  (b) assert this count is **zero** for refusal paths.
+  (b) assert this count is **zero** for the **sidecar-refusal** paths. **Zero
+  does not apply to the clean legacy-inspection path**: after a clean sidecar
+  scan, the C13 detector opens exactly **one raw read-only SQLite connection**
+  to inspect `sqlite_master` for legacy `skill_lifecycle_%` tables (still
+  strictly before any `Database(...)` construction) — that read-only connection
+  is permitted and expected; the spy asserts it is **read-only** and
+  **pre-constructor**, not that it is absent. Zero-connection is claimed only
+  where the refusal precedes any SQLite open (sidecar/layout refusal).
 - **D0/D1 inventory:** before any connection, capture `D0` = every direct
   entry of the source DB-parent directory (`name, type, size, inode/device,
   sha256 for regular files`) plus the classifier-driven included-tree
