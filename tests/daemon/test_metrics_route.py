@@ -99,3 +99,38 @@ def test_metrics_http_multiple_routes_tracked(tmp_home, app_idle, auth_headers) 
     assert body["http"]["__all__"]["p50"] is not None
     assert body["http"]["__all__"]["p95"] is not None
     assert body["http"]["__all__"]["max"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Route-template labels through the real HTTP middleware (TASK-5443)
+# ---------------------------------------------------------------------------
+
+def test_http_dynamic_ids_coalesce_to_template(tmp_home, app_idle, auth_headers) -> None:
+    """Two distinct slugs for the same handler coalesce into ONE histogram
+    keyed by the route template; no raw slug leaks into any label."""
+    client = TestClient(app_idle)
+    # Idle state → the org-scoped route raises 409 (no_active_runtime) but
+    # routing still resolves the template; the middleware labels by template.
+    client.get("/api/v1/orgs/foo/agents", headers=auth_headers)
+    client.get("/api/v1/orgs/bar/agents", headers=auth_headers)
+
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    body = r.json()
+    template = "GET /api/v1/orgs/{slug}/agents"
+    assert template in body["http"]
+    assert body["http"][template]["count"] == 2
+    # no literal org slug ever becomes a label
+    assert not any("foo" in k or "bar" in k for k in body["http"])
+
+
+def test_http_unmatched_route_uses_bounded_fallback(tmp_home, app_idle, auth_headers) -> None:
+    """A request that matches no route records the stable 'METHOD __unmatched__'
+    fallback, never a literal URL path."""
+    client = TestClient(app_idle)
+    client.get("/api/v1/definitely-not-a-route", headers=auth_headers)
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    body = r.json()
+    assert "GET __unmatched__" in body["http"]
+    assert body["http"]["GET __unmatched__"]["count"] == 1
+    # the literal path never becomes a label
+    assert not any("definitely-not-a-route" in k for k in body["http"])

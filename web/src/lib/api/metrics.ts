@@ -19,6 +19,11 @@ export interface HttpRouteStats {
   max: number | null;
 }
 
+/** Snapshot format version. `2` marks route-TEMPLATE `http` labels (bounded
+ *  cardinality). Legacy rows predate this field and used raw URL-path labels;
+ *  a MISSING `format_version` therefore means legacy/raw-label format. */
+export const SNAPSHOT_FORMAT_VERSION = 2;
+
 /** Per-loop tick record from the metrics registry. */
 export interface LoopStats {
   last_tick_iso: string;
@@ -36,6 +41,18 @@ export interface MetricsSnapshot {
   jobs_in_flight: number;
   executor_sessions_active: number;
   run_step_queue_depth: number;
+  /** Present on current snapshots (=== {@link SNAPSHOT_FORMAT_VERSION});
+   *  absent on legacy rows that used raw URL-path `http` labels. */
+  format_version?: number;
+}
+
+/** True when a snapshot carries route-template labels (version 2+); false for
+ *  legacy rows whose `http` labels were raw URL paths (missing version).
+ *  Accepts a full snapshot or just its `format_version` field. */
+export function snapshotUsesTemplateLabels(
+  snapshot: Pick<MetricsSnapshot, 'format_version'>,
+): boolean {
+  return snapshot.format_version !== undefined;
 }
 
 /** One persisted history row. `snapshot_json` is a JSON-encoded

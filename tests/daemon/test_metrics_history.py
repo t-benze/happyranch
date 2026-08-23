@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,19 +18,14 @@ from runtime.daemon.app import create_app
 # ---------------------------------------------------------------------------
 
 def _make_cross_thread_store(db_path: str | None) -> MetricsStore:
-    """Create a MetricsStore whose internal connection supports cross-thread
-    access (check_same_thread=False).  Needed because TestClient dispatches
-    HTTP handlers to a thread-pool worker, not the test thread."""
-    store = MetricsStore.__new__(MetricsStore)
-    store._db_path = db_path
-    store._conn = sqlite3.connect(
-        db_path if db_path is not None else ":memory:",
-        check_same_thread=False,
-    )
-    store._conn.row_factory = sqlite3.Row
-    store._conn.execute("PRAGMA journal_mode=WAL")
-    store._init_schema()
-    return store
+    """Create a MetricsStore usable from the TestClient thread pool.
+
+    MetricsStore now constructs a ``check_same_thread=False`` connection
+    guarded by a ``threading.RLock``, so the plain constructor is already
+    cross-thread safe — the manual construction this helper used to perform
+    is no longer needed.
+    """
+    return MetricsStore(db_path)
 
 
 def _make_app_with_store(tmp_path: Path, auth_headers) -> TestClient:

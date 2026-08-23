@@ -36,6 +36,18 @@ def _ok(r) -> bool:
             f"Session id mismatch — daemon expected {detail.get('active')} "
             f"but got {detail.get('got')}.",
         )
+    elif code == "not_quiescent":
+        print(
+            "Cannot run metrics maintenance: daemon is not quiescent "
+            f"({detail.get('nonterminal_tasks')} nonterminal tasks, "
+            f"{detail.get('running_jobs')} running jobs, "
+            f"{detail.get('active_executor_sessions')} active executor sessions)."
+        )
+    elif code == "confirmation_required":
+        print(
+            "Cannot run metrics maintenance without explicit confirmation — "
+            "re-run with --confirm-quiescent."
+        )
     else:
         print(f"Error ({r.status_code}): {r.text}")
     sys.exit(1)
