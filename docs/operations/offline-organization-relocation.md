@@ -84,6 +84,7 @@ merged.
    cancellation, and reports possible zombies but does **not** resolve them):
 
    ```bash
+   set -euo pipefail
    happyranch orgs portability-preflight "$SLUG"
    ```
 
@@ -120,8 +121,13 @@ merged.
 confirm the destination is still stopped:
 
 ```bash
+set -euo pipefail
 scripts/daemon.sh stop --force     # default daemon home requires --force
-scripts/daemon.sh status           # must print "not running" (exit non-zero)
+if scripts/daemon.sh status; then
+  echo "daemon still running — STOP" >&2
+  exit 1
+fi
+echo "daemon confirmed not running (status exited non-zero as expected)"
 ```
 
 `stop --force` is the documented default-home stop; the `--force` guard exists
@@ -135,8 +141,12 @@ remove daemon lifecycle/auth files (`daemon.token`, `daemon.pid`,
 residue at the resolved DB paths:
 
 ```bash
-test ! -e "$SRC/happyranch.db-wal" && test ! -e "$SRC/happyranch.db-shm" \
-  && echo "no sidecars" || echo "SIDECAR PRESENT — STOP"
+set -euo pipefail
+if test -e "$SRC/happyranch.db-wal" || test -e "$SRC/happyranch.db-shm"; then
+  echo "SIDECAR PRESENT — STOP: either sidecar prevents the logical snapshot" >&2
+  exit 1
+fi
+echo "no sidecars — logical snapshot may proceed"
 ```
 
 If **either** sidecar exists, **stop and refuse**: do not open SQLite, do not
@@ -158,6 +168,7 @@ through a read-only open. First verify your `sqlite3` build supports it on a
 throwaway database:
 
 ```bash
+set -euo pipefail
 tmp=$(mktemp -d) && sqlite3 "$tmp/t.db" "CREATE TABLE t(x);" && \
   sqlite3 -readonly "$tmp/t.db" ".backup '$tmp/s.db'" && \
   sqlite3 "$tmp/s.db" "PRAGMA integrity_check;" && rm -rf "$tmp"   # expect "ok"
@@ -166,6 +177,13 @@ tmp=$(mktemp -d) && sqlite3 "$tmp/t.db" "CREATE TABLE t(x);" && \
 Then take the real snapshot:
 
 ```bash
+set -euo pipefail
+# Re-run the §3 step-1 sidecar gate immediately before opening the source DB:
+# either present sidecar exits nonzero and prevents the logical snapshot.
+if test -e "$SRC/happyranch.db-wal" || test -e "$SRC/happyranch.db-shm"; then
+  echo "SIDECAR PRESENT — STOP: do not open SQLite" >&2
+  exit 1
+fi
 sqlite3 -readonly "$SRC/happyranch.db" ".backup '$STAGE/happyranch.db'"
 ```
 
@@ -175,6 +193,7 @@ default DB `main` is the real primitive.)
 **3. Validate the staged snapshot:**
 
 ```bash
+set -euo pipefail
 sqlite3 "$STAGE/happyranch.db" "PRAGMA integrity_check;"    # expect "ok"
 sqlite3 "$STAGE/happyranch.db" "PRAGMA foreign_key_check;"  # expect no rows
 ```
@@ -208,6 +227,7 @@ whose `--include`/`--exclude` semantics differ from GNU rsync, so a portable
 `find` + `cp -R` loop is safer:
 
 ```bash
+set -euo pipefail
 mkdir -p "$STAGE/org-payload"
 # … copy each whole-tree portable root (org, kb, talks, …) with cp -R …
 cp "$STAGE/happyranch.db" "$STAGE/org-payload/happyranch.db"
@@ -227,6 +247,7 @@ token/output/repo bytes.
 Then reject any nonregular member at any depth (symlink, device, FIFO, socket):
 
 ```bash
+set -euo pipefail
 find "$STAGE/org-payload" \( -type l -o -type p -o -type s -o -type b -o -type c \) -print
 # non-empty output ⇒ STOP: remove the offending member from the SOURCE org and
 # re-run preflight; never "fix" it in the payload
@@ -235,6 +256,7 @@ find "$STAGE/org-payload" \( -type l -o -type p -o -type s -o -type b -o -type c
 **Record a verifiable manifest + checksums**, then archive and hash it:
 
 ```bash
+set -euo pipefail
 (cd "$STAGE/org-payload" && find . -type f -print0 | LC_ALL=C sort -z | \
   xargs -0 shasum -a 256) > "$STAGE/manifest.txt"        # macOS
 # Linux: replace shasum -a 256 with sha256sum
@@ -260,6 +282,7 @@ three artifacts into `$STAGE`**; they are transfer evidence, not portable org
 data (§6):
 
 ```bash
+set -euo pipefail
 INBOX="$DST_RUNTIME/orgs/_pending/$OP.inbox"
 mkdir -p "$INBOX" && chmod 700 "$INBOX"
 # receive (scp / rsync / founder-selected channel) into "$INBOX":
@@ -271,16 +294,29 @@ mkdir -p "$INBOX" && chmod 700 "$INBOX"
 **2. Destination stopped, slug absent** (including any symlink/broken entry):
 
 ```bash
-scripts/daemon.sh status                          # "not running"
-test ! -e "$DST" && test ! -L "$DST" && echo "slug absent"
+set -euo pipefail
+if scripts/daemon.sh status; then
+  echo "destination daemon still running — STOP" >&2
+  exit 1
+fi
+echo "destination daemon confirmed not running"
+if test -e "$DST" || test -L "$DST"; then
+  echo "DST SLUG PRESENT — STOP (must be absent, including symlink/broken entry)" >&2
+  exit 1
+fi
+echo "slug absent"
 ```
 
 **3. Verify the received archive hash against the source-recorded receipt:**
 
 ```bash
-test "$(shasum -a 256 "$INBOX/org-archive.tar.gz" | awk '{print $1}')" \
-  = "$(cat "$INBOX/archive.sha256")" \
-  && echo "archive hash matches" || echo "HASH MISMATCH — STOP"
+set -euo pipefail
+if test "$(shasum -a 256 "$INBOX/org-archive.tar.gz" | awk '{print $1}')" \
+    != "$(cat "$INBOX/archive.sha256")"; then
+  echo "HASH MISMATCH — STOP: received archive does not match the source-recorded digest" >&2
+  exit 1
+fi
+echo "archive hash matches"
 # Linux: replace shasum -a 256 with sha256sum
 ```
 
@@ -293,10 +329,13 @@ below must pass **before** any `tar -x` runs; every rejection below **exits
 nonzero**, so extraction is never reached.
 
 ```bash
+set -euo pipefail
 tar -tzf "$INBOX/org-archive.tar.gz" > "$INBOX/members.txt"         # member names
 tar -tvzf "$INBOX/org-archive.tar.gz" > "$INBOX/members-typed.txt"  # typed listing; leading char = member type
 # Normalize: strip the leading "./" and a trailing "/", drop the bare root entry.
-grep -vE '^\./?$' "$INBOX/members.txt" | sed 's#^\./##; s#/$##' > "$INBOX/members-norm.txt"
+# An empty member list (only the bare ./ root) makes grep exit 1 — allowed here
+# because the EMPTY ARCHIVE check below rejects that case explicitly.
+grep -vE '^\./?$' "$INBOX/members.txt" | sed 's#^\./##; s#/$##' > "$INBOX/members-norm.txt" || :
 ```
 
 Reject the archive — do **not** extract — if **any** of these hold:
@@ -317,6 +356,7 @@ Reject the archive — do **not** extract — if **any** of these hold:
   `staged-manifest.txt` appears anywhere in the archive.
 
 ```bash
+set -euo pipefail
 failed=0
 : > "$INBOX/rejections.txt"
 if ! test -s "$INBOX/members-norm.txt"; then echo "EMPTY ARCHIVE" >> "$INBOX/rejections.txt"; failed=1; fi
@@ -345,6 +385,7 @@ must sit under the reserved `_pending` slug on the **same filesystem** as
 `$DST`:
 
 ```bash
+set -euo pipefail
 STAGE="$DST_RUNTIME/orgs/_pending/$OP"
 if test -e "$STAGE" || test -L "$STAGE"; then echo "STAGE ALREADY EXISTS — STOP" >&2; exit 1; fi
 mkdir "$STAGE" && chmod 700 "$STAGE" || { echo "CANNOT CREATE STAGE — STOP" >&2; exit 1; }
@@ -356,6 +397,7 @@ nonzero and never reaches here. Run `tar` as the founder (non-root) user; the
 archive bytes stay in `$INBOX` and are never copied into `$STAGE`:
 
 ```bash
+set -euo pipefail
 tar -xzf "$INBOX/org-archive.tar.gz" -C "$STAGE"
 ```
 
@@ -389,6 +431,7 @@ run the gate. `HR_CHECKOUT` is declared in §1; `$STAGE` is passed as a safe,
 quoted absolute path argument — never interpolated into the script:
 
 ```bash
+set -euo pipefail
 cd "$HR_CHECKOUT" && uv sync     # one-time: materialize the supported environment (uv; pyproject.toml + uv.lock)
 (
   cd "$HR_CHECKOUT" || exit 1
@@ -433,6 +476,7 @@ authoritative content gate; this is the layout-exactness proof reused in §6.)
 Any violation **exits nonzero**:
 
 ```bash
+set -euo pipefail
 ok=1
 test -f "$STAGE/happyranch.db" || { echo "happyranch.db missing/not regular — STOP" >&2; ok=0; }
 test -d "$STAGE/org" || { echo "org/ missing/not a directory — STOP" >&2; ok=0; }
@@ -452,9 +496,13 @@ and references.** Recompute the §4 manifest over the extracted tree and diff it
 against the received `manifest.txt` (same tool and `LC_ALL=C` ordering as §4):
 
 ```bash
+set -euo pipefail
 (cd "$STAGE" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$INBOX/staged-manifest.txt"
-diff "$INBOX/manifest.txt" "$INBOX/staged-manifest.txt" \
-  && echo "manifest matches" || echo "MANIFEST MISMATCH — STOP"
+if ! diff "$INBOX/manifest.txt" "$INBOX/staged-manifest.txt"; then
+  echo "MANIFEST MISMATCH — STOP: staged tree differs from the received manifest" >&2
+  exit 1
+fi
+echo "manifest matches"
 # Linux: replace shasum -a 256 with sha256sum (same tool as §4)
 ```
 
@@ -462,6 +510,7 @@ Then run `PRAGMA integrity_check` (expect `ok`) and `PRAGMA foreign_key_check`
 (expect no rows) against the staged `happyranch.db`:
 
 ```bash
+set -euo pipefail
 sqlite3 "$STAGE/happyranch.db" "PRAGMA integrity_check;"     # expect "ok"
 sqlite3 "$STAGE/happyranch.db" "PRAGMA foreign_key_check;"   # expect no rows
 ```
@@ -493,6 +542,7 @@ sharing that runtime).
    present anywhere in `$STAGE`:
 
    ```bash
+   set -euo pipefail
    find "$STAGE" \( -name '*.tar.gz' -o -name 'manifest.txt' \
      -o -name 'archive.sha256' -o -name 'members.txt' \
      -o -name 'members-typed.txt' -o -name 'staged-manifest.txt' \) -print
@@ -510,6 +560,7 @@ sharing that runtime).
    `rename(2)` with nothing to overwrite or merge:
 
    ```bash
+   set -euo pipefail
    mv "$STAGE" "$DST"
    ```
 
@@ -524,6 +575,7 @@ sharing that runtime).
 4. **Verify publication postconditions** (both must hold):
 
    ```bash
+   set -euo pipefail
    test -d "$DST" && test -f "$DST/org/teams.yaml" && echo "target exists"
    test ! -e "$STAGE" && echo "stage consumed"
    ```
@@ -538,6 +590,7 @@ against the **published** `$DST/happyranch.db`. The destination may start only
 if **both** print `|0`:
 
 ```bash
+set -euo pipefail
 sqlite3 -readonly "$DST/happyranch.db" \
   "SELECT 'schedules_armed_or_firing', COUNT(*) FROM schedules WHERE status IN ('armed','firing');"
 sqlite3 -readonly "$DST/happyranch.db" \
@@ -560,6 +613,7 @@ not a disarm command, and it performs no mutation.
 normal discovery/health:
 
 ```bash
+set -euo pipefail
 scripts/daemon.sh start
 scripts/daemon.sh status     # expect "running (pid …, port …)"
 happyranch orgs              # the relocated slug must appear with its root
