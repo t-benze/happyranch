@@ -1637,12 +1637,18 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
-    """Emit the implicit review_verdict audit row for a delegated subtask.
+    """Emit the review_verdict audit row for a delegated subtask.
 
-    The parent task owner is the implicit reviewer of every delegated subtask:
-    a COMPLETED subtask is an "approved" delegation, a FAILED subtask is
-    "rejected". Audit rows are how the founder reviews which agents need
-    attention; they are the canonical record of delegation outcomes.
+    The parent task owner is the implicit reviewer of every delegated subtask.
+    The audit row's verdict is a DISTINCT fact from the subtask's completion
+    status: when the subtask reported an explicit structured
+    ``CompletionReport.verdict`` (APPROVE / PASS / REQUEST_CHANGES / ...), that
+    reported workflow verdict is preserved verbatim. Only when no structured
+    verdict is present do we fall back to the legacy implicit mapping
+    (COMPLETED -> "approved", FAILED -> "rejected").
+
+    Audit rows are how the founder reviews which agents need attention; they
+    are the canonical record of delegation outcomes.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -1659,10 +1665,27 @@ def _log_verdict_if_delegated(
     orch._audit.log_review_verdict(
         task_id=task_id,
         reviewer=reviewer,
-        verdict="approved" if success else "rejected",
+        verdict=_verdict_for_delegated(orch, task_id, success=success),
         feedback=task.note,
         reviewed_agent=agent,
     )
+
+
+def _verdict_for_delegated(
+    orch: "Orchestrator", task_id: str, *, success: bool,
+) -> str:
+    """Resolve the review_verdict string for a delegated subtask.
+
+    An explicit structured ``CompletionReport.verdict`` is the worker's own
+    workflow verdict and is preserved verbatim — including an explicitly blank
+    value (readers treat blank/unknown as "unknown", never as approved). Only
+    when no structured verdict is present does the caller's completion-status
+    mapping apply (``success`` -> "approved", otherwise "rejected").
+    """
+    report = orch._db.get_latest_completion_report(task_id)
+    if report is not None and report.verdict is not None:
+        return report.verdict
+    return "approved" if success else "rejected"
 
 
 def _advance_chain_for_completed_child(

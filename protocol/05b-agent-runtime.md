@@ -897,7 +897,7 @@ After each task, the orchestrator prompts the agent: "Based on this task, are th
 Entries are addressed as `MEM-NNN`. Items migrated from the prior learnings store keep a permanent `LRN-NNN` alias so historical cross-references resolve forever. The audit trail is forward-only: new events log as `log_memory_*`; historical `log_learning_*` rows are never rewritten.
 
 **3. ~~Performance memory~~ (REMOVED 2026-05-27)**
-The 30-day rolling scorecard / tier classification was removed. The audit log (implicit `review_verdict` rows after every delegated child terminates, plus completion / failure events) is sufficient for the founder to identify which agents need attention — via `happyranch audit`. The legacy `scorecards` table is no longer created on fresh DBs.
+The 30-day rolling scorecard / tier classification was removed. The audit log (`review_verdict` rows after every delegated child terminates, plus completion / failure events) is sufficient for the founder to identify which agents need attention — via `happyranch audit`. A `review_verdict` row's verdict is a distinct fact from the child's completion status: an explicit structured `verdict` reported by the child (a free-string workflow value such as `APPROVE`, `PASS`, or `REQUEST_CHANGES`) is preserved verbatim; only when no structured verdict is present is `approved`/`rejected` inferred from the completion status. The legacy `scorecards` table is no longer created on fresh DBs.
 
 ### How context gets assembled at session start
 
@@ -918,7 +918,7 @@ The agent's persistent files (memory entries, prior work products) are already i
 After each session completes, the orchestrator:
 1. Extracts the completion report (`completion_report.json` written by the agent)
 2. Checks for new memory entries and appends to the memory store
-3. Writes an implicit `review_verdict` audit row for delegated work (approved / rejected) so the founder can audit per-agent outcomes via `happyranch audit`
+3. Writes a `review_verdict` audit row for delegated work so the founder can audit per-agent outcomes via `happyranch audit`. The audit verdict is a distinct fact from completion status: an explicit structured `verdict` reported by the worker is preserved verbatim (a completed worker that reports `REQUEST_CHANGES` carries `REQUEST_CHANGES`, not `approved`); only when no structured verdict is present is the implicit `approved`/`rejected` mapping from completion status applied. Missing/blank/unknown verdicts are normalized at dashboard read boundaries and never counted as accepted.
 4. Appends to `recent_tasks.md` with a summary of the task
 5. Logs everything to the audit trail (SQLite)
 6. Does NOT clean up the workspace — files persist for future sessions
