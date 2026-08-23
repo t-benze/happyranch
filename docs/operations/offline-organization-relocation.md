@@ -42,6 +42,7 @@ refusal, never an auto-upgrade).
 | `OP` | a short private operation id, e.g. `2026-08-23-thr187` |
 | `STAGE` | private staging dir; on the **destination** machine it **must** be `$DST_RUNTIME/orgs/_pending/$OP` so publication is a same-filesystem rename (§6). On the source machine use `$SRC_RUNTIME/orgs/_pending/$OP` (also reserved) or any other private dir **outside** `$SRC`. |
 | `INBOX` | destination **receive** dir, e.g. `$DST_RUNTIME/orgs/_pending/$OP.inbox/` — absolute, founder-private (`chmod 700`), **outside** both `$STAGE` and `$DST`; holds `org-archive.tar.gz`, `manifest.txt`, and the recorded `archive.sha256` receipt (§5) |
+| `HR_CHECKOUT` | absolute path to the **version-matched** HappyRanch checkout used to deploy the destination daemon — the checkout whose code (including `runtime/portability/roots.py`) matches the running destination deployment. Its **supported environment** is uv (`pyproject.toml` requires-python `>=3.12,<3.15`; `uv.lock` pinned). Used **only** for the offline classifier gate (§5 step 7); it is **not** the live daemon and serves no route |
 
 Hard requirements:
 
@@ -58,6 +59,13 @@ Hard requirements:
   (§5, §6).
 - **Both daemons stopped** during publication (§6) and before any source SQLite
   open (§3).
+- **Real-classifier gate before publish.** A spelling/type screen is **not** a
+  classifier. The staged candidate must pass the shipped runtime classifier
+  `runtime/portability/roots.py::classify_root_entries` — invoked **offline**
+  from the version-matched `HR_CHECKOUT` (§5 step 7) — with **zero rejections**
+  before any publication. The destination daemon stays stopped; the online
+  `/portability-preflight` route is a **source-only** seam and cannot run
+  against the stopped destination.
 
 ## 2. Slice-A preflight / readiness
 
@@ -276,9 +284,13 @@ test "$(shasum -a 256 "$INBOX/org-archive.tar.gz" | awk '{print $1}')" \
 # Linux: replace shasum -a 256 with sha256sum
 ```
 
-**4. Inspect every archive member BEFORE extraction.** A `tar` listing is an
-*inspection aid*, **not** a safe extractor: you still extract into a fresh empty
-staging dir (step 6) and re-validate the extracted tree (steps 7–8).
+**4. Inspect every archive member BEFORE extraction — fail closed.** A `tar`
+listing is an *inspection aid*, **not** a safe extractor, and this screen is a
+**preliminary** spelling/type screen, **not** the classifier: it cannot judge
+skills-package shape or the type of `workspaces/<agent>/memory`. The shipped
+runtime classifier does that on the extracted candidate in step 7. The screen
+below must pass **before** any `tar -x` runs; every rejection below **exits
+nonzero**, so extraction is never reached.
 
 ```bash
 tar -tzf "$INBOX/org-archive.tar.gz" > "$INBOX/members.txt"         # member names
@@ -301,24 +313,31 @@ Reject the archive — do **not** extract — if **any** of these hold:
   `task-attachments/`, `jobs/`, `dreams/`, `work_hours/`, `schedules/`,
   `artifacts/`, `skills/`, `workspaces/<agent>/memory/**`);
 - **smuggled transfer/inbox artifact**: a member named `org-archive.tar.gz`,
-  `manifest.txt`, `archive.sha256`, `members.txt`, or `members-typed.txt`
-  appears anywhere in the archive.
+  `manifest.txt`, `archive.sha256`, `members.txt`, `members-typed.txt`, or
+  `staged-manifest.txt` appears anywhere in the archive.
 
 ```bash
-test -s "$INBOX/members-norm.txt" || echo "EMPTY ARCHIVE — STOP"
-grep -nE '^/' "$INBOX/members-norm.txt"                # absolute path ⇒ STOP
-grep -nE '(^|/)\.\.(/|$)' "$INBOX/members-norm.txt"    # `..` traversal ⇒ STOP
-sort "$INBOX/members-norm.txt" | uniq -d               # duplicate path ⇒ STOP
-grep -nE '^[^d-]' "$INBOX/members-typed.txt"           # symlink/hardlink/device/FIFO ⇒ STOP
-grep -nEv '^(happyranch\.db|(org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills)(/.*)?|workspaces(/[^/]+(/memory(/.*)?)?)?)$' "$INBOX/members-norm.txt"
-                                                        # unallowlisted member ⇒ STOP
-grep -nE '(^|/)(org-archive\.tar\.gz|manifest\.txt|archive\.sha256|members\.txt|members-typed\.txt)$' "$INBOX/members-norm.txt"
-                                                        # smuggled transfer/inbox artifact ⇒ STOP
+failed=0
+: > "$INBOX/rejections.txt"
+if ! test -s "$INBOX/members-norm.txt"; then echo "EMPTY ARCHIVE" >> "$INBOX/rejections.txt"; failed=1; fi
+if grep -nE '^/' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi                      # absolute path
+if grep -nE '(^|/)\.\.(/|$)' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi          # `..` traversal
+dups=$(sort "$INBOX/members-norm.txt" | uniq -d); if test -n "$dups"; then printf '%s\n' "$dups" >> "$INBOX/rejections.txt"; failed=1; fi   # duplicate path
+if grep -vE '^total ' "$INBOX/members-typed.txt" | grep -nE '^[^d-]' >> "$INBOX/rejections.txt"; then failed=1; fi   # symlink/hardlink/device/FIFO/socket
+if grep -nEv '^(happyranch\.db|(org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills)(/.*)?|workspaces(/[^/]+(/memory(/.*)?)?)?)$' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi   # unallowlisted member
+if grep -nE '(^|/)(org-archive\.tar\.gz|manifest\.txt|archive\.sha256|members\.txt|members-typed\.txt|staged-manifest\.txt)$' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi   # smuggled transfer/inbox artifact
+if test "$failed" -ne 0; then
+  echo "ARCHIVE REJECTED — NOT EXTRACTING" >&2
+  cat "$INBOX/rejections.txt" >&2
+  exit 1
+fi
+echo "member screen passed — safe to extract into a clean STAGE"
 ```
 
-Any non-empty output above is a **STOP**: remove the offending member at the
-**source**, re-run preflight (§2) and re-export (§3–§4); never hand-fix the
-archive.
+Any rejection above **halts the runbook with a nonzero exit before extraction
+ever runs**: `$STAGE` is not created, `tar -x` is never reached. Remove the
+offending member at the **source**, re-run preflight (§2) and re-export
+(§3–§4); never hand-fix the archive.
 
 **5. Create a fresh, empty, founder-private staging directory.** `$STAGE` must
 be created fresh for this operation — never reused, never pre-populated — and
@@ -327,44 +346,108 @@ must sit under the reserved `_pending` slug on the **same filesystem** as
 
 ```bash
 STAGE="$DST_RUNTIME/orgs/_pending/$OP"
-test ! -e "$STAGE" || echo "STAGE ALREADY EXISTS — STOP"
-mkdir "$STAGE" && chmod 700 "$STAGE"
+if test -e "$STAGE" || test -L "$STAGE"; then echo "STAGE ALREADY EXISTS — STOP" >&2; exit 1; fi
+mkdir "$STAGE" && chmod 700 "$STAGE" || { echo "CANNOT CREATE STAGE — STOP" >&2; exit 1; }
 ```
 
-**6. Extract only the accepted archive into the empty `$STAGE`.** Run `tar` as
-the founder (non-root) user; the archive bytes stay in `$INBOX` and are never
-copied into `$STAGE`:
+**6. Extract only the accepted archive into the empty `$STAGE`.** This runs
+**only** because step 4 exited zero — every rejection path already exited
+nonzero and never reaches here. Run `tar` as the founder (non-root) user; the
+archive bytes stay in `$INBOX` and are never copied into `$STAGE`:
 
 ```bash
 tar -xzf "$INBOX/org-archive.tar.gz" -C "$STAGE"
 ```
 
-The step-4 member inspection ran first; steps 7–8 re-verify that nothing unsafe
-(symlink, device, FIFO, escaped or unallowlisted member) was actually written.
+The step-4 screen ran first; step 7 re-checks the extracted tree with the **real
+runtime classifier**, and steps 8–9 re-verify that nothing unsafe (symlink,
+device, FIFO, escaped, unallowlisted, or malformed member) was actually
+written.
 
-**7. Validate the extracted direct-child layout against the classifier-approved
-portable roots.** Every direct child of `$STAGE` must be a §4 root with its
-correct type — `happyranch.db` a regular file, every other root a directory —
-and nothing else:
+**7. Run the shipped runtime classifier on the whole staged candidate.** The
+step-4 screen judged **spelling and entry type only**. The authoritative
+pre-publish gate is the actual runtime classifier
+`runtime/portability/roots.py::classify_root_entries` — the same code the
+source preflight route uses — run **offline** on the extracted `$STAGE` from a
+**version-matched** HappyRanch Python environment. This is a **pre-publish
+candidate check**: it is not a claim that tar inspection safely extracts
+arbitrary input (step 4 already refused unsafe input), and it is not the online
+preflight route, which is source-only and cannot run against the stopped
+destination.
+
+The classifier is fail-closed: every direct child of `$STAGE` must be an
+allow-listed portable root with its correct type, `skills/` packages must pass
+legacy-skill validation (identity/metadata/member shape), and
+`workspaces/<agent>/memory` must be a real directory (a regular file or symlink
+is `reject nonregular`). Any `reject` — **including an invalid skills package
+or a non-directory memory entry, which the step-4 screen and a direct-child
+layout check cannot see** — makes the runbook **exit nonzero** and halts
+publication.
+
+First materialize the checkout's supported environment once (if needed), then
+run the gate. `HR_CHECKOUT` is declared in §1; `$STAGE` is passed as a safe,
+quoted absolute path argument — never interpolated into the script:
 
 ```bash
-test -f "$STAGE/happyranch.db" || echo "happyranch.db missing/not regular — STOP"
-test -d "$STAGE/org" || echo "org/ missing/not a directory — STOP"
+cd "$HR_CHECKOUT" && uv sync     # one-time: materialize the supported environment (uv; pyproject.toml + uv.lock)
+(
+  cd "$HR_CHECKOUT" || exit 1
+  uv run python - "$STAGE" <<'PY'
+import sys
+from pathlib import Path
+from runtime.portability.roots import classify_root_entries
+stage = Path(sys.argv[1])
+inventory = classify_root_entries(stage)
+for e in inventory.entries:
+    tag = {"include": "ok ", "exclude": "ex ", "reject": "REJ"}[e.classification]
+    print(f"{tag} {e.path}" + (f"  ({e.reason})" if e.reason else ""))
+if inventory.has_rejections:
+    print("CLASSIFIER-REJECTED: staged candidate is NOT portable — STOP", file=sys.stderr)
+    sys.exit(1)
+print("CLASSIFIER-OK: every staged direct root is classifier-approved")
+PY
+) || { echo "CLASSIFIER GATE FAILED — NOT PUBLISHING" >&2; exit 1; }
+```
+
+Read the output: a §4-correct candidate produces **only `ok` lines**. A named
+`ex` exclusion line would mean excluded bytes were archived (a §4 violation —
+investigate); **any `REJ <path>  (<reason>)` line means the candidate is not
+portable — stop**. A nonzero exit on any rejection **is** the gate. `uv run`
+uses the checkout's locked environment (`uv.lock`, requires-python
+`>=3.12,<3.15`); a `warning: VIRTUAL_ENV=… does not match the project
+environment path` line on stderr (if your shell exports a stale `VIRTUAL_ENV`)
+is harmless — uv uses the checkout's own locked environment. No new tool or
+dependency is introduced — the classifier is already a dependency of the
+shipped product (`pydantic`, `pyyaml`). Do **not** weaken this gate to a
+handwritten approximation of the classifier; if the version-matched
+environment genuinely cannot invoke it, stop and escalate rather than
+substituting a lookalike check.
+
+**8. Validate the extracted direct-child layout — fail closed.** This shell
+check proves `$STAGE` is the **future org root itself** — not a container
+holding a nested root (e.g. an `org-payload/` subdirectory) and not a dir
+holding the archive, manifest, or any inbox artifact — and that every direct
+child is a §4 root with its correct type: `happyranch.db` a regular file, every
+other root a directory, nothing else. (The classifier in step 7 is the
+authoritative content gate; this is the layout-exactness proof reused in §6.)
+Any violation **exits nonzero**:
+
+```bash
+ok=1
+test -f "$STAGE/happyranch.db" || { echo "happyranch.db missing/not regular — STOP" >&2; ok=0; }
+test -d "$STAGE/org" || { echo "org/ missing/not a directory — STOP" >&2; ok=0; }
 for child in $(find "$STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort); do
   case "$child" in
     happyranch.db) ;;
     org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills|workspaces)
-      test -d "$STAGE/$child" || echo "$child not a directory — STOP" ;;
-    *) echo "UNALLOWLISTED DIRECT CHILD: $child — STOP" ;;
+      test -d "$STAGE/$child" || { echo "$child not a directory — STOP" >&2; ok=0; } ;;
+    *) echo "UNALLOWLISTED DIRECT CHILD: $child — STOP" >&2; ok=0 ;;
   esac
 done
+test "$ok" -eq 1 || exit 1
 ```
 
-This proves `$STAGE` is the **future org root itself** — not a container holding
-a nested root (e.g. an `org-payload/` subdirectory) and not a dir holding the
-archive, manifest, or any inbox artifact.
-
-**8. Compare staged files to the external manifest, and validate the staged DB
+**9. Compare staged files to the external manifest, and validate the staged DB
 and references.** Recompute the §4 manifest over the extracted tree and diff it
 against the received `manifest.txt` (same tool and `LC_ALL=C` ordering as §4):
 
@@ -391,7 +474,7 @@ data-shaped refusal — populated `custom_skill_versions.references_manifest` /
 table (C13) — as a stop. If you cannot confirm a consumer resolves, escalate;
 do not guess.
 
-**9. Confirm the staged candidate is private, complete, and startable-shaped:**
+**10. Confirm the staged candidate is private, complete, and startable-shaped:**
 it must contain a valid `org/teams.yaml` and a `happyranch.db`, and be readable
 only by the founder. It remains a **candidate**, not an org, until §6.
 
@@ -405,7 +488,7 @@ sharing that runtime).
 
 1. **Re-check the slug is absent immediately before publish** (repeat §5 step 2).
 2. **Prove `$STAGE` holds exactly the future org root — no transfer or inbox
-   artifacts.** Immediately before the rename, re-run the §5 step 7 direct-child
+   artifacts.** Immediately before the rename, re-run the §5 step 8 direct-child
    layout check and confirm no archive/manifest/checksum/inbox artifact is
    present anywhere in `$STAGE`:
 
