@@ -383,6 +383,10 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
 
+> **Offline org relocation:** for the founder-operated manual procedure to move
+> an org between runtimes, see
+> [`docs/operations/offline-organization-relocation.md`](docs/operations/offline-organization-relocation.md).
+
 ## Configuration
 
 Operational settings come from two places, highest precedence first:
