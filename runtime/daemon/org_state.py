@@ -113,6 +113,7 @@ class OrgState:
                 "type": self._TERMINAL_STATUS_TO_EVENT[task.status],
                 "outcome": task.status.value,
                 "synthesized": True,
+                "timestamp": self._terminal_event_timestamp(task),
             }
         # Path B: escalated is a top-level non-terminal status. Late
         # subscribers still get the right synthesized event.
@@ -121,8 +122,28 @@ class OrgState:
                 "type": "task_blocked",
                 "outcome": "escalated",
                 "synthesized": True,
+                "timestamp": self._terminal_event_timestamp(task),
             }
         return None
+
+    @staticmethod
+    def _terminal_event_timestamp(task) -> str:
+        """Durable persisted timestamp for a synthesized terminal replay event.
+
+        ``completed_at`` is authoritative when the task actually reached a
+        terminal state (COMPLETED/FAILED/SUPERSEDED/CANCELLED all write it).
+        Legacy rows with a NULL ``completed_at`` fall back to ``updated_at`` —
+        the last durable write — mirroring ``list_agent_tasks``'s
+        ``COALESCE(completed_at, updated_at, created_at)`` ordering. We never
+        manufacture wall-clock time at replay.
+
+        ESCALATED is non-terminal by design: ``try_escalate`` and
+        ``try_escalate_over_budget`` write only ``updated_at`` (the transition
+        timestamp), never ``completed_at`` — so the fallback naturally yields
+        the escalation transition without reinterpreting ``completed_at``.
+        """
+        ts = task.completed_at or task.updated_at
+        return ts.isoformat()
 
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":

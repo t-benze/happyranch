@@ -175,3 +175,54 @@ def test_synthesize_terminal_event_rules(org_state):
     esc_event = org_state._synthesize_terminal_event(escalated)
     assert esc_event["type"] == "task_blocked"
     assert esc_event["outcome"] == "escalated"
+
+
+def test_synthesize_terminal_event_includes_durable_timestamp(org_state):
+    """Regression (TASK-5470): synthetic terminal replay events must carry a
+    durable persisted timestamp as a valid ISO string — never absent, never a
+    wall-clock time manufactured at replay. COMPLETED/FAILED use completed_at;
+    ESCALATED (non-terminal) uses the updated_at escalation transition; legacy
+    nullable completed_at falls back to durable updated_at."""
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
+
+    def make(task_id: str, status: TaskStatus,
+             block_kind: BlockKind | None = None,
+             completed_at: str | None = None):
+        org_state.db.insert_task(TaskRecord(id=task_id, brief="x"))
+        org_state.db.update_task(
+            task_id, status=status, block_kind=block_kind,
+            completed_at=completed_at,
+        )
+        return org_state.db.get_task(task_id)
+
+    completed_at = "2026-08-23T04:46:00.123456+00:00"
+    done = make("T-DONE", TaskStatus.COMPLETED, completed_at=completed_at)
+    failed = make("T-FAIL", TaskStatus.FAILED, completed_at=completed_at)
+    escalated = make("T-ESC", TaskStatus.ESCALATED)
+    legacy = make("T-LEG", TaskStatus.COMPLETED)  # nullable completed_at
+
+    done_event = org_state._synthesize_terminal_event(done)
+    assert done_event["type"] == "task_complete"
+    assert done_event["outcome"] == "completed"
+    assert done_event["timestamp"] == done.completed_at.isoformat()
+
+    failed_event = org_state._synthesize_terminal_event(failed)
+    assert failed_event["type"] == "task_failed"
+    assert failed_event["outcome"] == "failed"
+    assert failed_event["timestamp"] == failed.completed_at.isoformat()
+
+    esc_event = org_state._synthesize_terminal_event(escalated)
+    assert esc_event["type"] == "task_blocked"
+    assert esc_event["outcome"] == "escalated"
+    # ESCALATED is non-terminal by design (try_escalate* write only updated_at)
+    # — completed_at stays NULL and the replay timestamp is the transition.
+    assert escalated.completed_at is None
+    assert esc_event["timestamp"] == escalated.updated_at.isoformat()
+
+    # Legacy nullable completed_at: the event must still carry a valid string
+    # from durable updated_at rather than an absent timestamp.
+    legacy_event = org_state._synthesize_terminal_event(legacy)
+    assert legacy.completed_at is None
+    assert legacy_event["timestamp"] == legacy.updated_at.isoformat()
+    assert isinstance(legacy_event["timestamp"], str)
+    assert legacy_event["timestamp"] != ""

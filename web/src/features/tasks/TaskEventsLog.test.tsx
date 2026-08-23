@@ -102,4 +102,72 @@ describe('TaskEventsLog', () => {
     emit('TASK-LOCAL-TIME', EVENT);
     expect(screen.getAllByText('task_started')).toHaveLength(1);
   });
+
+  test('renders valid timestamps for synthetic terminal events (completed/failed/escalated) without falling back', () => {
+    vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
+    render(<TaskEventsLog taskId="TASK-SYNTH" />);
+
+    const completed: TaskEvent = {
+      type: 'task_complete',
+      outcome: 'completed',
+      synthesized: true,
+      timestamp: '2026-08-23T04:46:00.123456+00:00',
+    };
+    const failed: TaskEvent = {
+      type: 'task_failed',
+      outcome: 'failed',
+      synthesized: true,
+      timestamp: '2026-08-23T05:00:00.000000+00:00',
+    };
+    const escalated: TaskEvent = {
+      type: 'task_blocked',
+      outcome: 'escalated',
+      synthesized: true,
+      timestamp: '2026-08-23T05:30:00.000000+00:00',
+    };
+
+    emit('TASK-SYNTH', completed);
+    emit('TASK-SYNTH', failed);
+    emit('TASK-SYNTH', escalated);
+
+    expect(screen.getAllByText('FORMATTED')).toHaveLength(3);
+    expect(screen.queryByText('Time unavailable')).not.toBeInTheDocument();
+    expect(screen.getByText('task_complete')).toBeInTheDocument();
+    expect(screen.getByText('task_failed')).toBeInTheDocument();
+    expect(screen.getByText('task_blocked')).toBeInTheDocument();
+  });
+
+  test('renders a stable fallback instead of Invalid Date when the timestamp is missing', () => {
+    vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
+    render(<TaskEventsLog taskId="TASK-MISSING" />);
+
+    // Real legacy SSE shape: a synthesized terminal event with no timestamp key.
+    const missing = {
+      type: 'task_complete',
+      outcome: 'completed',
+      synthesized: true,
+    } as unknown as TaskEvent;
+    emit('TASK-MISSING', missing);
+
+    expect(screen.getByText('Time unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Invalid Date')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORMATTED')).not.toBeInTheDocument();
+  });
+
+  test('renders a stable fallback instead of Invalid Date for a malformed timestamp', () => {
+    vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
+    render(<TaskEventsLog taskId="TASK-MALFORMED" />);
+
+    const malformed: TaskEvent = {
+      type: 'task_failed',
+      outcome: 'failed',
+      synthesized: true,
+      timestamp: 'not-a-date',
+    };
+    emit('TASK-MALFORMED', malformed);
+
+    expect(screen.getByText('Time unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Invalid Date')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORMATTED')).not.toBeInTheDocument();
+  });
 });
