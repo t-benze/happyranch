@@ -578,6 +578,49 @@ class ThreadInvocation(BaseModel):
     decline_reason: str | None = None
 
 
+class ThreadReplyDeliveryState(BaseModel):
+    """Durable per-(thread_id, agent_name) conversational REPLY delivery state.
+
+    GitHub #688 Phase 1 Slice A. This is the provider-neutral required-delivery
+    contract for coalesced conversational reply wakes. One row per pair:
+    at most one queued and one running REPLY slot; both tokens (when present)
+    reference same-pair REPLY invocations.
+
+    ``acknowledged_through_seq`` is the highest transcript sequence
+    intentionally acknowledged as presented/handled; ``required_through_seq``
+    is the highest conversational sequence that must still be offered. The
+    queued/running tokens occupy the single unstarted/started REPLY slots.
+    ``running_from_seq``/``running_through_seq`` are the immutable prompt
+    receipt captured at claim time.
+
+    ``last_terminal_reason``/``last_terminal_at`` carry the diagnostic data
+    Slice B uses to project ``retry_required`` and to audit settlement.
+    """
+    thread_id: str
+    agent_name: str
+    acknowledged_through_seq: int = 0
+    required_through_seq: int = 0
+    queued_invocation_token: str | None = None
+    running_invocation_token: str | None = None
+    running_from_seq: int | None = None
+    running_through_seq: int | None = None
+    last_terminal_reason: str | None = None
+    last_terminal_at: str | None = None
+    updated_at: str = ""
+
+
+class ThreadReplyRecoveryEntry(BaseModel):
+    """One runnable token returned by the durable reply-delivery recovery pass.
+
+    ``kind`` distinguishes a retained queued wake from a replacement queued
+    wake minted for an interrupted running attempt.
+    """
+    thread_id: str
+    agent_name: str
+    invocation_token: str
+    kind: Literal["retained_queued", "replacement_queued"]
+
+
 class JobStatus(StrEnum):
     PENDING   = "pending"
     REJECTED  = "rejected"

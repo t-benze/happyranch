@@ -568,3 +568,1094 @@ def test_grouped_invocations_include_started_at(tmp_path):
     db.stamp_invocation_started(inv.invocation_token, session_id=None)
     grouped2 = db.list_invocations_for_thread_grouped_by_seq("THR-001")
     assert grouped2[1][0]["started_at"] is not None
+
+
+# ── GitHub #688 Phase 1 Slice A: thread_reply_delivery_state ─────────────
+# Additive per-(thread_id, agent_name) conversational REPLY delivery state,
+# plus the store-owned cutover and recovery primitives. These are UNHOOKED in
+# Slice A: no existing writer/runner/startup path reads or writes the table.
+
+from runtime.models import (
+    ThreadReplyDeliveryState,
+    ThreadReplyRecoveryEntry,
+)
+
+
+def _seed_pending_reply(db, thread_id, agent_name, triggering_seq):
+    """Mint one legacy pending REPLY invocation (pre-Phase-1 writer path)."""
+    return db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=agent_name,
+        triggering_seq=triggering_seq, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+
+def _seed_running_state(db, thread_id, agent_name, *, ack, req):
+    """Simulate the durable stage Slice B's claim leaves behind: one started
+    REPLY invocation referenced as ``running_invocation_token`` with an
+    immutable running range, queued slot clear."""
+    inv = db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=agent_name,
+        triggering_seq=ack + 1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(inv.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "running_invocation_token, running_from_seq, running_through_seq, "
+        "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (thread_id, agent_name, ack, req, inv.invocation_token, ack + 1, req,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    return inv.invocation_token
+
+
+def _pending_reply_rows(db, thread_id, agent_name):
+    return [
+        inv for inv in db.list_thread_invocations(thread_id)
+        if inv.agent_name == agent_name
+        and inv.purpose is ThreadInvocationPurpose.REPLY
+        and inv.status is ThreadInvocationStatus.PENDING
+    ]
+
+
+def test_reply_delivery_state_table_idempotent_create(tmp_path):
+    """Fresh and re-opened databases create the additive table idempotently."""
+    from runtime.infrastructure.database import Database
+    path = tmp_path / "happyranch.db"
+    db = Database(path)
+    names = {
+        row[0] for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='thread_reply_delivery_state'"
+        )
+    }
+    assert "thread_reply_delivery_state" in names
+    # Re-open over the same file — CREATE TABLE IF NOT EXISTS must not raise
+    # and must not duplicate the table.
+    db.close()
+    db2 = Database(path)
+    assert db2.get_reply_delivery_state("THR-000", "ghost") is None
+    assert db2.list_reply_delivery_states() == []
+
+
+def test_reply_delivery_state_dark_under_existing_paths(tmp_path):
+    """Existing REPLY mint path does not populate the new table (control pairs
+    remain inactive until Slice B wires activation)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+
+    assert db.list_reply_delivery_states() == []
+    assert db.get_reply_delivery_state("THR-001", "alice") is None
+
+
+def test_cutover_no_legacy_pending_seeds_tail(tmp_path):
+    """A current participant pair with no legacy pending REPLY seeds
+    acknowledged == required == thread tail, with no queued/running token."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for i in range(3):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )
+
+    created = db.cutover_thread_reply_delivery_state("THR-001")
+    assert len(created) == 1
+    st = created[0]
+    assert st.thread_id == "THR-001"
+    assert st.agent_name == "alice"
+    assert st.acknowledged_through_seq == 3
+    assert st.required_through_seq == 3
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+
+
+def test_cutover_legacy_pending_coalesces_to_one_queued(tmp_path):
+    """Multiple legacy pending REPLYs coalesce: terminalize with a
+    coalesced_cutover receipt and mint exactly one replacement queued REPLY
+    covering min(triggering_seq) .. tail."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for i in range(5):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )  # tail == 5
+    # Three legacy pending REPLYs at seqs 2, 3, 5 (min == 2).
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=2)
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=3)
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=5)
+
+    created = db.cutover_thread_reply_delivery_state("THR-001")
+    assert len(created) == 1
+    st = created[0]
+    assert isinstance(st, ThreadReplyDeliveryState)
+    assert st.acknowledged_through_seq == 1  # from_seq - 1
+    assert st.required_through_seq == 5      # tail
+    assert st.queued_invocation_token is not None
+    assert st.running_invocation_token is None
+
+    # Exactly one replacement pending REPLY (the coalesced wake).
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    assert pending[0].triggering_seq == 2   # min(triggering_seq)
+    assert pending[0].invocation_token == st.queued_invocation_token
+
+    # Exactly the three legacy rows were terminalized with the receipt.
+    terminalized = [
+        inv for inv in db.list_thread_invocations("THR-001")
+        if inv.agent_name == "alice"
+        and inv.purpose is ThreadInvocationPurpose.REPLY
+        and inv.status is ThreadInvocationStatus.FAILED
+        and inv.decline_reason == "coalesced_cutover"
+    ]
+    assert len(terminalized) == 3
+    assert sorted(inv.triggering_seq for inv in terminalized) == [2, 3, 5]
+
+
+def test_cutover_is_idempotent_across_repeat_and_reopen(tmp_path):
+    """Repeat cutover (and re-opening the thread) must not duplicate state or
+    mint a second coalesced wake."""
+    from runtime.infrastructure.database import Database
+    path = tmp_path / "happyranch.db"
+    db = Database(path)
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+
+    first = db.cutover_thread_reply_delivery_state("THR-001")
+    assert len(first) == 1
+    token = first[0].queued_invocation_token
+    assert token is not None
+
+    # Repeat in-process: no new state row, no new wake.
+    second = db.cutover_thread_reply_delivery_state("THR-001")
+    assert second == []
+
+    # Re-open the DB (simulated restart) and cut over again: still idempotent.
+    db.close()
+    db2 = Database(path)
+    third = db2.cutover_thread_reply_delivery_state("THR-001")
+    assert third == []
+    assert db2.get_reply_delivery_state("THR-001", "alice").queued_invocation_token == token
+    # Still exactly one pending REPLY for the pair.
+    assert len(_pending_reply_rows(db2, "THR-001", "alice")) == 1
+
+
+def test_cutover_ignores_last_resumed_seq(tmp_path):
+    """The cutover never reads last_resumed_seq; a bogus high watermark must
+    not affect acknowledged/required seeding."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="sess-1", last_resumed_seq=9999,
+    )
+    for i in range(2):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )
+
+    created = db.cutover_thread_reply_delivery_state("THR-001")
+    st = created[0]
+    # Seeded from the thread tail (2), not last_resumed_seq (9999).
+    assert st.acknowledged_through_seq == 2
+    assert st.required_through_seq == 2
+
+
+def test_cutover_isolates_task_followup_and_bootstrap(tmp_path):
+    """TASK_FOLLOWUP and BOOTSTRAP pending rows are never terminalized or
+    replaced by the cutover."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+
+    db.cutover_thread_reply_delivery_state("THR-001")
+
+    statuses = {
+        (inv.purpose, inv.status)
+        for inv in db.list_thread_invocations("THR-001")
+        if inv.agent_name == "alice"
+    }
+    # TASK_FOLLOWUP and BOOTSTRAP remain pending.
+    assert (ThreadInvocationPurpose.TASK_FOLLOWUP, ThreadInvocationStatus.PENDING) in statuses
+    assert (ThreadInvocationPurpose.BOOTSTRAP, ThreadInvocationStatus.PENDING) in statuses
+    # No TASK_FOLLOWUP/BOOTSTRAP row was failed with coalesced_cutover.
+    coalesced_non_reply = [
+        inv for inv in db.list_thread_invocations("THR-001")
+        if inv.agent_name == "alice"
+        and inv.purpose is not ThreadInvocationPurpose.REPLY
+        and inv.decline_reason == "coalesced_cutover"
+    ]
+    assert coalesced_non_reply == []
+
+
+def test_repeated_cutover_never_duplicates_pending_pair(tmp_path):
+    """The durable winner under repeated cutover is exactly one queued REPLY
+    per pair (no duplicate pending pair)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+
+    for _ in range(3):
+        db.cutover_thread_reply_delivery_state("THR-001")
+
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    states = db.list_reply_delivery_states()
+    assert len(states) == 1
+    assert states[0].queued_invocation_token == pending[0].invocation_token
+    assert states[0].running_invocation_token is None
+
+
+def test_recovery_retains_valid_queued(tmp_path):
+    """A valid queued state retains and returns its existing pending token."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for i in range(3):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=2)
+
+    created = db.cutover_thread_reply_delivery_state("THR-001")
+    queued = created[0].queued_invocation_token
+
+    entries = db.recover_reply_delivery_state()
+    assert len(entries) == 1
+    assert isinstance(entries[0], ThreadReplyRecoveryEntry)
+    assert entries[0].kind == "retained_queued"
+    assert entries[0].invocation_token == queued
+
+    # State unchanged: the token is still queued and still pending.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token == queued
+    assert st.running_invocation_token is None
+    assert db.get_pending_invocation(queued) is not None
+
+
+def test_recovery_running_terminalizes_once_with_replacement(tmp_path):
+    """A valid running state terminalizes only the interrupted attempt as
+    daemon_restart and mints exactly one replacement queued REPLY."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for i in range(4):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )
+    running_token = _seed_running_state(db, "THR-001", "alice", ack=1, req=4)
+
+    entries = db.recover_reply_delivery_state()
+    assert len(entries) == 1
+    assert entries[0].kind == "replacement_queued"
+    replacement = entries[0].invocation_token
+    assert replacement != running_token
+
+    # The interrupted attempt is terminal with daemon_restart.
+    running_inv = db.get_invocation_any_status(running_token)
+    assert running_inv.status is ThreadInvocationStatus.FAILED
+    assert running_inv.decline_reason == "daemon_restart"
+
+    # Exactly one replacement pending REPLY, covering acknowledged+1.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.running_from_seq is None
+    assert st.running_through_seq is None
+    assert st.queued_invocation_token == replacement
+    # Range preserved (acknowledged not advanced by recovery).
+    assert st.acknowledged_through_seq == 1
+    assert st.required_through_seq == 4
+    rep_inv = db.get_pending_invocation(replacement)
+    assert rep_inv is not None
+    assert rep_inv.triggering_seq == 2  # acknowledged + 1
+    assert rep_inv.purpose is ThreadInvocationPurpose.REPLY
+
+
+def test_recovery_running_is_idempotent(tmp_path):
+    """Repeat recovery after a running replacement retains (not re-mints) the
+    single queued wake."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    _seed_running_state(db, "THR-001", "alice", ack=0, req=1)
+
+    first = db.recover_reply_delivery_state()
+    assert len(first) == 1
+    replacement = first[0].invocation_token
+
+    # Second pass sees a queued state → retains, does not mint again.
+    second = db.recover_reply_delivery_state()
+    assert len(second) == 1
+    assert second[0].kind == "retained_queued"
+    assert second[0].invocation_token == replacement
+
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_recovery_wrong_purpose_running_fails_closed(tmp_path):
+    """A running token that is not a REPLY (TASK_FOLLOWUP) fails closed: no
+    runnable token, no replacement, no unowned work launched."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    followup = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    db.stamp_invocation_started(followup.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "running_invocation_token, running_from_seq, running_through_seq, "
+        "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, followup.invocation_token, 1, 1,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.queued_invocation_token is None
+    assert st.last_terminal_reason == "invalid_running_token_on_recovery"
+    # No replacement REPLY was minted.
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    # The TASK_FOLLOWUP row itself was not touched by recovery.
+    assert db.get_invocation_any_status(followup.invocation_token).status is ThreadInvocationStatus.PENDING
+
+
+def test_recovery_wrong_pair_running_fails_closed(tmp_path):
+    """A running token whose invocation belongs to a different pair fails
+    closed and never launches unowned work."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    # A REPLY owned by bob, referenced from alice's state row.
+    bob_reply = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(bob_reply.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "running_invocation_token, running_from_seq, running_through_seq, "
+        "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, bob_reply.invocation_token, 1, 1,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+    # bob's REPLY is untouched (still pending/started) — never terminalized
+    # by alice's failed-closed recovery.
+    assert db.get_invocation_any_status(bob_reply.invocation_token).status is ThreadInvocationStatus.PENDING
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.queued_invocation_token is None
+
+
+def test_recovery_missing_queued_token_fails_closed(tmp_path):
+    """A queued token that no longer resolves (missing row) fails closed and
+    clears the queued slot without minting replacement work."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, "nonexistent-token",
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.last_terminal_reason == "invalid_queued_token_on_recovery"
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+
+def test_cutover_snapshot_atomic_against_concurrent_append(tmp_path):
+    """BEGIN IMMEDIATE spans every cutoff-defining read, so a concurrent
+    message append cannot commit between the cutover snapshot and its state
+    commit (the old pre-transaction tail read dropped such a message from the
+    required range). Deterministic: hold the open cutover transaction right
+    after its in-transaction tail read, show a second connection's write is
+    refused (SQLITE_BUSY), then release and show the append lands cleanly
+    post-cutover."""
+    import sqlite3 as _sqlite3
+    import threading
+
+    path = tmp_path / "happyranch.db"
+    db = Database(path)
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m0",
+    )  # tail == 1
+    _seed_pending_reply(db, "THR-001", "alice", triggering_seq=1)
+
+    # Deterministically hold the cutover's open write-lock transaction right
+    # after its in-transaction tail read and before the state commit, so a
+    # second connection can attempt an append against the held write lock.
+    entered_txn = threading.Event()
+    release_txn = threading.Event()
+    real_tail = db._thread_tail_seq
+
+    def held_tail(thread_id):
+        tail = real_tail(thread_id)
+        entered_txn.set()
+        release_txn.wait(timeout=10)
+        return tail
+
+    db._thread_tail_seq = held_tail
+    outcome = {}
+
+    def run_cutover():
+        outcome["states"] = db.cutover_thread_reply_delivery_state("THR-001")
+
+    t = threading.Thread(target=run_cutover)
+    t.start()
+    try:
+        assert entered_txn.wait(timeout=10), (
+            "cutover never reached its open transaction"
+        )
+        # While the write lock is held, a second connection must NOT be able
+        # to commit an append: with timeout=0 it fails immediately with
+        # SQLITE_BUSY (a documented SQLite lock outcome).
+        conn2 = _sqlite3.connect(str(path), timeout=0, check_same_thread=False)
+        try:
+            try:
+                conn2.execute("BEGIN IMMEDIATE")
+            except _sqlite3.OperationalError:
+                outcome["append_refused"] = True
+            else:
+                outcome["append_refused"] = False
+                conn2.rollback()
+        finally:
+            conn2.close()
+        assert outcome["append_refused"] is True, (
+            "second connection acquired the write lock during the cutover "
+            "snapshot — a torn required_through_seq is possible"
+        )
+    finally:
+        release_txn.set()
+        t.join(timeout=10)
+        assert not t.is_alive(), "cutover thread did not finish"
+        db._thread_tail_seq = real_tail  # restore the instance method
+
+    states = outcome["states"]
+    assert len(states) == 1
+    st = states[0]
+    assert st.acknowledged_through_seq == 0   # from_seq(1) - 1
+    assert st.required_through_seq == 1       # snapshot taken at tail == 1
+    assert st.queued_invocation_token is not None
+
+    # The append is now a clean post-cutover message (serialized after the
+    # cutover commit), never silently folded into the pre-cutover range.
+    conn2 = _sqlite3.connect(str(path), timeout=5, check_same_thread=False)
+    try:
+        conn2.execute(
+            "INSERT INTO thread_messages "
+            "(thread_id, seq, speaker, kind, created_at) "
+            "VALUES ('THR-001', 2, 'founder', 'message', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn2.commit()
+    finally:
+        conn2.close()
+
+    # Durable result: the coalesced wake covers from_seq..required == 1..1 and
+    # the appended message is strictly above required_through_seq (a clean
+    # post-cutover message, not a dropped tail).
+    assert db._thread_tail_seq("THR-001") == 2
+    assert db.get_reply_delivery_state("THR-001", "alice").required_through_seq == 1
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    assert pending[0].triggering_seq == 1
+
+
+def test_recovery_consumed_running_fails_closed(tmp_path):
+    """A running slot whose receipt is already CONSUMED fails closed: clear the
+    running slot, mint no replacement, return no runnable token, and leave the
+    consumed receipt untouched."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    running_token = _seed_running_state(db, "THR-001", "alice", ack=0, req=1)
+    db.consume_invocation(running_token)
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.queued_invocation_token is None
+    assert st.last_terminal_reason == "running_already_terminal_on_recovery"
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert db.get_invocation_any_status(running_token).status is ThreadInvocationStatus.CONSUMED
+
+
+def test_recovery_failed_running_fails_closed(tmp_path):
+    """A running slot whose receipt was already terminalized by the generic
+    reaper (FAILED) fails closed: clear the running slot, mint no replacement,
+    return no runnable token, and preserve the truthful failed receipt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    running_token = _seed_running_state(db, "THR-001", "alice", ack=0, req=1)
+    db.reap_pending_invocations(
+        "THR-001",
+        purposes=[ThreadInvocationPurpose.REPLY],
+        decline_reason="archive_started",
+    )
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.queued_invocation_token is None
+    assert st.last_terminal_reason == "running_already_terminal_on_recovery"
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    failed_inv = db.get_invocation_any_status(running_token)
+    assert failed_inv.status is ThreadInvocationStatus.FAILED
+    assert failed_inv.decline_reason == "archive_started"
+
+
+def test_recovery_malformed_running_range_fails_closed(tmp_path):
+    """A running slot whose durable range is inconsistent (running_through >
+    required) fails closed: no replacement, no runnable token, and the
+    malformed receipt is left untouched."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(inv.invocation_token, session_id=None)
+    # required == 1 but running_through == 5 → malformed.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "running_invocation_token, running_from_seq, running_through_seq, "
+        "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, inv.invocation_token, 1, 5,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.running_invocation_token is None
+    assert st.running_from_seq is None
+    assert st.running_through_seq is None
+    assert st.queued_invocation_token is None
+    assert st.last_terminal_reason == "malformed_running_range_on_recovery"
+    # No replacement minted: exactly the original malformed receipt remains
+    # pending (recovery never terminalized it).
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    assert pending[0].invocation_token == inv.invocation_token
+    assert db.get_invocation_any_status(inv.invocation_token).status is ThreadInvocationStatus.PENDING
+
+
+def test_recovery_both_slots_corruption_fails_closed(tmp_path):
+    """A row with BOTH queued and running slots populated is corruption:
+    recovery clears both slots, mints no replacement, returns no runnable
+    token, and retires (terminalizes) ONLY the validated same-pair pending
+    REPLY receipts so no duplicate pending REPLY pair survives."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    queued = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    running = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(running.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, queued.invocation_token,
+         running.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.running_from_seq is None
+    assert st.running_through_seq is None
+    assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
+    # No replacement minted and no duplicate pending pair survives: both
+    # owned same-pair pending REPLY receipts are retired with a truthful
+    # corruption receipt, leaving ZERO (not two) pending REPLYs for the pair.
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 0
+    queued_inv = db.get_invocation_any_status(queued.invocation_token)
+    assert queued_inv.status is ThreadInvocationStatus.FAILED
+    assert queued_inv.decline_reason == "corrupt_both_slots_on_recovery"
+    assert queued_inv.consumed_at is not None
+    running_inv = db.get_invocation_any_status(running.invocation_token)
+    assert running_inv.status is ThreadInvocationStatus.FAILED
+    assert running_inv.decline_reason == "corrupt_both_slots_on_recovery"
+    assert running_inv.consumed_at is not None
+
+
+def test_recovery_both_slots_corruption_spares_foreign_and_terminal(tmp_path):
+    """A corrupt both-slots row whose receipts are foreign-pair or already
+    terminal fails closed WITHOUT mutating them: recovery retires only owned
+    same-pair PENDING REPLY receipts, never a foreign-pair or terminal
+    receipt, and issues no blanket pending-REPLY reaper."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    # queued slot references a REPLY owned by a DIFFERENT pair (bob) — foreign.
+    foreign = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # running slot references an already-terminal (consumed) receipt owned by
+    # alice — terminal, so it must be left untouched.
+    terminal = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.consume_invocation(terminal.invocation_token)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, foreign.invocation_token,
+         terminal.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
+
+    # The foreign-pair receipt is untouched (still pending, still bob's).
+    foreign_inv = db.get_invocation_any_status(foreign.invocation_token)
+    assert foreign_inv.status is ThreadInvocationStatus.PENDING
+    assert foreign_inv.agent_name == "bob"
+
+    # The already-terminal receipt is untouched (still consumed, no reason).
+    terminal_inv = db.get_invocation_any_status(terminal.invocation_token)
+    assert terminal_inv.status is ThreadInvocationStatus.CONSUMED
+    assert terminal_inv.decline_reason is None
+
+    # No pending REPLY remains for the owned pair alice (neither referenced
+    # receipt was an owned pending REPLY to retire).
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    # bob's foreign pending REPLY is untouched — NOT a blanket reaper.
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+
+def test_recovery_both_slots_corruption_is_idempotent(tmp_path):
+    """Repeat recovery after a both-slots corruption retires the owned
+    pending REPLYs exactly once and leaves no duplicate pending pair: a
+    second pass is a clean no-op."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    queued = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    running = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(running.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, queued.invocation_token,
+         running.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    first = db.recover_reply_delivery_state()
+    assert first == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+    # Second pass: the corrupt row now has no ownership slots, so it is not
+    # re-selected; nothing is re-terminalized or re-minted.
+    second = db.recover_reply_delivery_state()
+    assert second == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert db.get_invocation_any_status(queued.invocation_token).status is ThreadInvocationStatus.FAILED
+    assert db.get_invocation_any_status(running.invocation_token).status is ThreadInvocationStatus.FAILED
+
+
+def test_recovery_does_not_change_generic_reap_semantics(tmp_path):
+    """Before Slice B, the generic pending reaper is unchanged: it still fails
+    pending REPLY/BOOTSTRAP rows with daemon_restart and never touches the
+    (unwired) delivery state table."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+
+    reaped = db.reap_pending_invocations(
+        "THR-001",
+        purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        decline_reason="archive_started",
+    )
+    assert reaped == 2
+    # The new table was not consulted or written by the legacy reaper.
+    assert db.list_reply_delivery_states() == []
+
+
+@pytest.mark.parametrize("n", [7, 8])
+def test_recovery_both_slots_pair_scoped_sweep_parameterized(tmp_path, n):
+    """Founder-required proof (THR-198 seq 20): a corrupt both-slots row whose
+    pair owns N pending REPLY receipts (2 referenced by the slots + N-2
+    unreferenced orphans) is swept PAIR-SCOPED. Every owned PENDING REPLY is
+    retired under ``corrupt_both_slots_on_recovery`` (zero owned pending REPLY
+    remain, not merely the two referenced rows), no replacement is minted, both
+    slots clear with a truthful diagnostic, and the foreign-pair / wrong-purpose
+    / already-terminal controls are never mutated."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+
+    # Two owned pending REPLY receipts referenced by the corrupt slots.
+    queued = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    running = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(running.invocation_token, session_id=None)
+
+    # N-2 additional owned same-pair PENDING REPLY receipts OUTSIDE both slots
+    # (orphaned duplicates the old slot-scoped retirement left behind).
+    orphan_tokens = [
+        db.mint_thread_invocation(
+            thread_id="THR-001", agent_name="alice",
+            triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        for _ in range(n - 2)
+    ]
+
+    # Protected controls that must survive the sweep untouched:
+    foreign = db.mint_thread_invocation(  # foreign-pair PENDING REPLY (bob)
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    wrong_purpose = db.mint_thread_invocation(  # same-pair wrong-purpose PENDING
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    terminal = db.mint_thread_invocation(  # same-pair already-terminal REPLY
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.consume_invocation(terminal.invocation_token)
+
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, queued.invocation_token,
+         running.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    # (b) no returned/minted replacement on this fail-closed path.
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    # (c) cleared ownership slots + truthful corruption diagnostic.
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.running_from_seq is None
+    assert st.running_through_seq is None
+    assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
+
+    # (a) zero owned PENDING REPLY rows for the pair — the N-2 orphans are
+    # swept too, not merely the two referenced receipts.
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+    # (d) each owned PENDING REPLY terminalized under the corruption reason.
+    for token in [queued.invocation_token, running.invocation_token, *orphan_tokens]:
+        inv = db.get_invocation_any_status(token)
+        assert inv.status is ThreadInvocationStatus.FAILED
+        assert inv.decline_reason == "corrupt_both_slots_on_recovery"
+        assert inv.consumed_at is not None
+
+    # (e) every protected control remains unchanged.
+    foreign_inv = db.get_invocation_any_status(foreign.invocation_token)
+    assert foreign_inv.status is ThreadInvocationStatus.PENDING
+    assert foreign_inv.decline_reason is None
+    wrong_inv = db.get_invocation_any_status(wrong_purpose.invocation_token)
+    assert wrong_inv.status is ThreadInvocationStatus.PENDING
+    assert wrong_inv.decline_reason is None
+    terminal_inv = db.get_invocation_any_status(terminal.invocation_token)
+    assert terminal_inv.status is ThreadInvocationStatus.CONSUMED
+    assert terminal_inv.decline_reason is None
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+    # (f) repeat recovery is a no-op.
+    second = db.recover_reply_delivery_state()
+    assert second == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+
+def test_recovery_both_slots_corruption_missing_token_in_slot(tmp_path):
+    """A corrupt both-slots row whose running slot references a non-existent
+    invocation token fails closed without a crash: the pair-scoped sweep retires
+    only real owned PENDING REPLY receipts, the missing token is never mutated
+    (no such row exists), and no replacement is minted."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    queued = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # running slot references a token with no invocation row.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, queued.invocation_token,
+         "missing-token", 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
+
+    # The owned pending REPLY referenced by the queued slot is swept; the
+    # missing token has no row to mutate and never minted a replacement.
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    queued_inv = db.get_invocation_any_status(queued.invocation_token)
+    assert queued_inv.status is ThreadInvocationStatus.FAILED
+    assert queued_inv.decline_reason == "corrupt_both_slots_on_recovery"
+    assert db.get_invocation_any_status("missing-token") is None
+
+
+@pytest.mark.parametrize("n", [7, 8])
+def test_cutover_legacy_pending_deep_stack_parameterized(tmp_path, n):
+    """Founder-required proof (THR-198 seq 20): a deep historical stack of N
+    legacy pending REPLY rows for one pair coalesces to exactly one queued wake
+    spanning min(triggering_seq)..tail, terminalizing all N with
+    ``coalesced_cutover``, while foreign-pair and wrong-purpose rows are
+    preserved and repeat/reopen cutover stays idempotent."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    # Only alice is a participant: cutover iterates participants, so bob's
+    # foreign pending REPLY must never be touched.
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+
+    # Foreign-pair PENDING REPLY (bob, not a participant) — must survive.
+    bob_reply = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # Same-pair wrong-purpose PENDING rows — must survive.
+    task_followup = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    bootstrap = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+
+    tail = n + 3
+    for i in range(tail):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )  # transcript seqs 1..tail
+
+    # N legacy pending REPLYs at seqs 2..N+1 (min == 2).
+    seqs = list(range(2, n + 2))
+    for s in seqs:
+        _seed_pending_reply(db, "THR-001", "alice", triggering_seq=s)
+
+    created = db.cutover_thread_reply_delivery_state("THR-001")
+    assert len(created) == 1
+    st = created[0]
+    assert st.agent_name == "alice"
+    assert st.acknowledged_through_seq == 1   # from_seq - 1
+    assert st.required_through_seq == tail    # current tail
+    assert st.queued_invocation_token is not None
+    assert st.running_invocation_token is None
+
+    # Exactly one replacement pending REPLY spanning min..tail.
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    assert pending[0].triggering_seq == 2      # min(triggering_seq)
+    assert pending[0].invocation_token == st.queued_invocation_token
+
+    # All N legacy rows terminalized with coalesced_cutover.
+    terminalized = [
+        inv for inv in db.list_thread_invocations("THR-001")
+        if inv.agent_name == "alice"
+        and inv.purpose is ThreadInvocationPurpose.REPLY
+        and inv.status is ThreadInvocationStatus.FAILED
+        and inv.decline_reason == "coalesced_cutover"
+    ]
+    assert len(terminalized) == n
+    assert sorted(inv.triggering_seq for inv in terminalized) == seqs
+
+    # Foreign-pair and wrong-purpose rows preserved.
+    assert (
+        db.get_invocation_any_status(bob_reply.invocation_token).status
+        is ThreadInvocationStatus.PENDING
+    )
+    assert (
+        db.get_invocation_any_status(task_followup.invocation_token).status
+        is ThreadInvocationStatus.PENDING
+    )
+    assert (
+        db.get_invocation_any_status(bootstrap.invocation_token).status
+        is ThreadInvocationStatus.PENDING
+    )
+
+    # Repeat + reopen idempotence: no new state, no duplicate wake, foreign
+    # pair still exactly one pending REPLY.
+    assert db.cutover_thread_reply_delivery_state("THR-001") == []
+    db.close()
+    db2 = Database(tmp_path / "happyranch.db")
+    assert db2.cutover_thread_reply_delivery_state("THR-001") == []
+    assert len(_pending_reply_rows(db2, "THR-001", "alice")) == 1
+    assert len(_pending_reply_rows(db2, "THR-001", "bob")) == 1
