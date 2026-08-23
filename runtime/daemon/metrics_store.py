@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,16 @@ _THROTTLE_SECONDS = 55
 # queryable/readable (never rewritten in place).
 _SNAPSHOT_FORMAT_VERSION = 2
 _SNAPSHOT_FORMAT_FIELD = "format_version"
+
+
+class MetricsMaintenanceError(Exception):
+    """A daemon-owned offline metrics maintenance operation failed.
+
+    Raised only when the ordered maintenance sequence did NOT complete in
+    full (e.g. a busy WAL checkpoint, or ``PRAGMA integrity_check`` did not
+    return exactly ``ok``).  It never signals a partial success — callers
+    must surface it and require a fresh explicit invocation.
+    """
 
 
 class MetricsStore:
@@ -169,6 +180,139 @@ class MetricsStore:
         if self._db_path is None:
             return None
         return _file_size(self._db_path + "-wal")
+
+    # ------------------------------------------------------------------
+    # Health / offline maintenance (startup-only, daemon-owned)
+    # ------------------------------------------------------------------
+
+    def health(self) -> dict[str, Any]:
+        """Return non-sensitive storage-health aggregates (no row identifiers).
+
+        Row count, oldest/newest ``captured_at``, total stored snapshot
+        payload bytes, the latest snapshot's route-label count, SQLite
+        page/free-list counts, and on-disk DB/WAL byte sizes (the last three
+        are ``None`` for an in-memory store).
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n, MIN(captured_at) AS oldest,"
+            " MAX(captured_at) AS newest FROM metrics_snapshots"
+        ).fetchone()
+        result: dict[str, Any] = {
+            "row_count": int(row["n"]),
+            "oldest_captured_at": row["oldest"],
+            "newest_captured_at": row["newest"],
+            "total_snapshot_bytes": self._total_snapshot_bytes(),
+            "route_label_count": self._latest_route_label_count(),
+        }
+        if self._db_path is None:
+            result["page_count"] = None
+            result["freelist_count"] = None
+            result["db_bytes"] = None
+            result["wal_bytes"] = None
+            return result
+        result["page_count"] = int(
+            self._conn.execute("PRAGMA page_count").fetchone()[0]
+        )
+        result["freelist_count"] = int(
+            self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+        )
+        result["db_bytes"] = _file_size(self._db_path)
+        result["wal_bytes"] = _file_size(self._db_path + "-wal")
+        return result
+
+    def _total_snapshot_bytes(self) -> int:
+        """Sum of stored ``snapshot_json`` lengths (drives the DB footprint)."""
+        cur = self._conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(snapshot_json)), 0) FROM metrics_snapshots"
+        )
+        return int(cur.fetchone()[0])
+
+    def _latest_route_label_count(self) -> int:
+        """Distinct route-label count of the newest stored snapshot (0 if none)."""
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM metrics_snapshots"
+            " ORDER BY captured_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            parsed = json.loads(row["snapshot_json"])
+        except (ValueError, TypeError):
+            return 0
+        return _route_label_count(parsed)
+
+    def _wal_checkpoint(self) -> dict[str, int]:
+        """Checkpoint + truncate the WAL; return the raw PRAGMA result row."""
+        row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return {
+            "busy": int(row[0]),
+            "log_frames": int(row[1]),
+            "checkpointed_frames": int(row[2]),
+        }
+
+    def _integrity_check(self) -> str:
+        """Return the joined ``PRAGMA integrity_check`` result."""
+        rows = self._conn.execute("PRAGMA integrity_check").fetchall()
+        return "\n".join(r[0] for r in rows)
+
+    def _vacuum(self) -> None:
+        """Run the controlled SQLite compaction (``VACUUM``)."""
+        self._conn.execute("VACUUM")
+
+    def maintenance(self, cutoff_iso: str) -> dict[str, Any]:
+        """Run the offline maintenance sequence through this store connection.
+
+        Ordered sequence: bounded pre-telemetry → unchanged strict-before
+        prune at *cutoff_iso* → WAL checkpoint (TRUNCATE, fail-closed on
+        ``busy``) → ``PRAGMA integrity_check`` (must be exactly ``ok``
+        before compaction) → controlled ``VACUUM`` → post-vacuum integrity
+        evidence → bounded after telemetry.
+
+        Returns a deterministic report dict (before/after DB/WAL bytes, rows,
+        cutoff, page/free-list counts, duration, checkpoint/integrity
+        outcomes, prune count, snapshot-size and route-label cardinality —
+        no labels, IDs, slugs, or snapshot content).  Raises
+        ``MetricsMaintenanceError`` (or a SQLite error) on any failure —
+        never a partial success.  Never touches the SQLite files at the
+        filesystem level and never shells out; all work goes through this
+        connection.  Intended for the startup-only maintenance one-shot —
+        do not run against a live serving daemon.
+        """
+        t0 = _time.monotonic()
+        before = self.health()
+        pruned = self.prune(cutoff_iso)
+        checkpoint = self._wal_checkpoint()
+        if checkpoint["busy"] != 0:
+            raise MetricsMaintenanceError(
+                "WAL checkpoint was busy (a concurrent connection prevented "
+                f"the WAL reset): {checkpoint}"
+            )
+        integrity_before = self._integrity_check()
+        if integrity_before != "ok":
+            raise MetricsMaintenanceError(
+                "PRAGMA integrity_check did not return exactly 'ok' before "
+                f"VACUUM: {integrity_before!r}"
+            )
+        self._vacuum()
+        integrity_after = self._integrity_check()
+        if integrity_after != "ok":
+            raise MetricsMaintenanceError(
+                "PRAGMA integrity_check did not return exactly 'ok' after "
+                f"VACUUM: {integrity_after!r}"
+            )
+        after = self.health()
+        duration_s = round(_time.monotonic() - t0, 6)
+        return {
+            "before": before,
+            "after": after,
+            "cutoff": cutoff_iso,
+            "pruned_rows": pruned,
+            "checkpoint": checkpoint,
+            "integrity_check_before_vacuum": integrity_before,
+            "integrity_check_after_vacuum": integrity_after,
+            "vacuum": "ok",
+            "duration_seconds": duration_s,
+        }
 
 
 # ------------------------------------------------------------------

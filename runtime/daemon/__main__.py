@@ -2,9 +2,18 @@
 
 Bootstraps from ~/.happyranch/runtimes.yaml, binds an ephemeral local port,
 writes pid/port files, and runs the FastAPI app under uvicorn.
+
+Offline maintenance mode (TASK-5443 replacement, TASK-5505):
+``python -m runtime.daemon --maintenance`` is an explicit STARTUP-ONLY
+one-shot that runs the MetricsStore maintenance sequence and exits — it
+never binds an HTTP listener, never runs the FastAPI lifespan, and never
+starts a scheduler/worker.  Run it while the daemon is stopped; the SQLite
+layer fail-closes (checkpoint busy / VACUUM locked) if a live daemon holds
+the store.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import signal
@@ -326,12 +335,150 @@ def _install_signal_handlers(state: DaemonState) -> None:
     signal.signal(signal.SIGINT, _handle)
 
 
-def main() -> None:
+def _daemon_pid_alive() -> bool:
+    """True when the daemon pid file names a live process (fail-closed).
+
+    A pid file naming a live process means a normal daemon is (or may be)
+    serving traffic — offline maintenance must refuse.  A missing or
+    dead/stale pid is fine; an ambiguous probe (e.g. PermissionError) is
+    treated as alive so destructive compaction is never attempted when the
+    daemon state cannot be verified.
+    """
+    try:
+        raw = paths.pid_file().read_text().strip()
+        pid = int(raw)
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)  # signal 0 = existence check, no signal sent
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError / undeterminable → fail closed (don't run
+        # destructive compaction when we cannot verify the daemon is stopped).
+        return True
+    return True
+
+
+def run_maintenance() -> int:
+    """Run the offline/startup-only metrics maintenance one-shot and exit.
+
+    This function IS the entire process when ``--maintenance`` is passed:
+    it runs BEFORE ``_build_state`` (no org load, no startup sweep, no
+    task-state mutation), before ``create_app``, before ``_bind_port`` and
+    before uvicorn — so no HTTP listener, lifespan, scheduler loop, worker,
+    or task/job/session producer ever starts.  It opens the active runtime's
+    ``metrics.db`` through ``MetricsStore``, runs the ordered
+    prune → WAL checkpoint → integrity check → controlled VACUUM sequence,
+    logs the bounded telemetry report, and returns a process exit code.
+
+    Fail-closed: any invalid integrity/checkpoint/VACUUM result or
+    operational exception returns 1 with bounded recovery/retry guidance —
+    never a success claim, never an automatic retry.  A fresh explicit
+    invocation is required for retry.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from runtime.daemon.metrics_store import (
+        MetricsMaintenanceError,
+        MetricsStore,
+        _RETENTION_DAYS,
+    )
+
+    # Offline guard (belt-and-suspenders): SQLite fail-closes on a concurrent
+    # holder anyway (checkpoint busy / VACUUM locked), but a live-daemon pid
+    # probe fails fast with an actionable message.
+    if _daemon_pid_alive():
+        logger.error(
+            "metrics maintenance aborted: a daemon process appears to be "
+            "running (pid file %s). Maintenance is OFFLINE/STARTUP-ONLY — "
+            "stop the daemon first, then re-run "
+            "'python -m runtime.daemon --maintenance'.",
+            paths.pid_file(),
+        )
+        return 1
+
+    reg = runtimes.load()
+    if reg.active is None:
+        logger.error(
+            "metrics maintenance aborted: no active runtime is registered "
+            "(runtimes.yaml has no active runtime); nothing to maintain. "
+            "Register/activate a runtime, then re-run "
+            "'python -m runtime.daemon --maintenance'."
+        )
+        return 1
+
+    runtime = RuntimeDir.load(reg.active)
+    try:
+        store = MetricsStore(str(runtime.root / "metrics.db"))
+        try:
+            now = datetime.now(timezone.utc)
+            cutoff = (now - timedelta(days=_RETENTION_DAYS)).isoformat()
+            report = store.maintenance(cutoff)
+        finally:
+            try:
+                store.close()
+            except Exception:
+                pass
+    except MetricsMaintenanceError as exc:
+        logger.error(
+            "metrics maintenance FAILED: %s. No automatic retry — re-run "
+            "'python -m runtime.daemon --maintenance' after resolving the "
+            "cause. The store was left queryable where SQLite guarantees it; "
+            "metrics.db/-wal/-shm were never deleted or hand-edited.",
+            exc,
+        )
+        return 1
+    except Exception:
+        logger.exception(
+            "metrics maintenance FAILED with an operational error. No "
+            "automatic retry — re-run 'python -m runtime.daemon --maintenance' "
+            "after resolving the cause. The store was left queryable where "
+            "SQLite guarantees it; metrics.db/-wal/-shm were never deleted or "
+            "hand-edited."
+        )
+        return 1
+
+    logger.info("metrics maintenance complete: %s", report)
+    return 0
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m runtime.daemon",
+        description="HappyRanch daemon (or offline metrics maintenance one-shot).",
+    )
+    parser.add_argument(
+        "--maintenance",
+        action="store_true",
+        help=(
+            "Run the OFFLINE/STARTUP-ONLY metrics maintenance sequence "
+            "(strict-before prune at the 30-day cutoff, WAL checkpoint, "
+            "integrity check, controlled VACUUM) against the active "
+            "runtime's metrics.db, log the bounded telemetry report, and "
+            "exit. Never starts the normal daemon; requires a fresh "
+            "explicit invocation for retry."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     paths.ensure_daemon_home()
+
+    args = _build_parser().parse_args(argv)
+
+    # Offline maintenance is the ENTIRE process: it must run before any
+    # HTTP listener binds, before the FastAPI lifespan, and before any
+    # scheduler/worker starts — then exit.  It can never coexist with
+    # serving normal traffic.
+    if args.maintenance:
+        return run_maintenance()
+
     paths.ensure_token()
 
     settings = Settings()
@@ -356,7 +503,8 @@ def main() -> None:
     server = uvicorn.Server(config)
     # Hand the bound socket to uvicorn so we don't race the port number.
     server.run(sockets=[sock])
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
