@@ -444,35 +444,49 @@ write site) to filesystem bytes under the org root.
 - **Fixtures:** FX-C11-OK, FX-C11-HASHMISMATCH, FX-C11-MISSING,
   FX-C11-OUTROOT-SYMLINK, FX-C11-INROOT-SYMLINK, FX-C11-NONREGULAR.
 
-### C12 — `custom_skill_versions.skill_md_cache` / `references_manifest` / `assets_manifest` → inline text + active (currently-unpopulated) manifest metadata
+### C12 — `custom_skill_versions.skill_md_cache` (inline) · C12b/C12c `references_manifest` / `assets_manifest` (active manifest metadata — default-refuse when populated)
 
 - **Producer:** `custom_skill_versions.skill_md_cache` (inline SKILL.md text,
-  `TEXT`), `references_manifest` (`TEXT`, JSON), `assets_manifest` (`TEXT`,
-  JSON) — all three are **active current persisted metadata** columns declared
-  in `Database._create_tables()` (`database.py:1089–1091`), **not** dormant
-  legacy fields. `references_manifest` / `assets_manifest` are accepted as
-  optional parameters by `custom_store.create_skill_with_first_version`
-  (`runtime/skills/custom_store.py:74–75, 118–119`); the production
+  `TEXT`) is **C12** — inline portable DB data. `references_manifest`
+  (`TEXT`, **C12b**) and `assets_manifest` (`TEXT`, **C12c**) are **active
+  current persisted metadata** columns declared in
+  `Database._create_tables()` (`database.py:1089–1091`), **not** dormant
+  legacy fields. They are accepted as optional raw-string parameters only by
+  `custom_store.create_skill_with_first_version`
+  (`runtime/skills/custom_store.py:74–75, 118–119`), whose **only** caller is
+  test code (`tests/test_custom_skill_schema.py:18`); the production
   `service.create_version` writer (`runtime/skills/custom/service.py:38–70`)
-  does **not** populate them today, and no current resolver reads them to
-  filesystem bytes (the canonical-store/materializer path builds from the
-  `content_artifact_key` artifact, C11, not from these manifests).
+  does **not** populate them (its `INSERT` column list omits both), and **no
+  current resolver reads them to filesystem bytes** (the canonical-store /
+  materializer path builds from the `content_artifact_key` artifact, C11, not
+  from these manifests). **There is no production writer and no closed
+  manifest/reference grammar for either column.**
 - **Population (reproducible read-only observation, recorded live):** type
   `TEXT` (nullable) per `PRAGMA table_info(custom_skill_versions)`; the live
   org DB holds **8 rows, 0 non-empty `references_manifest`, 0 non-empty
   `assets_manifest`** (contrast `skill_md_cache` = 8 non-empty,
   `content_artifact_key` = 8 non-null). This is a **currently-zero-population
-  observation**, not a dormant-emptiness invariant: a non-null value must
-  **not** falsely trip the §2A dormant-empty control merely because the column
-  exists.
-- **Disposition:** `include` as portable DB data (rows are inline text / JSON
-  metadata with no direct path dependency). **If** a future producer writes
-  manifest JSON that *embeds* a DB→filesystem reference, that reference is
-  subject to the export-time default refusal (§2A / §6): any actual unresolved
-  or out-of-policy reference observed during validation **refuses** before
-  capture/import effects — it is **never** silently included merely because it
-  is embedded in an active manifest value.
-- **Fixtures:** FX-C12-INLINE.
+  observation**, not a dormant-emptiness invariant: a non-null active value
+  must **not** falsely trip the §2A dormant-empty control merely because the
+  column exists.
+- **Disposition:** `conditional` / **default-refuse when populated** —
+  `skill_md_cache` (C12) is `include` (inline text). For C12b/C12c, a **NULL
+  or empty** value is **ordinary**: the row is portable DB data with no special
+  handling, and it is **never** subject to a dormant-population check. A
+  **non-NULL, non-empty** value is an **unsupported active manifest** and
+  triggers the stable named pre-effect refusal **`unsupported_active_manifest`**
+  — refused **before** source capture/archive creation, destination
+  staging/import effect, or any filesystem traversal of a referenced path. The
+  exporter/importer **does not parse it as JSON**, does **not** interpret or
+  resolve any embedded reference, and does **not** silently carry it as inert
+  metadata — it refuses outright, naming the offending column
+  (`references_manifest` / `assets_manifest`). A later **separately approved**
+  slice may replace this default refusal only **after** an authoritative
+  manifest/reference grammar, an explicit reference/root policy, recursive
+  regular-file/no-symlink validation where the grammar declares paths, tests,
+  and independent review.
+- **Fixtures:** FX-C12-INLINE (C12 inline, null-manifest baseline),
+  FX-C12b-POPULATED (C12b), FX-C12c-POPULATED (C12c).
 
 ### C13 — `skill_lifecycle_packages.content_artifact_key` → `ArtifactStore.delete` (legacy, constructor-time)
 
@@ -579,7 +593,9 @@ DB→filesystem resolver/consumer and its producer (§2 — the 20 consumer
 columns); **(2)** maintain the active-versus-dormant population proof (§2A — a
 `dormant-legacy` field whose population proof is absent/nonzero fails closed;
 an active currently-unpopulated column is recorded as an observation, not an
-invariant); **(3)** default-refuse actual unresolved/out-of-policy file
+invariant; a **populated** active manifest column (C12b/C12c) default-refuses
+with the named refusal `unsupported_active_manifest`, never parsed as JSON);
+**(3)** default-refuse actual unresolved/out-of-policy file
 references during export/import validation, before effects (every reference
 classified file-bearing is resolved at export time and must land inside an
 included, hash-validated root; anything else refuses); **(4)** STOP on a newly
@@ -1060,9 +1076,11 @@ harness) — the refusal fires **before any capture/import effect**.
 `database.py:1090–1091`), **not** dormant legacy fields. Their current
 zero-population is an **observation**, not a dormant-emptiness invariant: a
 non-null active value does **not** trip the dormant-empty control merely
-because the column exists. If they ever become populated, the embedded
-references (if any) are subject to the export-time default refusal (§2A / §6),
-**not** to a dormant-stays-empty rule.
+because the column exists. If either ever becomes **populated** (non-NULL and
+non-empty), the value is an **unsupported active manifest** and triggers the
+stable named pre-effect default refusal **`unsupported_active_manifest`** (§4
+(ii-b)) — it is **not** parsed as JSON, **not** carried as inert metadata, and
+**not** subject to a dormant-stays-empty rule.
 
 ### Harness/check definition (the controls must fire)
 
@@ -1088,8 +1106,9 @@ additionally prove **each control fires** (not merely describe it). The check
    forcing reclassification. **Default-refuse fires before any capture/import
    effect.** Active columns with currently-zero population (e.g.
    `references_manifest` / `assets_manifest`) are **not** subject to this
-   control: a non-null active value is handled by the export-time default
-   refusal (§2A / §6), not a dormant-emptiness assertion.
+   control: a non-null active value is handled by the **populated
+   active-manifest default refusal** (`unsupported_active_manifest`, §4 (ii-b)),
+   not a dormant-emptiness assertion.
 
 The §4 harness requirements add the two behavioral firing proofs (an unsafe
 physical object → named refusal with **zero** source connections and no archive;
@@ -1123,6 +1142,15 @@ described as if it did):
 | C10 (output_dir) | exclude | dangling relative (now) | `escape`(now: containment→None) | n/a (excluded) | n/a | n/a | n/a | n/a |
 | C11 (content_artifact_key) | include | `missing`(now) | `escape`(now) | `nonregular`(req; follows now) | `dangling`(req; `exists()` false now) | `nonregular`(req) | `invalid`(now) | `integrity`(now) |
 | C13 (legacy lifecycle) | reject-until-retired | `ArtifactNotFound` swallowed (now); detector refuses (req) | `escape`(now crash vector; detector refuses req) | unlink link only, non-dangling (now); refuse (req) | `ArtifactNotFound` swallowed, link left (now); refuse (req) | `ArtifactNotFound` dir (now); refuse (req) | `invalid`(now crash; detector refuses req) | n/a |
+
+**C12b/C12c are value-state rows, not physical-file states.** They have no
+physical-file cell in this matrix because no production writer/resolver/grammar
+exists for them. Their disposition is governed by DB-value population: **NULL or
+empty** → ordinary portable DB row (no special handling); **non-NULL, non-empty**
+→ `refuse(unsupported_active_manifest)` before any capture/import effect or
+filesystem traversal — never parsed as JSON, never carried as inert metadata
+(§2 C12, §4 (ii-b)). Fixtures FX-C12b-POPULATED and FX-C12c-POPULATED assert
+the named refusal; FX-C12-INLINE preserves the null-manifest baseline.
 
 **States not supported by today's resolver are marked `(req)` and are required
 future pre-effect refusals** — never inferred current behavior. The §2 prose for
@@ -1229,7 +1257,9 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C11-OUTROOT-SYMLINK | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md → /etc/passwd` (outside root) | symlink (resolved target escapes root) | `escape` (`path_for` containment rejects resolved target) | no | no |
 | FX-C11-INROOT-SYMLINK | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md → artifacts/other` (in-root) | in-root symlink | `nonregular` — current `read()` **follows** and bytes may hash-match `content_hash`; required recursive validation refuses fail-closed | no | no |
 | FX-C11-NONREGULAR | C11 | same row | `artifacts/custom-skills/s/digest/SKILL.md` (FIFO/special) | nonregular member | `nonregular` — required recursive validation refuses | no | no |
-| FX-C12-INLINE | C12 | `custom_skill_versions(skill_md_cache="…", references_manifest=null, assets_manifest=null)` | none | inline only | none (no fs ref) | no | no |
+| FX-C12-INLINE | C12 | `custom_skill_versions(skill_md_cache="…", references_manifest=null, assets_manifest=null)` | none | inline only (null-manifest baseline) | none (no fs ref) | no | no |
+| FX-C12b-POPULATED | C12b | `custom_skill_versions(references_manifest='{"refs":["../skills/x"]}', assets_manifest=null)` | none | populated active manifest (no grammar) | `unsupported_active_manifest` — named pre-effect refusal; value **not** parsed as JSON, **not** carried as inert metadata | no | no |
+| FX-C12c-POPULATED | C12c | `custom_skill_versions(references_manifest=null, assets_manifest='{"assets":["/etc/passwd"]}')` | none | populated active manifest (no grammar) | `unsupported_active_manifest` — named pre-effect refusal; value **not** parsed as JSON, **not** carried as inert metadata | no | no |
 | FX-C13-ABSENT | C13 | no `skill_lifecycle_%` table (current-v2 DB) | none | — | none (no consumer; proceed) | no | no |
 | FX-C13-ESCAPE | C13 | `skill_lifecycle_packages(content_artifact_key="../../etc/passwd")` | — | invalid/escape key | `escape` — read-only detector refuses **before** any `Database(...)` (were the retire to run, `InvalidArtifactName` would crash the constructor) | no | no |
 | FX-C13-MISSING | C13 | `skill_lifecycle_packages(content_artifact_key="custom-skills/s/digest/SKILL.md")` | artifact file absent | missing-file | `missing` — `ArtifactNotFound` swallowed (no-op) if the retire ran; detector still refuses before any construction | no | no |
@@ -1261,13 +1291,16 @@ The registry above describes the shape; the Slice B/C harness must additionally
   currently-unpopulated columns (`references_manifest` / `assets_manifest`) are
   **excluded** from this dormant control: a non-null active value must not trip
   it.
-- **(ii-b) Active-manifest reference default refusal (firing proof).** If an
-  **active** manifest/metadata column (`references_manifest` / `assets_manifest`)
-  is ever populated with a value that embeds a DB→filesystem reference, the
-  export-time validation resolves it against the included, hash-validated roots
-  and **default-refuses** any actual unresolved or out-of-policy reference before
-  capture/import effects — it is never silently included merely because it sits
-  inside an active manifest value.
+- **(ii-b) Populated active-manifest default refusal (firing proof).** A
+  **non-NULL, non-empty** active manifest/metadata column
+  (`references_manifest` / `assets_manifest`) triggers the stable named pre-effect
+  default refusal **`unsupported_active_manifest`** — asserted via the
+  connection-spy (zero source connections) and "no archive produced"; the value
+  is **not** parsed as JSON, **not** interpreted/resolved, and **not** carried as
+  inert metadata. Distinct fixtures FX-C12b-POPULATED (references_manifest) and
+  FX-C12c-POPULATED (assets_manifest) each assert the named refusal before any
+  capture/import effect and no source/destination touch; FX-C12-INLINE preserves
+  the null/empty baseline as ordinary.
 - **(iii) Observable unsafe-object refusal.** At least one in-root symlink, one
   dangling link, and one nonregular member (dir/device/FIFO), as applicable per
   consumer, produces its named refusal (`nonregular` / `dangling` / `escape`)
