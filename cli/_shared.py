@@ -36,6 +36,34 @@ def _ok(r) -> bool:
             f"Session id mismatch — daemon expected {detail.get('active')} "
             f"but got {detail.get('got')}.",
         )
+    elif code == "not_quiescent":
+        print(
+            "Cannot run metrics maintenance: daemon is not quiescent "
+            f"({detail.get('nonterminal_tasks')} nonterminal tasks, "
+            f"{detail.get('running_jobs')} running jobs, "
+            f"{detail.get('active_executor_sessions')} active executor sessions)."
+        )
+    elif code == "confirmation_required":
+        print(
+            "Cannot run metrics maintenance without explicit confirmation — "
+            "re-run with --confirm-quiescent."
+        )
+    elif code == "maintenance_in_progress":
+        print(
+            "A metrics maintenance operation is already in progress — "
+            "retry after it completes."
+        )
+    elif code == "drain_timeout":
+        print(
+            "Metrics maintenance timed out waiting for in-flight requests to "
+            "drain; no maintenance was performed. Retry when the daemon is quieter."
+        )
+    elif code == "maintenance_failed":
+        print(
+            "Metrics maintenance failed and did not complete: "
+            f"{detail.get('detail')}. History remains queryable; "
+            "re-run with a fresh explicit invocation."
+        )
     else:
         print(f"Error ({r.status_code}): {r.text}")
     sys.exit(1)

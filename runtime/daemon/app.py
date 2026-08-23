@@ -5,6 +5,7 @@ import time as _time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from runtime.config import settings
 from runtime.daemon.dispatcher import Dispatcher
@@ -347,6 +348,45 @@ async def metrics_timing_middleware(request: Request, call_next):
     return response
 
 
+async def maintenance_admission_middleware(request: Request, call_next):
+    """Maintenance admission/drain middleware (TASK-5443).
+
+    While the metrics maintenance gate is pending/active, reject new normal
+    traffic with HTTP 503.  The maintenance endpoint itself is exempt — it is
+    the controlling operation.  Admitted requests are counted so the
+    maintenance route handler can drain them (and re-check quiescence) before
+    it runs checkpoint/integrity/VACUUM.
+    """
+    state = request.app.state.daemon
+    gate = getattr(state, "maintenance_gate", None)
+    if gate is None:
+        return await call_next(request)
+
+    # The maintenance request is the controlling operation — exempt from
+    # admission rejection (and not counted as a normal admitted request).
+    if request.method == "POST" and request.url.path == metrics.MAINTENANCE_ROUTE_PATH:
+        return await call_next(request)
+
+    if not gate.admit():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": {
+                    "code": "maintenance_in_progress",
+                    "detail": (
+                        "metrics maintenance is in progress; the daemon is "
+                        "temporarily rejecting new traffic. Retry after the "
+                        "operation completes."
+                    ),
+                }
+            },
+        )
+    try:
+        return await call_next(request)
+    finally:
+        gate.finish()
+
+
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
@@ -354,6 +394,10 @@ def create_app(state: DaemonState) -> FastAPI:
     state.queue._metrics_registry = state.metrics_registry
 
     app.middleware("http")(metrics_timing_middleware)
+    # TASK-5443: register the maintenance admission middleware AFTER the timing
+    # middleware so it is OUTERMOST — it rejects new traffic before the timing
+    # middleware records it and before routing admits the request.
+    app.middleware("http")(maintenance_admission_middleware)
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")

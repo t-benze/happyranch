@@ -9,6 +9,7 @@ from pathlib import Path
 from runtime.config import Settings
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+from runtime.daemon.maintenance_gate import MaintenanceGate
 from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.metrics_store import MetricsStore
 from runtime.daemon.org_state import OrgState
@@ -43,6 +44,10 @@ class DaemonState:
     )
     metrics_registry: MetricsRegistry = field(default_factory=MetricsRegistry)
     metrics_store: MetricsStore | None = None
+    # TASK-5443: admission/drain/exclusivity gate for the daemon-owned metrics
+    # maintenance operation.  Atomically rejects new traffic, drains in-flight
+    # requests, and rejects a second concurrent maintenance call.
+    maintenance_gate: MaintenanceGate = field(default_factory=MaintenanceGate)
     # Throttle for periodic snapshot writes — monotonic timestamp of last write.
     _last_metrics_snapshot_at: float = 0.0
 

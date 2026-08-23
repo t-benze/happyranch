@@ -32,6 +32,7 @@ from cli.commands import (
     jobs,
     kb,
     learning,
+    metrics,
     runtime,
     schedules,
     skills,
@@ -177,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     executors.register(sub)
     executor_binaries.register(sub)
     threads.register(sub)
+    metrics.register(sub)
 
     return parser
 

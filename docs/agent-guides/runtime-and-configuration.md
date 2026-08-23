@@ -123,8 +123,62 @@ consecutive 30-day windows — do not expect an immediate file-size drop, since
 row deletion does not shrink SQLite on its own.
 
 **Never** delete `metrics.db`, `metrics.db-wal`, or `metrics.db-shm` by hand,
-and never run VACUUM/checkpoint manually outside a founder-approved
-maintenance window; retention pruning is the only sanctioned row-removal path.
+and never run VACUUM/checkpoint manually. Retention pruning and the explicit
+daemon-owned maintenance operation below are the only sanctioned row-removal /
+compaction paths, and maintenance must never be executed against a live
+runtime — only against a daemon the founder has confirmed is quiescent.
+
+### POST /api/v1/metrics/maintenance — explicit quiescent maintenance
+
+A daemon-owned maintenance operation (bearer-authed, founder-explicit) that
+runs ONLY through `MetricsStore` — never a filesystem delete and never shell
+SQLite. It requires explicit confirmation (`confirm_quiescent: true`), then
+atomically enters a maintenance **admission/drain/exclusivity gate**:
+
+1. **Admission** — new normal traffic is rejected (HTTP 503
+   `maintenance_in_progress`); a second concurrent maintenance call is
+   deterministically rejected (HTTP 409 `maintenance_in_progress`).
+2. **Drain** — already-admitted requests finish within a bounded window
+   (HTTP 503 `drain_timeout` on timeout; the gate releases and nothing runs).
+3. **Re-check quiescence** — refuses (HTTP 409 `not_quiescent`) while any
+   nonterminal task, running job, or active executor session exists.
+4. **Operate** — through `MetricsStore`: prune (unchanged 30-day strict-before
+   cutoff) → WAL checkpoint (TRUNCATE; fail-closed on `busy`) → `PRAGMA
+   integrity_check` (fail-closed on non-`ok`) → `VACUUM` → post-vacuum
+   integrity + after telemetry.
+
+The gate is released on every success/failure path. The periodic snapshot
+writer skips for the entire gate so the scheduler loops never block or write
+during checkpoint/VACUUM; the blocking SQLite work runs off the event loop.
+
+```bash
+happyranch metrics maintenance --confirm-quiescent
+```
+
+**Request** `POST /api/v1/metrics/maintenance` body: `{"confirm_quiescent": true}`.
+
+**Response** `200 OK` reports before/after DB+WAL bytes, page/free-list counts,
+row count, total stored snapshot bytes, route-label count, cutoff, pruned-row
+count, checkpoint/integrity/VACUUM outcomes, and duration. No raw task/thread/
+org identifiers or snapshot content are ever returned.
+
+**Failure & recovery.** Any busy checkpoint, non-`ok` integrity check, VACUUM
+error, telemetry error, or unexpected SQLite exception returns HTTP 500
+(`maintenance_failed`) — never a partial success, never a false physical-
+reclaim claim. The gate releases and pre-existing valid history remains
+queryable. Recovery requires a fresh explicit invocation; there is no
+automatic retry. The periodic writer continues to catch and log its own
+persistence failures without crashing the scheduler loops. A successful
+`VACUUM` is the only evidence of physical space reclamation; do not claim
+reclamation without it.
+
+**Validating the projected steady-state reduction.** The bounded-cardinality
+route-template labels only shrink storage as old raw-path rows age out of the
+30-day window and a successful maintenance `VACUUM` runs. To validate, compare
+the persist-cycle telemetry (`serialized_bytes`, `route_label_count`) plus the
+maintenance `before`/`after` `db_bytes`/`total_snapshot_bytes` across two full
+30-day windows — the projected 48–57% drop appears only after the old
+unbounded-label rows are gone.
 
 ### GET /api/v1/metrics/history — persisted snapshot history
 
