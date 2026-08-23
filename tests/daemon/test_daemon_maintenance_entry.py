@@ -106,30 +106,32 @@ class TestMaintenanceEntrySeam:
     def test_maintenance_flag_without_flag_still_starts_server(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """The normal (no-flag) path is untouched: server seams are reached."""
+        """The normal (no-flag) path is untouched: server seams are reached,
+        and daemon-home initialization still precedes token/settings/state/
+        listener work (bootstrap ordering preserved)."""
         import runtime.daemon.__main__ as dm
 
-        called: list[str] = []
+        order: list[str] = []
 
         def _fake_bind(host: str, port: int = 0):
-            called.append("_bind_port")
+            order.append("_bind_port")
             import socket
             return socket.socket(), 9999
 
         def _fake_state(_settings):
-            called.append("_build_state")
+            order.append("_build_state")
             return DaemonState.idle(_settings)
 
         def _fake_app(_state):
-            called.append("create_app")
+            order.append("create_app")
             return object()
 
         class _FakeServer:
             def __init__(self, _config):
-                called.append("uvicorn.Server(config)")
+                order.append("uvicorn.Server(config)")
 
             def run(self, sockets=None):
-                called.append("server.run")
+                order.append("server.run")
 
         monkeypatch.setattr(dm, "_bind_port", _fake_bind)
         monkeypatch.setattr(dm, "_build_state", _fake_state)
@@ -139,10 +141,12 @@ class TestMaintenanceEntrySeam:
         class _FakePaths:
             @staticmethod
             def ensure_daemon_home():
+                order.append("ensure_daemon_home")
                 return None
 
             @staticmethod
             def ensure_token():
+                order.append("ensure_token")
                 return "token"
 
             @staticmethod
@@ -159,7 +163,8 @@ class TestMaintenanceEntrySeam:
         rc = dm.main([])
 
         assert rc == 0
-        assert called == [
+        assert order == [
+            "ensure_daemon_home", "ensure_token",
             "_build_state", "create_app", "_bind_port",
             "uvicorn.Server(config)", "server.run",
         ]
@@ -262,6 +267,40 @@ class TestMaintenanceEntrySeam:
         assert "SENSITIVE_PID_" not in caplog.text
         assert "Traceback" not in caplog.text
         assert len(caplog.text) < 2000
+        assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
+        assert not (tmp_path / ".happyranch" / "daemon.port").exists()
+
+    def test_maintenance_hostile_daemon_home_init_failure_bounded(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A hostile/malformed daemon-home initialization failure is the
+        reviewer's remaining finding: ``main(["--maintenance"])`` must parse
+        the flag and then run home initialization INSIDE the bounded
+        run_maintenance boundary — exit 1 with fixed redacted guidance only,
+        no raw marker/traceback, and zero server-startup side effects."""
+        import runtime.daemon.__main__ as dm
+
+        _guard_server_seams(monkeypatch)
+
+        marker = "SENSITIVE_HOME_" + "x" * 100_000
+
+        def _hostile_home_init():
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(dm.paths, "ensure_daemon_home", _hostile_home_init)
+
+        rc = dm.main(["--maintenance"])
+
+        assert rc == 1
+        # Fixed bounded classification + guidance only — never the raw marker,
+        # a traceback, or the exception type.
+        assert "operational-error" in caplog.text
+        assert marker not in caplog.text
+        assert "SENSITIVE_HOME_" not in caplog.text
+        assert "Traceback" not in caplog.text
+        assert len(caplog.text) < 2000
+        # No pid/port files were written — no server startup side effects
+        # (the guarded server seams would also have raised).
         assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
         assert not (tmp_path / ".happyranch" / "daemon.port").exists()
 

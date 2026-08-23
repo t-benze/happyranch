@@ -9,9 +9,10 @@ one-shot that runs the MetricsStore maintenance sequence and exits — it
 never binds an HTTP listener, never runs the FastAPI lifespan, and never
 starts a scheduler/worker.  Run it while the daemon is stopped; the SQLite
 layer fail-closes (checkpoint busy / VACUUM locked) if a live daemon holds
-the store.  Every failure path (including stale/malformed runtime state)
-returns 1 with a stable bounded classification and fixed recovery guidance
-— never raw exception text, tracebacks, paths, or injected content.
+the store.  Every failure path (including daemon-home initialization and
+stale/malformed runtime state) returns 1 with a stable bounded classification
+and fixed recovery guidance — never raw exception text, tracebacks, paths, or
+injected content.
 """
 from __future__ import annotations
 
@@ -375,11 +376,11 @@ def run_maintenance() -> int:
     post-VACUUM WAL checkpoint → final integrity check sequence, logs the
     bounded telemetry report, and returns a process exit code.
 
-    Fail-closed and bounded: every preflight step that can throw — the pid
-    probe, the runtime registry load, ``RuntimeDir.load`` (stale/malformed
-    runtime state), the store open, and the ordered maintenance sequence —
-    sits inside ONE controlled failure boundary.  Any failure returns 1 with
-    a stable, non-sensitive classification (``MetricsMaintenanceError.code``
+    Fail-closed and bounded: every preflight step that can throw — daemon-home
+    initialization, the pid probe, the runtime registry load, ``RuntimeDir.load``
+    (stale/malformed runtime state), the store open, and the ordered maintenance
+    sequence — sits inside ONE controlled failure boundary.  Any failure returns 1
+    with a stable, non-sensitive classification (``MetricsMaintenanceError.code``
     or ``operational-error``) plus fixed recovery guidance — never raw
     exception text, tracebacks, filesystem paths, IDs, or injected secrets,
     and never a success claim or an automatic retry.  A fresh explicit
@@ -394,11 +395,19 @@ def run_maintenance() -> int:
     )
 
     # The ENTIRE maintenance preflight + run sits inside the bounded
-    # failure boundary: pid probe, registry load, RuntimeDir.load (which
-    # raises on stale/malformed runtime state), store open, and the ordered
-    # maintenance sequence.  Any throw converts to exit 1 with bounded
-    # recovery guidance — never a raw traceback out of ``main()``.
+    # failure boundary: daemon-home initialization, pid probe, registry load,
+    # RuntimeDir.load (which raises on stale/malformed runtime state), store
+    # open, and the ordered maintenance sequence.  Any throw converts to exit
+    # 1 with bounded recovery guidance — never a raw traceback out of
+    # ``main()``.
     try:
+        # Daemon-home initialization first — inside the same controlled
+        # boundary as every other maintenance preflight, so a hostile or
+        # malformed home (unwritable parent, path-as-file, injected marker)
+        # returns exit 1 with fixed redacted guidance instead of an uncaught
+        # traceback out of ``main()``.
+        paths.ensure_daemon_home()
+
         # Offline guard (belt-and-suspenders): SQLite fail-closes on a
         # concurrent holder anyway (checkpoint busy / VACUUM locked), but a
         # live-daemon pid probe fails fast with an actionable message.
@@ -483,16 +492,21 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    paths.ensure_daemon_home()
-
+    # Parse the command line BEFORE any daemon-home initialization that can
+    # throw: a hostile/malformed daemon home must never leak an uncaught
+    # traceback out of an otherwise-controlled invocation.
     args = _build_parser().parse_args(argv)
 
     # Offline maintenance is the ENTIRE process: it must run before any
     # HTTP listener binds, before the FastAPI lifespan, and before any
     # scheduler/worker starts — then exit.  It can never coexist with
-    # serving normal traffic.
+    # serving normal traffic.  Daemon-home initialization for the
+    # maintenance path happens INSIDE run_maintenance()'s single bounded
+    # failure boundary.
     if args.maintenance:
         return run_maintenance()
+
+    paths.ensure_daemon_home()
 
     paths.ensure_token()
 
