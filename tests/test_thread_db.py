@@ -1240,7 +1240,8 @@ def test_recovery_malformed_running_range_fails_closed(tmp_path):
 def test_recovery_both_slots_corruption_fails_closed(tmp_path):
     """A row with BOTH queued and running slots populated is corruption:
     recovery clears both slots, mints no replacement, returns no runnable
-    token, and touches neither invocation row."""
+    token, and retires (terminalizes) ONLY the validated same-pair pending
+    REPLY receipts so no duplicate pending REPLY pair survives."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -1276,12 +1277,122 @@ def test_recovery_both_slots_corruption_fails_closed(tmp_path):
     assert st.running_from_seq is None
     assert st.running_through_seq is None
     assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
-    # No replacement minted: exactly the two original pending REPLYs remain,
-    # both untouched (still pending).
+    # No replacement minted and no duplicate pending pair survives: both
+    # owned same-pair pending REPLY receipts are retired with a truthful
+    # corruption receipt, leaving ZERO (not two) pending REPLYs for the pair.
     pending = _pending_reply_rows(db, "THR-001", "alice")
-    assert len(pending) == 2
-    assert db.get_invocation_any_status(queued.invocation_token).status is ThreadInvocationStatus.PENDING
-    assert db.get_invocation_any_status(running.invocation_token).status is ThreadInvocationStatus.PENDING
+    assert len(pending) == 0
+    queued_inv = db.get_invocation_any_status(queued.invocation_token)
+    assert queued_inv.status is ThreadInvocationStatus.FAILED
+    assert queued_inv.decline_reason == "corrupt_both_slots_on_recovery"
+    assert queued_inv.consumed_at is not None
+    running_inv = db.get_invocation_any_status(running.invocation_token)
+    assert running_inv.status is ThreadInvocationStatus.FAILED
+    assert running_inv.decline_reason == "corrupt_both_slots_on_recovery"
+    assert running_inv.consumed_at is not None
+
+
+def test_recovery_both_slots_corruption_spares_foreign_and_terminal(tmp_path):
+    """A corrupt both-slots row whose receipts are foreign-pair or already
+    terminal fails closed WITHOUT mutating them: recovery retires only owned
+    same-pair PENDING REPLY receipts, never a foreign-pair or terminal
+    receipt, and issues no blanket pending-REPLY reaper."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    # queued slot references a REPLY owned by a DIFFERENT pair (bob) — foreign.
+    foreign = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # running slot references an already-terminal (consumed) receipt owned by
+    # alice — terminal, so it must be left untouched.
+    terminal = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.consume_invocation(terminal.invocation_token)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, foreign.invocation_token,
+         terminal.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "corrupt_both_slots_on_recovery"
+
+    # The foreign-pair receipt is untouched (still pending, still bob's).
+    foreign_inv = db.get_invocation_any_status(foreign.invocation_token)
+    assert foreign_inv.status is ThreadInvocationStatus.PENDING
+    assert foreign_inv.agent_name == "bob"
+
+    # The already-terminal receipt is untouched (still consumed, no reason).
+    terminal_inv = db.get_invocation_any_status(terminal.invocation_token)
+    assert terminal_inv.status is ThreadInvocationStatus.CONSUMED
+    assert terminal_inv.decline_reason is None
+
+    # No pending REPLY remains for the owned pair alice (neither referenced
+    # receipt was an owned pending REPLY to retire).
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    # bob's foreign pending REPLY is untouched — NOT a blanket reaper.
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+
+def test_recovery_both_slots_corruption_is_idempotent(tmp_path):
+    """Repeat recovery after a both-slots corruption retires the owned
+    pending REPLYs exactly once and leaves no duplicate pending pair: a
+    second pass is a clean no-op."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    queued = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    running = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(running.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, running_invocation_token, running_from_seq, "
+        "running_through_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, queued.invocation_token,
+         running.invocation_token, 1, 1, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    first = db.recover_reply_delivery_state()
+    assert first == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+    # Second pass: the corrupt row now has no ownership slots, so it is not
+    # re-selected; nothing is re-terminalized or re-minted.
+    second = db.recover_reply_delivery_state()
+    assert second == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert db.get_invocation_any_status(queued.invocation_token).status is ThreadInvocationStatus.FAILED
+    assert db.get_invocation_any_status(running.invocation_token).status is ThreadInvocationStatus.FAILED
 
 
 def test_recovery_does_not_change_generic_reap_semantics(tmp_path):
