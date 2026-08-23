@@ -173,17 +173,23 @@ Slice-B admission step. This is why the runbook stops before publication and
 before any destination-daemon start (§11): a started destination would operate
 the imported org regardless of any marker you staged.
 
-## 6. Phase A — Deploy and calibrate Slice-A preflight on both instances
+## 6. Phase A — Deploy and calibrate Slice-A preflight on the source only
 
-Slice A (PR #680) must be **deployed and running**, not merely merged.
+Slice A (PR #680) must be **deployed and running** on the **source** instance —
+not merely merged. The **destination daemon must remain stopped throughout this
+entire runbook**; it is never started or restarted for preflight, calibration,
+validation, or any other reason (§1, §13).
 
-1. On each instance, confirm the running daemon is built from a head that
-   includes Slice A, then restart it so the new routes are live:
+1. On the **source** instance only, confirm the running daemon is built from a
+   head that includes Slice A, then restart it so the new route is live:
    `scripts/daemon.sh status` (calibrate the actual stop/start against the real
    daemon), then restart per your normal deploy procedure. **Merge ≠ live
-   deployment** — do not proceed until both daemons actually serve the
+   deployment** — do not proceed until the source daemon actually serves the
    `/portability-preflight` route.
-2. Calibrate on the **source** instance:
+2. Do **not** start, restart, or otherwise activate the **destination** daemon
+   at any point in this runbook. It stays stopped for the entire procedure and
+   is never used to serve preflight or to validate a staged payload.
+3. Calibrate on the **source** instance:
 
    ```bash
    happyranch orgs portability-preflight <source-slug>
@@ -222,12 +228,23 @@ Resolve classifier **rejections** (unknown roots, nonregular members, nonzero
 legacy-residue DBs, invalid skill packages) by hand-editing the org filesystem
 to the allow-list in §4 — never by guessing a new portable root.
 
-## 8. Phase C — Stop both daemons and verify stopped
+## 8. Phase C — Stop the source daemon; destination stays stopped
 
-On the source and destination instances:
+The **source** daemon was running to serve preflight (§6); stop it now. The
+**destination** daemon was never started and must remain stopped — do not start
+it here or anywhere else in this runbook.
+
+On the **source** instance:
 
 ```bash
 scripts/daemon.sh stop --force
+scripts/daemon.sh status    # must exit non-zero / print "not running"
+```
+
+On the **destination** instance, verify it is stopped (it was never started in
+this runbook):
+
+```bash
 scripts/daemon.sh status    # must exit non-zero / print "not running"
 ```
 
@@ -240,7 +257,8 @@ have an alternate daemon home. **Never** remove daemon lifecycle/auth files
 `runtime-audit.db`) by hand; the stop script removes only its own pid/port
 files.
 
-Verify `status` reports stopped on **both** instances before the next phase.
+Verify `status` reports stopped on the source (and still stopped on the
+destination) before the next phase.
 
 ## 9. Phase D — Export (sidecar gate → logical snapshot → payload → archive)
 
