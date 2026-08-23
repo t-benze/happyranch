@@ -4,7 +4,9 @@ import functools
 import hashlib
 import json
 import logging
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time as _time
 from datetime import datetime, timezone
@@ -163,6 +165,131 @@ _STALE_PENDING_JOBS_SCAN_SQL = (
     "AND created_at <= ? ORDER BY created_at, id"
 )
 
+# Active-WAL observation uses an internally managed temporary snapshot (see
+# ``_scan_stale_pending_jobs_via_snapshot``): the source store is byte-copied
+# into a private temp dir and ONLY the copy is opened with SQLite. This is the
+# third-round THR-195 correction: SQLite's WAL reader — even ``mode=ro`` —
+# updates shared-memory reader/lock state, and an independent review
+# (TASK-5517) proved that mutates an existing source ``-shm``. Never open the
+# SOURCE with SQLite while it is WAL-active.
+_SNAPSHOT_TMP_PREFIX = "happyranch-stale-scan-"
+# Bounded retries for a source that changes mid-copy (e.g. a writer commit or
+# checkpoint straddling the two file copies) — after this the observer FAILS
+# CLOSED rather than return an incoherent view as authoritative.
+_SNAPSHOT_MAX_ATTEMPTS = 3
+
+
+def _file_sig(path: Path) -> tuple | None:
+    """Stat signature (size / mtime-ns / inode) used to detect a source file
+    changing while the snapshot copies it. ``None`` when the file is absent."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    shutil.copyfile(src, dst)
+
+
+def _snapshot_source_store(
+    db_path: Path, wal_path: Path,
+) -> tuple[Path, Path] | None:
+    """Byte-copy the source main DB (and ``-wal``) into a private temp dir
+    outside any org root. Returns ``(temp_dir, temp_db)`` for a coherent copy,
+    or ``None`` when the source changed mid-copy (caller retries). The temp
+    dir is removed on every non-success path.
+
+    Never opens the SOURCE with SQLite — the source files are only read.
+    The temp copy's own ``-shm`` (rebuilt by SQLite from the copied ``-wal``)
+    absorbs every read-side write.
+    """
+    temp_dir = Path(tempfile.mkdtemp(prefix=_SNAPSHOT_TMP_PREFIX))
+    try:
+        before_db = _file_sig(db_path)
+        before_wal = _file_sig(wal_path)
+        if before_db is None:
+            # The source store vanished mid-scan — nothing coherent to copy.
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+        temp_db = temp_dir / "snapshot.db"
+        _copy_file(db_path, temp_db)
+        if before_wal is not None:
+            _copy_file(wal_path, temp_dir / "snapshot.db-wal")
+        # If either source file changed while we were copying, the pair may
+        # straddle two WAL generations (e.g. a checkpoint+restart between the
+        # two copies) — SQLite cannot detect that, so refuse and retry.
+        if _file_sig(db_path) != before_db or _file_sig(wal_path) != before_wal:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+        return temp_dir, temp_db
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+def _scan_stale_pending_jobs_via_snapshot(
+    db_path: Path, wal_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only observation of an ACTIVE-WAL store via a private temp
+    snapshot (the source is never opened with SQLite).
+
+    SQLite's WAL reader — even ``mode=ro`` — updates shared-memory
+    reader/lock state in the existing ``-shm`` file; an independent review
+    (TASK-5517) proved that mutates source ``-shm`` bytes. This path instead
+    byte-copies the source main DB and ``-wal`` into a private temp dir
+    (outside any org root, cleaned on every path) and opens ONLY the copy,
+    whose own ``-shm`` (rebuilt by SQLite from the copied ``-wal``) absorbs
+    every read-side write. The source files are only ``read()``-ed — bytes
+    and mtimes unchanged (founder ruling TASK-5499 third round).
+
+    Coherence contract: the copy is guarded by size/mtime/inode before+after
+    checks (a checkpoint/restart straddling the two copies is refused and
+    retried), the temp copy must pass ``PRAGMA quick_check`` before the query,
+    and a torn copy is retried then fails closed — an incomplete view is
+    NEVER returned as authoritative. Deterministic schema failures (e.g. a
+    pre-migration store without a ``jobs`` table) fail closed immediately
+    without retry.
+    """
+    last_error: Exception | None = None
+    for _ in range(_SNAPSHOT_MAX_ATTEMPTS):
+        snapshot = _snapshot_source_store(db_path, wal_path)
+        if snapshot is None:
+            last_error = sqlite3.DatabaseError(
+                "source store changed mid-snapshot; could not obtain a "
+                "coherent read-only view"
+            )
+            continue
+        temp_dir, temp_db = snapshot
+        try:
+            conn = sqlite3.connect(str(temp_db))
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA query_only=ON")
+                checks = conn.execute("PRAGMA quick_check").fetchall()
+                if not checks or checks[0][0] != "ok":
+                    last_error = sqlite3.DatabaseError(
+                        "temporary snapshot failed integrity validation"
+                    )
+                    continue
+                rows = conn.execute(
+                    _STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        except sqlite3.OperationalError:
+            raise  # deterministic schema issue (pre-migration) — fail closed
+        except sqlite3.DatabaseError as exc:
+            last_error = exc  # torn/incoherent snapshot — retry, then fail closed
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    raise sqlite3.DatabaseError(
+        f"could not obtain a coherent read-only snapshot of active-WAL store "
+        f"after {_SNAPSHOT_MAX_ATTEMPTS} attempts: {last_error}"
+    )
+
 
 def scan_stale_pending_jobs_readonly(
     db_path: Path, cutoff_iso: str,
@@ -171,17 +298,23 @@ def scan_stale_pending_jobs_readonly(
 
     THR-195 observation MUST NOT durably mutate any store: it never creates a
     missing DB, never enables WAL, never runs the schema migration guards, and
-    never writes ``-wal``/``-shm`` sidecars. This helper therefore opens a
-    GENUINE read-only SQLite connection instead of ``Database(db_path)``
-    (whose ``__init__`` creates the file, enables WAL, and runs migrations).
+    never writes ``-wal``/``-shm`` sidecars. This helper therefore never
+    opens the source with ``Database(db_path)`` (whose ``__init__`` creates
+    the file, enables WAL, and runs migrations) and — for an ACTIVE-WAL
+    store — never opens it with SQLite at all (a WAL reader, even ``mode=ro``,
+    mutates the existing source ``-shm``; proved by TASK-5517).
 
-    URI selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
+    Route selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
     checkpoints and removes them on the last close), so the main file holds
     every committed row — ``immutable=1`` reads it fully and provably cannot
     create sidecars. When sidecars exist (store open in this process — e.g. a
-    loaded org — or crash leftovers), ``mode=ro`` reads the WAL frames too and
-    never modifies the existing sidecars. Either way the scan sees every
-    committed candidate row and writes nothing.
+    loaded org — or crash leftovers), the scan byte-copies the source main DB
+    and ``-wal`` into a private temp dir (outside any org root, cleaned on
+    every path) and opens ONLY the copy: the candidate rows are read from the
+    copy (WAL frames included), every read-side write lands on the copy's own
+    ``-shm``, and the source DB/-wal/-shm bytes AND mtimes stay unchanged.
+    Either way the scan sees every committed candidate row and writes nothing
+    to any source file.
 
     A missing DB file returns ``[]`` — nothing to observe, nothing created.
     A store that cannot be read (malformed file, or a pre-migration/
@@ -194,10 +327,8 @@ def scan_stale_pending_jobs_readonly(
     wal = Path(f"{db_path}-wal")
     shm = Path(f"{db_path}-shm")
     if wal.exists() or shm.exists():
-        uri = f"file:{db_path}?mode=ro"
-    else:
-        uri = f"file:{db_path}?immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+        return _scan_stale_pending_jobs_via_snapshot(db_path, wal, cutoff_iso)
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(_STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,)).fetchall()

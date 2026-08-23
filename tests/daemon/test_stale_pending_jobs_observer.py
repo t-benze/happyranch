@@ -8,7 +8,9 @@ submission-to-dispatch orphan is surfaced instead of silently stranding tasks.
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -528,3 +530,254 @@ def test_startup_observation_includes_broken_org_root(tmp_path: Path, tmp_home, 
     messages = " ".join(r.message for r in caplog.records)
     assert "JOB-002" in messages  # healthy org still observed
     assert "JOB-777" in messages  # broken org's candidate reaches observation
+
+
+# ---------------------------------------------------------------------------
+# Active-WAL observation: byte-preserving internal snapshot (TASK-5532, third
+# substantive fix-forward). SQLite's WAL reader — even ``mode=ro`` — updates
+# shared-memory reader/lock state; an independent review (TASK-5517) proved it
+# mutates an existing source ``-shm``. These tests pin the replacement seam:
+# the source is NEVER opened with SQLite — a private temp snapshot of the
+# source DB + ``-wal`` is opened instead — so every source byte AND mtime is
+# unchanged and a WAL-only candidate is still observed.
+# ---------------------------------------------------------------------------
+
+
+def _open_active_wal_org(rt: RuntimeDir, slug: str) -> Database:
+    """Seed an org and return a KEPT-OPEN writer whose candidate is committed
+    only to the WAL (``wal_autocheckpoint=0`` → the main DB never receives
+    it, so the row provably lives in the ``-wal`` alone)."""
+    db = _seed_org(rt, slug)
+    db.execute("PRAGMA wal_autocheckpoint=0")
+    _seed_task(db, "TASK-001", TaskStatus.FAILED)
+    _seed_job(
+        db, job_id="JOB-WAL", task_id="TASK-001",
+        created_at=_z(_now() - timedelta(days=60)),
+    )
+    return db
+
+
+def _store_hashes(org_root: Path) -> dict[str, str | None]:
+    """SHA-256 of every source store file (DB, -wal, -shm)."""
+    return {
+        name: (
+            hashlib.sha256((org_root / name).read_bytes()).hexdigest()
+            if (org_root / name).exists() else None
+        )
+        for name in ("happyranch.db", "happyranch.db-wal", "happyranch.db-shm")
+    }
+
+
+def _store_mtimes(org_root: Path) -> dict[str, int | None]:
+    """mtime (ns) of every source store file — captured for the founder ruling
+    that a source ``-shm`` mtime touch would need to be documented."""
+    return {
+        name: (org_root / name).stat().st_mtime_ns
+        if (org_root / name).exists() else None
+        for name in ("happyranch.db", "happyranch.db-wal", "happyranch.db-shm")
+    }
+
+
+def _wal_only_row_count(db_path: Path) -> list:
+    """Candidate rows visible in a main-only (immutable=1, WAL-ignoring) view.
+    ``OperationalError`` (no jobs table in the main file) is itself proof the
+    table — and the candidate — live only in the WAL."""
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        try:
+            return conn.execute(
+                "SELECT id FROM jobs WHERE id='JOB-WAL'"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    finally:
+        conn.close()
+
+
+def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
+    tmp_path: Path,
+):
+    """MANDATORY deterministic proof at the ACTUAL production scanner seam
+    (TASK-5532): hold a writer OPEN with a candidate committed only to the
+    WAL; call the production all-org route; assert the candidate is observed;
+    hash every source DB/-wal/-shm byte-for-byte before/after and assert
+    identical hashes; capture mtimes and document the factual result.
+
+    Against the prior mechanism (``mode=ro`` on the source) this test is RED:
+    the reviewer's independent probe (TASK-5517) proved SQLite's read-only WAL
+    reader mutates the existing source ``-shm`` bytes. It passes only for a
+    mechanism that never opens the source with SQLite.
+    """
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    writer = _open_active_wal_org(rt, "happyranch")
+    org_root = rt.orgs_dir / "happyranch"
+    db_path = org_root / "happyranch.db"
+    assert (org_root / "happyranch.db-wal").exists()
+    assert (org_root / "happyranch.db-shm").exists()
+
+    # The candidate is committed ONLY to the WAL — the main DB never got it.
+    assert _wal_only_row_count(db_path) == []
+
+    before_hashes = _store_hashes(org_root)
+    before_mtimes = _store_mtimes(org_root)
+    leftovers_before = set(
+        p.name for p in Path(tempfile.gettempdir()).glob("happyranch-stale-scan-*")
+    )
+
+    # Production all-org route (registry-wide, includes this org root).
+    results = scan_all_org_stale_pending(rt, now=_now())
+    assert [f["id"] for f in results["happyranch"]] == ["JOB-WAL"]
+    assert results["happyranch"][0]["task_id"] == "TASK-001"
+
+    # Founder ruling: source DB/-wal/-shm must have NO byte changes.
+    assert _store_hashes(org_root) == before_hashes
+    # Factual mtime result: the source is only read() — no source mtime
+    # (including -shm) changes either (better than the ruling's allowance).
+    assert _store_mtimes(org_root) == before_mtimes
+    # The internal snapshot is cleaned safely — no temp leftovers.
+    leftovers_after = set(
+        p.name for p in Path(tempfile.gettempdir()).glob("happyranch-stale-scan-*")
+    )
+    assert leftovers_after == leftovers_before
+
+    # No source schema/row/audit change (writer-connection view; the observer
+    # wrote nothing and did not checkpoint the candidate into the main DB).
+    row = writer.get_job("JOB-WAL")
+    assert row is not None
+    assert row.status == JobStatus.PENDING and row.started_at is None
+    assert writer.get_audit_logs("TASK-001") == []
+    assert _wal_only_row_count(db_path) == []  # still WAL-only
+    writer.close()
+
+
+def test_active_wal_scan_retries_on_transient_source_change_then_succeeds(
+    tmp_path: Path, monkeypatch,
+):
+    """A source that changes mid-copy (a checkpoint/commit straddling the DB
+    and WAL copies) is detected by the size/mtime guard and re-copied: the
+    retry succeeds, the candidate is observed, and the source stays
+    byte-identical."""
+    import runtime.infrastructure.database as database_mod
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    writer = _open_active_wal_org(rt, "happyranch")
+    org_root = rt.orgs_dir / "happyranch"
+
+    real_sig = database_mod._file_sig
+    calls = {"n": 0}
+
+    def flaky_sig(path):
+        calls["n"] += 1
+        # First snapshot attempt reports the source as changed on every stat
+        # (4 sig calls: db before/after + wal before/after); from attempt 2
+        # the stat is stable so the snapshot lands.
+        if calls["n"] <= 4:
+            return (calls["n"], 0, 0)
+        return real_sig(path)
+
+    monkeypatch.setattr(database_mod, "_file_sig", flaky_sig)
+
+    before = _store_hashes(org_root)
+    results = scan_all_org_stale_pending(rt, now=_now())
+    assert [f["id"] for f in results["happyranch"]] == ["JOB-WAL"]
+    assert calls["n"] > 4  # at least one retry occurred, then success
+    assert _store_hashes(org_root) == before
+    writer.close()
+
+
+def test_active_wal_scan_persistent_incoherence_fails_closed_without_source_mutation(
+    tmp_path: Path, monkeypatch,
+):
+    """If the source keeps changing mid-copy (never a coherent pair) the
+    observer gives up and FAILS CLOSED after bounded retries — it never
+    returns a partial/incoherent view as if authoritative — and the source
+    stays byte-identical with no sidecar added."""
+    import runtime.infrastructure.database as database_mod
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    writer = _open_active_wal_org(rt, "happyranch")
+    org_root = rt.orgs_dir / "happyranch"
+
+    calls = {"n": 0}
+
+    def always_changing(path):
+        calls["n"] += 1
+        return (calls["n"], 0, 0)
+
+    monkeypatch.setattr(database_mod, "_file_sig", always_changing)
+
+    before = _store_hashes(org_root)
+    files_before = sorted(p.name for p in org_root.iterdir())
+    with pytest.raises(sqlite3.DatabaseError):
+        scan_all_org_stale_pending(rt, now=_now())
+    assert _store_hashes(org_root) == before
+    assert sorted(p.name for p in org_root.iterdir()) == files_before
+    # Bounded: every retry attempt ran (each attempt makes >=3 sig calls:
+    # before-db, before-wal, then the after-db check short-circuits the pair).
+    assert calls["n"] >= 3 * database_mod._SNAPSHOT_MAX_ATTEMPTS
+    writer.close()
+
+
+def test_active_wal_scan_copy_failure_fails_closed_without_source_mutation(
+    tmp_path: Path, monkeypatch,
+):
+    """An OS-level copy failure propagates (fail closed) with zero source
+    mutation: no bytes change, no sidecars created."""
+    import runtime.infrastructure.database as database_mod
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    writer = _open_active_wal_org(rt, "happyranch")
+    org_root = rt.orgs_dir / "happyranch"
+
+    def boom(src, dst):
+        raise OSError("injected copy failure")
+
+    monkeypatch.setattr(database_mod, "_copy_file", boom)
+
+    before = _store_hashes(org_root)
+    with pytest.raises(OSError):
+        scan_all_org_stale_pending(rt, now=_now())
+    assert _store_hashes(org_root) == before
+    writer.close()
+
+
+def test_active_wal_malformed_store_fails_closed_through_snapshot(tmp_path: Path):
+    """A malformed store that ALSO carries -wal/-shm sidecars (the active-WAL
+    shape) still fails closed (DatabaseError) through the internal snapshot
+    path, leaving every source byte untouched."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "happyranch"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    (org_root / "happyranch.db").write_bytes(
+        b"this is not a sqlite database at all\x00\x01" * 8
+    )
+    (org_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
+    before = _store_hashes(org_root)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        scan_all_org_stale_pending(rt, now=_now())
+
+    assert _store_hashes(org_root) == before
+
+
+def test_active_wal_pre_migration_store_fails_closed_through_snapshot(tmp_path: Path):
+    """An EXISTING pre-migration store (legacy ``script_requests`` shape) that
+    carries -wal/-shm sidecars fails closed (no jobs table) through the
+    snapshot path and is never migrated/altered — the source bytes stay
+    identical."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "happyranch"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    _legacy_script_requests_db(org_root / "happyranch.db")
+    # Simulate a legacy store that was left WAL-active (crash leftovers).
+    (org_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
+    before = _store_hashes(org_root)
+
+    with pytest.raises(sqlite3.OperationalError):
+        scan_all_org_stale_pending(rt, now=_now())
+
+    assert _store_hashes(org_root) == before
