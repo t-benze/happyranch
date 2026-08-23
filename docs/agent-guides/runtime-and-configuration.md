@@ -80,6 +80,52 @@ restart is a no-op.
 both get the store on startup — the store is created on demand regardless of
 runtime shape and touches no existing DB.
 
+### HTTP route labels (route-template bucketing)
+
+HTTP latency is labelled by the matched FastAPI **route template** — resolved
+after routing and prefixed with the request method — not the literal
+`request.url.path`. For example a request to
+`/api/v1/orgs/tourism-org/tasks/TASK-1505/completion` is recorded under
+`POST /api/v1/orgs/{slug}/tasks/{task_id}/completion`, so dynamic org slugs,
+task IDs, thread IDs, and job IDs coalesce into one bounded histogram per
+route instead of one unbounded key per concrete value. Method separation and
+the `__all__` aggregate bucket are preserved.
+
+Two bounded, stable fallbacks exist and can never contain a raw ID/path:
+
+| Condition | Label |
+| --- | --- |
+| No matched template (e.g. 404) | `METHOD __unmatched__` |
+| `call_next` raises (unhandled exception) | `METHOD __error__` (elapsed time recorded; original exception re-raised) |
+
+### Snapshot format marker and legacy-read compatibility
+
+The shared composer (`compose_metrics_snapshot`) adds an explicit
+`format_version` marker to every snapshot: `2` means route-template labels.
+Both the live `GET /api/v1/metrics` response and each persisted row carry it
+through the same composer, preserving the live/persisted byte-identical
+invariant. A stored row **without** the marker is legacy raw-URL-path format;
+it remains queryable and readable via `/metrics/history` and is never
+rewritten in place.
+
+### Storage telemetry (non-sensitive)
+
+Each successful snapshot persist cycle emits one structured log line with
+bounded, non-sensitive operational telemetry sufficient to compare storage
+growth across a full 30-day rollover: `route_label_count` (distinct labels,
+excluding `__all__`), `serialized_bytes`, `row_count`, `prune_count`,
+`oldest_captured_at`, `newest_captured_at`, `db_bytes`, `wal_bytes`,
+`page_count`, and `freelist_count`. It never emits route IDs, task IDs, thread
+IDs, org slugs, or snapshot contents. A telemetry failure is isolated and can
+never crash the scheduler loop or mask a successful persist. To measure the
+steady-state reduction, compare these values at the same point in two
+consecutive 30-day windows — do not expect an immediate file-size drop, since
+row deletion does not shrink SQLite on its own.
+
+**Never** delete `metrics.db`, `metrics.db-wal`, or `metrics.db-shm` by hand,
+and never run VACUUM/checkpoint manually outside a founder-approved
+maintenance window; retention pruning is the only sanctioned row-removal path.
+
 ### GET /api/v1/metrics/history — persisted snapshot history
 
 Returns persisted metrics snapshot rows from the `metrics_snapshots` table,

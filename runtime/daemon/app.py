@@ -40,6 +40,7 @@ from runtime.daemon.routes import (
     schedules,
 )
 from runtime.daemon.routes import settings as settings_routes
+from runtime.daemon.metrics import error_label, route_template_label
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
 
@@ -319,20 +320,40 @@ async def _lifespan(app: FastAPI):
         await state.close_all()
 
 
+async def metrics_timing_middleware(request: Request, call_next):
+    """HTTP timing middleware (THR-066 remediation, Slice 1).
+
+    Measures elapsed time around ``call_next``, then labels the latency by
+    the matched FastAPI route template (resolved AFTER routing, prefixed with
+    the request method) — never the literal ``request.url.path``.  A request
+    with no matched template records ``METHOD __unmatched__``; a request
+    whose handler raises records ``METHOD __error__`` (elapsed time is still
+    recorded and the original exception is re-raised).
+    """
+    t0 = _time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = _time.monotonic() - t0
+        request.app.state.daemon.metrics_registry.record_http_latency(
+            error_label(request.method), elapsed
+        )
+        raise
+    elapsed = _time.monotonic() - t0
+    route_path = getattr(request.scope.get("route"), "path", None)
+    request.app.state.daemon.metrics_registry.record_http_latency(
+        route_template_label(request.method, route_path), elapsed
+    )
+    return response
+
+
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry
 
-    @app.middleware("http")
-    async def _metrics_timing_middleware(request: Request, call_next):
-        t0 = _time.monotonic()
-        response = await call_next(request)
-        elapsed = _time.monotonic() - t0
-        route_key = f"{request.method} {request.url.path}"
-        request.app.state.daemon.metrics_registry.record_http_latency(route_key, elapsed)
-        return response
+    app.middleware("http")(metrics_timing_middleware)
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
