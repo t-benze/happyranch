@@ -60,7 +60,7 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Team with feedback or escalates after max rounds.
 
-**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes an implicit `review_verdict` audit row (`approved` for COMPLETED, `rejected` for FAILED). The founder reviews these via `happyranch audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
+**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes a `review_verdict` audit row. The audit verdict is a **distinct fact** from the child's completion status: when the child reported an explicit structured `verdict` (a free-string workflow value such as `APPROVE`, `PASS`, or `REQUEST_CHANGES`), that reported verdict is preserved verbatim. Only when no structured verdict is present does the orchestrator fall back to the legacy implicit mapping (`approved` for COMPLETED, `rejected` for FAILED/no-report). Dashboard readers normalize the free-string spellings case-insensitively and with benign whitespace/separator variation; an explicitly blank or unknown verdict is treated as unknown (no approval tone/count), never as approved. The founder reviews these via `happyranch audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
 
 **6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
@@ -249,9 +249,12 @@ The orchestrator is a Python application that:
 ## 2. ~~Performance Tier Impact on Team Configuration~~ (REMOVED)
 
 The performance-tier feature was removed on 2026-05-27. The audit log
-(implicit `review_verdict` rows after every delegation, plus completion /
-failure events) is sufficient for the founder to identify which agents
-need attention via `happyranch audit`. Tier classification on top of the
+(`review_verdict` rows after every delegation, plus completion / failure
+events) is sufficient for the founder to identify which agents need
+attention via `happyranch audit`. The audit verdict is separate from the
+child's completion status — a completed child that reported
+`REQUEST_CHANGES` carries `REQUEST_CHANGES` as its audit verdict, not an
+inferred `approved`. Tier classification on top of the
 verdicts added no behavioral enforcement in code, and the per-agent tier
 prose in agent `.md` files was not actionable (workers never saw their
 own tier; managers saw worker tiers but the tier didn't gate delegation).

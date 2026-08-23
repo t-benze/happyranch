@@ -116,9 +116,13 @@ def narrative_counts_today(db: Database, *, now: datetime, kb_store: KbStore) ->
 
 def org_pulse_7d(db: Database, *, now: datetime, teams: TeamsRegistry) -> list[TeamPulse]:
     """For each team in teams.yaml: last-7d acceptance pct + trend delta vs prior
-    7d + 12-week weekly sparkline. Acceptance = review_verdict='approved' /
-    total review_verdicts where the reviewed task's assigned_agent is in the
-    team. Empty teams return acceptance=0, trend_delta=0, sparkline=[0]*12."""
+    7d + 12-week weekly sparkline. Acceptance = review_verdict in the approval
+    family (APPROVE/approved/approve, ACCEPT/accept, OK/ok, PASS/pass, matched
+    case-insensitively with whitespace/separator folding) / total
+    review_verdicts where the reviewed task's assigned_agent is in the
+    team. Non-approval (REQUEST_CHANGES/REVISE/REJECT/FAIL, etc.) and blank/
+    unknown verdicts are never counted as accepted. Empty teams return
+    acceptance=0, trend_delta=0, sparkline=[0]*12."""
 
 def recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
     """Last n audit rows of kind in {session_start, completion_report,

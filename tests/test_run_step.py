@@ -126,11 +126,12 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
 
 
 def _make_report(output_summary: str, status: str = "completed",
-                 output_dir: str | None = None):
+                 output_dir: str | None = None, verdict: str | None = None):
     from runtime.models import CompletionReport
     return CompletionReport(
         task_id="T-IGNORED", agent="engineering_head", status=status,
         confidence=80, output_summary=output_summary, output_dir=output_dir,
+        verdict=verdict,
     )
 
 
@@ -1117,6 +1118,85 @@ def test_run_step_delegated_worker_emits_review_verdict(
     assert len(bad_verdicts) == 1
     assert bad_verdicts[0]["payload"]["verdict"] == "rejected"
     assert bad_verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
+
+
+def test_run_step_delegated_reviewer_request_changes_verdict(runtime, db, monkeypatch):
+    """A delegated non-manager reviewer that reports status=completed with an
+    explicit structured verdict=REQUEST_CHANGES must finish COMPLETED (the
+    completion status is a distinct fact) while its review_verdict audit
+    payload carries the reported REQUEST_CHANGES — never an inferred approved."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-REV", brief="review",
+        assigned_agent="qa_engineer", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    # Production seam: the agent callback persists the completion report
+    # (task_results) before run_step classifies the terminal transition.
+    def _run_agent_persisting(*a, **k):
+        db.insert_task_result(
+            task_id="T-REV", agent="qa_engineer", session_id="sess-x",
+            status="completed", confidence_score=80,
+            output_summary="needs changes", verdict="REQUEST_CHANGES",
+        )
+        return _make_result(), _make_report(
+            output_summary="needs changes", verdict="REQUEST_CHANGES")
+    monkeypatch.setattr(orch, "_run_agent", _run_agent_persisting)
+
+    orch.run_step("T-REV")
+
+    child = db.get_task("T-REV")
+    assert child.status == TaskStatus.COMPLETED
+    assert child.note == "needs changes"
+
+    verdicts = [a for a in db.get_audit_logs("T-REV")
+                if a["action"] == "review_verdict"]
+    assert len(verdicts) == 1
+    assert verdicts[0]["payload"]["verdict"] == "REQUEST_CHANGES"
+    assert verdicts[0]["payload"]["reviewed_agent"] == "qa_engineer"
+
+
+def test_run_step_delegated_completed_no_verdict_falls_back_approved(
+    runtime, db, monkeypatch,
+):
+    """A delegated worker reporting completed WITHOUT a structured verdict keeps
+    the legacy implicit mapping (approved)."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-OK", brief="ok",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary="done")))
+    orch.run_step("T-OK")
+
+    verdicts = [a for a in db.get_audit_logs("T-OK")
+                if a["action"] == "review_verdict"]
+    assert len(verdicts) == 1
+    assert verdicts[0]["payload"]["verdict"] == "approved"
 
 
 def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
