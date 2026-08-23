@@ -7,6 +7,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from runtime.models import ThreadInvocationStatus
+
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering", role: str = "worker") -> None:
     """Create the agent's frontmatter file and workspace dir."""
@@ -72,11 +74,12 @@ def test_agent_reply_excludes_self_from_broadcast(
     from runtime.models import ThreadInvocationStatus
     all_invs = org_state.db.list_thread_invocations(thread_id)
 
-    # Consume bravo + charlie's existing invocations so we can cleanly detect
+    # Settle bravo + charlie's existing queued wakes so we can cleanly detect
     # any NEW ones minted by alpha's reply.
-    for inv in all_invs:
-        if inv.agent_name in ("bravo", "charlie"):
-            org_state.db.consume_invocation(inv.invocation_token)
+    for agent in ("bravo", "charlie"):
+        org_state.db.discard_reply_delivery(
+            thread_id, agent_name=agent, decline_reason="test_settled",
+        )
 
     # Get alpha's pending invocation and consume it by replying.
     alpha_invs = [
@@ -181,11 +184,11 @@ def test_founder_send_broadcasts_to_all_participants(tmp_home, app, org_state, a
     assert r.status_code == 200, r.text
     thread_id = r.json()["thread_id"]
 
-    # Consume all pending invocations so no pending load.
-    from runtime.models import ThreadInvocationStatus
-    for inv in org_state.db.list_thread_invocations(thread_id):
-        if inv.status == ThreadInvocationStatus.PENDING:
-            org_state.db.consume_invocation(inv.invocation_token)
+    # Settle all pending reply wakes so no pending load (explicit discard
+    # boundary, mirroring what a real reply/decline round would leave behind).
+    org_state.db.discard_reply_delivery(
+        thread_id, decline_reason="test_settled",
+    )
 
     # Founder sends a follow-up — should mint for all 3 participants.
     r2 = client.post(

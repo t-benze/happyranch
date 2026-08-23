@@ -58,6 +58,17 @@ For each participant p in thread.participants:
         status = pending
 ```
 
+**GH-688 Phase 1 (landed):** the per-message mint loop above is replaced by the
+store-owned conversational-arrival path (`Database.record_conversational_arrival`
+in Slice A, wired in Slice B). The recipient set is identical — every
+participant except the speaker — and body `@`-mentions remain visible text,
+never routing signals. The store coalesces: one `(thread_id, agent_name)` pair
+holds at most one unstarted `REPLY` (queued) and at most one running `REPLY`;
+a burst advances the queued wake's `required_through_seq` instead of minting
+per-message rows. Newly minted tokens are enqueued only after the arrival
+transaction commits. See `docs/agent-guides/features-and-invariants.md` →
+Thread Broadcast Routing for the full Phase-1 contract.
+
 The founder is **not** a participant in `thread_participants` today and never has been — she's modeled exclusively as the `FOUNDER_LITERAL = "@founder"` address token. With addressing removed she has no presence in the participant set, so no special-case skip is needed in the mint loop. She continues to read every thread via the web UI; the only thread-related Feishu push she still receives is `notify_thread_compose` (agent opens a new thread).
 
 No selective addressing. No `@all` token. No `@founder` token. The participant set bounds the broadcast.

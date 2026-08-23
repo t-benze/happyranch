@@ -621,6 +621,82 @@ class ThreadReplyRecoveryEntry(BaseModel):
     kind: Literal["retained_queued", "replacement_queued"]
 
 
+class ThreadReplyArrival(BaseModel):
+    """One recipient's delivery result from a conversational arrival.
+
+    GitHub #688 Phase 1 Slice B. ``invocation_token`` is non-None only when
+    this arrival minted a NEW queued REPLY (no queued/running ownership
+    existed); ``coalesced=True`` means the arrival merely raised
+    ``required_through_seq`` on an existing wake. ``from_seq``/``through_seq``
+    carry the delivery range the pair's single wake now covers (diagnostic).
+    """
+    agent_name: str
+    invocation_token: str | None
+    coalesced: bool
+    from_seq: int
+    through_seq: int
+
+
+class ThreadReplyClaim(BaseModel):
+    """Successful queued→running CAS result for a conversational REPLY.
+
+    ``running_from_seq``/``running_through_seq`` are the immutable inclusive
+    prompt receipt snapshotted at claim time; they never change for the life
+    of the running attempt even if later arrivals raise ``required_through_seq``.
+    """
+    thread_id: str
+    agent_name: str
+    invocation_token: str
+    acknowledged_through_seq: int
+    required_through_seq: int
+    running_from_seq: int
+    running_through_seq: int
+
+
+class ThreadReplySettlement(BaseModel):
+    """Result of settling a conversational REPLY terminal path.
+
+    ``follow_on_token`` is at most one newly-minted queued REPLY covering
+    arrivals strictly after the immutable running range (reply/decline only).
+    ``retry_required`` is the residual-obligation diagnostic: True only when
+    ``required_through_seq`` still exceeds the acknowledged watermark AND no
+    follow-on wake was minted to carry it (failure/timeout leave the range
+    unacknowledged with no immediate retry).
+    """
+    thread_id: str
+    agent_name: str
+    outcome: Literal["reply", "decline", "failed", "timeout"]
+    acknowledged_through_seq: int
+    required_through_seq: int
+    retry_required: bool
+    follow_on_token: str | None
+
+
+class ReplyDeliveryProjection(BaseModel):
+    """Pair-level reply-delivery wire projection (server contract, Slice B).
+
+    Derived from ``thread_reply_delivery_state``, never fabricated from
+    per-message invocation rows. ``state`` truthfully distinguishes the three
+    live obligations:
+      * ``queued`` — one unstarted coalesced REPLY wake (token set, not started)
+      * ``running`` — one claimed in-flight REPLY (immutable range)
+      * ``retry_required`` — unacknowledged range with no active wake; the
+        next conversational arrival mints the single covering retry
+    A fully-settled pair (nothing queued/running/required) is omitted from the
+    live projection; terminal history stays on the per-message responder strips.
+    ``coalesced_message_count`` is the number of transcript rows the wake's
+    range covers (computed in the store, not inferred by numeric subtraction).
+    """
+    agent_name: str
+    state: Literal["queued", "running", "retry_required"]
+    from_seq: int
+    through_seq: int
+    coalesced_message_count: int
+    started_at: str | None
+    updated_at: str | None
+    last_terminal_reason: str | None
+
+
 class JobStatus(StrEnum):
     PENDING   = "pending"
     REJECTED  = "rejected"

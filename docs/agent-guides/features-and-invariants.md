@@ -253,16 +253,18 @@ Traps:
   bounded-wake.
 ## Thread Broadcast Routing
 
-Every `kind=message` thread row mints a `REPLY` invocation for every participant except the speaker. There is no `addressed_to`, `@all`, or `@founder` token. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`.
+Every `kind=message` thread row is a **conversational arrival** for every participant except the speaker. Since GH-688 Phase 1 (Slice A store + Slice B route/runner wiring), arrivals coalesce: a `(thread_id, agent_name)` pair holds at most one unstarted `REPLY` (queued) and at most one running `REPLY`; a burst advances the queued/running wake's `required_through_seq` instead of minting one invocation per message. The store owns the queued/running token transitions (`record_conversational_arrival`, `claim_conversational_reply`, `settle_conversational_reply`) — routes and the runner never open-code them. There is no `addressed_to`, `@all`, or `@founder` token; body `@`-mentions are visible text, not routing signals. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`; approved Phase-1 design recorded in THR-198 and TASK-5437 output.
 
 Traps:
 
 - Broadcast is unconditional; declines are silent.
 - Decline-by-default doctrine is prompt-injected for `REPLY`, not in `protocol/skills/thread/SKILL.md`.
 - Agent replies no longer enforce a hard `turn_cap` ceiling; turn count is still tracked and displayed but cap enforcement was removed per THR-046.
-- Orphaned pending invocations (reply subprocess killed by daemon restart)
-  are reaped to failed on startup; the wire `responder_status` flips from
-  `queued`/`working` to `failed` on the next poll, clearing the reply box.
+- **Coalescing (GH-688 Phase 1).** A burst creates at most one unstarted `REPLY` per pair; new queue tokens are enqueued only after the arrival transaction commits. An arrival while queued or running only advances `required_through_seq`. A successful reply/decline acknowledges **only the claimed coverage** (the immutable `running_through_seq` snapshot at claim); arrivals during the run yield exactly one post-settlement follow-on. Failure/timeout never hot-loop: the range stays unacknowledged, projects `retry_required`, and the next conversational arrival covers the retained plus new range.
+- **Runner claim (GH-688 Phase 1).** A conversational `REPLY` must pass the durable queued→running CAS (`claim_conversational_reply`) before any prompt materialization or provider work; a stale/duplicate queue notification no-ops there. The per-`(thread, agent)` in-memory lock remains for process-local serialization only — it is not the durability mechanism. The prompt explicitly states the claimed inclusive `[running_from_seq, running_through_seq]` range and renders each required message in order.
+- **Settlement is exactly-once.** Route reply/decline and every runner terminal path (clean-no-callback, provider failure, timeout, materialization failure, runner crash) settle through the store. Abort/archive/participant-removal discard through an explicit boundary (`discard_reply_delivery`); discarded wakes never resurrect and a later message starts after the boundary.
+- **Startup recovery (GH-688 Phase 1).** `_sweep_on_startup` replaces only the conversational `REPLY` portion of the generic reaper: a valid queued wake — a pending, **unstarted** same-pair `REPLY` (the claim CAS enforces the same precondition) — is retained and re-enqueued; an interrupted running `REPLY` is terminalized once as `daemon_restart` and replaced by exactly one queued wake. A malformed queued slot referencing a **started** receipt fails closed: the owned pending `REPLY` receipts for the pair are retired with `invalid_queued_started_on_recovery`, the slot clears, nothing is re-enqueued, and the preserved `required_through_seq` lets the next conversational arrival mint the single covering wake. `BOOTSTRAP` and `TASK_FOLLOWUP` keep the generic `daemon_restart` reaping unchanged.
+- **Wire contract (GH-688 Phase 1).** `GET /threads/{id}` and `GET /threads/{id}/messages` carry a pair-level `reply_delivery` projection (queued | running | retry_required, inclusive `from_seq`/`through_seq`, store-computed `coalesced_message_count`, `started_at`, `last_terminal_reason`). It is derived from `thread_reply_delivery_state`, never fabricated from per-message rows, and never claims a subprocess exists beyond `started_at`. Historical per-message `responder_status` strips are unchanged.
 
 ## Thread Agent-Session Resume
 
@@ -277,6 +279,7 @@ Traps:
 - Per-`(thread, agent)` `asyncio.Lock` protects read-run-update.
 - Eviction fallback re-runs once and audits `agent_session_evicted_fallback`.
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
+- **GH-688 Phase 1 claim gate.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq`; otherwise the runner falls back to the full prompt. `last_resumed_seq` is observed session presentation and is never the delivery cursor — it can never omit a message the delivery state requires.
 
 ## Thread Task Followup
 
@@ -289,6 +292,7 @@ Traps:
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 - Terminal gate is completion/failed **plus** `superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
+- **GH-688 Phase 1 isolation.** `TASK_FOLLOWUP` is a causal one-shot direct mint (`mint_followup_invocation_with_cap_extend`), never coalesced into reply delivery state and never routed through the claim/settle surface — even with a reply backlog on the same pair, the followup fires as its own `TASK_FOLLOWUP` row.
 - **Daemon lifespan ordering (THR-109).** `_attach_thread_queue_wiring` must run before `ensure_workers_started` so the orchestrator's `_thread_queue` and `_main_loop` references are populated before any task worker can execute a step. Without this ordering, a rapid terminal task fires `_append_followup_system_and_reinvoke` while those references are still `None`, producing `enqueue_unavailable` and stranding the invocation as permanently pending. The blocked-on-job recovery after wiring still has a wired queue (THR-109 PR).
 
 ## Dreams

@@ -132,11 +132,12 @@ def _create_agent_thread_locked(
             continue
         org.db.add_thread_participant(thread_id, name, added_by=composer)
 
-    seq = org.db.append_thread_message(
+    seq, arrivals = org.db.record_conversational_arrival(
         thread_id=thread_id, speaker=composer,
         kind=ThreadMessageKind.MESSAGE,
         body_markdown=body_text,
         attachments=attachments or [],
+        recipients=addressed_agents,
     )
     org.db.increment_thread_turns_used(thread_id, by=1)
     AuditLogger(org.db).log_thread_started(
@@ -152,13 +153,9 @@ def _create_agent_thread_locked(
         thread_id, seq=seq, speaker=composer, kind="message",
         attachment_names=[a.artifact_name for a in (attachments or [])],
     )
-    tokens_to_enqueue: list[str] = []
-    for name in addressed_agents:
-        inv = org.db.mint_thread_invocation(
-            thread_id=thread_id, agent_name=name,
-            triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-        )
-        tokens_to_enqueue.append(inv.invocation_token)
+    tokens_to_enqueue: list[str] = [
+        a.invocation_token for a in arrivals if a.invocation_token is not None
+    ]
     return thread_id, seq, tokens_to_enqueue, addressed_agents
 
 
@@ -522,11 +519,12 @@ async def _compose_thread_multipart(
 
         all_attachments = shared_attachments + thread_attachments
         body_text = _normalize_message_body(body.body_markdown, all_attachments)
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=all_attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -542,13 +540,9 @@ async def _compose_thread_multipart(
                 for a in all_attachments
             ],
         )
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(
@@ -648,11 +642,12 @@ async def compose_thread(
         ))
         for name in body.recipients:
             org.db.add_thread_participant(thread_id, name, added_by="founder")
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -665,15 +660,12 @@ async def compose_thread(
             thread_id, seq=seq, speaker="founder", kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        # Broadcast: mint REPLY for every recipient (participant). The founder
-        # is the speaker and is not in recipients, so she is never minted.
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        # Broadcast: the store raises required/coalesces for every recipient
+        # (participant). The founder is the speaker and is not in recipients,
+        # so she is never woken.
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -875,11 +867,12 @@ async def _compose_agent_thread_multipart(
         all_attachments = shared_attachments + thread_attachments
         body_text = _normalize_message_body(body.body_markdown, all_attachments)
 
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=body.composer,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=all_attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -898,13 +891,9 @@ async def _compose_agent_thread_multipart(
             ],
         )
 
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for tok in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
@@ -1266,6 +1255,10 @@ async def get_thread_endpoint(
         _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
         for m in msgs
     ]
+    d["reply_delivery"] = [
+        p.model_dump(mode="json")
+        for p in org.db.list_reply_delivery_projections(thread_id)
+    ]
     return d
 
 
@@ -1298,6 +1291,10 @@ async def list_thread_messages_endpoint(
         ],
         "has_more": has_more,
         "next_since_seq": next_since_seq,
+        "reply_delivery": [
+            p.model_dump(mode="json")
+            for p in org.db.list_reply_delivery_projections(thread_id)
+        ],
     }
 
 
@@ -1404,26 +1401,24 @@ async def reply_thread_endpoint(
         inv = org.db.get_pending_invocation(body.invocation_token)
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.speaker,
-            kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
+        seq, settlement, arrivals = org.db.reply_conversational(
+            thread_id=thread_id,
+            speaker=body.speaker,
+            body_markdown=body_text,
             attachments=attachments,
+            token=body.invocation_token,
+            token_purpose=inv.purpose,
         )
-        org.db.consume_invocation(body.invocation_token)
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.speaker, kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        # Broadcast: mint REPLY for every participant except the speaker.
-        for p in org.db.list_thread_participants(thread_id):
-            if p.agent_name == body.speaker:
-                continue
-            new_inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=p.agent_name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(new_inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
+        if settlement is not None and settlement.follow_on_token is not None:
+            tokens_to_enqueue.append(settlement.follow_on_token)
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -1476,18 +1471,38 @@ async def decline_thread_endpoint(
     # any message as long as they hold a valid invocation token.
 
     reason = body.reason.strip() if body.reason else None
+    tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        if org.db.get_pending_invocation(body.invocation_token) is None:
+        inv = org.db.get_pending_invocation(body.invocation_token)
+        if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        ok = org.db.mark_invocation_declined(
-            body.invocation_token, decline_reason=reason,
-        )
+        if inv.purpose is ThreadInvocationPurpose.REPLY:
+            settlement = org.db.settle_conversational_reply(
+                token=body.invocation_token,
+                outcome="decline",
+                decline_reason=reason,
+            )
+            if settlement is None:
+                # Legacy/stale pending REPLY not owned by delivery state.
+                ok = org.db.mark_invocation_declined(
+                    body.invocation_token, decline_reason=reason,
+                )
+            else:
+                ok = True
+                if settlement.follow_on_token is not None:
+                    tokens_to_enqueue.append(settlement.follow_on_token)
+        else:
+            ok = org.db.mark_invocation_declined(
+                body.invocation_token, decline_reason=reason,
+            )
         if not ok:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
         AuditLogger(org.db).log_thread_decline_consumed(
             thread_id, agent_name=body.speaker, reason=reason,
         )
         # No thread_messages row, no turns_used increment (spec §6: silent decline).
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=None, speaker=body.speaker,
@@ -2296,24 +2311,22 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=normalized_attachments,
             sent_from_task_id=sent_from_task_id,
+            recipients=addressed,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=speaker, kind="message",
             attachment_names=[a.artifact_name for a in normalized_attachments],
         )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -2349,24 +2362,22 @@ async def _post_agent_message(
     """
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=attachments,
             sent_from_task_id=task_id,
+            recipients=addressed,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=speaker, kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -2560,7 +2571,14 @@ async def remove_thread_participant_endpoint(
         if not removed:
             raise HTTPException(status_code=409, detail={"code": "not_participant"})
 
-        # Decline any pending invocations for this agent in this thread.
+        # Discard the pair's owned reply delivery state (explicit boundary) and
+        # decline any remaining special-purpose invocations (BOOTSTRAP/
+        # TASK_FOLLOWUP) for this agent in this thread.
+        org.db.discard_reply_delivery(
+            thread_id, agent_name=body.agent_name,
+            decline_reason="participant_removed",
+            status=ThreadInvocationStatus.DECLINED,
+        )
         org.db.decline_pending_invocations_for_agent(
             thread_id, body.agent_name,
             decline_reason="participant_removed",
@@ -2656,9 +2674,12 @@ async def archive_thread_endpoint(
 
     archived_at = datetime.now(timezone.utc)
     async with org.db_lock:
+        org.db.discard_reply_delivery(
+            thread_id, decline_reason="archive_started",
+        )
         org.db.reap_pending_invocations(
             thread_id,
-            purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+            purposes=[ThreadInvocationPurpose.BOOTSTRAP],
             decline_reason="archive_started",
         )
         org.db.set_thread_status(
@@ -2728,6 +2749,9 @@ async def resume_thread_endpoint(
     )
     async with org.db_lock:
         org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
+        # Re-activate per-pair reply delivery state (idempotent no-op for pairs
+        # already cut over; seeds any pair still missing a row).
+        org.db.cutover_thread_reply_delivery_state(thread_id)
         sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
@@ -2777,10 +2801,12 @@ async def abort_replies_endpoint(
 
     aborted_count = 0
     async with org.db_lock:
-        aborted_count = org.db.reap_pending_invocations(
+        aborted_count = org.db.discard_reply_delivery(
+            thread_id, decline_reason="founder_aborted",
+        )
+        aborted_count += org.db.reap_pending_invocations(
             thread_id,
             purposes=[
-                ThreadInvocationPurpose.REPLY,
                 ThreadInvocationPurpose.BOOTSTRAP,
                 ThreadInvocationPurpose.TASK_FOLLOWUP,
             ],

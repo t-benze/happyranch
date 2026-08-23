@@ -509,6 +509,16 @@ async def test_run_invocation_injects_guardrail_for_supersedable_escalation(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -563,6 +573,16 @@ async def test_run_invocation_skips_guardrail_for_non_supersedable_predecessor(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -614,6 +634,16 @@ async def test_run_invocation_guardrail_omits_continue_for_delegated_predecessor
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -675,6 +705,16 @@ async def test_run_invocation_guardrail_mixed_escalated_and_delegated(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=3, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 2, 3, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
