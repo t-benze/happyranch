@@ -83,9 +83,25 @@ cmd_status() {
     echo "running (pid $pid, port $port)"
 }
 
+cmd_maintenance() {
+    # OFFLINE/STARTUP-ONLY metrics maintenance one-shot (TASK-5443
+    # replacement).  Runs to completion in the FOREGROUND and propagates its
+    # exit code (0 = success, nonzero = fail-closed).  It never starts the
+    # normal daemon — no port/pid files are written, no server is bound.
+    # Run it only while the daemon is stopped.
+    # NOTE: no mkdir here — daemon-home initialization happens INSIDE the
+    # Python entry's single bounded/redacted failure boundary
+    # (runtime/daemon/__main__.py run_maintenance -> paths.ensure_daemon_home),
+    # so a hostile/malformed HAPPYRANCH_DAEMON_HOME (e.g. an existing file)
+    # returns the fixed exit-1 classification instead of a raw mkdir
+    # diagnostic that leaks the configured path.
+    uv run python -m runtime.daemon --maintenance
+}
+
 case "${1:-}" in
     start)  cmd_start  ;;
     stop)   cmd_stop "${2:-}"   ;;
     status) cmd_status ;;
-    *)      echo "Usage: $0 {start|stop [--force]|status}"; exit 2 ;;
+    maintenance) cmd_maintenance ;;
+    *)      echo "Usage: $0 {start|stop [--force]|status|maintenance}"; exit 2 ;;
 esac

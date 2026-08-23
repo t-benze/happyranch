@@ -122,9 +122,59 @@ steady-state reduction, compare these values at the same point in two
 consecutive 30-day windows — do not expect an immediate file-size drop, since
 row deletion does not shrink SQLite on its own.
 
-**Never** delete `metrics.db`, `metrics.db-wal`, or `metrics.db-shm` by hand,
-and never run VACUUM/checkpoint manually outside a founder-approved
-maintenance window; retention pruning is the only sanctioned row-removal path.
+**Never** delete `metrics.db`, `metrics.db-wal`, or `metrics.db-shm` by hand. Physical compaction (WAL checkpoint / `VACUUM`) is performed **only** by the sanctioned offline maintenance one-shot below — never manually and never against a live daemon.
+
+### Offline metrics maintenance (startup-only one-shot)
+
+Physical reduction of `metrics.db` (row deletion frees SQLite pages but does
+not shrink the file) is a deliberate **offline/startup-only** operation.  There
+is **no** live maintenance route, no resident maintenance gate, no
+scheduler/automatic maintenance, and no traffic-quiescence system — the
+daemon never runs maintenance while serving.
+
+**Invocation (explicit one-shot, reuses the daemon bootstrap):**
+
+```bash
+python -m runtime.daemon --maintenance        # or: scripts/daemon.sh maintenance
+```
+
+The maintenance process runs **before** the daemon binds an HTTP listener,
+before the FastAPI lifespan, and before any scheduler/worker starts, then
+exits when maintenance completes (success **or** failure).  It never writes
+pid/port files and never starts a normal daemon.  Run it only while the
+daemon is stopped; it refuses when a daemon pid is alive, and SQLite
+fail-closes (checkpoint busy / `VACUUM` locked) if a live holder exists.
+
+**Ordered sequence (all through `MetricsStore`):**
+
+1. Record bounded **before** telemetry.
+2. **Prune** rows strictly before the unchanged **30-day cutoff**
+   (`_RETENTION_DAYS = 30`).
+3. **Checkpoint** the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`); a busy result
+   fails closed.
+4. `PRAGMA integrity_check` must return exactly `ok` **before** compaction.
+5. Controlled `VACUUM`.
+6. **Post-VACUUM WAL checkpoint** (`PRAGMA wal_checkpoint(TRUNCATE)`); a
+   busy/error result fails closed — no success report is ever produced after
+   a failed post-vacuum checkpoint.
+7. Final `PRAGMA integrity_check` must return exactly `ok` (post-vacuum
+   integrity evidence).
+8. Record bounded **after** telemetry.
+
+The report/log captures before/after DB & WAL bytes, row count, cutoff,
+page/free-list counts, duration, pre- and post-vacuum checkpoint/integrity
+outcomes, prune count, snapshot-size and route-label cardinality — never
+labels, IDs, slugs, or snapshot content.
+
+**Failure/recovery:** an invalid integrity/checkpoint/VACUUM result, stale or
+malformed runtime state, or any operational exception returns a **nonzero**
+exit with a stable bounded/redacted classification plus fixed recovery
+guidance only — never raw exception text, tracebacks, filesystem paths, or
+injected content — and no success claim, no automatic retry.  Valid
+pre-existing historical rows remain queryable where SQLite guarantees it.
+Retry requires a fresh explicit invocation.  Never hand-edit or delete
+`metrics.db`, `-wal`, or `-shm`; never run a live compaction against a
+production database while the daemon serves.
 
 ### GET /api/v1/metrics/history — persisted snapshot history
 
