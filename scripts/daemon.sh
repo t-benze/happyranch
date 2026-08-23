@@ -89,7 +89,12 @@ cmd_maintenance() {
     # exit code (0 = success, nonzero = fail-closed).  It never starts the
     # normal daemon — no port/pid files are written, no server is bound.
     # Run it only while the daemon is stopped.
-    mkdir -p "$HAPPYRANCH_HOME"
+    # NOTE: no mkdir here — daemon-home initialization happens INSIDE the
+    # Python entry's single bounded/redacted failure boundary
+    # (runtime/daemon/__main__.py run_maintenance -> paths.ensure_daemon_home),
+    # so a hostile/malformed HAPPYRANCH_DAEMON_HOME (e.g. an existing file)
+    # returns the fixed exit-1 classification instead of a raw mkdir
+    # diagnostic that leaks the configured path.
     uv run python -m runtime.daemon --maintenance
 }
 
