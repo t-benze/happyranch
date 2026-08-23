@@ -37,11 +37,23 @@ _SNAPSHOT_FORMAT_FIELD = "format_version"
 class MetricsMaintenanceError(Exception):
     """A daemon-owned offline metrics maintenance operation failed.
 
+    Carries only a stable, non-sensitive classification ``code`` (never raw
+    SQL results, filesystem paths, IDs, or exception text).  The optional
+    ``detail`` is structured context for store-level debugging and is NEVER
+    logged or interpolated into the message by the daemon entry seam.
+
     Raised only when the ordered maintenance sequence did NOT complete in
     full (e.g. a busy WAL checkpoint, or ``PRAGMA integrity_check`` did not
     return exactly ``ok``).  It never signals a partial success — callers
     must surface it and require a fresh explicit invocation.
     """
+
+    def __init__(self, code: str, detail: str | None = None) -> None:
+        self.code = code
+        self.detail = detail
+        # The message is the stable code only — ``str(exc)`` never embeds
+        # raw content even if ``detail`` carried any.
+        super().__init__(code)
 
 
 class MetricsStore:
@@ -265,41 +277,43 @@ class MetricsStore:
         Ordered sequence: bounded pre-telemetry → unchanged strict-before
         prune at *cutoff_iso* → WAL checkpoint (TRUNCATE, fail-closed on
         ``busy``) → ``PRAGMA integrity_check`` (must be exactly ``ok``
-        before compaction) → controlled ``VACUUM`` → post-vacuum integrity
-        evidence → bounded after telemetry.
+        before compaction) → controlled ``VACUUM`` → post-VACUUM WAL
+        checkpoint (TRUNCATE, fail-closed on ``busy``) → final
+        ``PRAGMA integrity_check`` (must be exactly ``ok``) → bounded after
+        telemetry.
 
         Returns a deterministic report dict (before/after DB/WAL bytes, rows,
-        cutoff, page/free-list counts, duration, checkpoint/integrity
-        outcomes, prune count, snapshot-size and route-label cardinality —
-        no labels, IDs, slugs, or snapshot content).  Raises
-        ``MetricsMaintenanceError`` (or a SQLite error) on any failure —
-        never a partial success.  Never touches the SQLite files at the
-        filesystem level and never shells out; all work goes through this
-        connection.  Intended for the startup-only maintenance one-shot —
-        do not run against a live serving daemon.
+        cutoff, page/free-list counts, duration, pre- and post-vacuum
+        checkpoint outcomes, integrity outcomes, prune count, snapshot-size
+        and route-label cardinality — no labels, IDs, slugs, or snapshot
+        content).  Raises ``MetricsMaintenanceError`` (or a SQLite error) on
+        any failure — never a partial success and never a success report
+        after a failed post-VACUUM checkpoint.  Never touches the SQLite
+        files at the filesystem level and never shells out; all work goes
+        through this connection.  Intended for the startup-only maintenance
+        one-shot — do not run against a live serving daemon.
         """
         t0 = _time.monotonic()
         before = self.health()
         pruned = self.prune(cutoff_iso)
         checkpoint = self._wal_checkpoint()
         if checkpoint["busy"] != 0:
-            raise MetricsMaintenanceError(
-                "WAL checkpoint was busy (a concurrent connection prevented "
-                f"the WAL reset): {checkpoint}"
-            )
+            raise MetricsMaintenanceError("checkpoint-busy")
         integrity_before = self._integrity_check()
         if integrity_before != "ok":
-            raise MetricsMaintenanceError(
-                "PRAGMA integrity_check did not return exactly 'ok' before "
-                f"VACUUM: {integrity_before!r}"
-            )
+            raise MetricsMaintenanceError("integrity-before-vacuum")
         self._vacuum()
+        # Post-VACUUM WAL checkpoint: after controlled compaction, checkpoint
+        # (TRUNCATE) the WAL again so the compaction's journal frames are
+        # checkpointed back into the main file before the final integrity
+        # evidence is recorded.  Fail closed on busy — a success report is
+        # never produced after a failed post-vacuum checkpoint.
+        post_vacuum_checkpoint = self._wal_checkpoint()
+        if post_vacuum_checkpoint["busy"] != 0:
+            raise MetricsMaintenanceError("post-vacuum-checkpoint-busy")
         integrity_after = self._integrity_check()
         if integrity_after != "ok":
-            raise MetricsMaintenanceError(
-                "PRAGMA integrity_check did not return exactly 'ok' after "
-                f"VACUUM: {integrity_after!r}"
-            )
+            raise MetricsMaintenanceError("integrity-after-vacuum")
         after = self.health()
         duration_s = round(_time.monotonic() - t0, 6)
         return {
@@ -308,6 +322,7 @@ class MetricsStore:
             "cutoff": cutoff_iso,
             "pruned_rows": pruned,
             "checkpoint": checkpoint,
+            "post_vacuum_checkpoint": post_vacuum_checkpoint,
             "integrity_check_before_vacuum": integrity_before,
             "integrity_check_after_vacuum": integrity_after,
             "vacuum": "ok",

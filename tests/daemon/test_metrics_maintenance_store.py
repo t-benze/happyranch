@@ -66,11 +66,17 @@ class TestMaintenanceSuccess:
         assert json.loads(rows[0]["snapshot_json"]) == {"n": 2}
 
         # Report shape: before/after, cutoff, pruned count, checkpoint,
-        # integrity before/after, vacuum, duration.
+        # post-vacuum checkpoint, integrity before/after, vacuum, duration.
         assert report["pruned_rows"] == 1
         assert report["cutoff"] == cutoff
         assert report["checkpoint"]["busy"] == 0
         assert set(report["checkpoint"].keys()) == {
+            "busy", "log_frames", "checkpointed_frames",
+        }
+        # A second WAL checkpoint runs AFTER controlled VACUUM and its
+        # result is recorded as explicit evidence in the report.
+        assert report["post_vacuum_checkpoint"]["busy"] == 0
+        assert set(report["post_vacuum_checkpoint"].keys()) == {
             "busy", "log_frames", "checkpointed_frames",
         }
         assert report["integrity_check_before_vacuum"] == "ok"
@@ -146,6 +152,7 @@ class TestMaintenanceSuccess:
         assert report["pruned_rows"] == 0
         assert report["before"]["row_count"] == 0
         assert report["after"]["row_count"] == 0
+        assert report["post_vacuum_checkpoint"]["busy"] == 0
         assert report["integrity_check_before_vacuum"] == "ok"
         assert report["integrity_check_after_vacuum"] == "ok"
         assert report["vacuum"] == "ok"
@@ -274,11 +281,124 @@ class TestMaintenanceFailClosed:
         results = iter(["ok", "corrupted"])
         monkeypatch.setattr(store, "_integrity_check", lambda: next(results))
 
-        with pytest.raises(MetricsMaintenanceError):
+        with pytest.raises(MetricsMaintenanceError) as ei:
             store.maintenance(_now().isoformat())
 
+        # Stable bounded classification only — never the raw integrity text.
+        assert ei.value.code == "integrity-after-vacuum"
         # Rows still queryable after the failed post-vacuum integrity check.
         assert len(store.query()) == 1
+
+    def test_post_vacuum_checkpoint_evidence_and_ordering(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The post-VACUUM WAL checkpoint runs after VACUUM and BEFORE the
+        final integrity evidence, and its result lands in the report."""
+        store = _seed(tmp_path, [(_now().isoformat(), {"n": 1})])
+        order: list[str] = []
+        monkeypatch.setattr(
+            store, "prune",
+            lambda cutoff: (order.append("prune"), 0)[1],
+        )
+        monkeypatch.setattr(
+            store, "_wal_checkpoint",
+            lambda: (
+                order.append("checkpoint"),
+                {"busy": 0, "log_frames": 1, "checkpointed_frames": 1},
+            )[1],
+        )
+        monkeypatch.setattr(
+            store, "_integrity_check",
+            lambda: (order.append("integrity"), "ok")[1],
+        )
+        monkeypatch.setattr(store, "_vacuum", lambda: order.append("vacuum"))
+
+        report = store.maintenance(_now().isoformat())
+
+        assert order == [
+            "prune", "checkpoint", "integrity",
+            "vacuum", "checkpoint", "integrity",
+        ]
+        assert report["post_vacuum_checkpoint"] == {
+            "busy": 0, "log_frames": 1, "checkpointed_frames": 1,
+        }
+
+    def test_post_vacuum_checkpoint_busy_fails_closed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A busy post-VACUUM checkpoint fails closed: no final integrity
+        evidence, no success report, rows stay queryable, no file deletion."""
+        now = _now()
+        store = _seed(tmp_path, [
+            ((now - timedelta(days=40)).isoformat(), {"n": "old"}),
+            (now.isoformat(), {"n": "recent"}),
+        ])
+        calls: list[str] = []
+        results = iter([
+            {"busy": 0, "log_frames": 0, "checkpointed_frames": 0},
+            {"busy": 1, "log_frames": 2, "checkpointed_frames": 0},
+        ])
+        monkeypatch.setattr(
+            store, "_wal_checkpoint",
+            lambda: (calls.append("checkpoint") or next(results)),
+        )
+        integrity_calls: list[str] = []
+        monkeypatch.setattr(
+            store, "_integrity_check",
+            lambda: (integrity_calls.append("integrity") or "ok"),
+        )
+
+        with pytest.raises(MetricsMaintenanceError) as ei:
+            store.maintenance(
+                (now - timedelta(days=_RETENTION_DAYS)).isoformat()
+            )
+
+        assert ei.value.code == "post-vacuum-checkpoint-busy"
+        # Both checkpoints ran (the post-vacuum one ran after VACUUM), but
+        # the FINAL integrity evidence never ran → no success report exists.
+        assert len(calls) == 2
+        assert integrity_calls == ["integrity"]  # pre-vacuum only
+        # Rows remain queryable and no metrics.db files were deleted.
+        rows = store.query()
+        assert {json.loads(r["snapshot_json"])["n"] for r in rows} == {"recent"}
+        assert Path(store._db_path).exists()
+
+    def test_post_vacuum_checkpoint_operational_error_fails_closed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A post-VACUUM checkpoint operational error (e.g. database locked)
+        fails closed at the entry seam; no success report is produced and the
+        store stays queryable."""
+        store = _seed(tmp_path, [(_now().isoformat(), {"n": 1})])
+        calls: list[str] = []
+        results = iter([
+            {"busy": 0, "log_frames": 0, "checkpointed_frames": 0},
+        ])
+
+        def _second_checkpoint_locked():
+            if not calls:
+                calls.append("checkpoint")
+                return next(results)
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "_wal_checkpoint", _second_checkpoint_locked)
+        integrity_calls: list[str] = []
+        monkeypatch.setattr(
+            store, "_integrity_check",
+            lambda: (integrity_calls.append("integrity") or "ok"),
+        )
+
+        with pytest.raises(sqlite3.OperationalError):
+            store.maintenance(_now().isoformat())
+
+        # The final integrity evidence never ran after the failed post-vacuum
+        # checkpoint; the exception is not concealed (entry seam → exit 1).
+        assert len(calls) == 1
+        assert integrity_calls == ["integrity"]
+        rows = store.query()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["snapshot_json"]) == {"n": 1}
+        assert Path(store._db_path).exists()
 
     def test_vacuum_operational_failure_fails_closed(
         self, tmp_path: Path, monkeypatch
@@ -299,6 +419,37 @@ class TestMaintenanceFailClosed:
         rows = store.query()
         assert len(rows) == 1
         assert json.loads(rows[0]["snapshot_json"]) == {"n": 1}
+
+    def test_maintenance_errors_carry_only_stable_codes(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Every maintenance failure carries a stable, non-sensitive
+        classification code — never raw SQL/exception text (the entry seam
+        logs codes only)."""
+        now = _now()
+
+        busy = _seed(tmp_path / "busy", [(now.isoformat(), {"n": 1})])
+        monkeypatch.setattr(
+            busy, "_wal_checkpoint",
+            lambda: {"busy": 1, "log_frames": 2, "checkpointed_frames": 0},
+        )
+        with pytest.raises(MetricsMaintenanceError) as ei:
+            busy.maintenance(now.isoformat())
+        assert ei.value.code == "checkpoint-busy"
+        assert "busy" in str(ei.value)  # code-only message, no raw rows
+
+        bad_integrity = _seed(
+            tmp_path / "integrity", [(now.isoformat(), {"n": 1})]
+        )
+        monkeypatch.setattr(
+            bad_integrity, "_integrity_check",
+            lambda: "SENSITIVE-" + "x" * 100_000,
+        )
+        with pytest.raises(MetricsMaintenanceError) as ei:
+            bad_integrity.maintenance(now.isoformat())
+        assert ei.value.code == "integrity-before-vacuum"
+        assert "SENSITIVE-" not in str(ei.value)
+        assert len(str(ei.value)) < 200
 
     def test_maintenance_never_deletes_sqlite_files(self, tmp_path: Path) -> None:
         """No filesystem-level deletion of metrics.db/-wal/-shm occurs."""

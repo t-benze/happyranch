@@ -154,21 +154,27 @@ fail-closes (checkpoint busy / `VACUUM` locked) if a live holder exists.
    fails closed.
 4. `PRAGMA integrity_check` must return exactly `ok` **before** compaction.
 5. Controlled `VACUUM`.
-6. Post-vacuum checkpoint/integrity **evidence**.
-7. Record bounded **after** telemetry.
+6. **Post-VACUUM WAL checkpoint** (`PRAGMA wal_checkpoint(TRUNCATE)`); a
+   busy/error result fails closed — no success report is ever produced after
+   a failed post-vacuum checkpoint.
+7. Final `PRAGMA integrity_check` must return exactly `ok` (post-vacuum
+   integrity evidence).
+8. Record bounded **after** telemetry.
 
 The report/log captures before/after DB & WAL bytes, row count, cutoff,
-page/free-list counts, duration, checkpoint/integrity outcomes, prune count,
-snapshot-size and route-label cardinality — never labels, IDs, slugs, or
-snapshot content.
+page/free-list counts, duration, pre- and post-vacuum checkpoint/integrity
+outcomes, prune count, snapshot-size and route-label cardinality — never
+labels, IDs, slugs, or snapshot content.
 
-**Failure/recovery:** an invalid integrity/checkpoint/VACUUM result or any
-operational exception returns a **nonzero** exit with bounded recovery/retry
-guidance only — no success claim, no automatic retry.  Valid pre-existing
-historical rows remain queryable where SQLite guarantees it.  Retry requires
-a fresh explicit invocation.  Never hand-edit or delete `metrics.db`,
-`-wal`, or `-shm`; never run a live compaction against a production
-database while the daemon serves.
+**Failure/recovery:** an invalid integrity/checkpoint/VACUUM result, stale or
+malformed runtime state, or any operational exception returns a **nonzero**
+exit with a stable bounded/redacted classification plus fixed recovery
+guidance only — never raw exception text, tracebacks, filesystem paths, or
+injected content — and no success claim, no automatic retry.  Valid
+pre-existing historical rows remain queryable where SQLite guarantees it.
+Retry requires a fresh explicit invocation.  Never hand-edit or delete
+`metrics.db`, `-wal`, or `-shm`; never run a live compaction against a
+production database while the daemon serves.
 
 ### GET /api/v1/metrics/history — persisted snapshot history
 

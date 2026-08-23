@@ -9,7 +9,9 @@ one-shot that runs the MetricsStore maintenance sequence and exits — it
 never binds an HTTP listener, never runs the FastAPI lifespan, and never
 starts a scheduler/worker.  Run it while the daemon is stopped; the SQLite
 layer fail-closes (checkpoint busy / VACUUM locked) if a live daemon holds
-the store.
+the store.  Every failure path (including stale/malformed runtime state)
+returns 1 with a stable bounded classification and fixed recovery guidance
+— never raw exception text, tracebacks, paths, or injected content.
 """
 from __future__ import annotations
 
@@ -369,12 +371,18 @@ def run_maintenance() -> int:
     before uvicorn — so no HTTP listener, lifespan, scheduler loop, worker,
     or task/job/session producer ever starts.  It opens the active runtime's
     ``metrics.db`` through ``MetricsStore``, runs the ordered
-    prune → WAL checkpoint → integrity check → controlled VACUUM sequence,
-    logs the bounded telemetry report, and returns a process exit code.
+    prune → WAL checkpoint → integrity check → controlled VACUUM →
+    post-VACUUM WAL checkpoint → final integrity check sequence, logs the
+    bounded telemetry report, and returns a process exit code.
 
-    Fail-closed: any invalid integrity/checkpoint/VACUUM result or
-    operational exception returns 1 with bounded recovery/retry guidance —
-    never a success claim, never an automatic retry.  A fresh explicit
+    Fail-closed and bounded: every preflight step that can throw — the pid
+    probe, the runtime registry load, ``RuntimeDir.load`` (stale/malformed
+    runtime state), the store open, and the ordered maintenance sequence —
+    sits inside ONE controlled failure boundary.  Any failure returns 1 with
+    a stable, non-sensitive classification (``MetricsMaintenanceError.code``
+    or ``operational-error``) plus fixed recovery guidance — never raw
+    exception text, tracebacks, filesystem paths, IDs, or injected secrets,
+    and never a success claim or an automatic retry.  A fresh explicit
     invocation is required for retry.
     """
     from datetime import datetime, timedelta, timezone
@@ -385,31 +393,36 @@ def run_maintenance() -> int:
         _RETENTION_DAYS,
     )
 
-    # Offline guard (belt-and-suspenders): SQLite fail-closes on a concurrent
-    # holder anyway (checkpoint busy / VACUUM locked), but a live-daemon pid
-    # probe fails fast with an actionable message.
-    if _daemon_pid_alive():
-        logger.error(
-            "metrics maintenance aborted: a daemon process appears to be "
-            "running (pid file %s). Maintenance is OFFLINE/STARTUP-ONLY — "
-            "stop the daemon first, then re-run "
-            "'python -m runtime.daemon --maintenance'.",
-            paths.pid_file(),
-        )
-        return 1
-
-    reg = runtimes.load()
-    if reg.active is None:
-        logger.error(
-            "metrics maintenance aborted: no active runtime is registered "
-            "(runtimes.yaml has no active runtime); nothing to maintain. "
-            "Register/activate a runtime, then re-run "
-            "'python -m runtime.daemon --maintenance'."
-        )
-        return 1
-
-    runtime = RuntimeDir.load(reg.active)
+    # The ENTIRE maintenance preflight + run sits inside the bounded
+    # failure boundary: pid probe, registry load, RuntimeDir.load (which
+    # raises on stale/malformed runtime state), store open, and the ordered
+    # maintenance sequence.  Any throw converts to exit 1 with bounded
+    # recovery guidance — never a raw traceback out of ``main()``.
     try:
+        # Offline guard (belt-and-suspenders): SQLite fail-closes on a
+        # concurrent holder anyway (checkpoint busy / VACUUM locked), but a
+        # live-daemon pid probe fails fast with an actionable message.
+        if _daemon_pid_alive():
+            logger.error(
+                "metrics maintenance aborted: a daemon process appears to be "
+                "running (the daemon pid file in the daemon home names a "
+                "live process). Maintenance is OFFLINE/STARTUP-ONLY — stop "
+                "the daemon first, then re-run "
+                "'python -m runtime.daemon --maintenance'."
+            )
+            return 1
+
+        reg = runtimes.load()
+        if reg.active is None:
+            logger.error(
+                "metrics maintenance aborted: no active runtime is registered "
+                "(runtimes.yaml has no active runtime); nothing to maintain. "
+                "Register/activate a runtime, then re-run "
+                "'python -m runtime.daemon --maintenance'."
+            )
+            return 1
+
+        runtime = RuntimeDir.load(reg.active)
         store = MetricsStore(str(runtime.root / "metrics.db"))
         try:
             now = datetime.now(timezone.utc)
@@ -422,19 +435,19 @@ def run_maintenance() -> int:
                 pass
     except MetricsMaintenanceError as exc:
         logger.error(
-            "metrics maintenance FAILED: %s. No automatic retry — re-run "
+            "metrics maintenance FAILED (%s). No automatic retry — re-run "
             "'python -m runtime.daemon --maintenance' after resolving the "
             "cause. The store was left queryable where SQLite guarantees it; "
             "metrics.db/-wal/-shm were never deleted or hand-edited.",
-            exc,
+            exc.code,
         )
         return 1
     except Exception:
-        logger.exception(
-            "metrics maintenance FAILED with an operational error. No "
-            "automatic retry — re-run 'python -m runtime.daemon --maintenance' "
-            "after resolving the cause. The store was left queryable where "
-            "SQLite guarantees it; metrics.db/-wal/-shm were never deleted or "
+        logger.error(
+            "metrics maintenance FAILED (operational-error). No automatic "
+            "retry — re-run 'python -m runtime.daemon --maintenance' after "
+            "resolving the cause. The store was left queryable where SQLite "
+            "guarantees it; metrics.db/-wal/-shm were never deleted or "
             "hand-edited."
         )
         return 1
@@ -454,10 +467,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Run the OFFLINE/STARTUP-ONLY metrics maintenance sequence "
             "(strict-before prune at the 30-day cutoff, WAL checkpoint, "
-            "integrity check, controlled VACUUM) against the active "
+            "integrity check, controlled VACUUM, post-VACUUM WAL "
+            "checkpoint, final integrity check) against the active "
             "runtime's metrics.db, log the bounded telemetry report, and "
-            "exit. Never starts the normal daemon; requires a fresh "
-            "explicit invocation for retry."
+            "exit. Never starts the normal daemon; failure returns a "
+            "bounded, redacted classification plus fixed recovery guidance "
+            "and requires a fresh explicit invocation for retry."
         ),
     )
     return parser

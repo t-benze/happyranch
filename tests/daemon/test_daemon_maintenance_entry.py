@@ -165,7 +165,7 @@ class TestMaintenanceEntrySeam:
         ]
 
     def test_maintenance_failure_returns_nonzero_with_guidance(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, caplog
     ) -> None:
         _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
 
@@ -175,12 +175,144 @@ class TestMaintenanceEntrySeam:
         _guard_server_seams(monkeypatch)
 
         def _broken(_self, cutoff):
-            raise MetricsMaintenanceError("WAL checkpoint was busy")
+            raise MetricsMaintenanceError("checkpoint-busy")
 
         monkeypatch.setattr(MetricsStore, "maintenance", _broken)
 
         rc = dm.main(["--maintenance"])
         assert rc == 1
+        # The stable classification code is logged for operators; no raw
+        # exception text, traceback, or injected content escapes.
+        assert "checkpoint-busy" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert len(caplog.text) < 2000
+
+    def test_maintenance_metrics_error_detail_never_logged(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """Even a MetricsMaintenanceError that could carry hostile detail is
+        logged by stable code only (the reviewer's exact leak reproduction)."""
+        _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
+
+        import runtime.daemon.__main__ as dm
+        from runtime.daemon.metrics_store import MetricsStore
+
+        _guard_server_seams(monkeypatch)
+
+        def _broken(_self, cutoff):
+            raise MetricsMaintenanceError(
+                "integrity-before-vacuum",
+                detail="SENSITIVE-" + "x" * 100_000,
+            )
+
+        monkeypatch.setattr(MetricsStore, "maintenance", _broken)
+
+        rc = dm.main(["--maintenance"])
+        assert rc == 1
+        assert "integrity-before-vacuum" in caplog.text
+        assert "SENSITIVE-" not in caplog.text
+        assert "Traceback" not in caplog.text
+        assert len(caplog.text) < 2000
+
+    def test_maintenance_hostile_runtime_load_failure_bounded(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A stale/malformed active runtime (hostile RuntimeDir.load failure)
+        returns 1 with bounded recovery guidance — no traceback, no raw path,
+        no startup side effects (reviewer finding #2)."""
+        _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
+
+        import runtime.daemon.__main__ as dm
+
+        _guard_server_seams(monkeypatch)
+
+        def _hostile_load(_path):
+            raise ValueError("SENSITIVE_RUNTIME_PATH_" + "x" * 100_000)
+
+        monkeypatch.setattr(dm.RuntimeDir, "load", _hostile_load)
+
+        rc = dm.main(["--maintenance"])
+        assert rc == 1
+        assert "SENSITIVE_RUNTIME_PATH_" not in caplog.text
+        assert "Traceback" not in caplog.text
+        assert "ValueError" not in caplog.text
+        assert len(caplog.text) < 2000
+        # No pid/port files were written — no server startup side effects.
+        assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
+        assert not (tmp_path / ".happyranch" / "daemon.port").exists()
+
+    def test_maintenance_hostile_pid_preflight_failure_bounded(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A hostile pid-preflight failure converts to exit 1 with bounded
+        guidance (reviewer finding #2 — preflight inside the boundary)."""
+        _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
+
+        import runtime.daemon.__main__ as dm
+
+        _guard_server_seams(monkeypatch)
+
+        def _hostile_probe():
+            raise RuntimeError("SENSITIVE_PID_" + "x" * 100_000)
+
+        monkeypatch.setattr(dm, "_daemon_pid_alive", _hostile_probe)
+
+        rc = dm.main(["--maintenance"])
+        assert rc == 1
+        assert "SENSITIVE_PID_" not in caplog.text
+        assert "Traceback" not in caplog.text
+        assert len(caplog.text) < 2000
+        assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
+        assert not (tmp_path / ".happyranch" / "daemon.port").exists()
+
+    def test_maintenance_hostile_operational_exception_bounded(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A hostile 100KB operational exception at the real run_maintenance
+        seam returns 1 with bounded/redacted output (reviewer finding #3)."""
+        _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
+
+        import runtime.daemon.__main__ as dm
+        from runtime.daemon.metrics_store import MetricsStore
+
+        _guard_server_seams(monkeypatch)
+
+        def _hostile(_self, cutoff):
+            raise RuntimeError("SENSITIVE-" + "x" * 100_000)
+
+        monkeypatch.setattr(MetricsStore, "maintenance", _hostile)
+
+        rc = dm.main(["--maintenance"])
+        assert rc == 1
+        assert "SENSITIVE-" not in caplog.text
+        assert "Traceback" not in caplog.text
+        assert len(caplog.text) < 2000
+        assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
+        assert not (tmp_path / ".happyranch" / "daemon.port").exists()
+
+    def test_maintenance_stale_runtime_marker_returns_nonzero_bounded(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A REAL stale runtime marker (schema_version 1) — no monkeypatch —
+        returns 1 with bounded guidance and no raw path/traceback."""
+        runtime_root = _seed_runtime(tmp_path, [(_now().isoformat(), {"n": 1})])
+        # Downgrade the marker so RuntimeDir.load raises ValueError with the
+        # path embedded — the entry seam must NOT echo that path.
+        (runtime_root / "happyranch.yaml").write_text(
+            "schema_version: 1\ntype: multi-org-runtime\n"
+        )
+
+        import runtime.daemon.__main__ as dm
+
+        _guard_server_seams(monkeypatch)
+
+        rc = dm.main(["--maintenance"])
+        assert rc == 1
+        assert "Traceback" not in caplog.text
+        assert str(runtime_root) not in caplog.text
+        assert len(caplog.text) < 2000
+        assert not (tmp_path / ".happyranch" / "daemon.pid").exists()
+        assert not (tmp_path / ".happyranch" / "daemon.port").exists()
 
     def test_maintenance_operational_exception_returns_nonzero(
         self, tmp_path: Path, monkeypatch
