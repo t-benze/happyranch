@@ -27,7 +27,12 @@ import { StatValue } from '@/design-system/patterns/StatValue';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
-import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
+import type {
+  ReplyDeliveryEntry,
+  ThreadAttachment,
+  ThreadAttachmentRef,
+  ThreadMessage,
+} from '@/lib/api/types';
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
@@ -49,6 +54,7 @@ import { InviteDialog } from './InviteDialog';
 import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
+import { ReplyDeliveryStrip, replyDeliveryCaption } from './ReplyDeliveryStrip';
 import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
 import { describeError, THREADS_STRINGS as S } from './strings';
@@ -378,10 +384,11 @@ export function ThreadsPage(): JSX.Element {
 
   const anyWorking = useMemo(
     () =>
+      (activeThread.data?.reply_delivery ?? []).some((e) => e.state === 'running') ||
       messages.some((m) =>
         (m.responder_status ?? []).some((s) => s.status === 'working'),
       ),
-    [messages],
+    [messages, activeThread.data?.reply_delivery],
   );
   const nowMs = useNowMs(anyWorking);
 
@@ -738,6 +745,7 @@ interface DetailColumnProps {
         participants: string[];
         summary: string | null;
         composed_from_dream_id?: string | null;
+        reply_delivery?: ReplyDeliveryEntry[];
       }
     | undefined;
   messages: ThreadMessage[];
@@ -840,6 +848,10 @@ function DetailColumn({
 
   const open = thread.status === 'open';
   const isDreamOriginated = !!thread.composed_from_dream_id;
+  // Store-projected pair reply-delivery state (GH-688 Phase 1). Undefined on
+  // older payloads / loading → empty list renders nothing (no live
+  // obligation). Never inferred from per-message rows.
+  const replyDelivery = thread.reply_delivery ?? [];
 
   return (
     <section className="flex h-full flex-col">
@@ -886,6 +898,7 @@ function DetailColumn({
               slug={slug}
               threadId={threadId}
               nowMs={nowMs}
+              replyDelivery={replyDelivery}
             />
           </div>
           <footer className="border-border-default bg-surface-sunken border-t p-3">
@@ -955,6 +968,21 @@ function DetailColumn({
               </button>
             )}
           </div>
+
+          {/* Reply delivery — STORE-PROJECTED pair state (GH-688 Phase 1
+              Slice C). Renders only while any pair has a live obligation
+              (queued/running/retry_required); a fully-settled thread omits
+              the section entirely — no fabricated in-flight rows. The
+              transcript tail mirrors this same list, and the per-message
+              responder strips keep terminal history. */}
+          {replyDelivery.length > 0 && (
+            <div aria-label="Reply delivery">
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+                Reply delivery
+              </h3>
+              <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
+            </div>
+          )}
 
           {/* Linked tasks — compact COLORED CHIPS (status word + id in one
               pill), THR-061 a-thread-detail. ACTIVE tasks
@@ -1109,14 +1137,42 @@ interface TranscriptProps {
   slug?: string;
   threadId?: string;
   nowMs?: number;
+  /** Store-projected pair reply-delivery state (GH-688 Phase 1 Slice C). */
+  replyDelivery: ReplyDeliveryEntry[];
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Agents mid-reply (working) or waiting to reply (queued)
-  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
-  const inFlightKey = inFlight.map((s) => `${s.agent_name}:${s.status}`).join(',');
+  // Live pair-level obligations from the STORE projection (queued/running).
+  // These replace inferred per-message invocation rows for conversational
+  // REPLY wakes — the store owns the single-wake truth. retry_required pairs
+  // stay off the tail (they are diagnostics, never an active subprocess) and
+  // are surfaced in the right-rail Reply delivery strip instead.
+  const pairLive = useMemo(
+    () => replyDelivery.filter((e) => e.state === 'queued' || e.state === 'running'),
+    [replyDelivery],
+  );
+  const pairLiveAgents = useMemo(() => new Set(pairLive.map((e) => e.agent_name)), [pairLive]);
+  // Inferred in-flight rows NOT covered by a pair entry. Suppression is
+  // purpose/triggering-row-aware (GH-688 Phase 1 Slice C reviewer finding):
+  // only a conversational REPLY wake (hangs off a MESSAGE row) is masked when
+  // the store projection already owns that agent's pair. Special-purpose
+  // wakes (TASK_FOLLOWUP / BOOTSTRAP hang off system rows and are
+  // intentionally outside reply_delivery) are ALWAYS preserved — even when
+  // the same agent concurrently holds a REPLY pair, so the followup
+  // in-flight strip keeps working (THR-061).
+  const inferredInFlight = useMemo(
+    () =>
+      selectInFlightResponders(messages).filter(
+        (s) => !(s.purpose === 'reply' && pairLiveAgents.has(s.agent_name)),
+      ),
+    [messages, pairLiveAgents],
+  );
+  const inFlightKey =
+    pairLive.map((e) => `${e.agent_name}:${e.state}`).join(',') +
+    '|' +
+    inferredInFlight.map((s) => `${s.agent_name}:${s.purpose}:${s.status}`).join(',');
 
   useEffect(() => {
     if (typeof endRef.current?.scrollIntoView === 'function') {
@@ -1188,11 +1244,34 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
           </div>
         );
       })}
-      {inFlight.map((s) => (
+      {pairLive.map((e) => (
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-${s.agent_name}`} className="flex gap-3">
+        <div key={`typing-pair-${e.agent_name}`} className="flex gap-3">
+          <TurnAvatar name={e.agent_name} />
+          <div className="min-w-0 flex-1">
+            <TypingBubble
+              agentName={e.agent_name}
+              status={e.state === 'running' ? 'working' : 'queued'}
+              startedAt={e.started_at}
+              nowMs={nowMs}
+              // Honest store-projected caption: queued carries the coalesced
+              // count + inclusive range (never an active-subprocess claim),
+              // running carries the claimed immutable range.
+              caption={replyDeliveryCaption(e, nowMs)}
+              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+              // founder seq57). The generic `trailing` slot is intentionally left
+              // unused here — no abort control renders beside the replying row.
+            />
+          </div>
+        </div>
+      ))}
+      {inferredInFlight.map((s) => (
+        // Same avatar-indented turn structure as real messages above so the
+        // in-flight bubble's left edge lines up with the message bubbles
+        // (avatar + gap), instead of sitting flush-left / full-width.
+        <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="flex gap-3">
           <TurnAvatar name={s.agent_name} />
           <div className="min-w-0 flex-1">
             <TypingBubble

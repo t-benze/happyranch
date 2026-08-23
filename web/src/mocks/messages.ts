@@ -8,7 +8,7 @@
  *
  * Timestamps are stable, in ascending order within each thread.
  */
-import type { ThreadMessage } from '@/lib/api/types';
+import type { ReplyDeliveryEntry, ThreadMessage } from '@/lib/api/types';
 
 type MockMessageSeed = Omit<ThreadMessage, 'attachments'>;
 
@@ -230,3 +230,52 @@ export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = Object.fromEntries
     messages.map((message) => ({ ...message, attachments: [] })),
   ]),
 );
+
+/**
+ * GH-688 Phase 1 — mock pair-level reply-delivery projection per thread.
+ *
+ * Mirrors the server's `reply_delivery` list (see runtime/models.py
+ * ReplyDeliveryProjection). Populated threads exercise every live state the
+ * UI must render honestly: queued (one unstarted coalesced wake — NOT a
+ * subprocess) and running (one claimed in-flight reply with an immutable
+ * inclusive range). retry_required appears on THR-003 as a diagnostic with a
+ * last terminal reason. Threads absent from this map have no live obligation
+ * — the projection is empty and the UI must render no fabricated rows.
+ */
+
+export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
+  'THR-001': [
+    {
+      agent_name: 'engineering_head',
+      state: 'queued',
+      from_seq: 2,
+      through_seq: 4,
+      coalesced_message_count: 3,
+      started_at: null,
+      updated_at: '2026-05-13T17:42:00Z',
+      last_terminal_reason: null,
+    },
+    {
+      agent_name: 'ops_lead',
+      state: 'running',
+      from_seq: 1,
+      through_seq: 3,
+      coalesced_message_count: 3,
+      started_at: '2026-08-23T12:30:00Z',
+      updated_at: '2026-08-23T12:30:00Z',
+      last_terminal_reason: null,
+    },
+  ],
+  'THR-003': [
+    {
+      agent_name: 'support_lead',
+      state: 'retry_required',
+      from_seq: 2,
+      through_seq: 5,
+      coalesced_message_count: 4,
+      started_at: null,
+      updated_at: '2026-05-14T08:10:00Z',
+      last_terminal_reason: 'timeout',
+    },
+  ],
+};

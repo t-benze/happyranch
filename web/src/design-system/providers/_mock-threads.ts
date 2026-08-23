@@ -14,7 +14,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { ThreadDetailResponse, ThreadMessage, ThreadMessagesPage, ThreadRecord } from '@/lib/api/types';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
-import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
+import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_REPLY_DELIVERY, MOCK_THREADS } from '@/mocks';
 import type {
   ArchiveArgs,
   ArchiveResult,
@@ -129,6 +129,9 @@ function useThread(threadId: string | undefined): QueryLike<ThreadDetailResponse
         ...rec,
         participants: store.participants[id] ?? [],
         messages: store.messages[id] ?? [],
+        // GH-688 Phase 1 — pair-level reply-delivery projection mirroring the
+        // server contract; empty when no live obligation exists.
+        reply_delivery: MOCK_REPLY_DELIVERY[id] ?? [],
       };
     },
   });
@@ -155,6 +158,7 @@ function useThreadMessages(
         messages: msgs,
         has_more: false,
         next_since_seq: msgs.length > 0 ? msgs[msgs.length - 1].seq : 0,
+        reply_delivery: MOCK_REPLY_DELIVERY[id] ?? [],
       } as ThreadMessagesPage;
     },
   });

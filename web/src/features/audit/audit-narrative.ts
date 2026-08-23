@@ -12,8 +12,11 @@
  * fall back to a humanized phrase (snake_case → words); the raw code is never
  * surfaced verbatim.
  *
- * The per-action mapping mirrors runtime/infrastructure/audit_logger.py — the
- * single writer of audit rows — so payload keys here match what is stored.
+ * The per-action mapping mirrors runtime/infrastructure/audit_logger.py —
+ * the single writer of audit rows — so payload keys here match what is stored.
+ * (The GH-688 Phase 1 ``thread_reply_wake_*`` actions are emitted directly by
+ * the runtime/infrastructure/database.py reply-delivery store transitions
+ * with the same payload shapes; see the Slice C comment there.)
  *
  * Kept free of React so it is unit-testable in isolation; AuditTimeline maps
  * the returned segments to <Link>s (entity refs) and styled text.
@@ -79,6 +82,14 @@ function str(p: Record<string, unknown>, key: string): string | undefined {
 function numOf(p: Record<string, unknown>, key: string): number | undefined {
   const v = p[key];
   return typeof v === 'number' ? v : undefined;
+}
+
+/** Inclusive range detail "messages F–T" from a reply-wake payload. */
+function rangeOf(p: Record<string, unknown>): string | undefined {
+  const from = numOf(p, 'from_seq');
+  const to = numOf(p, 'through_seq');
+  if (from == null || to == null) return undefined;
+  return `messages ${from}–${to}`;
 }
 
 function tokensOf(p: Record<string, unknown>): number | undefined {
@@ -382,6 +393,70 @@ export function describeAuditEntry(e: AuditEntry): AuditNarrative {
       if (scope) segs.push(tx(' — a thread invocation failed in '), rf(scope), tx('.'));
       else segs.push(tx(' — a thread invocation failed.'));
       detail = detailOf(str(p, 'reason'));
+      break;
+    }
+
+    /* --- thread reply delivery (GH-688 Phase 1 Slice C) ---------------- */
+    // Payload shapes mirror runtime/infrastructure/database.py reply-delivery
+    // store transitions (the single writer of these rows): agent_name,
+    // inclusive from_seq/through_seq, 8-char token_prefix, outcome / reason /
+    // follow-on result. `agent` is the wake owner.
+    case 'thread_reply_wake_created': {
+      segs.push(tx(' queued a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(rangeOf(p));
+      break;
+    }
+    case 'thread_reply_wake_coalesced': {
+      segs.push(tx(' coalesced a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(rangeOf(p));
+      break;
+    }
+    case 'thread_reply_wake_claimed': {
+      segs.push(tx(' claimed a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(rangeOf(p));
+      break;
+    }
+    case 'thread_reply_wake_settled': {
+      segs.push(tx(' settled a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      const outcome = str(p, 'outcome');
+      const ack = numOf(p, 'acknowledged_through_seq');
+      const req = numOf(p, 'required_through_seq');
+      const retry = p['retry_required'] === true ? 'retry required' : null;
+      detail = detailOf(
+        outcome,
+        ack != null ? `acknowledged through ${ack}` : null,
+        req != null ? `required through ${req}` : null,
+        retry,
+        str(p, 'follow_on_token_prefix') ? 'follow-on minted' : null,
+      );
+      break;
+    }
+    case 'thread_reply_wake_cancelled': {
+      segs.push(tx(' cancelled a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      const boundary = numOf(p, 'boundary_seq');
+      const swept = numOf(p, 'swept_count');
+      detail = detailOf(
+        str(p, 'reason'),
+        boundary != null ? `discarded through ${boundary}` : null,
+        swept != null ? `${swept} receipt(s) retired` : null,
+      );
+      break;
+    }
+    case 'thread_reply_wake_recovered': {
+      segs.push(tx(' recovered a reply wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(str(p, 'kind'), rangeOf(p));
       break;
     }
 

@@ -80,6 +80,22 @@ covering wake. ``BOOTSTRAP`` / ``TASK_FOLLOWUP`` keep the
 generic reaper exactly. See ``docs/agent-guides/features-and-invariants.md`` →
 Thread Broadcast Routing for the full contract.
 
+Every Phase-1 store transition emits a lifecycle audit row atomically in the
+same SQLite transaction (Slice C), under the existing ``audit_log.task_id =
+THR-*`` scope convention: ``thread_reply_wake_created`` (arrival mints a queued
+wake), ``thread_reply_wake_coalesced`` (arrival advances an existing wake),
+``thread_reply_wake_claimed`` (queued→running CAS success),
+``thread_reply_wake_settled`` (reply/decline/failure/timeout terminal),
+``thread_reply_wake_cancelled`` (abort/archive/participant-removal discard and
+fail-closed recovery sweeps), and ``thread_reply_wake_recovered`` (startup
+retention/replacement of a wake). Duplicate queue notifications (stale claim
+no-ops) and idempotent recovery can never fabricate events; pure slot-clears
+record only the existing ``last_terminal_reason`` diagnostic. Payloads carry
+agent, inclusive range, 8-char token prefix and outcome/reason/follow-on
+result — never full single-use tokens. The web UI projects the same
+``reply_delivery`` pair state honestly (queued/coalesced count, running with
+immutable range, retry_required diagnostic) without fabricating subprocesses.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the

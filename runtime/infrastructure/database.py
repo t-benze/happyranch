@@ -2974,6 +2974,35 @@ class Database:
         """Commit the current transaction — public companion to insert_audit_log_uncommitted."""
         self._conn.commit()
 
+    def _emit_reply_wake_audit(
+        self,
+        *,
+        thread_id: str,
+        agent_name: str,
+        action: str,
+        payload: dict,
+    ) -> None:
+        """Emit one reply-delivery lifecycle audit row INSIDE the open store
+        transaction (caller commits). GH-688 Phase 1 Slice C.
+
+        The six approved actions — thread_reply_wake_created / _coalesced /
+        _claimed / _settled / _cancelled / _recovered — are written at the
+        exact store transitions that already know the durable outcome, so
+        duplicate queue notifications (stale claim CAS no-ops) and idempotent
+        recovery can never fabricate false events. The existing
+        ``audit_log.task_id = THR-*`` scope-prefix convention is unchanged;
+        ``agent`` is the wake owner so /audit?agent= filters naturally.
+        Payloads carry only truthfully observed fields (agent, inclusive
+        range, 8-char token prefix, outcome/reason/follow-on result) and
+        never expose full single-use invocation tokens.
+        """
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id,
+            agent=agent_name,
+            action=action,
+            payload=payload,
+        )
+
     @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
@@ -5720,7 +5749,7 @@ class Database:
                     # reaper is issued. Then clear both slots, record a
                     # truthful corruption diagnostic, and never mint or return
                     # a runnable replacement.
-                    self._conn.execute(
+                    swept = self._conn.execute(
                         "UPDATE thread_invocations SET status = 'failed', "
                         "decline_reason = 'corrupt_both_slots_on_recovery', "
                         "consumed_at = ? "
@@ -5737,6 +5766,19 @@ class Database:
                         "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                         ("corrupt_both_slots_on_recovery", now, now,
                          thread_id, agent_name),
+                    )
+                    # One truthful cancelled audit per corrupted pair — the
+                    # pair-scoped sweep retired its owned obligations with a
+                    # diagnostic reason; never mint a replacement.
+                    self._emit_reply_wake_audit(
+                        thread_id=thread_id, agent_name=agent_name,
+                        action="thread_reply_wake_cancelled",
+                        payload={
+                            "agent_name": agent_name,
+                            "boundary_seq": int(row["required_through_seq"] or 0),
+                            "reason": "corrupt_both_slots_on_recovery",
+                            "swept_count": swept.rowcount,
+                        },
                     )
                     continue
 
@@ -5824,6 +5866,17 @@ class Database:
                         "WHERE thread_id = ? AND agent_name = ?",
                         (replacement, now, now, thread_id, agent_name),
                     )
+                    self._emit_reply_wake_audit(
+                        thread_id=thread_id, agent_name=agent_name,
+                        action="thread_reply_wake_recovered",
+                        payload={
+                            "agent_name": agent_name,
+                            "kind": "replacement_queued",
+                            "from_seq": acknowledged + 1,
+                            "through_seq": required,
+                            "token_prefix": replacement[:8],
+                        },
+                    )
                     results.append(ThreadReplyRecoveryEntry(
                         thread_id=thread_id,
                         agent_name=agent_name,
@@ -5864,6 +5917,19 @@ class Database:
                         and not started
                     )
                     if valid_queued:
+                        self._emit_reply_wake_audit(
+                            thread_id=thread_id, agent_name=agent_name,
+                            action="thread_reply_wake_recovered",
+                            payload={
+                                "agent_name": agent_name,
+                                "kind": "retained_queued",
+                                "from_seq": (
+                                    int(row["acknowledged_through_seq"] or 0) + 1
+                                ),
+                                "through_seq": int(row["required_through_seq"] or 0),
+                                "token_prefix": queued_token[:8],
+                            },
+                        )
                         results.append(ThreadReplyRecoveryEntry(
                             thread_id=thread_id,
                             agent_name=agent_name,
@@ -5883,7 +5949,7 @@ class Database:
                         # required_through_seq is preserved, so the next
                         # conversational arrival mints a fresh wake covering
                         # the retained range (no swallowed arrival).
-                        self._conn.execute(
+                        swept = self._conn.execute(
                             "UPDATE thread_invocations SET status = 'failed', "
                             "decline_reason = 'invalid_queued_started_on_recovery', "
                             "consumed_at = ? "
@@ -5898,6 +5964,16 @@ class Database:
                             "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                             ("invalid_queued_started_on_recovery", now, now,
                              thread_id, agent_name),
+                        )
+                        self._emit_reply_wake_audit(
+                            thread_id=thread_id, agent_name=agent_name,
+                            action="thread_reply_wake_cancelled",
+                            payload={
+                                "agent_name": agent_name,
+                                "boundary_seq": int(row["required_through_seq"] or 0),
+                                "reason": "invalid_queued_started_on_recovery",
+                                "swept_count": swept.rowcount,
+                            },
                         )
                     else:
                         # Fail closed: clear the queued slot, return nothing.
@@ -5964,6 +6040,16 @@ class Database:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (thread_id, agent_name, seq - 1, seq, token, now),
             )
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=agent_name,
+                action="thread_reply_wake_created",
+                payload={
+                    "agent_name": agent_name,
+                    "from_seq": seq,
+                    "through_seq": seq,
+                    "token_prefix": token[:8],
+                },
+            )
             return ThreadReplyArrival(
                 agent_name=agent_name, invocation_token=token,
                 coalesced=False, from_seq=seq, through_seq=seq,
@@ -5975,6 +6061,8 @@ class Database:
         running = row["running_invocation_token"]
         if seq <= required:
             # Idempotent safety: already covered by the required watermark.
+            # No durable change — deliberately NO audit (a duplicate/backdated
+            # notification must not fabricate a coalesced event).
             return ThreadReplyArrival(
                 agent_name=agent_name, invocation_token=None,
                 coalesced=True, from_seq=acknowledged + 1, through_seq=required,
@@ -5988,6 +6076,15 @@ class Database:
                 "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
                 "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                 (new_required, now, thread_id, agent_name),
+            )
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=agent_name,
+                action="thread_reply_wake_coalesced",
+                payload={
+                    "agent_name": agent_name,
+                    "from_seq": acknowledged + 1,
+                    "through_seq": new_required,
+                },
             )
             return ThreadReplyArrival(
                 agent_name=agent_name, invocation_token=None,
@@ -6006,6 +6103,16 @@ class Database:
             "queued_invocation_token = ?, updated_at = ? "
             "WHERE thread_id = ? AND agent_name = ?",
             (new_required, token, now, thread_id, agent_name),
+        )
+        self._emit_reply_wake_audit(
+            thread_id=thread_id, agent_name=agent_name,
+            action="thread_reply_wake_created",
+            payload={
+                "agent_name": agent_name,
+                "from_seq": from_seq,
+                "through_seq": new_required,
+                "token_prefix": token[:8],
+            },
         )
         return ThreadReplyArrival(
             agent_name=agent_name, invocation_token=token,
@@ -6141,6 +6248,20 @@ class Database:
                 "WHERE thread_id = ? AND agent_name = ?",
                 (follow_on, now, thread_id, agent_name),
             )
+
+        self._emit_reply_wake_audit(
+            thread_id=thread_id, agent_name=agent_name,
+            action="thread_reply_wake_settled",
+            payload={
+                "agent_name": agent_name,
+                "outcome": outcome,
+                "acknowledged_through_seq": new_ack,
+                "required_through_seq": required,
+                "retry_required": (required > new_ack and follow_on is None),
+                "follow_on_token_prefix": follow_on[:8] if follow_on else None,
+                "decline_reason": decline_reason,
+            },
+        )
 
         return ThreadReplySettlement(
             thread_id=thread_id,
@@ -6309,6 +6430,16 @@ class Database:
                 (token, running_from, running_through, now,
                  row["thread_id"], row["agent_name"]),
             )
+            self._emit_reply_wake_audit(
+                thread_id=row["thread_id"], agent_name=row["agent_name"],
+                action="thread_reply_wake_claimed",
+                payload={
+                    "agent_name": row["agent_name"],
+                    "from_seq": running_from,
+                    "through_seq": running_through,
+                    "token_prefix": token[:8],
+                },
+            )
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -6346,6 +6477,60 @@ class Database:
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            # Snapshot the per-pair obligations BEFORE the terminalizing
+            # UPDATE so each affected pair emits exactly one truthful cancelled
+            # audit. Two obligation classes are merged: (a) every pair with a
+            # pending REPLY invocation (legacy-only pairs without a state row
+            # included), and (b) every pair with a live delivery-state
+            # obligation — a queued/running token, or an unacknowledged
+            # retry_required range — even when no pending receipt row exists
+            # (e.g. a failed wake awaiting the next conversational arrival).
+            # Boundary = state required watermark when present, else the
+            # pair's max triggering seq.
+            if agent_name is None:
+                pair_rows = self._conn.execute(
+                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                    "AS max_seq FROM thread_invocations "
+                    "WHERE thread_id = ? AND status = 'pending' "
+                    "AND purpose = 'reply' GROUP BY agent_name",
+                    (thread_id,),
+                ).fetchall()
+                state_rows = self._conn.execute(
+                    "SELECT agent_name FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND (queued_invocation_token IS NOT NULL "
+                    "OR running_invocation_token IS NOT NULL "
+                    "OR required_through_seq > acknowledged_through_seq)",
+                    (thread_id,),
+                ).fetchall()
+            else:
+                pair_rows = self._conn.execute(
+                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                    "AS max_seq FROM thread_invocations "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply' "
+                    "GROUP BY agent_name",
+                    (thread_id, agent_name),
+                ).fetchall()
+                state_rows = self._conn.execute(
+                    "SELECT agent_name FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND (queued_invocation_token IS NOT NULL "
+                    "OR running_invocation_token IS NOT NULL "
+                    "OR required_through_seq > acknowledged_through_seq)",
+                    (thread_id, agent_name),
+                ).fetchall()
+            # Merge state-only pairs (n = 0 receipts terminalized by the sweep)
+            # into the audit set without duplicate rows.
+            seen: set[str] = set()
+            merged: list[dict] = []
+            for pr in pair_rows:
+                merged.append(pr)
+                seen.add(pr["agent_name"])
+            for sr in state_rows:
+                if sr["agent_name"] not in seen:
+                    merged.append({"agent_name": sr["agent_name"], "n": 0,
+                                   "max_seq": None})
+                    seen.add(sr["agent_name"])
             if agent_name is None:
                 cursor = self._conn.execute(
                     "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
@@ -6381,6 +6566,27 @@ class Database:
                     "last_terminal_reason = ?, last_terminal_at = ?, "
                     "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                     (decline_reason, now, now, thread_id, agent_name),
+                )
+            for pr in merged:
+                pair_agent = pr["agent_name"]
+                st = self._conn.execute(
+                    "SELECT required_through_seq FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, pair_agent),
+                ).fetchone()
+                boundary = (
+                    int(st["required_through_seq"] or 0)
+                    if st is not None else int(pr["max_seq"] or 0)
+                )
+                self._emit_reply_wake_audit(
+                    thread_id=thread_id, agent_name=pair_agent,
+                    action="thread_reply_wake_cancelled",
+                    payload={
+                        "agent_name": pair_agent,
+                        "boundary_seq": boundary,
+                        "reason": decline_reason,
+                        "swept_count": int(pr["n"]),
+                    },
                 )
             self._conn.commit()
         except Exception:

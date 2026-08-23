@@ -71,6 +71,8 @@ Thread Broadcast Routing for the full Phase-1 contract.
 
 The founder is **not** a participant in `thread_participants` today and never has been — she's modeled exclusively as the `FOUNDER_LITERAL = "@founder"` address token. With addressing removed she has no presence in the participant set, so no special-case skip is needed in the mint loop. She continues to read every thread via the web UI; the only thread-related Feishu push she still receives is `notify_thread_compose` (agent opens a new thread).
 
+**GH-688 Phase 1 Slice C presentation.** The web UI surfaces the store-projected pair state (a compact "Reply delivery" rail section plus the transcript-tail live indicator) from the `reply_delivery` wire list — never from inferred per-message rows. `queued` is rendered as a coalesced count + inclusive range with static styling (no active-subprocess claim), `running` as an in-flight reply with the claimed immutable range (`started_at` is the only subprocess evidence), and `retry_required` as a diagnostic with the last terminal reason where the store recorded one. Terminal per-message responder history is unchanged. The six reply-wake lifecycle audit actions (created / coalesced / claimed / settled / cancelled / recovered) are emitted atomically at the store transitions that already know the durable outcome, under the existing `task_id = THR-*` scope convention.
+
 No selective addressing. No `@all` token. No `@founder` token. The participant set bounds the broadcast.
 
 Special-purpose invocations (`BOOTSTRAP` on invite, `CLOSE_OUT` on archive request, `TASK_FOLLOWUP` on dispatched-task terminal) are unchanged.

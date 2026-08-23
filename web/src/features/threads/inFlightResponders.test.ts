@@ -16,6 +16,23 @@ function msg(seq: number, responders: ResponderStatusEntry[]): ThreadMessage {
   };
 }
 
+// A system-row message (task terminal) — the row a TASK_FOLLOWUP wake hangs
+// off (GH-688 Phase 1: REPLY invocations hang off MESSAGE rows; TASK_FOLLOWUP
+// hang off SYSTEM rows; disjoint by triggering-row kind).
+function systemMsg(seq: number, responders: ResponderStatusEntry[]): ThreadMessage {
+  return {
+    seq,
+    speaker: 'agent_x',
+    kind: 'system',
+    body_markdown: null,
+    decline_reason: null,
+    system_payload: { kind_tag: 'task_completed', task_id: 'TASK-9' },
+    attachments: [],
+    created_at: '2026-06-03T10:00:00Z',
+    responder_status: responders,
+  };
+}
+
 const entry = (
   agent_name: string,
   status: ResponderStatusEntry['status'],
@@ -61,5 +78,41 @@ describe('selectInFlightResponders', () => {
     expect(
       selectInFlightResponders([msg(1, [entry('alpha', 'replied'), entry('bravo', 'declined')])]),
     ).toEqual([]);
+  });
+
+  it('classifies a message-row wake as reply and a system-row wake as special', () => {
+    const result = selectInFlightResponders([
+      msg(1, [entry('alpha', 'working')]),
+      systemMsg(2, [entry('alpha', 'queued')]),
+    ]);
+    // Same agent, DIFFERENT purposes — kept as separate rows (coexistence):
+    // the conversational REPLY is owned by the store projection while the
+    // special-purpose wake stays inferred.
+    expect(result).toHaveLength(2);
+    expect(result.find((s) => s.purpose === 'reply')).toMatchObject({
+      agent_name: 'alpha',
+      status: 'working',
+    });
+    expect(result.find((s) => s.purpose === 'special')).toMatchObject({
+      agent_name: 'alpha',
+      status: 'queued',
+    });
+  });
+
+  it('dedupes within a purpose but keeps same-agent different-purpose rows separate', () => {
+    const result = selectInFlightResponders([
+      msg(1, [entry('alpha', 'working'), entry('alpha', 'queued')]), // reply: working wins
+      systemMsg(2, [entry('alpha', 'working')]), // special
+      systemMsg(3, [entry('alpha', 'queued')]), // special, later queued — masked by working
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result.find((s) => s.purpose === 'reply')).toMatchObject({
+      agent_name: 'alpha',
+      status: 'working',
+    });
+    expect(result.find((s) => s.purpose === 'special')).toMatchObject({
+      agent_name: 'alpha',
+      status: 'working',
+    });
   });
 });
