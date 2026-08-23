@@ -14,6 +14,31 @@ from typing import Any
 # Maximum number of latency samples retained per route.
 _RING_SIZE = 1024
 
+# Stable fallback labels for route-template bucketing (THR-066 remediation,
+# Slice 1).  These are bounded by construction — they never contain a raw
+# URL path, org slug, task/thread/job ID, or any other per-request value.
+UNMATCHED_LABEL = "__unmatched__"
+ERROR_LABEL = "__error__"
+
+
+def route_template_label(method: str, route_path: str | None) -> str:
+    """Return the bounded per-route metric label for a request.
+
+    ``route_path`` is the matched FastAPI route template, resolved AFTER
+    routing (e.g. ``/api/v1/orgs/{slug}/tasks/{task_id}/completion``).  When
+    no template exists (an unmatched 404), emit the bounded
+    ``METHOD __unmatched__`` fallback.  A literal ``request.url.path`` must
+    never be used as a label source.
+    """
+    if route_path is None:
+        return f"{method} {UNMATCHED_LABEL}"
+    return f"{method} {route_path}"
+
+
+def error_label(method: str) -> str:
+    """Return the bounded label recorded when ``call_next`` raises."""
+    return f"{method} {ERROR_LABEL}"
+
 
 class _RouteHistogram:
     """Bounded ring buffer of raw latencies for a single route.

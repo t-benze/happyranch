@@ -462,3 +462,53 @@ class TestPeriodicWriterIntegration:
 
         # Loop didn't crash — we got two ticks
         assert tick_count >= 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_mode", ["append", "prune"])
+    async def test_schedule_loop_storage_failure_does_not_crash(
+        self, tmp_path: Path, failure_mode: str
+    ) -> None:
+        """schedule_scheduler_loop is the second production persistence
+        caller: a MetricsStore append OR prune failure must not terminate it.
+
+        Forces the failure through the real loop seam (not the helper),
+        reaches a second tick, and proves the loop stays alive — mirroring the
+        work-hours loop isolation coverage above.
+        """
+        from runtime.runtime import RuntimeDir
+        from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+        import asyncio
+
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        state = DaemonState.from_runtime(rt, Settings())
+
+        if failure_mode == "append":
+
+            def broken_append(*args, **kwargs):
+                raise OSError("disk full")
+
+            state.metrics_store.append_snapshot = broken_append
+        else:
+
+            def broken_prune(*args, **kwargs):
+                raise OSError("prune failed")
+
+            state.metrics_store.prune = broken_prune
+
+        tick_count = 0
+
+        async def fast_sleep(seconds):
+            nonlocal tick_count
+            tick_count += 1
+            if tick_count >= 2:
+                raise asyncio.CancelledError()
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(asyncio, "sleep", fast_sleep)
+            try:
+                await schedule_scheduler_loop(state)
+            except asyncio.CancelledError:
+                pass
+
+        # The loop survived the storage failure and reached a second tick.
+        assert tick_count >= 2
