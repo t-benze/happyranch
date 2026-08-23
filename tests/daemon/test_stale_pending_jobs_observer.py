@@ -250,6 +250,30 @@ def test_scan_all_orgs_missing_db_reports_empty(tmp_path: Path):
     assert results == {"brand-new": []}
 
 
+def test_scan_all_orgs_missing_db_never_creates_a_store(tmp_path: Path):
+    """Observation must not durably mutate: scanning a teams.yaml-only org
+    (the ``orgs init`` skeleton materializes teams.yaml before any DB) must
+    NOT create a happyranch.db or run schema migrations as a side effect.
+    """
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "brand-new"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    assert not (org_root / "happyranch.db").exists()
+
+    results = scan_all_org_stale_pending(rt, now=_now())
+    assert results == {"brand-new": []}
+    # No DB file, no -wal/-shm sidecars: the scan opened nothing.
+    assert not (org_root / "happyranch.db").exists()
+    assert not (org_root / "happyranch.db-wal").exists()
+    assert not (org_root / "happyranch.db-shm").exists()
+
+    # Idempotent: a second scan still creates nothing.
+    assert scan_all_org_stale_pending(rt, now=_now()) == {"brand-new": []}
+    assert not (org_root / "happyranch.db").exists()
+
+
 # ---------------------------------------------------------------------------
 # Daemon-startup wiring: observation runs, logs, and never mutates
 # ---------------------------------------------------------------------------

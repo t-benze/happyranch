@@ -99,10 +99,21 @@ def scan_org_root_stale_pending(
     now: datetime | None = None,
     max_age: timedelta = STALE_PENDING_JOB_MAX_AGE,
 ) -> list[dict]:
-    """Scan one org root's ``happyranch.db`` (own connection, closed after)."""
+    """Scan one org root's ``happyranch.db`` (own connection, closed after).
+
+    An org root without a ``happyranch.db`` yet (``orgs init`` materializes
+    ``org/teams.yaml`` first) has nothing to observe — return ``[]`` WITHOUT
+    opening a store, so observation never creates a DB or runs schema
+    migrations as a side effect. For an existing DB, opening it through the
+    supported ``Database`` path is the same no-op-on-migrated-DB open the
+    daemon performs at boot.
+    """
     from runtime.infrastructure.database import Database
 
-    db = Database(org_root / "happyranch.db")
+    db_path = org_root / "happyranch.db"
+    if not db_path.is_file():
+        return []
+    db = Database(db_path)
     try:
         return scan_org_stale_pending(db, now=now, max_age=max_age)
     finally:
