@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,8 +12,11 @@ import pytest
 
 from runtime.config import Settings
 from runtime.daemon.metrics_store import (
+    MetricsMaintenanceError,
     MetricsStore,
     compose_metrics_snapshot,
+    daemon_is_quiescent,
+    live_work_counts,
     _RETENTION_DAYS,
 )
 from runtime.daemon.state import DaemonState
@@ -512,3 +516,256 @@ class TestPeriodicWriterIntegration:
 
         # The loop survived the storage failure and reached a second tick.
         assert tick_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Storage health + maintenance (TASK-5443 maintenance slice)
+# ---------------------------------------------------------------------------
+
+class TestMetricsStoreHealth:
+    def test_health_reports_non_sensitive_aggregates(self, tmp_path: Path) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        t = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        store.append_snapshot(t.isoformat(), {"n": 1})
+        h = store.health()
+        assert h["row_count"] == 1
+        assert h["oldest_captured_at"] == t.isoformat()
+        assert h["newest_captured_at"] == t.isoformat()
+        assert h["page_count"] >= 1
+        assert h["freelist_count"] >= 0
+        assert h["db_bytes"] > 0
+        assert h["wal_bytes"] is None or h["wal_bytes"] >= 0
+
+    def test_health_in_memory_has_no_file_metrics(self) -> None:
+        store = MetricsStore(None)
+        store.append_snapshot(datetime.now(timezone.utc).isoformat(), {"n": 1})
+        h = store.health()
+        assert h["row_count"] == 1
+        assert h["page_count"] is None
+        assert h["db_bytes"] is None
+        assert h["wal_bytes"] is None
+
+
+class TestMetricsStoreMaintenance:
+    def test_maintenance_prunes_and_passes_integrity(self, tmp_path: Path) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        old = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        boundary = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        store.append_snapshot(old.isoformat(), {"n": 1})
+        store.append_snapshot(boundary.isoformat(), {"n": 2})
+
+        cutoff = datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat()
+        report = store.maintenance(cutoff)
+
+        assert report["pruned_rows"] == 1
+        assert report["integrity_check_before_vacuum"] == "ok"
+        assert report["integrity_check_after_vacuum"] == "ok"
+        assert report["before"]["row_count"] == 2
+        assert report["after"]["row_count"] == 1
+        assert report["cutoff"] == cutoff
+        assert report["duration_seconds"] >= 0
+        assert set(report["checkpoint"].keys()) == {
+            "busy", "log_frames", "checkpointed_frames",
+        }
+        # exact retention boundary: the boundary row is retained
+        rows = store.query()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["snapshot_json"]) == {"n": 2}
+
+    def test_maintenance_reclaims_pages_via_vacuum(self, tmp_path: Path) -> None:
+        """VACUUM reduces page_count (physical reclamation proof)."""
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        # Insert many rows then prune most so free-list pages exist.
+        base = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        for i in range(2000):
+            store.append_snapshot(
+                (base + timedelta(minutes=i)).isoformat(),
+                {"n": i, "pad": "x" * 512},
+            )
+        cutoff = (base + timedelta(minutes=1500)).isoformat()
+        before_pages = store.page_count()
+        report = store.maintenance(cutoff)
+        after_pages = store.page_count()
+        assert report["pruned_rows"] == 1500
+        assert after_pages < before_pages  # physical space actually reclaimed
+
+    def test_maintenance_integrity_failure_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-`ok` integrity check raises (never a false success) and
+        pre-existing valid history remains queryable."""
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        recent = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        store.append_snapshot(recent.isoformat(), {"n": 1})
+        monkeypatch.setattr(store, "_integrity_check_locked", lambda: "not ok")
+
+        with pytest.raises(MetricsMaintenanceError):
+            store.maintenance(datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat())
+
+        # history still queryable (no file deletion / connection teardown)
+        rows = store.query()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["snapshot_json"]) == {"n": 1}
+
+    def test_maintenance_vacuum_failure_raises_and_stays_queryable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        store.append_snapshot(datetime(2026, 7, 4, tzinfo=timezone.utc).isoformat(), {"n": 1})
+        monkeypatch.setattr(
+            store, "_vacuum_locked",
+            lambda: (_ for _ in ()).throw(RuntimeError("vacuum boom")),
+        )
+        with pytest.raises(RuntimeError):
+            store.maintenance(datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat())
+        rows = store.query()
+        assert len(rows) == 1
+
+
+class TestMetricsStoreSerialization:
+    def test_maintenance_holds_lock_against_concurrent_query(self, tmp_path: Path) -> None:
+        """The maintenance sequence holds the store lock for its whole span, so
+        a concurrent history read (another thread) cannot interleave — this is
+        the serialization that makes maintenance unable to overlap itself."""
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        store.append_snapshot(datetime(2026, 7, 4, tzinfo=timezone.utc).isoformat(), {"n": 1})
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_integrity():
+            entered.set()
+            release.wait(timeout=10)
+            return "ok"
+
+        store._integrity_check_locked = slow_integrity
+
+        result: dict[str, object] = {}
+
+        def do_maintenance():
+            result["report"] = store.maintenance(
+                datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat()
+            )
+
+        t = threading.Thread(target=do_maintenance)
+        t.start()
+        assert entered.wait(timeout=5)
+
+        # While maintenance holds the lock, a concurrent query from another
+        # thread blocks (does not interleave).
+        query_result: dict[str, object] = {}
+
+        def do_query():
+            query_result["rows"] = store.query()
+
+        t2 = threading.Thread(target=do_query)
+        t2.start()
+        t2.join(timeout=1.0)
+        assert t2.is_alive()  # still blocked on the lock
+
+        release.set()
+        t.join(timeout=10)
+        t2.join(timeout=10)
+        assert not t.is_alive()
+        assert not t2.is_alive()
+        assert "report" in result
+        assert query_result["rows"][0]["snapshot_json"]  # query completed after lock release
+
+
+# ---------------------------------------------------------------------------
+# Quiescence helper + live-work-count composer seam (TASK-5443)
+# ---------------------------------------------------------------------------
+
+class TestDaemonQuiescence:
+    def test_idle_is_quiescent(self) -> None:
+        state = DaemonState.idle(Settings())
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is True
+        assert result["nonterminal_tasks"] == 0
+        assert result["running_jobs"] == 0
+        assert result["active_executor_sessions"] == 0
+
+    def test_detects_nonterminal_task(self) -> None:
+        state = DaemonState.idle(Settings())
+
+        class _Db:
+            def get_nonterminal_task_ids(self):
+                return ["TASK-1"]
+
+            def list_jobs_db(self, status):
+                return []
+
+        class _Sessions:
+            def count_active(self):
+                return 0
+
+        class _Org:
+            def __init__(self):
+                self.db = _Db()
+                self.sessions = _Sessions()
+
+        state.orgs["alpha"] = _Org()
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is False
+        assert result["nonterminal_tasks"] == 1
+
+    def test_detects_running_job(self) -> None:
+        state = DaemonState.idle(Settings())
+
+        class _Db:
+            def get_nonterminal_task_ids(self):
+                return []
+
+            def list_jobs_db(self, status):
+                return ["JOB-1"]
+
+        class _Sessions:
+            def count_active(self):
+                return 0
+
+        class _Org:
+            def __init__(self):
+                self.db = _Db()
+                self.sessions = _Sessions()
+
+        state.orgs["alpha"] = _Org()
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is False
+        assert result["running_jobs"] == 1
+
+    def test_detects_active_session(self) -> None:
+        state = DaemonState.idle(Settings())
+
+        class _Db:
+            def get_nonterminal_task_ids(self):
+                return []
+
+            def list_jobs_db(self, status):
+                return []
+
+        class _Sessions:
+            def count_active(self):
+                return 3
+
+        class _Org:
+            def __init__(self):
+                self.db = _Db()
+                self.sessions = _Sessions()
+
+        state.orgs["alpha"] = _Org()
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is False
+        assert result["active_executor_sessions"] == 3
+
+
+class TestLiveWorkCountsComposerSeam:
+    def test_live_work_counts_matches_composer_pull_gauges(self) -> None:
+        """The composer's pull-gauges are sourced from live_work_counts — the
+        extraction must not change the composed payload (byte-identical)."""
+        state = DaemonState.idle(Settings())
+        counts = live_work_counts(state)
+        snap = compose_metrics_snapshot(state)
+        assert snap["tasks"]["pending_and_in_flight"] == counts["nonterminal_tasks"]
+        assert snap["jobs_in_flight"] == counts["running_jobs"]
+        assert snap["executor_sessions_active"] == counts["active_executor_sessions"]
+        assert counts == {"nonterminal_tasks": 0, "running_jobs": 0, "active_executor_sessions": 0}
