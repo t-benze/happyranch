@@ -99,22 +99,22 @@ def scan_org_root_stale_pending(
     now: datetime | None = None,
     max_age: timedelta = STALE_PENDING_JOB_MAX_AGE,
 ) -> list[dict]:
-    """Scan one org root's ``happyranch.db`` (own connection, closed after).
+    """Scan one org root's ``happyranch.db`` via a GENUINE read-only connection
+    (own handle, closed after).
 
-    An org root without a ``happyranch.db`` yet (``orgs init`` materializes
-    ``org/teams.yaml`` first) has nothing to observe — return ``[]`` WITHOUT
-    opening a store, so observation never creates a DB or runs schema
-    migrations as a side effect. For an existing DB, opening it through the
-    supported ``Database`` path is the same no-op-on-migrated-DB open the
-    daemon performs at boot.
+    Observation must never durably mutate any store: an org root without a
+    ``happyranch.db`` yet (``orgs init`` materializes ``org/teams.yaml``
+    first) has nothing to observe — return ``[]`` without opening anything.
+    For an EXISTING store this uses ``scan_stale_pending_jobs_readonly``: a
+    read-only SQLite connection that cannot create a DB, enable WAL, run
+    schema migrations, or write ``-wal``/``-shm`` sidecars — a legacy
+    pre-migration DB stays byte-identical across scans, and a
+    malformed/irrelevant store fails closed (raises) without mutation.
     """
-    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.database import scan_stale_pending_jobs_readonly
 
+    now = now or datetime.now(timezone.utc)
     db_path = org_root / "happyranch.db"
-    if not db_path.is_file():
-        return []
-    db = Database(db_path)
-    try:
-        return scan_org_stale_pending(db, now=now, max_age=max_age)
-    finally:
-        db.close()
+    return scan_stale_pending_jobs_readonly(
+        db_path, stale_pending_cutoff_iso(now, max_age=max_age),
+    )

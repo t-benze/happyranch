@@ -1961,8 +1961,15 @@ class AuditLogger:
         the action is auditable and recovery-aware. ``agent`` is ``"system"``
         — the transition is a system reconciliation, not a founder or agent
         review decision.
+
+        The row is inserted UNCOMMITTED (``insert_audit_log_uncommitted``) and
+        participates in the caller's transaction: the caller must commit via
+        ``Database.commit()`` — and ``rollback()`` on any failure — so the
+        guarded job transition and this audit record are atomic; an audit
+        failure can never leave a terminalized job without its durable
+        non-live proof.
         """
-        self._db.insert_audit_log(
+        self._db.insert_audit_log_uncommitted(
             task_id=task_id,
             agent="system",
             action="job_reconciled_orphaned",

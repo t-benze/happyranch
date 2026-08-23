@@ -151,6 +151,61 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
         raise ValueError(f"Invalid cursor: {cursor!r}")
 
 
+# Shared SELECT for the stale never-started pending observation (THR-195): the
+# single source of truth for BOTH the managed-store scan
+# (``Database.list_stale_pending_jobs``) and the read-only registry scan
+# (``scan_stale_pending_jobs_readonly``), so the observation predicate
+# (``status='pending' AND started_at IS NULL AND created_at <= cutoff``) can
+# never drift between the two paths.
+_STALE_PENDING_JOBS_SCAN_SQL = (
+    "SELECT id, task_id, agent_name, title, review_required, created_at "
+    "FROM jobs WHERE status='pending' AND started_at IS NULL "
+    "AND created_at <= ? ORDER BY created_at, id"
+)
+
+
+def scan_stale_pending_jobs_readonly(
+    db_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only, sidecar-free stale-pending observation over one org store.
+
+    THR-195 observation MUST NOT durably mutate any store: it never creates a
+    missing DB, never enables WAL, never runs the schema migration guards, and
+    never writes ``-wal``/``-shm`` sidecars. This helper therefore opens a
+    GENUINE read-only SQLite connection instead of ``Database(db_path)``
+    (whose ``__init__`` creates the file, enables WAL, and runs migrations).
+
+    URI selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
+    checkpoints and removes them on the last close), so the main file holds
+    every committed row — ``immutable=1`` reads it fully and provably cannot
+    create sidecars. When sidecars exist (store open in this process — e.g. a
+    loaded org — or crash leftovers), ``mode=ro`` reads the WAL frames too and
+    never modifies the existing sidecars. Either way the scan sees every
+    committed candidate row and writes nothing.
+
+    A missing DB file returns ``[]`` — nothing to observe, nothing created.
+    A store that cannot be read (malformed file, or a pre-migration/
+    irrelevant schema without a ``jobs`` table) raises
+    ``sqlite3.DatabaseError``/``OperationalError``: fail closed — never
+    mutate, never fabricate candidates.
+    """
+    if not db_path.is_file():
+        return []
+    wal = Path(f"{db_path}-wal")
+    shm = Path(f"{db_path}-shm")
+    if wal.exists() or shm.exists():
+        uri = f"file:{db_path}?mode=ro"
+    else:
+        uri = f"file:{db_path}?immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(_STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -2971,6 +3026,11 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def rollback(self) -> None:
+        """Roll back the current transaction — companion to insert_audit_log_uncommitted."""
+        self._conn.rollback()
+
+    @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (task_id,)
@@ -4155,9 +4215,7 @@ class Database:
         created_at) — not full JobRecords — because this is a diagnostic scan.
         """
         rows = self._conn.execute(
-            "SELECT id, task_id, agent_name, title, review_required, created_at "
-            "FROM jobs WHERE status='pending' AND started_at IS NULL "
-            "AND created_at <= ? ORDER BY created_at, id",
+            _STALE_PENDING_JOBS_SCAN_SQL,
             (cutoff_iso,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -4175,6 +4233,13 @@ class Database:
         stamps ``started_at``) makes this a no-op ValueError. Mirrors the
         guarded UPDATE shape of ``transition_job_to_rejected`` — callers get
         no ad-hoc SQL path.
+
+        The UPDATE is deliberately left UNCOMMITTED: the caller owns the
+        surrounding transaction so this terminalization and its
+        ``job_reconciled_orphaned`` audit row commit atomically
+        (``insert_audit_log_uncommitted`` + ``commit()``) and roll back
+        together on any failure — a terminalized job must never survive
+        without its durable non-live-proof audit record.
         """
         cur = self._conn.execute(
             "UPDATE jobs SET status='failed', reason=?, finished_at=?, "
@@ -4182,7 +4247,6 @@ class Database:
             "WHERE id=? AND status='pending' AND started_at IS NULL",
             (reason, now_iso, job_id),
         )
-        self._conn.commit()
         if cur.rowcount == 0:
             raise ValueError(
                 f"not_never_started_pending: job {job_id} cannot be reconciled"

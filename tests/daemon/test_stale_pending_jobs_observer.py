@@ -8,6 +8,7 @@ submission-to-dispatch orphan is surfaced instead of silently stranding tasks.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -305,3 +306,225 @@ def test_startup_observation_logs_without_mutating(daemon_state, app, caplog):
         "stale never-started pending jobs" in r.message and "JOB-002" in r.message
         for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial read-only guarantees: existing/legacy/malformed stores untouched
+# ---------------------------------------------------------------------------
+
+def _snapshot_store(org_root: Path) -> dict:
+    """Byte + schema + sidecar snapshot of an org store (read-only)."""
+    db_path = org_root / "happyranch.db"
+    files = sorted(
+        p.name for p in org_root.iterdir() if p.is_file()
+    )
+    if not db_path.is_file():
+        return {"bytes": None, "schema": None, "files": files}
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        try:
+            schema = conn.execute(
+                "SELECT name, sql FROM sqlite_master ORDER BY name"
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            schema = None  # malformed store: bytes comparison still applies
+    finally:
+        conn.close()
+    return {"bytes": db_path.read_bytes(), "schema": schema, "files": files}
+
+
+def _legacy_script_requests_db(db_path: Path) -> None:
+    """Hand-build a PRE-MIGRATION store: the legacy ``script_requests`` table
+    that ``Database.__init__`` would rename to ``jobs`` and add columns to.
+    A read-only observer must never run that migration."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE script_requests ("
+        "id TEXT PRIMARY KEY, task_id TEXT, status TEXT, started_at TEXT, created_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO script_requests VALUES ("
+        "'SR-001','TASK-001','pending',NULL,'2026-01-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_existing_db_bytes_schema_sidecars_unchanged_across_repeated_scans(tmp_path: Path):
+    """An EXISTING migrated store is byte-identical (bytes + schema) and gains
+    no ``-wal``/``-shm``/``-journal`` sidecars across repeated registry scans."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    db = _seed_org(rt, "happyranch")
+    _seed_task(db, "TASK-001", TaskStatus.FAILED)
+    _seed_job(
+        db, job_id="JOB-001", task_id="TASK-001",
+        created_at=_z(_now() - timedelta(days=60)),
+    )
+    db.close()  # clean close: SQLite checkpoints and removes -wal/-shm
+    org_root = rt.orgs_dir / "happyranch"
+    before = _snapshot_store(org_root)
+
+    for _ in range(2):
+        results = scan_all_org_stale_pending(rt, now=_now())
+        assert [f["id"] for f in results["happyranch"]] == ["JOB-001"]
+
+    after = _snapshot_store(org_root)
+    assert after["bytes"] == before["bytes"]
+    assert after["schema"] == before["schema"]
+    assert after["files"] == before["files"] == ["happyranch.db"]
+
+
+def test_legacy_pre_migration_db_never_migrated_or_mutated(tmp_path: Path):
+    """An EXISTING pre-migration store (legacy ``script_requests`` shape) is
+    never migrated by observation: the scan fails closed (no ``jobs`` table)
+    and leaves bytes/schema/sidecars untouched — where ``Database(db_path)``
+    would have RENAMED the table and added columns (durable mutation)."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "happyranch"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    _legacy_script_requests_db(org_root / "happyranch.db")
+    before = _snapshot_store(org_root)
+
+    with pytest.raises(sqlite3.OperationalError):
+        scan_all_org_stale_pending(rt, now=_now())
+
+    after = _snapshot_store(org_root)
+    assert after["bytes"] == before["bytes"]
+    assert after["schema"] == before["schema"]
+    assert after["files"] == before["files"] == ["happyranch.db"]
+
+
+def test_malformed_db_fails_closed_without_durable_mutation(tmp_path: Path):
+    """A malformed/irrelevant store fails closed (raises) without durable
+    mutation: no bytes change, no sidecars created, repeated scans idempotent."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "happyranch"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    db_path = org_root / "happyranch.db"
+    db_path.write_bytes(b"this is not a sqlite database at all\x00\x01" * 8)
+    before = _snapshot_store(org_root)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        scan_all_org_stale_pending(rt, now=_now())
+
+    after = _snapshot_store(org_root)
+    assert after["bytes"] == before["bytes"]
+    assert after["files"] == before["files"] == ["happyranch.db"]
+
+
+def test_irrelevant_legacy_store_no_jobs_table_fails_closed(tmp_path: Path):
+    """A legacy store with only an unrelated table (no ``jobs`` at all) fails
+    closed instead of fabricating candidates or mutating."""
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    org_root = rt.orgs_dir / "happyranch"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    conn = sqlite3.connect(str(org_root / "happyranch.db"))
+    conn.execute("CREATE TABLE unrelated (id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO unrelated VALUES ('x')")
+    conn.commit()
+    conn.close()
+    before = _snapshot_store(org_root)
+
+    with pytest.raises(sqlite3.OperationalError):
+        scan_all_org_stale_pending(rt, now=_now())
+
+    after = _snapshot_store(org_root)
+    assert after["bytes"] == before["bytes"]
+    assert after["files"] == before["files"] == ["happyranch.db"]
+
+
+# ---------------------------------------------------------------------------
+# Daemon-startup wiring: registry-wide scan includes BROKEN org roots
+# ---------------------------------------------------------------------------
+
+def test_startup_observation_includes_broken_org_root(tmp_path: Path, tmp_home, caplog):
+    """A current DB-bearing org root whose OrgState.load fails (broken_orgs)
+    still reaches observation: the startup scan is registry-wide
+    (``RuntimeDir.iter_org_roots``), not limited to ``state.orgs.values()``."""
+    from fastapi.testclient import TestClient
+    import logging
+
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    # Healthy org with a stale pending job.
+    alpha = _seed_org(rt, "alpha")
+    _seed_task(alpha, "TASK-516", TaskStatus.FAILED)
+    _seed_job(
+        alpha, job_id="JOB-002", task_id="TASK-516",
+        created_at=_z(_now() - timedelta(days=89)),
+        review_required=True,
+    )
+    alpha.close()
+    # Broken org: teams.yaml + drifted agent (OrgConsistencyError on load), but
+    # WITH an existing DB carrying a stale pending job.
+    broken_root = rt.orgs_dir / "broken"
+    broken_root.mkdir(parents=True)
+    (broken_root / "org").mkdir()
+    (broken_root / "org" / "teams.yaml").write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [dev_agent]\n"
+    )
+    (broken_root / "org" / "agents").mkdir()
+    paths = OrgPaths(root=broken_root)
+    manager = AgentDef(
+        name="solo_manager",
+        team="missing_team",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are solo.\n",
+        description="Solo",
+    )
+    (paths.agents_dir / "solo_manager.md").write_text(render_agent_text(manager))
+    broken_db = Database(broken_root / "happyranch.db")
+    _seed_task(broken_db, "TASK-777", TaskStatus.FAILED)
+    _seed_job(
+        broken_db, job_id="JOB-777", task_id="TASK-777",
+        created_at=_z(_now() - timedelta(days=60)),
+    )
+    broken_db.close()
+
+    state = DaemonState.from_runtime(rt, Settings())
+    assert "broken" in state.broken_orgs  # OrgState.load refused it
+    assert "broken" not in state.orgs
+    app = create_app(state)
+
+    with caplog.at_level(logging.WARNING, logger="happyranch.daemon"):
+        with TestClient(app) as client:
+            assert client.get("/healthz").status_code in (200, 404)
+            # Observation never mutates the broken org's candidate.
+            import sqlite3 as _sqlite3
+            read = _sqlite3.connect(
+                f"file:{broken_root / 'happyranch.db'}?immutable=1", uri=True
+            )
+            try:
+                row = read.execute(
+                    "SELECT status, started_at, finished_at, reason "
+                    "FROM jobs WHERE id='JOB-777'"
+                ).fetchone()
+            finally:
+                read.close()
+            assert row is not None
+            assert row[0] == "pending" and row[1] is None
+            assert row[2] is None and row[3] is None
+
+    messages = " ".join(r.message for r in caplog.records)
+    assert "JOB-002" in messages  # healthy org still observed
+    assert "JOB-777" in messages  # broken org's candidate reaches observation

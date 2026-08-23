@@ -124,7 +124,12 @@ def reconcile_never_started_job(
 
     Full proof first (no mutation on failure), then the store's guarded
     transition, then a durable ``job_reconciled_orphaned`` audit row carrying
-    before/after lifecycle state. Returns the after record.
+    before/after lifecycle state. The guarded transition and the audit row are
+    ONE transaction (``transition_never_started_job_to_failed`` leaves the
+    UPDATE uncommitted; the audit insert is ``insert_audit_log_uncommitted``;
+    ``commit()`` makes both durable together) — an audit/commit failure rolls
+    everything back, so a terminalized job can never survive without its
+    durable non-live-proof recovery record. Returns the after record.
     """
     now = now or datetime.now(timezone.utc)
     evidence = proof_never_dispatched(db, job_id, now=now, max_age=max_age)
@@ -134,24 +139,31 @@ def reconcile_never_started_job(
         "started_at": evidence["started_at"],
         "created_at": evidence["created_at"],
     }
-    db.transition_never_started_job_to_failed(
-        job_id, now_iso=_now_iso(now), reason=reason,
-    )
-    after_row = db.get_job(job_id)
-    assert after_row is not None
-    after = {
-        "status": after_row.status.value,
-        "started_at": after_row.started_at,
-        "finished_at": after_row.finished_at,
-        "reason": after_row.reason,
-    }
-
-    AuditLogger(db).log_job_reconciled_orphaned(
-        task_id=evidence["task_id"],
-        job_id=job_id,
-        reason=reason,
-        evidence=evidence,
-        before=before,
-        after=after,
-    )
+    try:
+        db.transition_never_started_job_to_failed(
+            job_id, now_iso=_now_iso(now), reason=reason,
+        )
+        after_row = db.get_job(job_id)
+        assert after_row is not None
+        after = {
+            "status": after_row.status.value,
+            "started_at": after_row.started_at,
+            "finished_at": after_row.finished_at,
+            "reason": after_row.reason,
+        }
+        AuditLogger(db).log_job_reconciled_orphaned(
+            task_id=evidence["task_id"],
+            job_id=job_id,
+            reason=reason,
+            evidence=evidence,
+            before=before,
+            after=after,
+        )
+        db.commit()
+    except BaseException:
+        # Atomicity: the transition UPDATE and the audit INSERT share this
+        # transaction — discard BOTH on any failure so no terminalized job
+        # and no partial audit residue can survive.
+        db.rollback()
+        raise
     return after

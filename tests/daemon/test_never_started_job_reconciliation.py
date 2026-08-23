@@ -237,3 +237,64 @@ def test_historical_orphan_records_are_reconcilable_end_to_end(tmp_path: Path):
     assert scan_org_stale_pending(db, now=_now()) == []
     for job_id in ("JOB-002", "JOB-003", "JOB-004", "JOB-155"):
         assert db.get_job(job_id).status == JobStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# Atomicity: the guarded transition and its audit row commit as ONE transaction
+# ---------------------------------------------------------------------------
+
+def test_reconcile_audit_failure_leaves_no_mutation_or_residue(tmp_path: Path, monkeypatch):
+    """If the audit write fails, the guarded transition must roll back too:
+    no job status/finished-at/reason mutation and no partial audit residue."""
+    from runtime.infrastructure.audit_logger import AuditLogger
+
+    db = Database(tmp_path / "happyranch.db")
+    _seed_task(db, "TASK-861", TaskStatus.COMPLETED)
+    _seed_job(
+        db, job_id="JOB-155", task_id="TASK-861",
+        created_at=_z(_now() - timedelta(days=61)),
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected audit failure")
+
+    monkeypatch.setattr(AuditLogger, "log_job_reconciled_orphaned", _boom)
+    with pytest.raises(RuntimeError, match="injected audit failure"):
+        reconcile_never_started_job(db, job_id="JOB-155", now=_now(), reason="x")
+
+    row = db.get_job("JOB-155")
+    assert row is not None
+    assert row.status == JobStatus.PENDING  # no status mutation survives
+    assert row.started_at is None
+    assert row.finished_at is None          # no finished-at mutation survives
+    assert row.reason is None               # no reason mutation survives
+    audits = _audit_actions(db, "TASK-861")
+    assert all(a["action"] != "job_reconciled_orphaned" for a in audits)
+
+
+def test_reconcile_commit_failure_leaves_no_partial_residue(tmp_path: Path, monkeypatch):
+    """If the final COMMIT fails after both the transition and the audit insert
+    executed, EVERYTHING rolls back atomically — no partial audit residue and
+    no job mutation survive."""
+    db = Database(tmp_path / "happyranch.db")
+    _seed_task(db, "TASK-861", TaskStatus.COMPLETED)
+    _seed_job(
+        db, job_id="JOB-155", task_id="TASK-861",
+        created_at=_z(_now() - timedelta(days=61)),
+    )
+
+    def _boom():
+        raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(db, "commit", _boom)
+    with pytest.raises(RuntimeError, match="injected commit failure"):
+        reconcile_never_started_job(db, job_id="JOB-155", now=_now(), reason="x")
+
+    row = db.get_job("JOB-155")
+    assert row is not None
+    assert row.status == JobStatus.PENDING
+    assert row.started_at is None
+    assert row.finished_at is None
+    assert row.reason is None
+    audits = _audit_actions(db, "TASK-861")
+    assert all(a["action"] != "job_reconciled_orphaned" for a in audits)
