@@ -27,7 +27,9 @@
 - Record the restart as the **deployment epoch** (`DEPLOY_EPOCH`, UTC
   ISO-8601). Every one-month release query below is measured from this epoch,
   **never from the merge timestamp** — otherwise a deploy gap reads as a
-  Phase-1 failure (THR-198 seq 29).
+  Phase-1 failure (THR-198 seq 29). Each query counts ONLY rows in the
+  half-open one-month window `[DEPLOY_EPOCH, DEPLOY_EPOCH + 1 month)`
+  (`enqueued_at >= DEPLOY_EPOCH AND enqueued_at < DEPLOY_EPOCH_PLUS_1_MONTH`).
 - Phase-1 behavior is only "live" once the restart happened; do not claim
   supersession-rate movement or audit rows from before the restart.
 
@@ -97,19 +99,29 @@ DB=<DAEMON_HOME>/orgs/happyranch/happyranch.db     # repeat for tourism-org
 sqlite3 -readonly "$DB"
 ```
 
+`DEPLOY_EPOCH_PLUS_1_MONTH` is the ISO-8601 UTC instant exactly one calendar
+month after `DEPLOY_EPOCH` (day-of-month clamped to month end), e.g.
+`date -u -d "$DEPLOY_EPOCH + 1 month"` (GNU date) or
+`date -u -v+1m "$DEPLOY_EPOCH"` (macOS BSD date). Every query below is
+windowed to `[DEPLOY_EPOCH, DEPLOY_EPOCH_PLUS_1_MONTH)` so a wake enqueued
+at or after the +1-month instant is excluded from the measurement.
+
 ### 5a. Supersession rate (target ≈ 0, vs baseline 10.4% happyranch / 13.2% tourism-org)
 
 The consultant's `LEAD()` definition (THR-198 seq 2) — a reply wake is
 superseded when the next wake for the same pair was enqueued before this one
-started:
+started. Measured over the one-month deployment window: the next wake is the
+next in-window wake for the pair (the final in-window wake per pair has no
+in-window successor and is therefore never counted superseded):
 
 ```sql
 WITH r AS (
   SELECT thread_id, agent_name, enqueued_at, started_at,
          lead(enqueued_at) OVER (PARTITION BY thread_id, agent_name
-                                 ORDER BY enqueued_at) AS nxt
+                                 ORDER BY enqueued_at, id) AS nxt
   FROM thread_invocations WHERE purpose = 'reply'
-   AND enqueued_at >= '<DEPLOY_EPOCH>'        -- month-long window from the epoch
+   AND enqueued_at >= '<DEPLOY_EPOCH>'              -- one-month window
+   AND enqueued_at <  '<DEPLOY_EPOCH_PLUS_1_MONTH>' -- [epoch, epoch + 1 month)
 )
 SELECT count(*) AS total,
        sum(CASE WHEN nxt IS NOT NULL
@@ -125,7 +137,7 @@ falsification threshold (THR-198 seq 2/8), not as green evidence.
 ### 5b. Duplicate pending conversational REPLY rows per pair (must be 0)
 
 Phase 1's invariant is at most one unstarted REPLY per `(thread_id,
-agent_name)`:
+agent_name)`. Measured over the one-month deployment window:
 
 ```sql
 SELECT count(*) AS dup_pairs FROM (
@@ -133,6 +145,7 @@ SELECT count(*) AS dup_pairs FROM (
   FROM thread_invocations
   WHERE status = 'pending' AND purpose = 'reply'
     AND enqueued_at >= '<DEPLOY_EPOCH>'
+    AND enqueued_at <  '<DEPLOY_EPOCH_PLUS_1_MONTH>'
   GROUP BY thread_id, agent_name
   HAVING n > 1
 );
@@ -148,17 +161,34 @@ failed wake was its **last** — that agent goes silent until a new message.
 Baseline measured pre-Phase-1: 10 of 305 failed+timeout were last-for-pair
 (happyranch 6/204, tourism-org 4/101).
 
+**Last-ness is derived over ALL conversational REPLY wakes for the pair** —
+next/last order is computed per `(thread_id, agent_name)` over every REPLY
+wake (successful or not), and only THEN are the terminal failure/timeout
+candidates filtered to the one-month deployment window. A failed wake that
+has any later REPLY wake (a successful reply, a decline, or a later failed
+retry) has a successor and is **not** counted as last-for-pair:
+
 ```sql
-WITH f AS (
-  SELECT thread_id, agent_name, enqueued_at,
-         max(enqueued_at) OVER (PARTITION BY thread_id, agent_name) AS last_enq
+WITH r AS (
+  -- Next-wake ordering over ALL conversational REPLY wakes per pair
+  -- (unbounded — a post-window successor still makes an in-window failed
+  -- wake NOT last). `id` breaks enqueued_at ties deterministically.
+  SELECT thread_id, agent_name, enqueued_at, status,
+         lead(enqueued_at) OVER (PARTITION BY thread_id, agent_name
+                                 ORDER BY enqueued_at, id) AS nxt
   FROM thread_invocations
   WHERE purpose = 'reply'
-    AND status IN ('failed', 'timeout')
+),
+f AS (
+  -- The counted population: terminal failure/timeout candidates inside the
+  -- one-month deployment window [DEPLOY_EPOCH, DEPLOY_EPOCH + 1 month).
+  SELECT * FROM r
+  WHERE status IN ('failed', 'timeout')
     AND enqueued_at >= '<DEPLOY_EPOCH>'
+    AND enqueued_at <  '<DEPLOY_EPOCH_PLUS_1_MONTH>'
 )
 SELECT count(*) AS failed_or_timeout,
-       sum(CASE WHEN enqueued_at = last_enq THEN 1 ELSE 0 END) AS last_for_pair
+       sum(CASE WHEN nxt IS NULL THEN 1 ELSE 0 END) AS last_for_pair
 FROM f;
 ```
 
@@ -191,7 +221,7 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
 - restart_evidence: PID <n>, lstart <...>, /health {"status":"ok",...}
 - topology_conclusion: <shared_daemon | separate_epochs — with evidence>
 - (separate epochs only) second org epoch: <...>
-- query window: <DEPLOY_EPOCH .. DEPLOY_EPOCH+1 month> (UTC)
+- query window: <DEPLOY_EPOCH .. DEPLOY_EPOCH_PLUS_1_MONTH> (UTC)
 - 5a supersession: total=..., superseded=... (rate=...%) — target ≈ 0
 - 5b duplicate pending pairs: <n> — target 0
 - 5c failed/timeout last-for-pair: <last>/<total> (<pct>) — baseline 10/305 (3.3%)

@@ -1154,18 +1154,25 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     [replyDelivery],
   );
   const pairLiveAgents = useMemo(() => new Set(pairLive.map((e) => e.agent_name)), [pairLive]);
-  // Inferred in-flight rows NOT covered by a pair entry — these are
-  // special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP hang off system rows and
-  // are intentionally outside the reply-delivery projection). Preserved so
-  // the followup in-flight strip keeps working (THR-061).
+  // Inferred in-flight rows NOT covered by a pair entry. Suppression is
+  // purpose/triggering-row-aware (GH-688 Phase 1 Slice C reviewer finding):
+  // only a conversational REPLY wake (hangs off a MESSAGE row) is masked when
+  // the store projection already owns that agent's pair. Special-purpose
+  // wakes (TASK_FOLLOWUP / BOOTSTRAP hang off system rows and are
+  // intentionally outside reply_delivery) are ALWAYS preserved — even when
+  // the same agent concurrently holds a REPLY pair, so the followup
+  // in-flight strip keeps working (THR-061).
   const inferredInFlight = useMemo(
-    () => selectInFlightResponders(messages).filter((s) => !pairLiveAgents.has(s.agent_name)),
+    () =>
+      selectInFlightResponders(messages).filter(
+        (s) => !(s.purpose === 'reply' && pairLiveAgents.has(s.agent_name)),
+      ),
     [messages, pairLiveAgents],
   );
   const inFlightKey =
     pairLive.map((e) => `${e.agent_name}:${e.state}`).join(',') +
     '|' +
-    inferredInFlight.map((s) => `${s.agent_name}:${s.status}`).join(',');
+    inferredInFlight.map((s) => `${s.agent_name}:${s.purpose}:${s.status}`).join(',');
 
   useEffect(() => {
     if (typeof endRef.current?.scrollIntoView === 'function') {
@@ -1241,7 +1248,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-${e.agent_name}`} className="flex gap-3">
+        <div key={`typing-pair-${e.agent_name}`} className="flex gap-3">
           <TurnAvatar name={e.agent_name} />
           <div className="min-w-0 flex-1">
             <TypingBubble
@@ -1264,7 +1271,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-${s.agent_name}`} className="flex gap-3">
+        <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="flex gap-3">
           <TurnAvatar name={s.agent_name} />
           <div className="min-w-0 flex-1">
             <TypingBubble

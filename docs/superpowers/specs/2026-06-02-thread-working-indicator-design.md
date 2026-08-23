@@ -14,7 +14,10 @@
 > `queued|working` split from `started_at`, the SSE invalidation contract,
 > and the elapsed ticker) for: (a) terminal responder history strips, which
 > are unchanged; and (b) special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP),
-> which hang off system rows and are intentionally outside `reply_delivery`.
+> which hang off system rows and are intentionally outside `reply_delivery`
+> (preserved even when the same agent concurrently holds a conversational
+> REPLY pair — inferred-row suppression is purpose/triggering-row-aware,
+> never agent-name-only).
 > The transcript-tail bubbles for conversational pairs now render the honest
 > store projection — queued pairs show a coalesced count + inclusive range
 > with static styling (never an active-subprocess claim), running pairs show
