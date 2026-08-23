@@ -13,9 +13,14 @@ function signature(ev: TaskEvent): string {
   return JSON.stringify([ev.timestamp, ev.type, ev.agent ?? null, ev.payload ?? null]);
 }
 
-/** Render an SSE timestamp in the browser viewer's local date and time. */
-function formatEventTimestamp(timestamp: string): string {
-  return new Date(timestamp).toLocaleString();
+/** Render an SSE timestamp in the browser viewer's local date and time.
+ * Missing or malformed timestamps (e.g. legacy synthetic terminal events that
+ * predate timestamp synthesis) must never visibly render 'Invalid Date'. */
+function formatEventTimestamp(timestamp: string | null | undefined): string {
+  if (!timestamp) return 'Time unavailable';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 'Time unavailable';
+  return date.toLocaleString();
 }
 
 /**
