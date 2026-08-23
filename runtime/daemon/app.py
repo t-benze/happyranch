@@ -168,6 +168,20 @@ async def _lifespan(app: FastAPI):
                 "recovered %d orphaned jobs in org %s: %s",
                 len(recovered), org.slug, recovered,
             )
+        # THR-195: observation (read-only) of stale never-started pending jobs.
+        # Surfaces a recurrence of the historical submission-to-dispatch
+        # orphan; deliberately NOT a reaper — no automatic mutation.
+        from runtime.daemon.stale_pending_jobs import scan_org_stale_pending
+        stale_pending = scan_org_stale_pending(org.db)
+        if stale_pending:
+            _logger.warning(
+                "stale never-started pending jobs in org %s: %s",
+                org.slug,
+                [
+                    f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
+                    for r in stale_pending
+                ],
+            )
 
     # _attach_thread_queue_wiring was called above (before workers).
     # The second call at the original location is now a no-op for

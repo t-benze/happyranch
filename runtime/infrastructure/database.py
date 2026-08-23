@@ -4143,6 +4143,52 @@ class Database:
         return [row["id"] for row in rows]
 
     @_synchronized
+    def list_stale_pending_jobs(self, cutoff_iso: str) -> list[dict]:
+        """Read-only scan for never-started pending jobs older than ``cutoff_iso``.
+
+        Predicate: ``status='pending' AND started_at IS NULL AND created_at <=
+        cutoff`` — a row that was submitted but never dispatched (no
+        ``transition_job_to_running`` ever stamped ``started_at``) and has
+        reached the observation threshold. Purely observational: callers
+        must NOT use this as a reaper/retry/cancel mechanism. Returns a
+        lightweight dict per row (id/task_id/agent_name/title/review_required/
+        created_at) — not full JobRecords — because this is a diagnostic scan.
+        """
+        rows = self._conn.execute(
+            "SELECT id, task_id, agent_name, title, review_required, created_at "
+            "FROM jobs WHERE status='pending' AND started_at IS NULL "
+            "AND created_at <= ? ORDER BY created_at, id",
+            (cutoff_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def transition_never_started_job_to_failed(
+        self, job_id: str, *, now_iso: str, reason: str,
+    ) -> None:
+        """Guarded bookkeeping transition: pending + never-started → failed.
+
+        The terminalization seam for founder-authorized reconciliation of
+        abandoned never-dispatched jobs (THR-195). Only a row that is STILL
+        ``status='pending'`` AND ``started_at IS NULL`` can be reconciled;
+        any concurrent dispatch (which first transitions to ``running`` and
+        stamps ``started_at``) makes this a no-op ValueError. Mirrors the
+        guarded UPDATE shape of ``transition_job_to_rejected`` — callers get
+        no ad-hoc SQL path.
+        """
+        cur = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason=?, finished_at=?, "
+            "duration_ms=COALESCE(duration_ms, 0) "
+            "WHERE id=? AND status='pending' AND started_at IS NULL",
+            (reason, now_iso, job_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"not_never_started_pending: job {job_id} cannot be reconciled"
+            )
+
+    @_synchronized
     def transition_job_to_rejected(
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
