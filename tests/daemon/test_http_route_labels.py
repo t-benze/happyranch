@@ -8,7 +8,7 @@ preserves method separation and the ``__all__`` aggregate, and uses bounded
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from runtime.daemon.app import metrics_timing_middleware
@@ -159,6 +159,51 @@ def test_error_fallback_recorded_and_reraised() -> None:
     assert http[f"GET {ERROR_LABEL}"]["count"] == 1
     for key in http:
         assert "boom" not in key
+
+
+@pytest.mark.asyncio
+async def test_error_middleware_re_raises_exact_exception() -> None:
+    """Calling the middleware directly with a raising ``call_next`` must
+    re-raise the ORIGINAL exception (not manufacture a 500) and record exactly
+    one bounded method-prefixed ``__error__`` metric."""
+    registry = MetricsRegistry()
+    app = _make_app(registry)
+
+    boom = RuntimeError("boom")
+
+    async def raising_call_next(request):
+        raise boom
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/boom",
+        "raw_path": b"/boom",
+        "app": app,
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+        "root_path": "",
+        "state": {},
+    }
+    request = Request(scope)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await metrics_timing_middleware(request, raising_call_next)
+
+    # The exact original exception object propagates, unmodified.
+    assert excinfo.value is boom
+
+    http = registry.snapshot()["http"]
+    assert f"GET {ERROR_LABEL}" in http
+    # Exactly one bounded method-prefixed __error__ recording.
+    assert http[f"GET {ERROR_LABEL}"]["count"] == 1
+    # No raw path / handler-derived material leaked into any label.
+    for key in http:
+        assert "boom" not in key
+        assert "/boom" not in key
 
 
 def test_aggregate_bucket_spans_all_requests() -> None:
