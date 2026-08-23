@@ -3751,3 +3751,118 @@ def test_archive_discards_reply_delivery_state(tmp_home, app, org_state, auth_he
         if i.status is ThreadInvocationStatus.PENDING
     ]
     assert pending == []
+
+
+# ---------------------------------------------------------------------------
+# GH-688 Phase 1 Slice C — reply-delivery lifecycle audits through the routes
+# ---------------------------------------------------------------------------
+
+
+def test_route_compose_and_send_emit_wake_created_and_coalesced_audits(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Compose mints one queued wake per recipient (created); a follow-up
+    send coalesces into the existing wakes (coalesced) — both audited with the
+    THR-* scope convention via the real endpoints."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    audits = org_state.db.get_audit_logs(tid)
+    created = [a for a in audits if a["action"] == "thread_reply_wake_created"]
+    assert {c["payload"]["agent_name"] for c in created} == {
+        "dev_agent", "qa_engineer",
+    }
+    assert all(c["payload"]["from_seq"] == 1 for c in created)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "m2"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    audits = org_state.db.get_audit_logs(tid)
+    coalesced = [a for a in audits if a["action"] == "thread_reply_wake_coalesced"]
+    assert {c["payload"]["agent_name"] for c in coalesced} == {
+        "dev_agent", "qa_engineer",
+    }
+    assert all(c["payload"]["through_seq"] == 2 for c in coalesced)
+
+
+def test_route_reply_emits_settled_and_broadcast_wake_audits(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A reply through POST /threads/{id}/reply settles the running wake
+    (settled) and the broadcast wakes the other participant (created)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    token = next(
+        i.invocation_token for i in org_state.db.list_thread_invocations(tid)
+        if i.agent_name == "dev_agent"
+    )
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={"thread_id": tid, "invocation_token": token,
+              "speaker": "dev_agent", "body_markdown": "hello back",
+              "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    audits = org_state.db.get_audit_logs(tid)
+    settled = [a for a in audits if a["action"] == "thread_reply_wake_settled"]
+    assert len(settled) == 1
+    assert settled[0]["payload"]["agent_name"] == "dev_agent"
+    assert settled[0]["payload"]["outcome"] == "reply"
+    # qa_engineer's existing wake coalesces to seq 2 (broadcast after reply).
+    coalesced = [a for a in audits
+                 if a["action"] == "thread_reply_wake_coalesced"
+                 and a["payload"]["agent_name"] == "qa_engineer"]
+    assert len(coalesced) == 1
+    assert coalesced[0]["payload"]["through_seq"] == 2
+
+
+def test_route_abort_emits_cancelled_audits_per_pair(
+    tmp_home, app, org_state, auth_headers,
+):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    audits = org_state.db.get_audit_logs(tid)
+    cancelled = [a for a in audits if a["action"] == "thread_reply_wake_cancelled"]
+    assert {c["payload"]["agent_name"] for c in cancelled} == {
+        "dev_agent", "qa_engineer",
+    }
+    assert all(c["payload"]["reason"] == "founder_aborted" for c in cancelled)

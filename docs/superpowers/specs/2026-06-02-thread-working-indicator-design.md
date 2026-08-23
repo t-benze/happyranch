@@ -3,6 +3,28 @@
 **Status:** Approved (brainstorm 2026-06-02)
 **Scope:** Web UI + daemon. Threads only.
 
+> **GH-688 Phase 1 (Slices B/C) overlay — read first.** Conversational REPLY
+> wakes are now coalesced per `(thread_id, agent_name)` in the durable
+> `thread_reply_delivery_state` table, and the web tail live indicator for
+> conversational replies is driven by the store-projected `reply_delivery`
+> pair list (see `2026-05-30-thread-broadcast-only-design.md` and
+> `docs/agent-guides/features-and-invariants.md` → Thread Broadcast Routing),
+> NOT by per-message inferred rows. This spec remains the authoritative
+> record of the *pre-Phase-1* per-message working indicator (the wire
+> `queued|working` split from `started_at`, the SSE invalidation contract,
+> and the elapsed ticker) for: (a) terminal responder history strips, which
+> are unchanged; and (b) special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP),
+> which hang off system rows and are intentionally outside `reply_delivery`.
+> The transcript-tail bubbles for conversational pairs now render the honest
+> store projection — queued pairs show a coalesced count + inclusive range
+> with static styling (never an active-subprocess claim), running pairs show
+> the claimed immutable range with `started_at` as the only subprocess
+> evidence, and `retry_required` pairs stay off the tail (they are a rail
+> diagnostic). The SSE invalidation contract below still keeps the pair
+> projection fresh: seq-bearing lifecycle events invalidate both
+> `thread-messages` and the `thread` detail query (Slice C added the latter
+> so the rail + tail refetch together).
+
 ## Problem
 
 When a message is posted to a thread, every non-speaker participant gets a REPLY

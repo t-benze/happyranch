@@ -203,6 +203,38 @@ export interface ThreadRecord {
 export interface ThreadDetailResponse extends ThreadRecord {
   participants: string[];
   messages: ThreadMessage[];
+  /** Pair-level reply-delivery projection (GH-688 Phase 1, Slice B wire).
+   *  Present on both GET /threads/{id} and GET /threads/{id}/messages.
+   *  Empty when every pair is fully settled — no live obligation exists. */
+  reply_delivery: ReplyDeliveryEntry[];
+}
+
+export type ReplyDeliveryState =
+  | 'queued'
+  | 'running'
+  | 'retry_required';
+
+/** Pair-level reply-delivery projection (GH-688 Phase 1).
+ *
+ *  Mirrors runtime/models.py ReplyDeliveryProjection. Derived from the
+ *  durable ``thread_reply_delivery_state`` table — never fabricated from
+ *  per-message invocation rows. ``state`` is truthful about the live
+ *  obligation: queued = one unstarted coalesced wake (NO subprocess), running
+ *  = one claimed in-flight reply (started_at set), retry_required = an
+ *  unacknowledged range with no active wake (diagnostic; the next
+ *  conversational arrival mints the single covering retry).
+ *  ``coalesced_message_count`` is the number of transcript rows the wake's
+ *  inclusive range covers (computed in the store, not inferred from
+ *  seq subtraction). */
+export interface ReplyDeliveryEntry {
+  agent_name: string;
+  state: ReplyDeliveryState;
+  from_seq: number;
+  through_seq: number;
+  coalesced_message_count: number;
+  started_at: string | null;
+  updated_at: string | null;
+  last_terminal_reason: string | null;
 }
 
 export type ResponderStatus =
@@ -260,6 +292,9 @@ export interface ThreadMessagesPage {
   messages: ThreadMessage[];
   has_more: boolean;
   next_since_seq: number;
+  /** Pair-level reply-delivery projection — same shape as the thread-detail
+   *  response so both surfaces stay in lockstep (GH-688 Phase 1 Slice B). */
+  reply_delivery: ReplyDeliveryEntry[];
 }
 
 export interface ThreadInboxEvent {

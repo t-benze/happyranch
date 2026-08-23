@@ -193,3 +193,68 @@ describe('useThreadTailSSE — thread-tasks invalidation (THR-137)', () => {
     expect(isInvalidated(qc, ['thread-tasks', SLUG, THREAD_ID])).toBe(true);
   });
 });
+
+describe('useThreadTailSSE — thread-detail invalidation for reply_delivery (GH-688 Phase 1 Slice C)', () => {
+  it('invalidates the thread detail query so the pair projection refetches', async () => {
+    const qc = makeClient();
+    // Seed the thread detail cache as if a prior GET /threads/{id} returned
+    // the pair-level reply_delivery projection.
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      thread_id: THREAD_ID,
+      subject: 'x',
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+    qc.setQueryData(['thread-messages', SLUG, THREAD_ID], {
+      pages: [{ messages: [], has_more: false, next_since_seq: 0, reply_delivery: [] }],
+      pageParams: [0],
+    });
+
+    renderHook(() => realThreadsApi.useThreadTailSSE(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+
+    // A seq-bearing invocation-lifecycle event must refresh the canonical
+    // detail (the Reply delivery rail + tail live indicator live there).
+    await act(async () => {
+      capturedOnMessage!({
+        thread_id: THREAD_ID,
+        seq: 5,
+        speaker: 'dev_agent',
+        kind: 'invocation_settled',
+        preview: '',
+      });
+    });
+
+    expect(isInvalidated(qc, ['thread', SLUG, THREAD_ID])).toBe(true);
+    expect(isInvalidated(qc, ['thread-messages', SLUG, THREAD_ID])).toBe(true);
+  });
+
+  it('leaves the thread detail untouched for null-seq events', async () => {
+    const qc = makeClient();
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      thread_id: THREAD_ID,
+      subject: 'x',
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+
+    renderHook(() => realThreadsApi.useThreadTailSSE(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+
+    await act(async () => {
+      capturedOnMessage!({
+        thread_id: THREAD_ID,
+        seq: null,
+        speaker: 'system',
+        kind: 'decline_status',
+        preview: '',
+      });
+    });
+
+    expect(isInvalidated(qc, ['thread', SLUG, THREAD_ID])).toBe(false);
+  });
+});

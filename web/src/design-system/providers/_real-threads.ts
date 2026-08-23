@@ -178,7 +178,12 @@ function useThreadTailSSE(threadId: string | undefined): void {
               const msg = ev as ThreadMessage;
               if (!prev || prev.pages.length === 0) {
                 return {
-                  pages: [{ messages: [msg], has_more: false, next_since_seq: msg.seq }],
+                  pages: [{
+                    messages: [msg],
+                    has_more: false,
+                    next_since_seq: msg.seq,
+                    reply_delivery: [],
+                  }],
                   pageParams: [0],
                 };
               }
@@ -203,9 +208,13 @@ function useThreadTailSSE(threadId: string | undefined): void {
         } else {
           // Preview, invocation-lifecycle, or system event — invalidate to
           // refetch the canonical rows (responder_status lives in messages;
-          // dispatched tasks live in thread-tasks).
+          // dispatched tasks live in thread-tasks; the GH-688 Phase 1
+          // pair-level reply_delivery projection lives on BOTH the thread
+          // detail and the messages page, so invalidate the detail query too
+          // to keep the Reply delivery rail + tail live indicator fresh).
           qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
           qc.invalidateQueries({ queryKey: ['thread-tasks', slug, threadId] });
+          qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
         }
       },
     }).catch(() => {
@@ -244,6 +253,9 @@ function useSendFollowUp(threadId: string): MutationLike<
       threadsApi.sendThreadFollowUp(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+      // A follow-up message wakes every other participant — the pair-level
+      // reply_delivery projection on the thread detail must refetch too.
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
     },
   });
