@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -281,3 +282,114 @@ def test_due_wake_producer_defers_while_maintenance_active(org_state, monkeypatc
     # After release, the same due slots are still scheduled.
     assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 2
     assert len(org_state.db.work_hours.list(agent="dev_agent")) == 1
+
+
+def test_due_wake_transition_race_closed_by_atomic_lease(org_state, monkeypatch):
+    """TASK-5494: the reviewer's TASK-5491 transition race for the wake
+    producer, driven at the real production seam.  A producer admitted while
+    OPEN holds the gate's counted background lease across its ENTIRE
+    authoritative path (work_hours insert + audit + enqueue).  Maintenance may
+    then win OPEN→PENDING, but drain cannot finish — and ACTIVE cannot be
+    entered — until the producer completes; afterwards only the documented
+    durable side effects exist.
+
+    On the pre-fix check-then-act code this fails: drain returns immediately
+    (it only waited for HTTP admission) while the producer is still mid-insert.
+    """
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    _seed(org_state)
+    enqueued = _capture(org_state, monkeypatch)
+    gate = MaintenanceGate()
+    now = datetime(2026, 6, 11, 9, 30, tzinfo=_SH)  # weekday, due slots
+
+    # Pause the producer INSIDE its authoritative path, before the first
+    # durable work_hours insert is committed.
+    entered_insert = threading.Event()
+    release_insert = threading.Event()
+    original_insert = org_state.db.work_hours.insert
+
+    def paused_insert(record):
+        entered_insert.set()
+        assert release_insert.wait(timeout=5)
+        return original_insert(record)
+
+    monkeypatch.setattr(org_state.db.work_hours, "insert", paused_insert)
+
+    producer: dict = {}
+    producer_done = threading.Event()
+
+    def run_producer() -> None:
+        producer["count"] = schedule_due_wakes(
+            org=org_state, now=now, maintenance_gate=gate,
+        )
+        producer_done.set()
+
+    t = threading.Thread(target=run_producer)
+    t.start()
+    assert entered_insert.wait(timeout=5)  # producer admitted while OPEN, mid-insert
+
+    # Maintenance wins the OPEN→PENDING transition while the producer is
+    # mid-flight (the exact interleaving the reviewer forced for schedules).
+    assert gate.try_enter_pending() is True
+
+    drain: dict = {}
+    drain_done = threading.Event()
+
+    def run_drain() -> None:
+        drain["ok"] = gate.drain(timeout=2.0)
+        drain_done.set()
+
+    dt = threading.Thread(target=run_drain)
+    dt.start()
+    # Drain MUST wait for the producer's background lease.
+    assert not drain_done.wait(timeout=0.3)
+    assert not producer_done.is_set()
+
+    release_insert.set()
+    assert producer_done.wait(timeout=5)
+    assert producer["count"] == 2
+    assert drain_done.wait(timeout=5)
+    assert drain["ok"] is True
+    gate.mark_active()
+    try:
+        # Only the documented durable side effects: one pending row per due
+        # agent, each audited once and enqueued once.
+        dev = org_state.db.work_hours.get_for_agent_date_slot("dev_agent", "2026-06-11", "09:00")
+        assert dev is not None and dev.status == WorkHourStatus.PENDING
+        cw = org_state.db.work_hours.get_for_agent_date_slot("content_writer", "2026-06-11", "09:00")
+        assert cw is not None and cw.mode == WorkHourMode.CONTINUOUS
+        assert len(enqueued) == 2
+    finally:
+        gate.release()
+    t.join(timeout=5)
+    dt.join(timeout=5)
+
+
+def test_due_wake_maintenance_wins_first_then_release_resumes(org_state, monkeypatch):
+    """TASK-5494: maintenance-wins-first at the atomic seam — a producer that
+    attempts admission once PENDING is visible is DENIED with zero side
+    effects (no insert/audit/enqueue) and the same due slots are scheduled on
+    a later post-release tick."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    _seed(org_state)
+    enqueued = _capture(org_state, monkeypatch)
+    gate = MaintenanceGate()
+    now = datetime(2026, 6, 11, 9, 30, tzinfo=_SH)
+
+    assert gate.try_enter_pending() is True
+    try:
+        # Lease admission is atomic: denied while PENDING — no side effects.
+        with gate.background_lease() as admitted:
+            assert admitted is False
+        assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 0
+        assert org_state.db.work_hours.list(agent="dev_agent") == []
+        assert org_state.db.work_hours.list(agent="content_writer") == []
+        assert enqueued == []
+    finally:
+        gate.release()
+
+    # Continuity: after release, a later tick schedules the same due slots.
+    assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 2
+    assert len(enqueued) == 2

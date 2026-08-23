@@ -139,10 +139,16 @@ before any admission or maintenance work) — then atomically enters a
 maintenance **admission/drain/exclusivity gate**:
 
 1. **Admission** — new normal traffic is rejected (HTTP 503
-   `maintenance_in_progress`); a second concurrent maintenance call is
+   `maintenance_in_progress`) and NEW background-work leases are closed — both
+   atomic with the transition, so no request or producer can slip past the
+   instant the gate closes; a second concurrent maintenance call is
    deterministically rejected (HTTP 409 `maintenance_in_progress`).
-2. **Drain** — already-admitted requests finish within a bounded window
+2. **Drain** — already-admitted requests AND already-admitted background
+   passes (a producer's claim/insert/enqueue or a snapshot persist that
+   started while the gate was still OPEN) finish within a bounded window
    (HTTP 503 `drain_timeout` on timeout; the gate releases and nothing runs).
+   The gate's counted background lease is released in `finally`, so an
+   exception can never wedge the drain.
 3. **Re-check quiescence** — refuses (HTTP 409 `not_quiescent`) while any
    nonterminal task, running job, or active executor session exists.
 4. **Operate** — through `MetricsStore`: prune (unchanged 30-day strict-before
@@ -151,18 +157,29 @@ maintenance **admission/drain/exclusivity gate**:
    integrity + after telemetry.
 
 The gate is released on every success/failure path. The periodic snapshot
-writer skips for the entire gate so the scheduler loops never block or write
-during checkpoint/VACUUM; the blocking SQLite work runs off the event loop.
+writer is admitted through the SAME atomic background lease as the producers:
+while maintenance is pending/active it defers (no write can begin after
+PENDING, and drain counts an in-flight persist), so the scheduler loops never
+block or write during checkpoint/VACUUM; the blocking SQLite work runs off the
+event loop.
 
-**Background producers are deferred for the entire gate.** While maintenance
-is pending/active, BOTH background task/work producers — due schedule fires
-(`schedule_due_schedules`) and due working-hours wakes (`schedule_due_wakes`)
-— are stopped/deferred BEFORE their respective claim/insert/enqueue choke
-points. Nothing is dropped, consumed, or permanently rescheduled: a due
-schedule stays `ARMED` and a due wake slot stays unscheduled in the DB, so
-both remain eligible and are processed on the first scheduler tick after the
-gate releases. Both scheduler loops themselves stay alive throughout and
-never block behind the maintenance SQLite operation.
+**Background producers are admitted through a gate-owned atomic lease for
+the entire gate.** While maintenance is pending/active, BOTH background
+task/work producers — due schedule fires (`schedule_due_schedules`) and due
+working-hours wakes (`schedule_due_wakes`) — are admitted through a single
+counted `background_lease` that is atomic with the OPEN→PENDING transition:
+a producer admitted while the gate was OPEN holds the lease across its ENTIRE
+authoritative path (schedule recovery/claim + audit + queue enqueue; work-hours
+insert + audit + queue enqueue), and maintenance drain waits for it before
+re-checking quiescence or entering ACTIVE — so checkpoint/VACUUM can never run
+concurrently with a producer mid-mutation. A producer denied because
+maintenance won first returns/defer with zero side effects. Nothing is
+dropped, consumed, or permanently rescheduled: a due schedule stays `ARMED`
+and a due wake slot stays unscheduled in the DB, so both remain eligible and
+are processed on the first scheduler tick after the gate releases (the loops'
+startup catch-up flag only advances once a pass actually runs). Both scheduler
+loops themselves stay alive throughout and never block behind the maintenance
+SQLite operation.
 
 ```bash
 happyranch metrics maintenance --confirm-quiescent

@@ -94,6 +94,115 @@ class TestMaintenanceGate:
         assert gate.is_maintenance_in_progress() is False
         assert gate.admit() is True
 
+    # TASK-5494: gate-owned atomic background-work lease.  A producer that is
+    # admitted while OPEN holds a counted lease across its ENTIRE authoritative
+    # path; ``try_enter_pending`` atomically closes new leases and ``drain``
+    # waits for both admitted HTTP requests AND background leases before the
+    # route rechecks quiescence or calls ``mark_active``.
+
+    def test_background_lease_admitted_while_open_and_released(self) -> None:
+        gate = MaintenanceGate()
+        with gate.background_lease() as admitted:
+            assert admitted is True
+        # Released in finally: a subsequent drain completes immediately.
+        assert gate.drain(timeout=1.0) is True
+
+    def test_background_lease_denied_while_pending(self) -> None:
+        gate = MaintenanceGate()
+        gate.try_enter_pending()
+        with gate.background_lease() as admitted:
+            assert admitted is False
+        gate.release()
+
+    def test_background_lease_denied_while_active(self) -> None:
+        gate = MaintenanceGate()
+        gate.try_enter_pending()
+        gate.mark_active()
+        with gate.background_lease() as admitted:
+            assert admitted is False
+        gate.release()
+
+    def test_background_lease_atomic_with_try_enter_pending(self) -> None:
+        """The transition race the reviewer reproduced: a producer that read
+        OPEN and then claims after PENDING is impossible — lease admission and
+        try_enter_pending serialize on the same condition lock, so once
+        PENDING is visible no new lease is granted."""
+        gate = MaintenanceGate()
+        # Simulate the producer observing OPEN, then maintenance winning:
+        # after PENDING the producer's lease is denied with zero side effects.
+        assert gate.try_enter_pending() is True
+        with gate.background_lease() as admitted:
+            assert admitted is False
+        gate.release()
+
+    def test_drain_waits_for_background_lease(self) -> None:
+        gate = MaintenanceGate()
+        entered = threading.Event()
+        release_holder = threading.Event()
+
+        def hold_lease() -> None:
+            with gate.background_lease() as admitted:
+                assert admitted is True
+                entered.set()
+                assert release_holder.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lease)
+        holder.start()
+        assert entered.wait(timeout=5)
+
+        # Maintenance wins the transition while the producer is mid-flight.
+        assert gate.try_enter_pending() is True
+        result: dict[str, object] = {}
+        drained = threading.Event()
+
+        def do_drain() -> None:
+            result["ok"] = gate.drain(timeout=2.0)
+            drained.set()
+
+        dt = threading.Thread(target=do_drain)
+        dt.start()
+        # Drain cannot complete while the background lease is held.
+        assert not drained.wait(timeout=0.3)
+
+        release_holder.set()
+        assert drained.wait(timeout=5)
+        assert result["ok"] is True
+        holder.join(timeout=5)
+        dt.join(timeout=5)
+        gate.release()
+
+    def test_background_lease_released_on_exception(self) -> None:
+        """Lease release is in a finally path: an exception inside the
+        producer's authoritative work must never leak the lease (no deadlock)."""
+        gate = MaintenanceGate()
+        with pytest.raises(RuntimeError):
+            with gate.background_lease() as admitted:
+                assert admitted is True
+                raise RuntimeError("boom")
+        # The lease leaked nothing: drain completes immediately and the gate
+        # can still close and re-open normally.
+        assert gate.drain(timeout=1.0) is True
+        assert gate.try_enter_pending() is True
+        gate.release()
+
+    def test_background_admissions_counts_only_admitted_passes(self) -> None:
+        """The admitted-pass counter drives the scheduler loops' startup flag:
+        only ADMITTED passes count, so a pass deferred at the atomic lease
+        seam never consumes the startup catch-up pass."""
+        gate = MaintenanceGate()
+        assert gate.background_admissions == 0
+        with gate.background_lease():
+            pass
+        assert gate.background_admissions == 1
+        assert gate.try_enter_pending() is True
+        with gate.background_lease() as admitted:
+            assert admitted is False  # denied — must NOT be counted
+        assert gate.background_admissions == 1
+        gate.release()
+        with gate.background_lease():
+            pass
+        assert gate.background_admissions == 2
+
 
 # ---------------------------------------------------------------------------
 # Auth

@@ -483,14 +483,31 @@ def maybe_persist_metrics_snapshot(
     if state.metrics_store is None:
         return
 
-    # TASK-5443: skip the entire persist cycle while metrics maintenance is
-    # pending/active.  The maintenance sequence holds the store lock through
-    # checkpoint/VACUUM; skipping (rather than blocking) keeps both scheduler
-    # loops responsive and guarantees the writer never writes mid-VACUUM.
+    # TASK-5443/TASK-5494: the persist cycle is a gate-admitted background
+    # operation.  The gate's counted ``background_lease`` is atomic with
+    # ``try_enter_pending``, so a write can never BEGIN after maintenance is
+    # PENDING, and ``drain`` counts the lease so ACTIVE (checkpoint/VACUUM)
+    # cannot be entered while a persist is mid-flight.  Skipping (rather than
+    # blocking) keeps both scheduler loops responsive and guarantees the
+    # writer never writes mid-VACUUM.
     gate = getattr(state, "maintenance_gate", None)
-    if gate is not None and gate.is_maintenance_in_progress():
+    if gate is not None:
+        with gate.background_lease() as admitted:
+            if not admitted:
+                return
+            _persist_snapshot_cycle(state, now)
         return
+    _persist_snapshot_cycle(state, now)
 
+
+def _persist_snapshot_cycle(state: DaemonState, now: datetime) -> None:
+    """One persist cycle (throttle → compose → append → prune → telemetry).
+
+    Runs under the maintenance gate's background lease when a gate is present
+    (the caller guarantees admission) so the append/prune are atomic with
+    respect to the OPEN→PENDING transition.  Errors are logged but never
+    propagate.
+    """
     elapsed = _time.monotonic() - state._last_metrics_snapshot_at
     if elapsed < _THROTTLE_SECONDS:
         return

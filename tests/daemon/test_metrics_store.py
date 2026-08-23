@@ -867,6 +867,99 @@ class TestSchedulerSnapshotSkip:
         maybe_persist_metrics_snapshot(state, datetime.now(timezone.utc))
         assert state.metrics_store.row_count() == before + 1
 
+    def test_maybe_persist_transition_race_closed_by_atomic_lease(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TASK-5494: the snapshot writer has the SAME check-then-act shape the
+        reviewer found on the two producers, so it gets the same gate-owned
+        atomic lease.  A persist admitted while OPEN holds the lease across its
+        append/prune; maintenance may then win OPEN→PENDING, but drain cannot
+        finish (ACTIVE cannot be entered) until the persist completes, and
+        afterwards exactly one snapshot row exists.
+
+        On the pre-fix check-then-act code this fails: drain returns
+        immediately while the writer is still mid-append.
+        """
+        import threading
+
+        state = DaemonState.idle(Settings())
+        state.metrics_store = MetricsStore(str(tmp_path / "metrics.db"))
+        state._last_metrics_snapshot_at = 0.0  # defeat throttle
+        gate = state.maintenance_gate
+
+        # Pause the persist INSIDE its authoritative write (the append).
+        entered_append = threading.Event()
+        release_append = threading.Event()
+        original_append = state.metrics_store.append_snapshot
+
+        def paused_append(captured_at_iso: str, snapshot: dict):
+            entered_append.set()
+            assert release_append.wait(timeout=5)
+            return original_append(captured_at_iso, snapshot)
+
+        monkeypatch.setattr(state.metrics_store, "append_snapshot", paused_append)
+
+        persist_done = threading.Event()
+
+        def run_persist() -> None:
+            maybe_persist_metrics_snapshot(state, datetime.now(timezone.utc))
+            persist_done.set()
+
+        t = threading.Thread(target=run_persist)
+        t.start()
+        assert entered_append.wait(timeout=5)  # admitted while OPEN, mid-append
+
+        assert gate.try_enter_pending() is True
+        drain: dict = {}
+        drain_done = threading.Event()
+
+        def run_drain() -> None:
+            drain["ok"] = gate.drain(timeout=2.0)
+            drain_done.set()
+
+        dt = threading.Thread(target=run_drain)
+        dt.start()
+        assert not drain_done.wait(timeout=0.3)
+        assert not persist_done.is_set()
+
+        release_append.set()
+        assert persist_done.wait(timeout=5)
+        assert drain_done.wait(timeout=5)
+        assert drain["ok"] is True
+        gate.mark_active()
+        try:
+            # Exactly the documented single durable side effect: one snapshot.
+            assert state.metrics_store.row_count() == 1
+        finally:
+            gate.release()
+        t.join(timeout=5)
+        dt.join(timeout=5)
+
+    def test_maybe_persist_denied_while_pending_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """TASK-5494: maintenance-wins-first at the atomic seam for the
+        snapshot writer — a persist that attempts admission once PENDING is
+        visible is DENIED with zero rows written, and after release the next
+        persist succeeds."""
+        state = DaemonState.idle(Settings())
+        state.metrics_store = MetricsStore(str(tmp_path / "metrics.db"))
+        state._last_metrics_snapshot_at = 0.0  # defeat throttle
+        gate = state.maintenance_gate
+
+        assert gate.try_enter_pending() is True
+        try:
+            with gate.background_lease() as admitted:
+                assert admitted is False
+            before = state.metrics_store.row_count()
+            maybe_persist_metrics_snapshot(state, datetime.now(timezone.utc))
+            assert state.metrics_store.row_count() == before  # nothing written
+        finally:
+            gate.release()
+
+        maybe_persist_metrics_snapshot(state, datetime.now(timezone.utc))
+        assert state.metrics_store.row_count() == before + 1
+
     @pytest.mark.asyncio
     async def test_work_hours_loop_skips_persist_but_stays_alive(
         self, tmp_path: Path
@@ -1002,6 +1095,83 @@ class TestSchedulerProducerDeferral:
         assert org.db.schedules.get("SCHEDULE-5488").status == ScheduleStatus.FIRING
         # The enqueue is fire-and-forget via create_task; drain the loop once
         # so the put coroutine runs before we observe the queue.
+        await asyncio.sleep(0)
+        assert org.schedule_queue.size == 1
+
+    @pytest.mark.asyncio
+    async def test_schedule_loop_preserves_startup_recovery_across_deferred_tick(
+        self, runtime,
+    ) -> None:
+        """TASK-5494: a startup catch-up pass deferred by maintenance is NOT
+        consumed.  The first real tick after release is still a startup pass:
+        a stale FIRING row (crash artifact) is recovered and a due row is
+        claimed through the REAL loop (startup flag advances only when a pass
+        actually runs)."""
+        import asyncio
+
+        from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+        from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+
+        state = DaemonState.from_runtime(runtime, Settings())
+        org = state.orgs["alpha"]
+        # Crash artifact: a schedule left FIRING when the daemon died.
+        org.db.schedules.insert(ScheduleRecord(
+            id="SCHEDULE-5494-FIRING",
+            agent_name="dev_agent",
+            team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            status=ScheduleStatus.FIRING,
+            fire_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            timezone="UTC",
+            normalized_brief="crashed mid-fire",
+            source_instruction="crashed mid-fire",
+        ))
+        # A due row that would be claimed on the same startup pass.
+        org.db.schedules.insert(ScheduleRecord(
+            id="SCHEDULE-5494-DUE",
+            agent_name="dev_agent",
+            team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            fire_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            timezone="UTC",
+            normalized_brief="do the thing",
+            source_instruction="please do the thing",
+        ))
+
+        async def run_two_ticks() -> int:
+            tick_count = 0
+
+            async def fast_sleep(seconds):
+                nonlocal tick_count
+                tick_count += 1
+                if tick_count >= 2:
+                    raise asyncio.CancelledError()
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(asyncio, "sleep", fast_sleep)
+                try:
+                    await schedule_scheduler_loop(state)
+                except asyncio.CancelledError:
+                    pass
+            return tick_count
+
+        # Phase 1: maintenance pending across the daemon's first ticks — the
+        # startup pass is fully deferred (rows untouched, loop alive).
+        state.maintenance_gate.try_enter_pending()
+        try:
+            ticks = await run_two_ticks()
+            assert ticks >= 2
+            assert org.db.schedules.get("SCHEDULE-5494-FIRING").status == ScheduleStatus.FIRING
+            assert org.db.schedules.get("SCHEDULE-5494-DUE").status == ScheduleStatus.ARMED
+            assert org.schedule_queue.size == 0
+        finally:
+            state.maintenance_gate.release()
+
+        # Phase 2: the first tick after release is STILL the startup pass — it
+        # recovers the stale FIRING row AND claims the due row.
+        await run_two_ticks()
+        assert org.db.schedules.get("SCHEDULE-5494-FIRING").status == ScheduleStatus.FAILED
+        assert org.db.schedules.get("SCHEDULE-5494-DUE").status == ScheduleStatus.FIRING
         await asyncio.sleep(0)
         assert org.schedule_queue.size == 1
 

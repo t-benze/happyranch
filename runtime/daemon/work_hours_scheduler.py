@@ -276,10 +276,29 @@ def schedule_due_wakes(
     eligible and is picked up on the first tick after the gate releases
     (continuity — nothing is dropped, consumed, or permanently rescheduled;
     the loop never blocks behind the SQLite operation).
-    """
-    if maintenance_gate is not None and maintenance_gate.is_maintenance_in_progress():
-        return 0
 
+    Admission is ATOMIC with the maintenance transition (TASK-5494): the
+    producer's authoritative path (insert/audit/enqueue) runs under a
+    gate-owned counted ``background_lease``.  A producer admitted while the
+    gate was OPEN holds the lease until its entire pass finishes — the
+    maintenance drain waits for it, so ACTIVE (checkpoint/VACUUM) cannot be
+    entered concurrently.  A producer denied because maintenance won first
+    returns 0 with zero side effects.  ``maintenance_gate=None`` preserves the
+    legacy un-gated caller path.
+    """
+    if maintenance_gate is not None:
+        with maintenance_gate.background_lease() as admitted:
+            if not admitted:
+                return 0
+            return _run_due_wakes_pass(org=org, now=now, startup=startup)
+    return _run_due_wakes_pass(org=org, now=now, startup=startup)
+
+
+def _run_due_wakes_pass(*, org, now: datetime, startup: bool) -> int:
+    """The authoritative due-wake producer pass (insert/audit/enqueue).  The
+    caller guarantees the maintenance gate's background lease is held when a
+    gate is present; this helper never re-checks the gate.
+    """
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     if not cfg.enabled:
@@ -351,10 +370,12 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
     # Every later iteration is steady-state on-time scheduling.
     #
     # While the metrics maintenance gate is pending/active, the ENTIRE producer
-    # pass is deferred (TASK-5488 fix): no work_hours row is inserted and no
-    # WakeJob is enqueued; the startup flag only advances once a pass actually
-    # runs, so the catch-up pass is preserved.  The loop itself stays alive and
-    # never blocks behind the maintenance SQLite operation.
+    # pass is deferred via the gate-owned atomic background lease (TASK-5488 /
+    # TASK-5494): no work_hours row is inserted and no WakeJob is enqueued; the
+    # startup flag only advances once a pass actually runs (tracked via the
+    # gate's admitted-pass counter), so the catch-up pass is preserved.  The
+    # loop itself stays alive and never blocks behind the maintenance SQLite
+    # operation.
     startup = True
     while True:
         t0 = time.monotonic()
@@ -364,6 +385,15 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
             gate is not None and gate.is_maintenance_in_progress()
         )
         if not maintenance_in_progress:
+            # Track whether any org producer pass was actually ADMITTED: a pass
+            # deferred at the atomic lease seam (maintenance won the
+            # OPEN→PENDING transition between this check and the producer's
+            # lease acquisition) must NOT consume the startup flag — the
+            # startup catch-up pass then runs intact on the first tick after
+            # release.
+            admitted_before = (
+                gate.background_admissions if gate is not None else 0
+            )
             for org in list(state.orgs.values()):
                 try:
                     schedule_due_wakes(
@@ -374,7 +404,8 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
                         "work-hours scheduling skipped for org %s: invalid working_hours config",
                         org.slug,
                     )
-            startup = False
+            if gate is None or gate.background_admissions > admitted_before:
+                startup = False
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick("work_hours_scheduler", interval_seconds, duration)
 

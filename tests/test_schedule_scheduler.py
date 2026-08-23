@@ -543,3 +543,117 @@ def test_due_schedule_producer_skips_startup_recovery_while_maintenance_pending(
     assert schedule_due_schedules(org=org, now=_now(), startup=True, maintenance_gate=gate) == 1
     assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FAILED  # recovered
     assert db.schedules.get("SCHEDULE-002").status == ScheduleStatus.FIRING  # claimed
+
+
+def test_due_schedule_transition_race_closed_by_atomic_lease(tmp_path, monkeypatch):
+    """TASK-5494: the reviewer's TASK-5491 transition race, driven at the real
+    production seam.  A producer that was ADMITTED while the gate was OPEN must
+    hold the gate's counted background lease across its ENTIRE authoritative
+    path (claim + audit + enqueue).  Maintenance may then win OPEN→PENDING, but
+    drain cannot finish — and ACTIVE cannot be entered — until the producer
+    completes; afterwards exactly one durable side effect exists.
+
+    On the pre-fix check-then-act code this fails: drain returns immediately
+    (it only waited for HTTP admission) while the producer is still mid-claim.
+    """
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db, fire_at=_dt(day=22, hour=11))  # due
+    org = _FakeOrg(db)
+    gate = MaintenanceGate()
+
+    # Pause the producer INSIDE its authoritative path, right after the lease
+    # is acquired but before the claim is committed — the deterministic seam
+    # where the old code would have claimed after PENDING became visible.
+    entered_claim = threading.Event()
+    release_claim = threading.Event()
+    original_claim = db.schedules.claim_firing
+
+    def paused_claim(schedule_id: str):
+        entered_claim.set()
+        assert release_claim.wait(timeout=5)
+        return original_claim(schedule_id)
+
+    monkeypatch.setattr(db.schedules, "claim_firing", paused_claim)
+
+    producer: dict = {}
+    producer_done = threading.Event()
+
+    def run_producer() -> None:
+        producer["count"] = schedule_due_schedules(
+            org=org, now=_now(), maintenance_gate=gate,
+        )
+        producer_done.set()
+
+    t = threading.Thread(target=run_producer)
+    t.start()
+    assert entered_claim.wait(timeout=5)  # producer admitted while OPEN, mid-claim
+
+    # Maintenance wins the OPEN→PENDING transition while the producer is
+    # mid-flight (the exact interleaving the reviewer forced).
+    assert gate.try_enter_pending() is True
+
+    drain: dict = {}
+    drain_done = threading.Event()
+
+    def run_drain() -> None:
+        drain["ok"] = gate.drain(timeout=2.0)
+        drain_done.set()
+
+    dt = threading.Thread(target=run_drain)
+    dt.start()
+    # Drain MUST wait for the producer's background lease — it cannot finish
+    # (and ACTIVE cannot be entered) until the producer completes.
+    assert not drain_done.wait(timeout=0.3)
+    assert not producer_done.is_set()
+
+    # Let the producer finish; only then does drain complete.
+    release_claim.set()
+    assert producer_done.wait(timeout=5)
+    assert producer["count"] == 1
+    assert drain_done.wait(timeout=5)
+    assert drain["ok"] is True
+    gate.mark_active()
+    try:
+        # Exactly the documented single durable side effect: the claim.
+        assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
+        assert org.schedule_queue.size == 1
+        logs = db.get_audit_logs("SCHEDULE-001")
+        assert sum(1 for e in logs if e["action"] == "schedule_claimed") == 1
+    finally:
+        gate.release()
+    t.join(timeout=5)
+    dt.join(timeout=5)
+
+
+def test_due_schedule_maintenance_wins_first_then_release_resumes(tmp_path, monkeypatch):
+    """TASK-5494: maintenance-wins-first at the atomic seam — a producer that
+    attempts admission once PENDING is visible is DENIED with zero side
+    effects (no claim/audit/enqueue) and the due item is processed on a later
+    post-release tick.  This drives the same real producer/lease seam as the
+    transition-race test, so the lease-denied path is proven, not assumed."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db, fire_at=_dt(day=22, hour=11))  # due
+    org = _FakeOrg(db)
+    gate = MaintenanceGate()
+
+    assert gate.try_enter_pending() is True
+    try:
+        # Lease admission is atomic: denied while PENDING — no side effects.
+        with gate.background_lease() as admitted:
+            assert admitted is False
+        assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 0
+        assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.ARMED
+        assert org.schedule_queue.size == 0
+        logs = db.get_audit_logs("SCHEDULE-001")
+        assert not any(entry["action"] == "schedule_claimed" for entry in logs)
+    finally:
+        gate.release()
+
+    # Continuity: after release, a later tick processes the due item.
+    assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
+    assert org.schedule_queue.size == 1
