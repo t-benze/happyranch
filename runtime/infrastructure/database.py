@@ -5665,36 +5665,28 @@ class Database:
 
                 if running_token is not None and queued_token is not None:
                     # Both ownership slots populated: the mutually-exclusive
-                    # claim/settle invariant was violated. Fail closed — retire
-                    # (terminalize) ONLY the receipts validated as this corrupt
-                    # row's own same-pair, purpose REPLY, status PENDING
-                    # receipts (never a foreign-pair, wrong-purpose, missing,
-                    # or already-terminal receipt), clear both slots, record a
+                    # claim/settle invariant was violated. Fail closed with a
+                    # transactionally atomic PAIR-SCOPED sweep: retire EVERY
+                    # invocation owned by this corrupt row's (thread_id,
+                    # agent_name) pair that is purpose REPLY and status PENDING
+                    # — including unreferenced same-pair pending receipts the
+                    # slots never pointed at — so no duplicate/orphaned pending
+                    # REPLY survives once Slice B replaces generic reaping. The
+                    # sweep is gated on the pair, purpose='reply', and
+                    # status='pending', so a foreign-pair, wrong-purpose,
+                    # missing, or already-terminal receipt (even one referenced
+                    # by a corrupt slot) is never mutated. No blanket global
+                    # reaper is issued. Then clear both slots, record a
                     # truthful corruption diagnostic, and never mint or return
-                    # a runnable replacement. No blanket pending-REPLY reaper
-                    # is issued; the released no-duplicate-pending-pair
-                    # invariant is restored for this pair.
-                    for token in (queued_token, running_token):
-                        inv = self._conn.execute(
-                            "SELECT * FROM thread_invocations "
-                            "WHERE invocation_token = ?",
-                            (token,),
-                        ).fetchone()
-                        owned_pending_reply = (
-                            inv is not None
-                            and inv["thread_id"] == thread_id
-                            and inv["agent_name"] == agent_name
-                            and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
-                            and inv["status"] == ThreadInvocationStatus.PENDING.value
-                        )
-                        if owned_pending_reply:
-                            self._conn.execute(
-                                "UPDATE thread_invocations SET status = 'failed', "
-                                "decline_reason = 'corrupt_both_slots_on_recovery', "
-                                "consumed_at = ? "
-                                "WHERE invocation_token = ? AND status = 'pending'",
-                                (now, token),
-                            )
+                    # a runnable replacement.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'corrupt_both_slots_on_recovery', "
+                        "consumed_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ? "
+                        "AND status = 'pending' AND purpose = 'reply'",
+                        (now, thread_id, agent_name),
+                    )
                     self._conn.execute(
                         "UPDATE thread_reply_delivery_state SET "
                         "queued_invocation_token = NULL, "
