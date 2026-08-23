@@ -455,3 +455,91 @@ def test_startup_recovery_then_schedules_due(tmp_path):
     assert schedule_due_schedules(org=org, now=now, startup=True) == 1
     assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FAILED
     assert db.schedules.get("SCHEDULE-002").status == ScheduleStatus.FIRING
+
+
+# ── TASK-5488: maintenance-gate producer deferral ───────────────────────
+# The daemon-owned metrics maintenance gate must stop BOTH background
+# task/work producers (schedule fires, working-hours wakes) before their
+# claim/insert/enqueue choke points for the entire maintenance-pending AND
+# active interval — a maintenance request must never start checkpoint/VACUUM
+# while either producer can subsequently create a task/job/session.  These
+# tests drive the REAL producer seam with the REAL MaintenanceGate and a real
+# Database: they cannot falsely pass by checking maybe_persist_metrics_snapshot.
+
+def test_due_schedule_producer_defers_immediately_after_pending_visible(tmp_path):
+    """Adversarial ordering: the producer attempts admission IMMEDIATELY after
+    maintenance pending is visible — it must defer with zero claim/insert/
+    enqueue, and the due schedule must stay ARMED and eligible."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db, fire_at=_dt(day=22, hour=11))  # due
+    org = _FakeOrg(db)
+    gate = MaintenanceGate()
+
+    assert gate.try_enter_pending() is True
+    try:
+        # The producer runs right after pending is visible: deferred.
+        assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 0
+        # No claim (still ARMED), no audit, no enqueue.
+        assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.ARMED
+        assert org.schedule_queue.size == 0
+        logs = db.get_audit_logs("SCHEDULE-001")
+        assert not any(entry["action"] == "schedule_claimed" for entry in logs)
+    finally:
+        gate.release()
+
+    # Continuity: after the gate releases, a later tick processes the item.
+    assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
+    assert org.schedule_queue.size == 1
+
+
+def test_due_schedule_producer_defers_while_maintenance_active(tmp_path):
+    """The producer also defers during the ACTIVE phase (checkpoint/VACUUM can
+    run): a due schedule is never claimed/enqueued mid-operation."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db, fire_at=_dt(day=22, hour=11))  # due
+    org = _FakeOrg(db)
+    gate = MaintenanceGate()
+    assert gate.try_enter_pending() is True
+    gate.mark_active()
+    try:
+        assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 0
+        assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.ARMED
+        assert org.schedule_queue.size == 0
+    finally:
+        gate.release()
+
+    # After release, the same due schedule is still eligible and fires.
+    assert schedule_due_schedules(org=org, now=_now(), maintenance_gate=gate) == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING
+
+
+def test_due_schedule_producer_skips_startup_recovery_while_maintenance_pending(tmp_path):
+    """Even a startup catch-up pass is fully deferred while the gate is closed:
+    a stale FIRING row is not touched and a due row is not claimed; the pass
+    runs intact after release (startup semantics preserved by the loop)."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    db = Database(tmp_path / "db.sqlite")
+    _schedule(db, id="SCHEDULE-001", status=ScheduleStatus.FIRING, fire_at=_dt(day=21, hour=10))
+    _schedule(db, id="SCHEDULE-002", fire_at=_dt(day=22, hour=11))
+    org = _FakeOrg(db)
+    gate = MaintenanceGate()
+
+    assert gate.try_enter_pending() is True
+    try:
+        assert schedule_due_schedules(org=org, now=_now(), startup=True, maintenance_gate=gate) == 0
+        assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FIRING  # untouched
+        assert db.schedules.get("SCHEDULE-002").status == ScheduleStatus.ARMED  # not claimed
+        assert org.schedule_queue.size == 0
+    finally:
+        gate.release()
+
+    # The deferred startup pass runs intact after release.
+    assert schedule_due_schedules(org=org, now=_now(), startup=True, maintenance_gate=gate) == 1
+    assert db.schedules.get("SCHEDULE-001").status == ScheduleStatus.FAILED  # recovered
+    assert db.schedules.get("SCHEDULE-002").status == ScheduleStatus.FIRING  # claimed

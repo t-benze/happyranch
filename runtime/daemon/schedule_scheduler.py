@@ -33,6 +33,7 @@ def schedule_due_schedules(
     org,
     now: datetime,
     startup: bool = False,
+    maintenance_gate=None,
 ) -> int:
     """Schedule due schedule fires for an org.
 
@@ -55,7 +56,17 @@ def schedule_due_schedules(
     At startup (``startup=True``), stale FIRING rows from a prior daemon crash
     are recovered first via ``ScheduleStore.recover_firing()``, so the scheduler
     never re-fires an already-claimed row.
+
+    ``maintenance_gate`` — when provided and the metrics maintenance gate is
+    pending/active, the ENTIRE producer pass is DEFERRED: it returns 0 without
+    claiming any row, writing any audit, or enqueuing any job.  Due rows stay
+    ARMED in the DB, so the first tick after the gate releases picks them up
+    unchanged (continuity — nothing is dropped, consumed, or permanently
+    rescheduled; the loop never blocks behind the SQLite operation).
     """
+    if maintenance_gate is not None and maintenance_gate.is_maintenance_in_progress():
+        return 0
+
     if startup:
         recovered = org.db.schedules.recover_firing()
         for schedule_id, agent_name in recovered:
@@ -163,21 +174,34 @@ async def schedule_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
     The first iteration is the startup catch-up pass: recover stale FIRING rows
     then process any due schedules that may have been missed during downtime.
 
+    While the metrics maintenance gate is pending/active, the ENTIRE producer
+    pass is deferred (TASK-5488 fix): due schedules stay ARMED and remain
+    eligible, and the startup flag only advances once a pass actually runs, so
+    the catch-up pass is preserved.  The loop itself stays alive and never
+    blocks behind the maintenance SQLite operation.
+
     Mirrors ``work_hours_scheduler_loop``.
     """
     startup = True
     while True:
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
-        for org in list(state.orgs.values()):
-            try:
-                schedule_due_schedules(org=org, now=now, startup=startup)
-            except Exception:
-                logger.exception(
-                    "schedule scheduling skipped for org %s",
-                    org.slug,
-                )
-        startup = False
+        gate = getattr(state, "maintenance_gate", None)
+        maintenance_in_progress = (
+            gate is not None and gate.is_maintenance_in_progress()
+        )
+        if not maintenance_in_progress:
+            for org in list(state.orgs.values()):
+                try:
+                    schedule_due_schedules(
+                        org=org, now=now, startup=startup, maintenance_gate=gate,
+                    )
+                except Exception:
+                    logger.exception(
+                        "schedule scheduling skipped for org %s",
+                        org.slug,
+                    )
+            startup = False
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "schedule_scheduler", interval_seconds, duration,

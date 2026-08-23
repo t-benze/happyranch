@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.metrics_store import (
@@ -49,10 +49,13 @@ router = APIRouter(dependencies=[require_token()])
 class MetricsMaintenanceRequest(BaseModel):
     """Request body for the explicit quiescent metrics maintenance operation.
 
-    ``confirm_quiescent`` must be explicitly ``true``; absent/false is refused.
+    ``confirm_quiescent`` must be exactly the JSON literal ``true`` (strict
+    bool).  Absent/false is refused; coercible values (strings such as
+    ``"yes"``/``"true"``, numeric ``1``/``0``, ``"on"``, …) are rejected with
+    HTTP 422 before any admission or maintenance work.
     """
 
-    confirm_quiescent: bool = False
+    confirm_quiescent: StrictBool = False
 
 
 @router.get("/metrics")
@@ -90,9 +93,11 @@ def metrics_maintenance(request: Request, body: MetricsMaintenanceRequest) -> di
     returning a deterministic before/after report.
 
     The gate is released on every success/failure path.  A failure returns
-    HTTP 500 ``maintenance_failed`` with history still queryable; a fresh
-    explicit invocation is required (no automatic retry, no false
-    physical-reclaim claim).
+    HTTP 500 ``maintenance_failed`` with a stable bounded ``code``/``reason``
+    and history still queryable; the original exception is logged
+    server-side only and never echoed to the client (no raw SQLite/integrity
+    text, paths, IDs, or snapshot content).  A fresh explicit invocation is
+    required (no automatic retry, no false physical-reclaim claim).
     """
     state: DaemonState = request.app.state.daemon
 
@@ -170,7 +175,7 @@ def metrics_maintenance(request: Request, body: MetricsMaintenanceRequest) -> di
         return state.metrics_store.maintenance(cutoff)
     except HTTPException:
         raise
-    except Exception as exc:  # noqa: BLE001 — surfaced, never concealed
+    except Exception as exc:  # noqa: BLE001 — logged server-side, never leaked
         logger.exception(
             "metrics maintenance failed; pre-existing history remains queryable — "
             "recovery requires a fresh explicit invocation (no automatic retry)."
@@ -179,12 +184,17 @@ def metrics_maintenance(request: Request, body: MetricsMaintenanceRequest) -> di
             status_code=500,
             detail={
                 "code": "maintenance_failed",
-                "detail": str(exc),
+                "reason": "maintenance_did_not_complete",
+                "detail": (
+                    "Metrics maintenance did not complete. Pre-existing history "
+                    "remains queryable. Recovery requires a fresh explicit "
+                    "invocation (no automatic retry)."
+                ),
                 "recovery": (
                     "Maintenance did not complete. History remains queryable; "
                     "re-run the maintenance operation with a fresh explicit invocation."
                 ),
             },
-        )
+        ) from exc
     finally:
         gate.release()

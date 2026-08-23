@@ -132,8 +132,11 @@ runtime — only against a daemon the founder has confirmed is quiescent.
 
 A daemon-owned maintenance operation (bearer-authed, founder-explicit) that
 runs ONLY through `MetricsStore` — never a filesystem delete and never shell
-SQLite. It requires explicit confirmation (`confirm_quiescent: true`), then
-atomically enters a maintenance **admission/drain/exclusivity gate**:
+SQLite. It requires explicit confirmation — ONLY the JSON literal boolean
+`true` is accepted (`confirm_quiescent` is a strict bool; coercible values
+such as `"yes"`, `"true"`, `1`, `0`, or `"on"` are rejected with HTTP 422
+before any admission or maintenance work) — then atomically enters a
+maintenance **admission/drain/exclusivity gate**:
 
 1. **Admission** — new normal traffic is rejected (HTTP 503
    `maintenance_in_progress`); a second concurrent maintenance call is
@@ -151,6 +154,16 @@ The gate is released on every success/failure path. The periodic snapshot
 writer skips for the entire gate so the scheduler loops never block or write
 during checkpoint/VACUUM; the blocking SQLite work runs off the event loop.
 
+**Background producers are deferred for the entire gate.** While maintenance
+is pending/active, BOTH background task/work producers — due schedule fires
+(`schedule_due_schedules`) and due working-hours wakes (`schedule_due_wakes`)
+— are stopped/deferred BEFORE their respective claim/insert/enqueue choke
+points. Nothing is dropped, consumed, or permanently rescheduled: a due
+schedule stays `ARMED` and a due wake slot stays unscheduled in the DB, so
+both remain eligible and are processed on the first scheduler tick after the
+gate releases. Both scheduler loops themselves stay alive throughout and
+never block behind the maintenance SQLite operation.
+
 ```bash
 happyranch metrics maintenance --confirm-quiescent
 ```
@@ -165,12 +178,17 @@ org identifiers or snapshot content are ever returned.
 **Failure & recovery.** Any busy checkpoint, non-`ok` integrity check, VACUUM
 error, telemetry error, or unexpected SQLite exception returns HTTP 500
 (`maintenance_failed`) — never a partial success, never a false physical-
-reclaim claim. The gate releases and pre-existing valid history remains
-queryable. Recovery requires a fresh explicit invocation; there is no
-automatic retry. The periodic writer continues to catch and log its own
-persistence failures without crashing the scheduler loops. A successful
-`VACUUM` is the only evidence of physical space reclamation; do not claim
-reclamation without it.
+reclaim claim. The response is a stable bounded structured failure: `code`
+`maintenance_failed`, `reason` `maintenance_did_not_complete`, and a fixed
+`detail`/`recovery` message — the original exception is logged server-side
+only (via the existing `logger.exception` pattern) and is never echoed to the
+client; raw SQLite/integrity/checkpoint text, filesystem paths, IDs, labels,
+and snapshot contents never appear in the response. The gate releases and
+pre-existing valid history remains queryable. Recovery requires a fresh
+explicit invocation; there is no automatic retry. The periodic writer
+continues to catch and log its own persistence failures without crashing the
+scheduler loops. A successful `VACUUM` is the only evidence of physical space
+reclamation; do not claim reclamation without it.
 
 **Validating the projected steady-state reduction.** The bounded-cardinality
 route-template labels only shrink storage as old raw-path rows age out of the

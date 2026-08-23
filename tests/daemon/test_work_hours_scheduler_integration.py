@@ -220,3 +220,64 @@ def test_recover_running_marks_stale_failed(org_state):
     wh = org_state.db.work_hours.get("WORKHOUR-077")
     assert wh.status == WorkHourStatus.FAILED
     assert wh.error == "daemon_restart"
+
+
+# ── TASK-5488: maintenance-gate producer deferral (due wake) ────────────
+# The daemon-owned metrics maintenance gate must stop the working-hours wake
+# producer before its insert/enqueue choke point for the entire maintenance
+# pending/active interval.  These tests drive the REAL producer seam with the
+# REAL MaintenanceGate and the real org DB/queue — they cannot falsely pass
+# by checking maybe_persist_metrics_snapshot.
+
+def test_due_wake_producer_defers_immediately_after_pending_visible(org_state, monkeypatch):
+    """Adversarial ordering: the producer attempts admission IMMEDIATELY after
+    maintenance pending is visible — it must defer with zero insert/enqueue,
+    and the same due slot must be scheduled on a later tick after release."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    _seed(org_state)
+    enqueued = _capture(org_state, monkeypatch)
+    gate = MaintenanceGate()
+    now = datetime(2026, 6, 11, 9, 30, tzinfo=_SH)  # weekday, due slots
+
+    assert gate.try_enter_pending() is True
+    try:
+        # The producer runs right after pending is visible: deferred.
+        assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 0
+        # No work_hours row inserted, nothing enqueued.
+        assert org_state.db.work_hours.list(agent="dev_agent") == []
+        assert org_state.db.work_hours.list(agent="content_writer") == []
+        assert enqueued == []
+    finally:
+        gate.release()
+
+    # Continuity: after the gate releases, a later tick schedules the same slots.
+    assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 2
+    dev = org_state.db.work_hours.get_for_agent_date_slot("dev_agent", "2026-06-11", "09:00")
+    assert dev is not None and dev.status == WorkHourStatus.PENDING
+    cw = org_state.db.work_hours.get_for_agent_date_slot("content_writer", "2026-06-11", "09:00")
+    assert cw is not None and cw.mode == WorkHourMode.CONTINUOUS
+    assert len(enqueued) == 2
+
+
+def test_due_wake_producer_defers_while_maintenance_active(org_state, monkeypatch):
+    """The producer also defers during the ACTIVE phase (checkpoint/VACUUM can
+    run): no wake row is inserted or enqueued mid-operation."""
+    from runtime.daemon.maintenance_gate import MaintenanceGate
+
+    _seed(org_state)
+    _capture(org_state, monkeypatch)
+    gate = MaintenanceGate()
+    assert gate.try_enter_pending() is True
+    gate.mark_active()
+    now = datetime(2026, 6, 11, 9, 30, tzinfo=_SH)
+    try:
+        assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 0
+        assert org_state.db.work_hours.list(agent="dev_agent") == []
+        assert org_state.db.work_hours.list(agent="content_writer") == []
+    finally:
+        gate.release()
+
+    # After release, the same due slots are still scheduled.
+    assert schedule_due_wakes(org=org_state, now=now, maintenance_gate=gate) == 2
+    assert len(org_state.db.work_hours.list(agent="dev_agent")) == 1

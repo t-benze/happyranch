@@ -7,8 +7,9 @@ the *admission/drain/exclusivity* primitive that makes that guarantee explicit.
 
 It coordinates three threads:
 
-* the **event-loop thread** — the HTTP admission middleware and the scheduler
-  loops (which call the periodic snapshot writer);
+* the **event-loop thread** — the HTTP admission middleware, the scheduler
+  loops (which call the periodic snapshot writer), and the background
+  task/work producers (``schedule_due_schedules`` / ``schedule_due_wakes``);
 * the **threadpool thread** — the synchronous ``POST /api/v1/metrics/maintenance``
   FastAPI route handler (FastAPI runs sync handlers off the event loop);
 * **any second maintenance caller** — deterministically rejected.
@@ -24,15 +25,19 @@ State machine::
       ▲                              │                        │
       └───────────release()──────────┴────────────────────────┘
 
-* ``OPEN``    — normal traffic flows; the snapshot writer may write.
+* ``OPEN``    — normal traffic flows; the snapshot writer may write; the
+                background task/work producers may claim/insert/enqueue.
 * ``PENDING`` — atomically entered by the single winning maintenance caller;
                 new normal traffic is rejected and already-admitted requests
-                are drained; the periodic snapshot writer skips.
+                are drained; the periodic snapshot writer AND both background
+                producers defer (due schedules stay ARMED / due wake slots stay
+                unscheduled — nothing is dropped or consumed).
 * ``ACTIVE``  — quiescence has been re-checked; the blocking maintenance
-                sequence runs.
+                sequence runs.  The producers continue to defer.
 
 ``release()`` must be called on every success *and* failure path so the gate
-always returns to ``OPEN``.
+always returns to ``OPEN``.  Producers observe the gate via the single
+authoritative ``is_maintenance_in_progress()`` API — no ad-hoc state checks.
 """
 from __future__ import annotations
 

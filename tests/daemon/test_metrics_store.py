@@ -933,3 +933,140 @@ class TestSchedulerSnapshotSkip:
         assert tick_count >= 2
         assert state.metrics_store.row_count() == 0
         state.maintenance_gate.release()
+
+
+# ---------------------------------------------------------------------------
+# TASK-5488: scheduler-loop producer deferral while maintenance is gated
+# ---------------------------------------------------------------------------
+
+class TestSchedulerProducerDeferral:
+    """The maintenance gate must stop BOTH background producers (schedule fires,
+    working-hours wakes) before their claim/insert/enqueue choke points for the
+    entire maintenance-pending AND active interval.  These loop-level tests run
+    the REAL scheduler loops against a REAL org with a due schedule/wake and
+    prove: no claim/insert/enqueue while pending; the loop stays alive; the
+    previously due item is processed on a later tick after the gate releases."""
+
+    @pytest.mark.asyncio
+    async def test_schedule_loop_defers_due_producer_and_recovers_after_release(
+        self, runtime,
+    ) -> None:
+        import asyncio
+
+        from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+        from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+
+        state = DaemonState.from_runtime(runtime, Settings())
+        org = state.orgs["alpha"]
+        org.db.schedules.insert(ScheduleRecord(
+            id="SCHEDULE-5488",
+            agent_name="dev_agent",
+            team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            fire_at=datetime.now(timezone.utc) - timedelta(hours=1),  # due
+            timezone="UTC",
+            normalized_brief="do the thing",
+            source_instruction="please do the thing",
+        ))
+
+        async def run_two_ticks() -> int:
+            tick_count = 0
+
+            async def fast_sleep(seconds):
+                nonlocal tick_count
+                tick_count += 1
+                if tick_count >= 2:
+                    raise asyncio.CancelledError()
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(asyncio, "sleep", fast_sleep)
+                try:
+                    await schedule_scheduler_loop(state)
+                except asyncio.CancelledError:
+                    pass
+            return tick_count
+
+        # Phase 1: gate pending — the producer pass is deferred, loop alive.
+        state.maintenance_gate.try_enter_pending()
+        try:
+            ticks = await run_two_ticks()
+            assert ticks >= 2  # loop stayed alive across ticks
+            # No claim, no enqueue during the gate.
+            assert org.db.schedules.get("SCHEDULE-5488").status == ScheduleStatus.ARMED
+            assert org.schedule_queue.size == 0
+        finally:
+            state.maintenance_gate.release()
+
+        # Phase 2: gate released — a later tick claims and enqueues the due item.
+        await run_two_ticks()
+        assert org.db.schedules.get("SCHEDULE-5488").status == ScheduleStatus.FIRING
+        # The enqueue is fire-and-forget via create_task; drain the loop once
+        # so the put coroutine runs before we observe the queue.
+        await asyncio.sleep(0)
+        assert org.schedule_queue.size == 1
+
+    @pytest.mark.asyncio
+    async def test_work_hours_loop_defers_due_producer_and_recovers_after_release(
+        self, runtime,
+    ) -> None:
+        import asyncio
+        import json
+
+        from runtime.daemon.work_hours_scheduler import work_hours_scheduler_loop
+        from runtime.models import WorkHourStatus
+
+        state = DaemonState.from_runtime(runtime, Settings())
+        org = state.orgs["alpha"]
+        agents_dir = org.root / "org" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / "dev_agent.md").write_text(
+            "---\nname: dev_agent\nteam: engineering\nrole: worker\n"
+            "executor: claude\n---\n\nYou are a developer.\n\n"
+            "## Routine Tasks\n\n- Triage tickets.\n"
+        )
+        (org.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+        org.db.upsert_org_setting("working_hours", json.dumps({
+            "enabled": True,
+            "agents": {"mode": "all", "include": [], "exclude": []},
+            "default": {
+                "mode": "continuous",
+                "interval": "1h",
+                "window": {"timezone": "UTC"},
+                "catch_up_on_startup": True,
+            },
+            "teams": {},
+            "overrides": {},
+        }))
+
+        async def run_two_ticks() -> int:
+            tick_count = 0
+
+            async def fast_sleep(seconds):
+                nonlocal tick_count
+                tick_count += 1
+                if tick_count >= 2:
+                    raise asyncio.CancelledError()
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(asyncio, "sleep", fast_sleep)
+                try:
+                    await work_hours_scheduler_loop(state)
+                except asyncio.CancelledError:
+                    pass
+            return tick_count
+
+        # Phase 1: gate pending — the producer pass is deferred, loop alive.
+        state.maintenance_gate.try_enter_pending()
+        try:
+            ticks = await run_two_ticks()
+            assert ticks >= 2  # loop stayed alive across ticks
+            # No wake row inserted during the gate.
+            assert org.db.work_hours.list(agent="dev_agent") == []
+        finally:
+            state.maintenance_gate.release()
+
+        # Phase 2: gate released — a later tick schedules the due wake.
+        await run_two_ticks()
+        rows = org.db.work_hours.list(agent="dev_agent")
+        assert len(rows) == 1
+        assert rows[0].status == WorkHourStatus.PENDING

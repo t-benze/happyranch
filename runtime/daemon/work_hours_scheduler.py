@@ -255,7 +255,13 @@ async def _enqueue(org, work_hour_id: str) -> None:
     await org.wake_queue.put(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
 
 
-def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
+def schedule_due_wakes(
+    *,
+    org,
+    now: datetime,
+    startup: bool = False,
+    maintenance_gate=None,
+) -> int:
     """Schedule due working-hours wakes for an org.
 
     For each selected agent: resolve its effective schedule, find the current
@@ -263,7 +269,17 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     (absent/empty -> skip silently, no row), apply the uniqueness guard, and at
     startup honor ``catch_up_on_startup`` (false -> record a ``skipped`` row so
     the steady-state loop won't re-pick the slot today).
+
+    ``maintenance_gate`` — when provided and the metrics maintenance gate is
+    pending/active, the ENTIRE producer pass is DEFERRED: it returns 0 without
+    inserting any work_hours row or enqueuing any WakeJob.  The due slot stays
+    eligible and is picked up on the first tick after the gate releases
+    (continuity — nothing is dropped, consumed, or permanently rescheduled;
+    the loop never blocks behind the SQLite operation).
     """
+    if maintenance_gate is not None and maintenance_gate.is_maintenance_in_progress():
+        return 0
+
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     if not cfg.enabled:
@@ -333,19 +349,32 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
     # The first iteration runs after orgs are loaded and DB recovery has run; it
     # IS the startup catch-up pass (gated per agent by catch_up_on_startup).
     # Every later iteration is steady-state on-time scheduling.
+    #
+    # While the metrics maintenance gate is pending/active, the ENTIRE producer
+    # pass is deferred (TASK-5488 fix): no work_hours row is inserted and no
+    # WakeJob is enqueued; the startup flag only advances once a pass actually
+    # runs, so the catch-up pass is preserved.  The loop itself stays alive and
+    # never blocks behind the maintenance SQLite operation.
     startup = True
     while True:
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
-        for org in list(state.orgs.values()):
-            try:
-                schedule_due_wakes(org=org, now=now, startup=startup)
-            except OrgConfigError:
-                logger.exception(
-                    "work-hours scheduling skipped for org %s: invalid working_hours config",
-                    org.slug,
-                )
-        startup = False
+        gate = getattr(state, "maintenance_gate", None)
+        maintenance_in_progress = (
+            gate is not None and gate.is_maintenance_in_progress()
+        )
+        if not maintenance_in_progress:
+            for org in list(state.orgs.values()):
+                try:
+                    schedule_due_wakes(
+                        org=org, now=now, startup=startup, maintenance_gate=gate,
+                    )
+                except OrgConfigError:
+                    logger.exception(
+                        "work-hours scheduling skipped for org %s: invalid working_hours config",
+                        org.slug,
+                    )
+            startup = False
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick("work_hours_scheduler", interval_seconds, duration)
 

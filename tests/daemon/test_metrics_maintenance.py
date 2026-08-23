@@ -127,6 +127,47 @@ def test_maintenance_refuses_false_confirmation(tmp_home, tmp_path, auth_headers
     assert r.json()["detail"]["code"] == "confirmation_required"
 
 
+@pytest.mark.parametrize(
+    "coercible",
+    [
+        "yes",
+        "true",
+        "True",
+        "on",
+        "false",
+        "1",
+        "0",
+        1,
+        0,
+        [],
+        ["true"],
+    ],
+    ids=[
+        "str-yes", "str-true", "str-True", "str-on", "str-false",
+        "str-1", "str-0", "int-1", "int-0", "list", "list-true",
+    ],
+)
+def test_maintenance_rejects_coercible_confirmation_values(
+    tmp_home, tmp_path, auth_headers, coercible,
+) -> None:
+    """Strict validation: confirmation accepts ONLY the JSON literal boolean
+    true.  Coercible values ("yes", "true", 1, 0, …) are rejected with HTTP
+    422 BEFORE any admission or maintenance work — the gate never closes."""
+    client = _maintenance_app(tmp_path, [])
+    state = _state_of(client)
+    r = client.post(
+        "/api/v1/metrics/maintenance",
+        headers=auth_headers,
+        json={"confirm_quiescent": coercible},
+    )
+    assert r.status_code == 422
+    assert state.maintenance_gate.is_maintenance_in_progress() is False
+    # No maintenance ran: no rows were touched and history stays empty.
+    h = client.get("/api/v1/metrics/history", headers=auth_headers)
+    assert h.status_code == 200
+    assert h.json()["snapshots"] == []
+
+
 # ---------------------------------------------------------------------------
 # Admission / drain / exclusivity at the route boundary
 # ---------------------------------------------------------------------------
@@ -407,7 +448,9 @@ def test_maintenance_checkpoint_failure_no_false_success(
 def test_maintenance_busy_checkpoint_fails_closed(
     tmp_home, tmp_path, auth_headers, monkeypatch
 ) -> None:
-    """A checkpoint that reports ``busy != 0`` is a structured failure."""
+    """A checkpoint that reports ``busy != 0`` is a structured failure whose
+    public surface is stable and bounded — no raw SQLite/checkpoint output is
+    ever echoed to the client (TASK-5488 fix)."""
     client, _ = _failure_app(
         tmp_path, auth_headers, monkeypatch,
         "_wal_checkpoint_locked",
@@ -419,9 +462,75 @@ def test_maintenance_busy_checkpoint_fails_closed(
         json={"confirm_quiescent": True},
     )
     assert r.status_code == 500
-    assert r.json()["detail"]["code"] == "maintenance_failed"
-    assert "busy" in r.json()["detail"]["detail"]
+    body = r.json()["detail"]
+    assert body["code"] == "maintenance_failed"
+    assert body["reason"] == "maintenance_did_not_complete"
+    # The raw checkpoint dict / SQLite text must NOT leak into the response.
+    assert "busy" not in body["detail"]
+    assert "log_frames" not in json.dumps(r.json())
     assert _state_of(client).maintenance_gate.is_maintenance_in_progress() is False
+
+
+def test_maintenance_failure_surface_is_stable_and_redacted(
+    tmp_home, tmp_path, auth_headers, monkeypatch
+) -> None:
+    """A hostile long/sensitive-looking exception must never reach the client:
+    the response is a stable bounded maintenance_failed code/reason with the
+    original exception logged server-side only.  The gate releases and a fresh
+    explicit retry remains possible."""
+    db_path = str(tmp_path / "metrics.db")
+    store = MetricsStore(db_path)
+    store.append_snapshot(datetime.now(timezone.utc).isoformat(), {"n": 1})
+
+    sensitive = (
+        "disk full while vacuuming /home/founder/.ssh/id_rsa "
+        + "TASK-TOP-SECRET-5488 " * 200
+    )
+    real_vacuum = store._vacuum_locked
+    calls = {"n": 0}
+
+    def flaky_vacuum():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(sensitive)
+        return real_vacuum()
+
+    monkeypatch.setattr(store, "_vacuum_locked", flaky_vacuum)
+    state = DaemonState.idle(Settings())
+    state.metrics_store = store
+    client = TestClient(create_app(state))
+
+    r = client.post(
+        "/api/v1/metrics/maintenance",
+        headers=auth_headers,
+        json={"confirm_quiescent": True},
+    )
+    assert r.status_code == 500
+    blob = json.dumps(r.json())
+    body = r.json()["detail"]
+    assert body["code"] == "maintenance_failed"
+    assert body["reason"] == "maintenance_did_not_complete"
+    # Bounded and fully redacted: no raw exception text, path, or ID leaks.
+    assert len(blob) < 1000
+    assert "TASK-TOP-SECRET-5488" not in blob
+    assert "id_rsa" not in blob
+    assert "disk full" not in blob
+
+    # Gate released; history remains queryable; fresh explicit retry possible.
+    assert state.maintenance_gate.is_maintenance_in_progress() is False
+    h = client.get("/api/v1/metrics/history", headers=auth_headers)
+    assert h.status_code == 200
+    assert len(h.json()["snapshots"]) == 1
+
+    # A fresh explicit invocation (no automatic retry) now succeeds — the
+    # failure did not wedge the gate.
+    r2 = client.post(
+        "/api/v1/metrics/maintenance",
+        headers=auth_headers,
+        json={"confirm_quiescent": True},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["vacuum"] == "ok"
 
 
 def test_post_failure_fresh_retry_succeeds(
