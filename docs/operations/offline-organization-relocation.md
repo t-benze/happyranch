@@ -41,6 +41,7 @@ refusal, never an auto-upgrade).
 | `DST` | `$DST_RUNTIME/orgs/$SLUG` — destination org root (**must be absent**, §6) |
 | `OP` | a short private operation id, e.g. `2026-08-23-thr187` |
 | `STAGE` | private staging dir; on the **destination** machine it **must** be `$DST_RUNTIME/orgs/_pending/$OP` so publication is a same-filesystem rename (§6). On the source machine use `$SRC_RUNTIME/orgs/_pending/$OP` (also reserved) or any other private dir **outside** `$SRC`. |
+| `INBOX` | destination **receive** dir, e.g. `$DST_RUNTIME/orgs/_pending/$OP.inbox/` — absolute, founder-private (`chmod 700`), **outside** both `$STAGE` and `$DST`; holds `org-archive.tar.gz`, `manifest.txt`, and the recorded `archive.sha256` receipt (§5) |
 
 Hard requirements:
 
@@ -51,6 +52,10 @@ Hard requirements:
   `$DST_RUNTIME/orgs/_pending/$OP`. `_pending` is a reserved slug
   (`runtime/runtime.py::_RESERVED_ORG_SLUGS`) skipped by org enumeration, so it
   is never treated as an org. It is crash residue, **not** a retry protocol.
+- **Receive inbox outside the candidate tree.** The transferred archive,
+  manifest, and recorded hash live in a founder-private `$INBOX` that is
+  **outside both `$STAGE` and `$DST`**; they are never copied into `$STAGE`
+  (§5, §6).
 - **Both daemons stopped** during publication (§6) and before any source SQLite
   open (§3).
 
@@ -222,53 +227,173 @@ find "$STAGE/org-payload" \( -type l -o -type p -o -type s -o -type b -o -type c
 **Record a verifiable manifest + checksums**, then archive and hash it:
 
 ```bash
-(cd "$STAGE/org-payload" && find . -type f -print0 | sort -z | \
+(cd "$STAGE/org-payload" && find . -type f -print0 | LC_ALL=C sort -z | \
   xargs -0 shasum -a 256) > "$STAGE/manifest.txt"        # macOS
 # Linux: replace shasum -a 256 with sha256sum
 tar -czf "$STAGE/org-archive.tar.gz" -C "$STAGE/org-payload" .
-shasum -a 256 "$STAGE/org-archive.tar.gz"                 # record this value
+shasum -a 256 "$STAGE/org-archive.tar.gz" | awk '{print $1}' > "$STAGE/archive.sha256"
+# archive.sha256 = the 64-char hex digest; transfer it with the archive + manifest (§5)
 ```
 
 **The source is preserved fully** — nothing here mutates or deletes it.
 
-## 5. Transfer (plaintext) and destination-side validation
+## 5. Receive, inspect, extract, and validate on the destination
 
 Transfer `org-archive.tar.gz` and `manifest.txt` over a founder-selected
 **secure** channel. The archive is unsigned, unencrypted local plaintext; its
-hash is integrity evidence, not authentication or confidentiality. On arrival,
-verify the archive hash matches the recorded value, then re-inspect
-`manifest.txt`.
+hash is integrity evidence, not authentication or confidentiality.
 
-On the **destination** machine (`STAGE=$DST_RUNTIME/orgs/_pending/$OP`, same
-filesystem as `orgs/`):
+**1. Receive into a private inbox outside the candidate tree.** Create a fresh
+founder-private **inbox** that sits **outside both `$STAGE` and `$DST`** — for
+example `$DST_RUNTIME/orgs/_pending/$OP.inbox/` (under the reserved `_pending`
+slug, so it is never enumerated as an org) — and receive the archive, the
+manifest, and the recorded archive SHA-256 there. **Never copy any of these
+three artifacts into `$STAGE`**; they are transfer evidence, not portable org
+data (§6):
 
-1. **Destination stopped, slug absent** (including any symlink/broken entry):
+```bash
+INBOX="$DST_RUNTIME/orgs/_pending/$OP.inbox"
+mkdir -p "$INBOX" && chmod 700 "$INBOX"
+# receive (scp / rsync / founder-selected channel) into "$INBOX":
+#   org-archive.tar.gz , manifest.txt , archive.sha256
+```
 
-   ```bash
-   scripts/daemon.sh status                          # "not running"
-   test ! -e "$DST" && test ! -L "$DST" && echo "slug absent"
-   ```
+`archive.sha256` is the single-line hex digest recorded in §4.
 
-2. **Validate every member path before/after extract**: reject any absolute
-   path, `..` traversal, duplicate path, path escaping the staging root,
-   symlink/dangling link, device/FIFO/nonregular member, or any member not in
-   the §4 allow-list. Verify the allow-list of every member against §4 and the
-   recorded manifest.
+**2. Destination stopped, slug absent** (including any symlink/broken entry):
 
-3. **Validate the staged DB and references**: run
-   `PRAGMA integrity_check` (expect `ok`) and `PRAGMA foreign_key_check` (expect
-   no rows) against the staged `happyranch.db`. As the manual form of the
-   deferred reference validation, confirm each DB-held filesystem reference in
-   the Step-0 consumer map (C1–C13) resolves to a staged regular file with no
-   symlink/escape. Treat any missing, escaping, symlinked, or data-shaped
-   refusal — populated `custom_skill_versions.references_manifest` /
-   `assets_manifest` (C12b/C12c) or a populated `skill_lifecycle_packages`
-   legacy table (C13) — as a stop. If you cannot confirm a consumer resolves,
-   escalate; do not guess.
+```bash
+scripts/daemon.sh status                          # "not running"
+test ! -e "$DST" && test ! -L "$DST" && echo "slug absent"
+```
 
-4. Confirm the staged candidate is private, complete, and startable-shaped: it
-   must contain a valid `org/teams.yaml` and a `happyranch.db`, and be readable
-   only by the founder. It remains a **candidate**, not an org, until §6.
+**3. Verify the received archive hash against the source-recorded receipt:**
+
+```bash
+test "$(shasum -a 256 "$INBOX/org-archive.tar.gz" | awk '{print $1}')" \
+  = "$(cat "$INBOX/archive.sha256")" \
+  && echo "archive hash matches" || echo "HASH MISMATCH — STOP"
+# Linux: replace shasum -a 256 with sha256sum
+```
+
+**4. Inspect every archive member BEFORE extraction.** A `tar` listing is an
+*inspection aid*, **not** a safe extractor: you still extract into a fresh empty
+staging dir (step 6) and re-validate the extracted tree (steps 7–8).
+
+```bash
+tar -tzf "$INBOX/org-archive.tar.gz" > "$INBOX/members.txt"         # member names
+tar -tvzf "$INBOX/org-archive.tar.gz" > "$INBOX/members-typed.txt"  # typed listing; leading char = member type
+# Normalize: strip the leading "./" and a trailing "/", drop the bare root entry.
+grep -vE '^\./?$' "$INBOX/members.txt" | sed 's#^\./##; s#/$##' > "$INBOX/members-norm.txt"
+```
+
+Reject the archive — do **not** extract — if **any** of these hold:
+
+- **empty**: `members-norm.txt` is empty (no members beyond the `./` root);
+- **absolute path**: a member name begins with `/`;
+- **`..` traversal**: a member name contains a `..` path component;
+- **duplicate path**: a member name appears more than once;
+- **nonregular entry**: a `members-typed.txt` line does **not** begin with `d`
+  (directory) or `-` (regular file) — this rejects symlinks (`l`), hardlinks
+  (`h`), block/char devices (`b`/`c`), FIFOs (`p`), and sockets (`s`);
+- **unallowlisted member**: a member path is not under one of the §4 portable
+  roots (`happyranch.db`, `org/`, `kb/`, `talks/`, `threads/`,
+  `task-attachments/`, `jobs/`, `dreams/`, `work_hours/`, `schedules/`,
+  `artifacts/`, `skills/`, `workspaces/<agent>/memory/**`);
+- **smuggled transfer/inbox artifact**: a member named `org-archive.tar.gz`,
+  `manifest.txt`, `archive.sha256`, `members.txt`, or `members-typed.txt`
+  appears anywhere in the archive.
+
+```bash
+test -s "$INBOX/members-norm.txt" || echo "EMPTY ARCHIVE — STOP"
+grep -nE '^/' "$INBOX/members-norm.txt"                # absolute path ⇒ STOP
+grep -nE '(^|/)\.\.(/|$)' "$INBOX/members-norm.txt"    # `..` traversal ⇒ STOP
+sort "$INBOX/members-norm.txt" | uniq -d               # duplicate path ⇒ STOP
+grep -nE '^[^d-]' "$INBOX/members-typed.txt"           # symlink/hardlink/device/FIFO ⇒ STOP
+grep -nEv '^(happyranch\.db|(org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills)(/.*)?|workspaces(/[^/]+(/memory(/.*)?)?)?)$' "$INBOX/members-norm.txt"
+                                                        # unallowlisted member ⇒ STOP
+grep -nE '(^|/)(org-archive\.tar\.gz|manifest\.txt|archive\.sha256|members\.txt|members-typed\.txt)$' "$INBOX/members-norm.txt"
+                                                        # smuggled transfer/inbox artifact ⇒ STOP
+```
+
+Any non-empty output above is a **STOP**: remove the offending member at the
+**source**, re-run preflight (§2) and re-export (§3–§4); never hand-fix the
+archive.
+
+**5. Create a fresh, empty, founder-private staging directory.** `$STAGE` must
+be created fresh for this operation — never reused, never pre-populated — and
+must sit under the reserved `_pending` slug on the **same filesystem** as
+`$DST`:
+
+```bash
+STAGE="$DST_RUNTIME/orgs/_pending/$OP"
+test ! -e "$STAGE" || echo "STAGE ALREADY EXISTS — STOP"
+mkdir "$STAGE" && chmod 700 "$STAGE"
+```
+
+**6. Extract only the accepted archive into the empty `$STAGE`.** Run `tar` as
+the founder (non-root) user; the archive bytes stay in `$INBOX` and are never
+copied into `$STAGE`:
+
+```bash
+tar -xzf "$INBOX/org-archive.tar.gz" -C "$STAGE"
+```
+
+The step-4 member inspection ran first; steps 7–8 re-verify that nothing unsafe
+(symlink, device, FIFO, escaped or unallowlisted member) was actually written.
+
+**7. Validate the extracted direct-child layout against the classifier-approved
+portable roots.** Every direct child of `$STAGE` must be a §4 root with its
+correct type — `happyranch.db` a regular file, every other root a directory —
+and nothing else:
+
+```bash
+test -f "$STAGE/happyranch.db" || echo "happyranch.db missing/not regular — STOP"
+test -d "$STAGE/org" || echo "org/ missing/not a directory — STOP"
+for child in $(find "$STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort); do
+  case "$child" in
+    happyranch.db) ;;
+    org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills|workspaces)
+      test -d "$STAGE/$child" || echo "$child not a directory — STOP" ;;
+    *) echo "UNALLOWLISTED DIRECT CHILD: $child — STOP" ;;
+  esac
+done
+```
+
+This proves `$STAGE` is the **future org root itself** — not a container holding
+a nested root (e.g. an `org-payload/` subdirectory) and not a dir holding the
+archive, manifest, or any inbox artifact.
+
+**8. Compare staged files to the external manifest, and validate the staged DB
+and references.** Recompute the §4 manifest over the extracted tree and diff it
+against the received `manifest.txt` (same tool and `LC_ALL=C` ordering as §4):
+
+```bash
+(cd "$STAGE" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$INBOX/staged-manifest.txt"
+diff "$INBOX/manifest.txt" "$INBOX/staged-manifest.txt" \
+  && echo "manifest matches" || echo "MANIFEST MISMATCH — STOP"
+# Linux: replace shasum -a 256 with sha256sum (same tool as §4)
+```
+
+Then run `PRAGMA integrity_check` (expect `ok`) and `PRAGMA foreign_key_check`
+(expect no rows) against the staged `happyranch.db`:
+
+```bash
+sqlite3 "$STAGE/happyranch.db" "PRAGMA integrity_check;"     # expect "ok"
+sqlite3 "$STAGE/happyranch.db" "PRAGMA foreign_key_check;"   # expect no rows
+```
+
+As the manual form of the deferred reference validation, confirm each DB-held
+filesystem reference in the Step-0 consumer map (C1–C13) resolves to a staged
+regular file with no symlink/escape. Treat any missing, escaping, symlinked, or
+data-shaped refusal — populated `custom_skill_versions.references_manifest` /
+`assets_manifest` (C12b/C12c) or a populated `skill_lifecycle_packages` legacy
+table (C13) — as a stop. If you cannot confirm a consumer resolves, escalate;
+do not guess.
+
+**9. Confirm the staged candidate is private, complete, and startable-shaped:**
+it must contain a valid `org/teams.yaml` and a `happyranch.db`, and be readable
+only by the founder. It remains a **candidate**, not an org, until §6.
 
 ## 6. Manual publication (founder-exclusive, no-overwrite)
 
@@ -278,8 +403,26 @@ a shipped atomic importer. It requires an exclusive founder-owned window with
 agent sessions, jobs, or other admin — including any process on any machine
 sharing that runtime).
 
-1. **Re-check the slug is absent immediately before publish** (repeat §5 step 1).
-2. **Publish with an atomic same-filesystem rename.** Because the target is
+1. **Re-check the slug is absent immediately before publish** (repeat §5 step 2).
+2. **Prove `$STAGE` holds exactly the future org root — no transfer or inbox
+   artifacts.** Immediately before the rename, re-run the §5 step 7 direct-child
+   layout check and confirm no archive/manifest/checksum/inbox artifact is
+   present anywhere in `$STAGE`:
+
+   ```bash
+   find "$STAGE" \( -name '*.tar.gz' -o -name 'manifest.txt' \
+     -o -name 'archive.sha256' -o -name 'members.txt' \
+     -o -name 'members-typed.txt' -o -name 'staged-manifest.txt' \) -print
+   # must print NOTHING
+   find "$STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort
+   # must list only a subset of the §4 roots (happyranch.db, org, kb, …, workspaces)
+   ```
+
+   `$STAGE` must be the future org root **exactly** — not a container holding a
+   nested root (e.g. an `org-payload/` subdirectory) and not a directory holding
+   the archive, manifest, or any inbox artifact. If either command prints an
+   unexpected entry, **STOP** and escalate (§8).
+3. **Publish with an atomic same-filesystem rename.** Because the target is
    verified absent and the window is exclusive, `mv` performs an atomic
    `rename(2)` with nothing to overwrite or merge:
 
@@ -295,7 +438,7 @@ sharing that runtime).
    `mv`/`mkdir`+move-contents merge. If you cannot guarantee an exclusive
    window and an absent target, **STOP** and escalate (§8) rather than risk a
    partially populated, discoverable org.
-3. **Verify publication postconditions** (both must hold):
+4. **Verify publication postconditions** (both must hold):
 
    ```bash
    test -d "$DST" && test -f "$DST/org/teams.yaml" && echo "target exists"
@@ -358,10 +501,10 @@ the §7 zero-count gate passed and the source was quiescent when exported.
 ## 8. Failure handling and escalation
 
 - **Before publication (staging/validation):** retain the source intact and
-  clean **only** the exact `_pending/$OP` operation directory you created, after
-  inspection, with both daemons stopped. Never `rm -rf` broadly, never touch
-  `_pending` beyond your own operation directory. Re-run from §2 after fixing
-  the cause.
+  clean **only** the exact operation directories you created — the staging
+  `_pending/$OP` and the receive inbox `_pending/$OP.inbox` — after inspection,
+  with both daemons stopped. Never `rm -rf` broadly, never touch `_pending`
+  beyond your own operation directories. Re-run from §2 after fixing the cause.
 - **After publication but before start** (a nonzero §7 count or a failed §6
   postcondition): do **not** overwrite, re-run, or merge the published tree, and
   do **not** hand-edit the DB. Leave the destination **stopped**, preserve the
