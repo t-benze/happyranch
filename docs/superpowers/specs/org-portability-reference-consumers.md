@@ -98,7 +98,8 @@ durable-data *design evidence* — it carries no executable risk itself.
 
 Evidence commands and results are summarized inline per consumer; the raw
 commands were `rg` over `runtime/` and `sqlite3 -readonly` over a live org DB
-(read-only) to confirm stored shapes.
+(read-only) to confirm stored shapes, plus the recorded PRAGMA
+schema/population audit in §2A.
 
 ---
 
@@ -108,6 +109,10 @@ Consumers are traced from the **producer table → stored column → resolver �
 path-construction → validation → recoverability → disposition**. A "consumer"
 here means a column whose value is resolved (at read time, or at the sole
 write site) to filesystem bytes under the org root.
+
+> The authoritative classification is the PRAGMA-derived matrix in §2A; this
+> section is a compact cross-reference to it. Where they disagree, §2A governs
+> (and the discrepancy is a default refusal, never a silent omission).
 
 ### Legend for disposition
 
@@ -304,13 +309,21 @@ write site) to filesystem bytes under the org root.
 - **Root:** `<org>/workspaces/<agent>/<cwd_hint>` — **workspace data**
   (excluded), but a malicious absolute/`..` value resolves *outside* it.
 - **Validation/integrity (required future portability validation — not present
-  today):** before any imported `jobs` row can run, `cwd_hint` must be validated
-  as a **single relative safe segment** (nonempty, no `/`, `\`, NUL, no `..`,
-  no leading `.`, not absolute) and the fully-resolved cwd must remain within
-  `<org>/workspaces/<agent>/`; an absolute or dotdot `cwd_hint` in a staged DB
-  is a refusal (`escape`) **before any capture/import effect**. This holds even
-  though the workspace bytes themselves are excluded — the *string* is
-  resolution-bearing and is executed by `_resolve_cwd` at spawn time.
+  today):** before any imported `jobs` row can run, `cwd_hint` must be a
+  **route-compatible relative workspace path** — nonempty, not absolute, no `..`
+  segment, no leading `.` segment, no `\` or NUL — which **may be nested**
+  (e.g. `repos/web-app`; the submit path already accepts nested relatives via
+  `_validate_cwd_hint` at `jobs.py:89–104`, and persisted tests use
+  `repos/web-app` — see `tests/test_database_scripts.py:66` and
+  `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md:177,216`).
+  **Do not reduce it to a single segment**: that would falsely refuse a valid
+  imported job. Additionally the fully-resolved cwd must remain within
+  `<org>/workspaces/<agent>/` (the assigned agent workspace); an absolute or
+  dotdot `cwd_hint` in a staged DB is a refusal (`escape`) **before any
+  capture/import effect**. This holds even though the workspace bytes themselves
+  are excluded — the *string* is resolution-bearing and is executed by
+  `_resolve_cwd` at spawn time, which today performs **no** containment check
+  (`.resolve()` only normalizes; see §2A).
 - **Recoverability:** an absolute/`..` `cwd_hint` is **not** rejected today at
   run time (only at submit) and would resolve outside `workspace_root` before a
   job is launched.
@@ -321,7 +334,7 @@ write site) to filesystem bytes under the org root.
   stale-able absolute display/inspection field and **cannot redeem an unsafe
   `cwd_hint`**. Do **not** describe an invalid `cwd_hint` as "carried
   harmlessly."
-- **Fixtures:** FX-C5-REL, FX-C5-ABS, FX-C5-DOTDOT.
+- **Fixtures:** FX-C5-REL, FX-C5-NESTED, FX-C5-ABS, FX-C5-DOTDOT.
 
 ### C6 — `dreams.transcript_path` → `DreamStore` (display-only; re-derived)
 
@@ -473,16 +486,26 @@ write site) to filesystem bytes under the org root.
   DB (drops tables) and the source artifact tree (deletes blobs) as a
   constructor side effect.
 - **Validation/integrity (actual current behavior):** `ArtifactStore.delete`
-  runs `validate_name` + `path_for` (so an escaping/absolute key raises
-  `InvalidArtifactName`, which is **not** caught here and would crash the
-  constructor), then `unlink()`s whatever regular-or-symlink path passes
-  containment (an in-root symlink is unlinked; an out-of-root symlink raises
-  `path_traversal`). A missing artifact raises `ArtifactNotFound`, which is
-  swallowed (no-op). No symlink/nonregular distinction beyond
-  `validate_name`/containment is made.
-- **Recoverability:** missing artifact → `ArtifactNotFound` (swallowed, no-op);
+  (`artifact_store.py:120–128`) runs `validate_name` + `path_for` (so an
+  escaping/absolute key raises `InvalidArtifactName`, which is **not** caught
+  here and would crash the constructor), then checks `path.exists()` and
+  `path.is_dir()` before `unlink()`:
+  - a **non-dangling in-root symlink** (target exists) passes `path.exists()`
+    and `path.is_dir()`, and is **unlinked** — the link is removed, its target
+    is left untouched;
+  - a **dangling in-root symlink** (target absent) makes `path.exists()` return
+    `False`, so `delete` raises `ArtifactNotFound`, which the retire loop
+    swallows (`database.py:236–239`) — the dangling link is **left on disk**, a
+    no-op, not a crash;
+  - an out-of-root symlink raises `path_traversal`; a directory target raises
+    `ArtifactNotFound` via `path.is_dir()`.
+  No symlink/nonregular distinction beyond `validate_name`/containment and the
+  `exists()`/`is_dir()` checks is made.
+- **Recoverability:** missing artifact **or dangling in-root link** →
+  `ArtifactNotFound` (swallowed, no-op; a dangling link is **left on disk**);
   invalid/escape key → `InvalidArtifactName` escapes the constructor (crash
-  vector); symlink → unlinked (the link removed, its target untouched).
+  vector); non-dangling in-root symlink → unlinked (the link removed, its target
+  untouched).
 - **Disposition/detection requirement:** `reject`-until-retired. A legacy
   `skill_lifecycle_%` table must be detected by a **read-only pre-connection
   schema inspection** (e.g. `SELECT name FROM sqlite_master WHERE name LIKE
@@ -494,7 +517,131 @@ write site) to filesystem bytes under the org root.
   (`legacy_skill_lifecycle_unretired`); the source must be retired by the normal
   daemon (or deliberately) before export. On any healthy DB the table is
   already dropped and the referenced blobs already deleted.
-- **Fixtures:** FX-C13-ABSENT, FX-C13-ESCAPE, FX-C13-MISSING, FX-C13-SYMLINK.
+- **Fixtures:** FX-C13-ABSENT, FX-C13-ESCAPE, FX-C13-MISSING, FX-C13-SYMLINK,
+  FX-C13-DANGLING.
+
+---
+
+## 2A. PRAGMA-derived candidate classification matrix (evidence source of truth)
+
+The classification below is derived from a **recorded read-only PRAGMA
+inspection of the exact base schema**, not from memory or column-name
+recollection. The per-consumer prose in §2 is a **compact cross-reference** to
+this matrix. Where a §2 statement and this matrix disagree, **this matrix is
+authoritative**; a consumer→matrix mismatch is a **default refusal** (§9),
+never a silent omission.
+
+### Derivation (recorded commands)
+
+1. **Schema dump** — a fresh DB at the base head (the same
+   `Database._create_tables()` that defines the schema) was inspected via
+   `PRAGMA table_info(<t>)` and `SELECT name FROM sqlite_master WHERE
+   type='table' AND name NOT LIKE 'sqlite_%'`:
+
+   ```
+   python - <<'PY'
+   import sys, tempfile
+   from pathlib import Path
+   sys.path.insert(0, "<worktree>")
+   from runtime.infrastructure.database import Database
+   db = Database(Path(tempfile.mkdtemp()) / "orgs" / "happyranch" / "happyranch.db")
+   for t in sorted(r[0] for r in db._conn.execute(
+           "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")):
+       for c in db._conn.execute(f"PRAGMA table_info({t})"):
+           print(t, c["name"], c["type"])
+   PY
+   ```
+
+   **Result: 28 tables, 351 columns** at the base schema.
+
+2. **Population status** — a read-only live org DB
+   (`sqlite3 "file:<runtime>/orgs/happyranch/happyranch.db?mode=ro"`,
+   `PRAGMA table_info` + `SELECT COUNT(*), COUNT(<col>) FROM <table>`) recorded
+   the non-null population per candidate column (the `non-null / rows` column
+   below).
+
+3. **Legacy-table discovery** — `SELECT name FROM sqlite_master WHERE name LIKE
+   'skill_lifecycle_%'` (returns `[]` on the live DB) and the presence of the
+   retired `agent_enrollments` table (0 rows, no `runtime/` reference) were
+   recorded, so a pre-retirement DB is covered rather than assumed inert.
+
+### Candidate derivation rule
+
+A **candidate** is any `TEXT` column whose name matches the
+path/artifact/storage/key/cwd/output/transcript/manifest/cache pattern, **or**
+that is named by a §2 consumer row, **or** that lives in a legacy table still
+present in a pre-retirement DB. All 351 columns were inspected; the candidate
+set below is the complete enumeration. Columns not listed are non-path
+inline/identity fields reconciled to §3.
+
+### Classification matrix
+
+| # | Table.column | Type | Population (non-null / rows) | Class | Producer shape | Resolver / call sites (proof) | Disposition |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| C1 | `task_attachments.storage_key` | TEXT | 3 / 3 | **consumer** | flat safe token | `TaskAttachmentStore.path_for` (tasks.py:1583; task_attachment_store.py:177,184–199); read orchestrator.py:473,484 | `include` (gated) |
+| C2 | `thread_message_attachments.artifact_name` | TEXT | 171 / 171 | **consumer** | nested key | `ArtifactStore.path_for` (threads.py:243,257,270,278; artifact_store.py:55–75) | `conditional`/reject-until-staged |
+| C2b | `thread_message_attachments.thread_attachment_id` | TEXT | 59 / 171 | **no-resolver** (legacy id) | `att-NNN` | none (display fallback threads.py:541,896) | `include` (inert id; a path-shaped value ⇒ refuse) |
+| C3 | `thread_scoped_attachments.attachment_id` + `.thread_id` | TEXT | 60 / 60 | **consumer** | id + thread_id | `ThreadScopedAttachmentStore.path_for` (threads.py:2810,2909,2960; thread_scoped_attachment_store.py:26–32,54–60) | `conditional`/reject-until-staged |
+| C4 | `jobs.stdout_path`, `jobs.stderr_path` | TEXT | 515 / 535 | **consumer** (absolute) | absolute path | `open(path)` jobs.py:513; `_read()` jobs.py:921–932 | `target-local` (rebase) |
+| C5 | `jobs.cwd_hint` | TEXT | 401 / 535 | **consumer** | relative (nested ok) | `_resolve_cwd` jobs.py:661–670 (no containment) | `conditional`/reject-until-staged |
+| C5b | `jobs.cwd_resolved` | TEXT | 515 / 535 | **display field** (stale absolute) | absolute | none (echo only) | `target-local` display; cannot redeem cwd_hint |
+| C6 | `dreams.transcript_path` | TEXT | 364 / 400 | **display-only** | absolute | re-derived from `dream_id` (dreams.py:117,190–207) | `include` (re-derived) |
+| C7 | `threads.transcript_path` | TEXT | 164 / 201 | **display-only** | absolute | derived (threads.py:2676–2689) | `include` (regenerable) |
+| C8 | `schedules.transcript_path` | TEXT | 0 / 1 | **display-only** | absolute | schedules.py:443 | `include` (regenerable) |
+| C9 | `work_hours.transcript_path` | TEXT | 0 / 0 | **display-only** | absolute | work_hours.py:63 | `include` (regenerable) |
+| C10 | `tasks.final_output_dir` | TEXT | 859 / 5434 | **consumer** (excluded) | relative | tasks.py:416,424,431 `_read_output` (containment) | `exclude` |
+| C10b | `task_results.output_dir` | TEXT | 1009 / 6980 | **consumer** (excluded) | relative | tasks.py:416,424,431 `_read_output` | `exclude` |
+| C11 | `custom_skill_versions.content_artifact_key` | TEXT | 8 / 8 | **consumer** | nested key | `ArtifactStore.read` (workspace_adapters.py:801,829; skills.py:1188) | `conditional`/reject-until-staged |
+| C11b | `custom_skill_versions.content_hash` | TEXT | 8 / 8 | **integrity pair** | sha256 | asserted skills.py:1193; workspace_adapters.py:831 | `integrity` (not standalone) |
+| C12 | `custom_skill_versions.skill_md_cache` | TEXT | 8 / 8 | **no-resolver** | inline md | none | `include` |
+| C12b | `custom_skill_versions.references_manifest` | TEXT | 0 / 8 | **no-resolver** | JSON | none | `include` (no fs ref) |
+| C12c | `custom_skill_versions.assets_manifest` | TEXT | 0 / 8 | **no-resolver** | JSON | none | `include` (no fs ref) |
+| — | `kb_views.slug` | TEXT | 100 / 100 | **no-consumer** | slug | `kb_store.path_for(slug)` at load (fs-only) | `include` (fs-only KB) |
+| — | `dream_kb_candidates.promoted_kb_slug` | TEXT | 2 / 525 | **no-consumer** | slug | same | `include` |
+| — | `skill_validation_events.skill_id` / `.slug` | TEXT | 17 / 17 | **no-consumer** | id/slug | filesystem `_classify_skills` | `include` (no DB path) |
+| — | `custom_skills.slug` / `.org_slug` | TEXT | 5 / 5 | **no-resolver identity** | slug | path materialized into C11 `content_artifact_key` | `include` (identity) |
+| C13 | `skill_lifecycle_packages.content_artifact_key` | TEXT (legacy; not in current schema) | n/a (0 legacy tables live) | **consumer** (destructive) | nested key | `ArtifactStore.delete` (database.py:235–239) | `reject`-until-retired |
+| D1 | `agent_enrollments.repos` | TEXT (legacy table, 0 rows; not in current schema) | 0 / 0 | **dormant legacy, no resolver** | repos value | none (no `runtime/` reference) | **default refusal if populated** |
+
+The matrix is **reconciled to C1–C13** (every consumer row above has exactly one
+§2 prose entry and ≥1 fixture) **and to the §3 no-consumer table** (every
+no-consumer/no-resolver row above is also listed there). Any column that a
+future PRAGMA sweep discovers *outside* this set is an unclassified consumer ⇒
+named default refusal (`unclassified_consumer`), never a silent portable
+classification.
+
+### Default-refuse policy per consumer × physical state
+
+Legend — each cell states the **disposition** for that state, marked `(now)`
+when today's resolver enforces it and `(req)` when it is a **required future
+pre-effect refusal** (today's resolver does **not** enforce it and must not be
+described as if it did):
+
+- **safe regular approved member** — the only portable state.
+- **missing** — named refusal or empty/re-derived, per consumer.
+- **outside-root escape** — `refuse(escape)`.
+- **in-root symlink** — `refuse(nonregular)`.
+- **dangling link** — `refuse(dangling)`.
+- **nonregular (dir/device/FIFO)** — `refuse(nonregular)`.
+- **malformed/staged-invalid identifier/path** — `refuse(invalid)`.
+- **hash/integrity** — `refuse(integrity)` (C11 only).
+
+| Consumer | safe regular | missing | outside-root | in-root symlink | dangling | nonregular | malformed/invalid | hash/integrity |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C1 (task-attachments) | include | `missing`(now) | `escape`(now) | `nonregular`(req; admits now) | `dangling`(req; `read` 404 now) | `nonregular`(req) | `invalid`(now: token regex) | n/a |
+| C2 (artifacts) | include | `missing`(now 404) | `escape`(now) | `nonregular`(req; follows now) | `dangling`(req; `exists()` false now) | `nonregular`(req; dir→404 now) | `invalid`(now) | n/a |
+| C3 (thread-scoped) | include | `missing`(now KeyError) | `escape`(req; none now) | `nonregular`(req) | `dangling`(req) | `nonregular`(req) | `invalid`(req; none now) | n/a |
+| C4 (jobs stdout/stderr) | target-local | empty stream (now) | `escape`(req; abs open now) | `nonregular`(req) | `dangling`(req) | `nonregular`(req) | `invalid`(req) | n/a |
+| C5 (cwd_hint) | exclude bytes; string include | `cwd_missing`(now at run) | `escape`(req; no containment now) | `nonregular`(req) | `dangling`(req) | `nonregular`(req) | `invalid`(req; nested-relative ok) | n/a |
+| C6–C9 (transcripts) | include (re-derived) | re-derived (now) | n/a (stale abs, not resolved) | n/a | n/a | n/a | n/a | n/a |
+| C10 (output_dir) | exclude | dangling relative (now) | `escape`(now: containment→None) | n/a (excluded) | n/a | n/a | n/a | n/a |
+| C11 (content_artifact_key) | include | `missing`(now) | `escape`(now) | `nonregular`(req; follows now) | `dangling`(req; `exists()` false now) | `nonregular`(req) | `invalid`(now) | `integrity`(now) |
+| C13 (legacy lifecycle) | reject-until-retired | `ArtifactNotFound` swallowed (now); detector refuses (req) | `escape`(now crash vector; detector refuses req) | unlink link only, non-dangling (now); refuse (req) | `ArtifactNotFound` swallowed, link left (now); refuse (req) | `ArtifactNotFound` dir (now); refuse (req) | `invalid`(now crash; detector refuses req) | n/a |
+
+**States not supported by today's resolver are marked `(req)` and are required
+future pre-effect refusals** — never inferred current behavior. The §2 prose for
+each consumer repeats the `(now)` vs `(req)` split; this matrix is the
+authoritative reconciliation.
 
 ---
 
@@ -512,6 +659,9 @@ prevent a future implementer from assuming a path dependency exists.
 | `org_settings.value_json` | JSON settings (dreaming, threads, session_timeout, working_hours). No file-path values. |
 | `escalation_notifications` / `processed_event_ids` | Dormant Feishu tables (THR-022 removed); no filesystem reference. |
 | `session_token_usage`, `tasks.brief`, `thread_messages.body_markdown` | Inline text. |
+| `thread_message_attachments.thread_attachment_id` | Legacy `att-NNN` identifier; used only as a display fallback (`threads.py:541,896`). Not a path column. |
+| `custom_skills.slug` / `custom_skills.org_slug` | Skill identity; the filesystem path is materialized into `custom_skill_versions.content_artifact_key` (C11), not resolved from these columns. |
+| `agent_enrollments.*` (legacy table, 0 rows; not in current schema) | Retired table (dropped from `_create_tables`; no `runtime/` reference). Its `repos` TEXT column has **no resolver** on current main. A legacy DB with a populated `agent_enrollments.repos` is an unclassified candidate ⇒ default refusal (see §2A and §4 harness requirement (ii)). |
 | Learnings/memory `workspaces/<agent>/memory/**` | Filesystem-only (no DB table). Allow-listed as the sole workspace carve-out; not DB-referenced. |
 | `org/` content (`charter.md`, `teams.yaml`, `config.yaml`, `agents/*.md`) | Loaded from filesystem (`TeamsRegistry`, `org_config`); no DB path column. |
 
@@ -568,6 +718,7 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C4-ABS | C4 | `jobs(id="JOB-9", stdout_path="<src>/jobs/JOB-9.out", stderr_path="<src>/jobs/JOB-9.err")` | `jobs/JOB-9.out`, `jobs/JOB-9.err` | **absolute path re-resolution** | import-time rebase (target-local) — see §9 | read-only | yes (rebase) |
 | FX-C4-MISSING | C4 | same row | files absent | missing-file | `missing` (empty stream) | no | no |
 | FX-C5-REL | C5 | `jobs(cwd_hint="subdir")` | — | valid relative (submit path) | none (excluded bytes; resolves under `workspace_root`) | no | no |
+| FX-C5-NESTED | C5 | `jobs(cwd_hint="repos/web-app")` (submit path) | — | valid **nested** relative (submit path) | none — route-compatible nested-relative resolves under `workspace_root`; bytes excluded | no | no |
 | FX-C5-ABS | C5 | `jobs(cwd_hint="/etc")` (staged DB, bypasses submit validation) | — | staged-DB absolute | `escape` — `_resolve_cwd` resolves outside `workspace_root`; required staged-DB validation refuses, no effect | no | no |
 | FX-C5-DOTDOT | C5 | `jobs(cwd_hint="../../outside")` (staged DB) | — | staged-DB dotdot | `escape` — `_resolve_cwd` resolves above `workspace_root`; required staged-DB validation refuses, no effect | no | no |
 | FX-C6-ABS | C6 | `dreams(id="DREAM-1", transcript_path="<src>/dreams/DREAM-1.md")` | `dreams/DREAM-1.md` | stale absolute (display-only) | none — re-derived from `dream_id` | read-only | no |
@@ -586,9 +737,40 @@ fallback), `integrity` (hash/content mismatch), `escape` (traversal/absolute),
 | FX-C13-ESCAPE | C13 | `skill_lifecycle_packages(content_artifact_key="../../etc/passwd")` | — | invalid/escape key | `escape` — read-only detector refuses **before** any `Database(...)` (were the retire to run, `InvalidArtifactName` would crash the constructor) | no | no |
 | FX-C13-MISSING | C13 | `skill_lifecycle_packages(content_artifact_key="custom-skills/s/digest/SKILL.md")` | artifact file absent | missing-file | `missing` — `ArtifactNotFound` swallowed (no-op) if the retire ran; detector still refuses before any construction | no | no |
 | FX-C13-SYMLINK | C13 | same row | `artifacts/custom-skills/s/digest/SKILL.md` → in-root symlink | symlink/nonregular | `nonregular` — detector refuses (or, were the retire to run, `unlink()` removes the link only) | no | no |
+| FX-C13-DANGLING | C13 | same row | `artifacts/custom-skills/s/digest/SKILL.md` → **dangling** in-root symlink (target absent) | dangling link | `dangling`/`nonregular` — were the retire to run, `path.exists()` is `False` → `ArtifactNotFound` swallowed, the dangling link is **left on disk**; the read-only detector still refuses **before** any construction | no | no |
 
 Every consumer-map row in §2 has at least one fixture; every fixture names a
 specific consumer.
+
+### Harness requirements (design only — no test code in this gate)
+
+The registry above describes the shape; the Slice B/C harness must additionally
+**prove each control fires**, not merely describe it. Requirements:
+
+- **(i) Unclassified-candidate default refusal.** An intentionally inserted
+  PRAGMA-discovered candidate column **not** in the C1–C13 / no-consumer map
+  (e.g. a populated `agent_enrollments.repos` value) triggers a **named
+  pre-effect default refusal** (`unclassified_consumer`) before any
+  capture/import effect — never a silent portable classification.
+- **(ii) Populated-dormant default refusal.** A **populated** dormant /
+  no-resolver column (e.g. a non-null `agent_enrollments.repos` in a legacy DB)
+  triggers its named default refusal rather than being silently treated
+  portable.
+- **(iii) Observable unsafe-object refusal.** At least one in-root symlink, one
+  dangling link, and one nonregular member (dir/device/FIFO), as applicable per
+  consumer, produces its named refusal (`nonregular` / `dangling` / `escape`)
+  **before** capture/import effects — asserted via the connection-spy (zero
+  source connections) and "no archive produced".
+- **(iv) Bijective fixture cross-reference.** Every fixture ID in §4 maps 1:1 to
+  a §2/§2A consumer row and appears in exactly one harness assertion; the total
+  fixture-ID count equals the sum of each consumer's fixture list (no orphan, no
+  duplicate, no un-cited ID).
+
+Where a control is required future behavior, the harness must assert it as a
+future pre-effect refusal and must **not** infer it from today's resolver
+(which may admit/follow in-root symlinks, swallow a dangling link, or leave a
+dangling link on disk). The §2A default-refuse matrix is the authoritative
+statement of `(now)` vs `(req)`.
 
 ---
 
