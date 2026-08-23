@@ -5524,13 +5524,18 @@ class Database:
         ``last_resumed_seq`` is never read.
         """
         now = _now().isoformat()
-        tail = self._thread_tail_seq(thread_id)
-        participants = [
-            p.agent_name for p in self.list_thread_participants(thread_id)
-        ]
         created: list[ThreadReplyDeliveryState] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            # Every cutoff-defining read (tail, participants, state existence,
+            # legacy pending REPLY selection) runs AFTER the write lock is held
+            # so a concurrent append cannot commit between the snapshot and the
+            # state commit (a torn snapshot would drop a message from the
+            # required range).
+            tail = self._thread_tail_seq(thread_id)
+            participants = [
+                p.agent_name for p in self.list_thread_participants(thread_id)
+            ]
             for agent_name in participants:
                 existing = self._conn.execute(
                     "SELECT 1 FROM thread_reply_delivery_state "
@@ -5593,6 +5598,26 @@ class Database:
             raise
         return created
 
+    def _running_recovery_fail_reason(
+        self, inv, *, same_pair: bool, right_purpose: bool,
+        pending: bool, started: bool, range_ok: bool,
+    ) -> str:
+        """Truthful fail-closed diagnostic for a non-recoverable running slot.
+
+        Ordered so the most specific cause wins while keeping the distinct
+        terminal vs malformed vs ownership causes that Slice B's retry
+        projection and audit settlement depend on.
+        """
+        if inv is None or not same_pair or not right_purpose:
+            return "invalid_running_token_on_recovery"
+        if not pending:
+            return "running_already_terminal_on_recovery"
+        if not range_ok:
+            return "malformed_running_range_on_recovery"
+        if not started:
+            return "running_missing_start_evidence_on_recovery"
+        return "invalid_running_token_on_recovery"
+
     @_synchronized
     def recover_reply_delivery_state(self) -> list[ThreadReplyRecoveryEntry]:
         """Durable reply-delivery recovery (Slice A ships it UNHOOKED).
@@ -5604,12 +5629,19 @@ class Database:
           * queued token set, running clear → validate it is a pending
             same-pair REPLY. Valid → retain and return it. Otherwise fail
             closed: clear the queued slot, record a diagnostic, return nothing.
-          * running token set → validate it is a same-pair REPLY. Invalid →
-            fail closed (clear running, diagnostic, no runnable token, never
-            launch unowned work). Valid → terminalize ONLY that owned attempt
-            as daemon_restart, preserve the unacknowledged required range,
-            clear running, mint/record exactly one replacement queued REPLY and
-            return it.
+          * both ownership slots populated → corruption. Fail closed: clear
+            both slots, record a diagnostic, return nothing, never mint.
+          * running token set → recoverable ONLY when the receipt is owned by
+            this pair, is a REPLY, is still PENDING (the expected interrupted
+            in-flight status), carries started evidence, and its durable range
+            is internally consistent (acknowledged <= running_from <=
+            running_through <= required). Recoverable → terminalize ONLY that
+            owned attempt as daemon_restart, preserve the unacknowledged
+            required range, clear running, mint/record exactly one replacement
+            queued REPLY. Otherwise (consumed/failed/declined terminal,
+            missing, wrong-pair, wrong-purpose, malformed range, missing start)
+            → fail closed: clear the running slot, record a truthful
+            diagnostic, never mint/return a runnable token.
 
         Repeat recovery is idempotent: after a running row is replaced its slot
         holds a queued token, so a second pass retains rather than re-mints.
@@ -5631,20 +5663,73 @@ class Database:
                 running_token = row["running_invocation_token"]
                 queued_token = row["queued_invocation_token"]
 
+                if running_token is not None and queued_token is not None:
+                    # Both ownership slots populated: the mutually-exclusive
+                    # claim/settle invariant was violated. Fail closed — clear
+                    # both slots (never leave two ownership slots), never mint a
+                    # replacement, never return a runnable token. The invocation
+                    # rows are left untouched to preserve truthful diagnostics.
+                    self._conn.execute(
+                        "UPDATE thread_reply_delivery_state SET "
+                        "queued_invocation_token = NULL, "
+                        "running_invocation_token = NULL, "
+                        "running_from_seq = NULL, running_through_seq = NULL, "
+                        "last_terminal_reason = ?, last_terminal_at = ?, "
+                        "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                        ("corrupt_both_slots_on_recovery", now, now,
+                         thread_id, agent_name),
+                    )
+                    continue
+
                 if running_token is not None:
                     inv = self._conn.execute(
                         "SELECT * FROM thread_invocations "
                         "WHERE invocation_token = ?",
                         (running_token,),
                     ).fetchone()
-                    valid_running = (
+                    same_pair = (
                         inv is not None
                         and inv["thread_id"] == thread_id
                         and inv["agent_name"] == agent_name
+                    )
+                    right_purpose = (
+                        inv is not None
                         and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
                     )
-                    if not valid_running:
-                        # Fail closed: clear running, never launch unowned work.
+                    pending = (
+                        inv is not None
+                        and inv["status"] == ThreadInvocationStatus.PENDING.value
+                    )
+                    started = inv is not None and inv["started_at"] is not None
+
+                    acknowledged = int(row["acknowledged_through_seq"] or 0)
+                    required = int(row["required_through_seq"] or 0)
+                    running_from = row["running_from_seq"]
+                    running_through = row["running_through_seq"]
+                    range_ok = (
+                        running_from is not None
+                        and running_through is not None
+                        and acknowledged <= running_from
+                        and running_from <= running_through
+                        and running_through <= required
+                    )
+
+                    recoverable = (
+                        same_pair and right_purpose and pending
+                        and started and range_ok
+                    )
+
+                    if not recoverable:
+                        reason = self._running_recovery_fail_reason(
+                            inv, same_pair=same_pair,
+                            right_purpose=right_purpose, pending=pending,
+                            started=started, range_ok=range_ok,
+                        )
+                        # Fail closed: clear the running slot (never leave an
+                        # ownership slot referencing a terminal/mismatched/
+                        # malformed attempt), never mint a replacement, never
+                        # return a runnable token. The invocation row itself is
+                        # left untouched so truthful terminal diagnostics survive.
                         self._conn.execute(
                             "UPDATE thread_reply_delivery_state SET "
                             "running_invocation_token = NULL, "
@@ -5652,44 +5737,41 @@ class Database:
                             "running_through_seq = NULL, "
                             "last_terminal_reason = ?, last_terminal_at = ?, "
                             "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
-                            ("invalid_running_token_on_recovery", now, now,
-                             thread_id, agent_name),
+                            (reason, now, now, thread_id, agent_name),
                         )
-                    else:
-                        # Terminalize the interrupted owned attempt as
-                        # daemon_restart (only if still pending; the generic
-                        # reaper may already have done so).
-                        if inv["status"] == ThreadInvocationStatus.PENDING.value:
-                            self._conn.execute(
-                                "UPDATE thread_invocations SET status = 'failed', "
-                                "decline_reason = 'daemon_restart', consumed_at = ? "
-                                "WHERE invocation_token = ? AND status = 'pending'",
-                                (now, running_token),
-                            )
-                        # Preserve the unacknowledged range: the replacement
-                        # starts at acknowledged + 1 through required.
-                        acknowledged = int(row["acknowledged_through_seq"] or 0)
-                        replacement = self._mint_reply_invocation_uncommitted(
-                            thread_id, agent_name, acknowledged + 1,
-                        )
-                        self._conn.execute(
-                            "UPDATE thread_reply_delivery_state SET "
-                            "running_invocation_token = NULL, "
-                            "running_from_seq = NULL, "
-                            "running_through_seq = NULL, "
-                            "queued_invocation_token = ?, "
-                            "last_terminal_reason = 'daemon_restart', "
-                            "last_terminal_at = ?, updated_at = ? "
-                            "WHERE thread_id = ? AND agent_name = ?",
-                            (replacement, now, now, thread_id, agent_name),
-                        )
-                        results.append(ThreadReplyRecoveryEntry(
-                            thread_id=thread_id,
-                            agent_name=agent_name,
-                            invocation_token=replacement,
-                            kind="replacement_queued",
-                        ))
                         continue
+
+                    # Recoverable interrupted in-flight attempt: terminalize
+                    # ONLY the owned pending receipt as daemon_restart, preserve
+                    # the unacknowledged required range, clear running,
+                    # mint/record exactly one replacement queued REPLY.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'daemon_restart', consumed_at = ? "
+                        "WHERE invocation_token = ? AND status = 'pending'",
+                        (now, running_token),
+                    )
+                    replacement = self._mint_reply_invocation_uncommitted(
+                        thread_id, agent_name, acknowledged + 1,
+                    )
+                    self._conn.execute(
+                        "UPDATE thread_reply_delivery_state SET "
+                        "running_invocation_token = NULL, "
+                        "running_from_seq = NULL, "
+                        "running_through_seq = NULL, "
+                        "queued_invocation_token = ?, "
+                        "last_terminal_reason = 'daemon_restart', "
+                        "last_terminal_at = ?, updated_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ?",
+                        (replacement, now, now, thread_id, agent_name),
+                    )
+                    results.append(ThreadReplyRecoveryEntry(
+                        thread_id=thread_id,
+                        agent_name=agent_name,
+                        invocation_token=replacement,
+                        kind="replacement_queued",
+                    ))
+                    continue
 
                 if queued_token is not None:
                     inv = self._conn.execute(
