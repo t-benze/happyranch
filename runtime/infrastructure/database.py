@@ -5661,8 +5661,15 @@ class Database:
         REPLY portion of the generic reaper. Contract per state row:
 
           * queued token set, running clear → validate it is a pending
-            same-pair REPLY. Valid → retain and return it. Otherwise fail
-            closed: clear the queued slot, record a diagnostic, return nothing.
+            UNSTARTED same-pair REPLY (the claim CAS enforces the same
+            precondition). Valid → retain and return it. A queued receipt
+            with started_at set (malformed/crash-window state) fails closed
+            with a PAIR-SCOPED sweep: retire every owned pending REPLY
+            receipt, clear the queued slot, preserve required_through_seq,
+            never mint/return a replacement — the next conversational arrival
+            mints the single covering wake. Any other invalid queued token →
+            fail closed: clear the queued slot, record a diagnostic, return
+            nothing.
           * both ownership slots populated → corruption. Fail closed: clear
             both slots, record a diagnostic, return nothing, never mint.
           * running token set → recoverable ONLY when the receipt is owned by
@@ -5831,12 +5838,30 @@ class Database:
                         "WHERE invocation_token = ?",
                         (queued_token,),
                     ).fetchone()
-                    valid_queued = (
+                    same_pair = (
                         inv is not None
                         and inv["thread_id"] == thread_id
                         and inv["agent_name"] == agent_name
+                    )
+                    right_purpose = (
+                        inv is not None
                         and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                    )
+                    pending = (
+                        inv is not None
                         and inv["status"] == ThreadInvocationStatus.PENDING.value
+                    )
+                    started = inv is not None and inv["started_at"] is not None
+                    # A valid queued wake is a same-pair pending REPLY whose
+                    # receipt is UNSTARTED — claim_conversational_reply
+                    # enforces the identical precondition. started_at on a
+                    # queued receipt is malformed/crash-window state: the
+                    # worker claim would no-op and the pair would strand
+                    # forever, with later arrivals only coalescing into it.
+                    valid_queued = (
+                        inv is not None
+                        and same_pair and right_purpose and pending
+                        and not started
                     )
                     if valid_queued:
                         results.append(ThreadReplyRecoveryEntry(
@@ -5845,6 +5870,35 @@ class Database:
                             invocation_token=queued_token,
                             kind="retained_queued",
                         ))
+                    elif same_pair and right_purpose and pending and started:
+                        # Queued slot references a started receipt: invalid
+                        # queued ownership. Fail closed with a transactionally
+                        # atomic PAIR-SCOPED sweep (same class as the
+                        # both-slots corruption branch): retire EVERY owned
+                        # pending REPLY receipt for this pair — including
+                        # unreferenced orphans no slot points at — so no
+                        # pending REPLY survives that no claim can ever run,
+                        # then clear the queued slot. Never mint or return a
+                        # runnable replacement (no unowned provider run).
+                        # required_through_seq is preserved, so the next
+                        # conversational arrival mints a fresh wake covering
+                        # the retained range (no swallowed arrival).
+                        self._conn.execute(
+                            "UPDATE thread_invocations SET status = 'failed', "
+                            "decline_reason = 'invalid_queued_started_on_recovery', "
+                            "consumed_at = ? "
+                            "WHERE thread_id = ? AND agent_name = ? "
+                            "AND status = 'pending' AND purpose = 'reply'",
+                            (now, thread_id, agent_name),
+                        )
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "queued_invocation_token = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            ("invalid_queued_started_on_recovery", now, now,
+                             thread_id, agent_name),
+                        )
                     else:
                         # Fail closed: clear the queued slot, return nothing.
                         self._conn.execute(

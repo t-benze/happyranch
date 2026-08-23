@@ -1573,6 +1573,195 @@ def test_recovery_both_slots_corruption_missing_token_in_slot(tmp_path):
     assert db.get_invocation_any_status("missing-token") is None
 
 
+def test_recovery_queued_started_fails_closed_liveness(tmp_path):
+    """A queued slot referencing a same-pair pending REPLY whose receipt has
+    started_at set is malformed/crash-window state: the claim CAS would reject
+    it (started_at is not None) so retaining it strands the pair forever.
+    Recovery fails closed — clears the slot, retires the owned pending
+    receipt, returns no runnable token — and the pair stays live: the next
+    conversational arrival mints a fresh covering wake that claims cleanly.
+    """
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for i in range(2):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )  # transcript seqs 1..2
+
+    # Build the malformed durable state: queued slot -> started pending REPLY.
+    token = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+    db.stamp_invocation_started(token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 2, token, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    # The buggy behavior would have returned retained_queued here; recovery
+    # must instead return NOTHING runnable (no unowned provider run).
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+
+    # No stranded queued ownership: slot cleared with a truthful diagnostic.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "invalid_queued_started_on_recovery"
+    # Retained required range (acknowledged never advanced by recovery).
+    assert st.acknowledged_through_seq == 0
+    assert st.required_through_seq == 2
+
+    # The started receipt is terminalized (never claimable again) and zero
+    # owned pending REPLY rows survive the recovery.
+    inv = db.get_invocation_any_status(token)
+    assert inv.status is ThreadInvocationStatus.FAILED
+    assert inv.decline_reason == "invalid_queued_started_on_recovery"
+    assert inv.consumed_at is not None
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+    # The stranded token can no longer be claimed (no provider run) and the
+    # projection honestly reports retry_required instead of a fake queued.
+    assert db.claim_conversational_reply(token) is None
+    proj = {p.agent_name: p for p in db.list_reply_delivery_projections("THR-001")}
+    assert proj["alice"].state == "retry_required"
+    assert proj["alice"].from_seq == 1 and proj["alice"].through_seq == 2
+    assert proj["alice"].last_terminal_reason == "invalid_queued_started_on_recovery"
+
+    # No swallowed future conversational arrival: the next message mints a
+    # FRESH queued wake covering the retained range + the new message, and
+    # that wake claims cleanly (unstarted, same pair, pending).
+    seq, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m3",
+        recipients=["alice"],
+    )
+    assert seq == 3
+    assert len(arrivals) == 1
+    assert arrivals[0].coalesced is False
+    fresh = arrivals[0].invocation_token
+    assert fresh is not None and fresh != token
+    st2 = db.get_reply_delivery_state("THR-001", "alice")
+    assert st2 is not None
+    assert st2.queued_invocation_token == fresh
+    assert st2.acknowledged_through_seq == 0
+    assert st2.required_through_seq == 3
+    claim = db.claim_conversational_reply(fresh)
+    assert claim is not None
+    assert claim.running_from_seq == 1
+    assert claim.running_through_seq == 3
+    proj2 = {p.agent_name: p for p in db.list_reply_delivery_projections("THR-001")}
+    assert proj2["alice"].state == "running"
+    assert proj2["alice"].from_seq == 1 and proj2["alice"].through_seq == 3
+
+
+@pytest.mark.parametrize("n", [7, 8])
+def test_recovery_queued_started_pair_scoped_sweep_parameterized(tmp_path, n):
+    """MEM-223 class proof: a queued slot referencing a started pending REPLY
+    whose pair owns N pending REPLY receipts (1 referenced by the slot + N-1
+    unreferenced orphans) is swept PAIR-SCOPED. Every owned PENDING REPLY is
+    retired under ``invalid_queued_started_on_recovery`` (zero owned pending
+    REPLY remain, not merely the referenced row), the slot clears with a
+    truthful diagnostic, no replacement/returned token, and the foreign-pair /
+    wrong-purpose / already-terminal controls are never mutated. Repeat
+    recovery is a no-op.
+    """
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+
+    # The owned started receipt referenced by the corrupt queued slot.
+    referenced = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(referenced.invocation_token, session_id=None)
+
+    # N-1 additional owned same-pair PENDING REPLY receipts OUTSIDE the slot
+    # (orphaned duplicates that must not survive recovery either).
+    orphan_tokens = [
+        db.mint_thread_invocation(
+            thread_id="THR-001", agent_name="alice",
+            triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        for _ in range(n - 1)
+    ]
+
+    # Protected controls that must survive the sweep untouched:
+    foreign = db.mint_thread_invocation(  # foreign-pair PENDING REPLY (bob)
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    wrong_purpose = db.mint_thread_invocation(  # same-pair wrong-purpose PENDING
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+    terminal = db.mint_thread_invocation(  # same-pair already-terminal REPLY
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.consume_invocation(terminal.invocation_token)
+
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, referenced.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    entries = db.recover_reply_delivery_state()
+    # No returned/minted replacement on this fail-closed path.
+    assert entries == []
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "invalid_queued_started_on_recovery"
+
+    # Zero owned PENDING REPLY rows for the pair — the N-1 orphans are swept
+    # too, not merely the referenced receipt.
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+
+    # Each owned PENDING REPLY terminalized under the corruption reason.
+    for t in [referenced.invocation_token, *orphan_tokens]:
+        inv = db.get_invocation_any_status(t)
+        assert inv.status is ThreadInvocationStatus.FAILED
+        assert inv.decline_reason == "invalid_queued_started_on_recovery"
+        assert inv.consumed_at is not None
+
+    # Every protected control remains unchanged.
+    foreign_inv = db.get_invocation_any_status(foreign.invocation_token)
+    assert foreign_inv.status is ThreadInvocationStatus.PENDING
+    assert foreign_inv.decline_reason is None
+    wrong_inv = db.get_invocation_any_status(wrong_purpose.invocation_token)
+    assert wrong_inv.status is ThreadInvocationStatus.PENDING
+    assert wrong_inv.decline_reason is None
+    terminal_inv = db.get_invocation_any_status(terminal.invocation_token)
+    assert terminal_inv.status is ThreadInvocationStatus.CONSUMED
+    assert terminal_inv.decline_reason is None
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+    # Repeat recovery is a no-op.
+    second = db.recover_reply_delivery_state()
+    assert second == []
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+
+
 @pytest.mark.parametrize("n", [7, 8])
 def test_cutover_legacy_pending_deep_stack_parameterized(tmp_path, n):
     """Founder-required proof (THR-198 seq 20): a deep historical stack of N

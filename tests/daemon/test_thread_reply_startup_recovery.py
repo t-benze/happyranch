@@ -153,6 +153,60 @@ def test_startup_sweep_reaps_orphan_reply_without_state(tmp_path):
     assert db.list_reply_delivery_states() == []
 
 
+def test_startup_sweep_queued_started_fails_closed_nothing_reenqueued(tmp_path):
+    """A malformed queued slot referencing a started pending REPLY (crash-
+    window state the claim CAS would reject) fails closed at startup: NOTHING
+    is re-enqueued, the owned pending receipt is retired, the slot clears with
+    a truthful diagnostic, and the pair stays live — the next conversational
+    arrival mints a fresh wake that claims cleanly."""
+    db = _seed_org(tmp_path)
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.stamp_invocation_started(inv.invocation_token, session_id=None)
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "alice", 0, 1, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    tokens = _sweep_on_startup(db, TaskQueue(), "test")
+    # No runnable token returned — nothing is re-enqueued for the workers.
+    assert tokens == []
+
+    # The receipt is terminal with the truthful diagnostic; slot cleared.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status is ThreadInvocationStatus.FAILED
+    assert after.decline_reason == "invalid_queued_started_on_recovery"
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason == "invalid_queued_started_on_recovery"
+    assert _pending_reply_tokens(db) == []
+
+    # Liveness: the next conversational arrival mints a fresh covering wake.
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m2",
+        recipients=["alice"],
+    )
+    assert len(arrivals) == 1
+    fresh = arrivals[0].invocation_token
+    assert fresh is not None and fresh != inv.invocation_token
+    claim = db.claim_conversational_reply(fresh)
+    assert claim is not None
+    assert claim.running_from_seq == 1 and claim.running_through_seq == 2
+
+
 def test_startup_sweep_preserves_bootstrap_and_task_followup_reaping(tmp_path):
     """BOOTSTRAP and TASK_FOLLOWUP keep the generic daemon_restart reaper
     exactly — never routed through delivery-state recovery, never returned."""

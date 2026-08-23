@@ -68,9 +68,15 @@ exactly one follow-on; failures leave ``retry_required`` for the next
 conversational arrival (no hot loop). Abort/archive/participant-removal
 discard through an explicit boundary and never resurrect. At daemon startup,
 ``_sweep_on_startup`` replaces only the conversational ``REPLY`` portion of
-the generic reaper with store-owned recovery: valid queued wakes are retained
-and re-enqueued, an interrupted running ``REPLY`` becomes exactly one
-``daemon_restart`` replacement, and ``BOOTSTRAP`` / ``TASK_FOLLOWUP`` keep the
+the generic reaper with store-owned recovery: a valid queued wake — a
+pending, **unstarted** same-pair ``REPLY`` (the claim CAS enforces the same
+precondition) — is retained and re-enqueued; an interrupted running
+``REPLY`` becomes exactly one ``daemon_restart`` replacement; and a malformed
+queued slot referencing a **started** receipt fails closed — the owned
+pending ``REPLY`` receipts for the pair are retired, the slot clears with a
+truthful diagnostic, nothing is re-enqueued, and the preserved
+``required_through_seq`` lets the next conversational arrival mint the single
+covering wake. ``BOOTSTRAP`` / ``TASK_FOLLOWUP`` keep the
 generic reaper exactly. See ``docs/agent-guides/features-and-invariants.md`` →
 Thread Broadcast Routing for the full contract.
 
