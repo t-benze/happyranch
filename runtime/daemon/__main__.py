@@ -31,7 +31,7 @@ logger = logging.getLogger("happyranch.daemon")
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
-) -> None:
+) -> list[str]:
     """Post-restart recovery for a single org (Path B — THR-037 Change B).
 
     Under Path B ``in_progress`` is two-valued, discriminated by ``block_kind``:
@@ -72,6 +72,11 @@ def _sweep_on_startup(
     When ``orchestrator`` is None (test harnesses that don't construct one),
     Branch 1 degrades to liveness-probe-and-mark-failed only; no cascade
     notification to parent. Production always passes an orchestrator.
+
+    Returns the list of reply-delivery invocation tokens that must be
+    re-enqueued onto the thread queue after commit (retained valid queued
+    wakes and daemon_restart replacements from interrupted running replies);
+    the caller enqueues them once the event loop is live.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import (
@@ -236,31 +241,55 @@ def _sweep_on_startup(
         # The boot-time migration flips any legacy blocked(escalated) row
         # before startup; this branch is reached only via new escalated rows.
 
-    # Branch 6 — orphaned pending thread invocations: every reply subprocess
-    # was killed by the restart, so every pending invocation is orphaned.
-    # Reap them to 'failed' with decline_reason='daemon_restart' so the UI
-    # reply box (queued/working render) clears on next poll.
-    # A pending invocation is orphaned regardless of thread status (open or
-    # archived), so we reap across ALL threads.
-    #
-    # This uses db._conn directly (bypassing the Database._synchronized
-    # lock) because _sweep_on_startup runs synchronously at boot, before
-    # the event loop or worker pool starts — there is no concurrent access
-    # to the DB connection at this point. The UPDATE is guarded by
-    # WHERE status='pending' so already-terminal rows are preserved.
+    # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
+    # Replace ONLY the conversational REPLY portion of the generic reaper with
+    # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
+    # keep the generic daemon_restart reaping below.
     from datetime import datetime, timezone
     _now = datetime.now(timezone.utc).isoformat()
+
+    # 6a. Activate per-pair reply delivery state for every OPEN thread
+    # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
+    recovered_tokens: list[str] = []
+    for thread_id in db.list_open_thread_ids():
+        db.cutover_thread_reply_delivery_state(thread_id)
+
+    # 6b. Durable reply-delivery recovery: retain valid queued wakes, replace
+    # interrupted running attempts with exactly one daemon_restart replacement.
+    for entry in db.recover_reply_delivery_state():
+        recovered_tokens.append(entry.invocation_token)
+
+    # 6c. Reap the remaining conversational REPLY rows not governed by any
+    # delivery-state ownership slot (orphan legacy receipts — e.g. archived
+    # threads cutover does not reach). Never touch the governed queued wakes
+    # retained above.
+    db._conn.execute(
+        "UPDATE thread_invocations SET status = 'failed', "
+        "decline_reason = ?, consumed_at = ? "
+        "WHERE status = 'pending' AND purpose = 'reply' "
+        "AND invocation_token NOT IN "
+        "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
+        " WHERE queued_invocation_token IS NOT NULL) "
+        "AND invocation_token NOT IN "
+        "(SELECT running_invocation_token FROM thread_reply_delivery_state "
+        " WHERE running_invocation_token IS NOT NULL)",
+        ("daemon_restart", _now),
+    )
+
+    # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
     cursor = db._conn.execute(
         "UPDATE thread_invocations SET status = 'failed', "
         "decline_reason = ?, consumed_at = ? "
-        "WHERE status = 'pending'",
+        "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
         ("daemon_restart", _now),
     )
     db._conn.commit()
     logger.debug(
-        "startup sweep: reaped %d orphaned pending thread invocations",
-        cursor.rowcount,
+        "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
+        "invocations; recovered %d reply-delivery tokens",
+        cursor.rowcount, len(recovered_tokens),
     )
+    return recovered_tokens
 
 
 def _build_state(settings: Settings) -> DaemonState:
@@ -290,7 +319,13 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():
-        _sweep_on_startup(org.db, state.queue, org.slug, org.orchestrator)
+        recovered_tokens = _sweep_on_startup(
+            org.db, state.queue, org.slug, org.orchestrator,
+        )
+        # GitHub #688 Slice B: startup reply-delivery recovery returns the
+        # queued/replacement tokens to re-enqueue once the event loop is live
+        # (the lifespan enqueues them before thread workers start).
+        org._startup_recovered_thread_tokens = recovered_tokens
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.

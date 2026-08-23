@@ -6,6 +6,8 @@
 
 **Architecture:** Persist a per-`(thread, agent)` Claude session id on `thread_participants`. Turn 1 (no stored id) runs the full prompt and captures Claude's `.session_id` from the JSON output. Turn 2+ invokes with `--resume <stored_id>` and a delta prompt containing only messages newer than the stored watermark. If `--resume` fails with a session-not-found signature, fall back transparently to a full-context fresh session. The SQLite transcript remains the canonical record; the session id is a pure optimization.
 
+**GH-688 Phase 1 (landed): claim gate.** For a conversational `REPLY` whose delivery state was durably claimed (`running_from_seq`..`running_through_seq`), the resume delta is allowed only when the stored `last_resumed_seq` watermark is **strictly below** the claim's `running_from_seq`; otherwise the runner uses the full prompt. `last_resumed_seq` is observed session presentation and is never the delivery cursor — it can never omit a message the delivery state requires. The claimed REPLY prompt also explicitly states its inclusive delivery range.
+
 **Tech Stack:** Python 3.11+, SQLite (WAL), Pydantic v2, `claude -p --output-format json`. Scope is **threads only** — talks have no daemon-side per-turn executor loop (they are interactive founder↔agent sessions), so the issue's talk column is intentionally dropped. Resume is **Claude-only**; codex/opencode/pi participants are unchanged.
 
 ---

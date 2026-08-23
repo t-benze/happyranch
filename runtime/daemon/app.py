@@ -194,6 +194,18 @@ async def _lifespan(app: FastAPI):
                 org.orchestrator, _task_id,
                 trigger="startup_recovery", triggering_job_id=None,
             )
+
+    # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
+    # BEFORE the thread workers start draining each org's queue, so retained
+    # queued wakes and daemon_restart replacements are picked up exactly once
+    # (duplicate notifications remain harmless through the claim CAS).
+    from runtime.daemon.thread_queue import ThreadJob
+    for org in state.orgs.values():
+        for token in getattr(org, "_startup_recovered_thread_tokens", []):
+            await org.thread_queue.put(
+                ThreadJob(org_slug=org.slug, invocation_token=token),
+            )
+
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)

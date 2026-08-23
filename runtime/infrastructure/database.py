@@ -27,8 +27,12 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    ThreadReplyArrival,
+    ThreadReplyClaim,
     ThreadReplyDeliveryState,
     ThreadReplyRecoveryEntry,
+    ThreadReplySettlement,
+    ReplyDeliveryProjection,
     ThreadScopedAttachment,
     ThreadStatus,
     TokenUsage,
@@ -4401,6 +4405,68 @@ class Database:
         )
         self._conn.commit()
 
+    def _append_thread_message_uncommitted(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        decline_reason: str | None = None,
+        system_payload: dict | None = None,
+        attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
+    ) -> int:
+        """Allocate seq + insert a message (and its attachments) WITHOUT
+        opening or committing a transaction. Callers must own the transaction
+        (``BEGIN IMMEDIATE`` / ``BEGIN``) and commit/rollback themselves.
+
+        Returns the allocated seq.
+        """
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        )
+        next_seq = cursor.fetchone()["next_seq"]
+        self._conn.execute(
+            "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+            "body_markdown, decline_reason, system_payload_json, "
+            "sent_from_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                next_seq,
+                speaker,
+                kind.value,
+                body_markdown,
+                decline_reason,
+                json.dumps(system_payload) if system_payload else None,
+                sent_from_task_id,
+                _now().isoformat(),
+            ),
+        )
+        for ordinal, attachment in enumerate(attachments or []):
+            self._conn.execute(
+                "INSERT INTO thread_message_attachments ("
+                "thread_id, message_seq, ordinal, artifact_name, display_name, "
+                "size_bytes, content_type, uploaded_by, created_at, "
+                "thread_attachment_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    next_seq,
+                    ordinal,
+                    attachment.artifact_name,
+                    attachment.display_name,
+                    attachment.size_bytes,
+                    attachment.content_type,
+                    attachment.uploaded_by,
+                    _now().isoformat(),
+                    attachment.thread_attachment_id,
+                ),
+            )
+        return next_seq
+
     @_synchronized
     def append_thread_message(
         self,
@@ -4422,48 +4488,16 @@ class Database:
         """
         try:
             self._conn.execute("BEGIN")
-            cursor = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
-                "FROM thread_messages WHERE thread_id = ?",
-                (thread_id,),
+            next_seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=kind,
+                body_markdown=body_markdown,
+                decline_reason=decline_reason,
+                system_payload=system_payload,
+                attachments=attachments,
+                sent_from_task_id=sent_from_task_id,
             )
-            next_seq = cursor.fetchone()["next_seq"]
-            self._conn.execute(
-                "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
-                "body_markdown, decline_reason, system_payload_json, "
-                "sent_from_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    thread_id,
-                    next_seq,
-                    speaker,
-                    kind.value,
-                    body_markdown,
-                    decline_reason,
-                    json.dumps(system_payload) if system_payload else None,
-                    sent_from_task_id,
-                    _now().isoformat(),
-                ),
-            )
-            for ordinal, attachment in enumerate(attachments or []):
-                self._conn.execute(
-                    "INSERT INTO thread_message_attachments ("
-                    "thread_id, message_seq, ordinal, artifact_name, display_name, "
-                    "size_bytes, content_type, uploaded_by, created_at, "
-                    "thread_attachment_id"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        thread_id,
-                        next_seq,
-                        ordinal,
-                        attachment.artifact_name,
-                        attachment.display_name,
-                        attachment.size_bytes,
-                        attachment.content_type,
-                        attachment.uploaded_by,
-                        _now().isoformat(),
-                        attachment.thread_attachment_id,
-                    ),
-                )
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -5826,6 +5860,543 @@ class Database:
             self._conn.rollback()
             raise
         return results
+
+    # ── GitHub #688 Phase 1 Slice B: reply delivery state wiring ────────────
+    #
+    # Slice A shipped the table + cutover/recovery primitives UNHOOKED. Slice B
+    # owns the route/runner activation and the atomic conversational-arrival,
+    # claim, and settlement operations. The store is the single authority for
+    # the queued/running token transitions; routes/runner MUST NOT open-code
+    # them. All state-changing methods run one explicit SQLite transaction
+    # (BEGIN IMMEDIATE) so the append+arrival / append+settle+broadcast units
+    # are atomic and queue notifications happen strictly after commit.
+
+    @_synchronized
+    def list_open_thread_ids(self) -> list[str]:
+        """Every OPEN thread id (activation cutover sweep at startup)."""
+        cursor = self._conn.execute(
+            "SELECT id FROM threads WHERE status = 'open' ORDER BY id",
+        )
+        return [r["id"] for r in cursor.fetchall()]
+
+    def _apply_arrival_uncommitted(
+        self, thread_id: str, agent_name: str, seq: int,
+    ) -> ThreadReplyArrival:
+        """Raise ``required_through_seq`` to ``seq`` for one recipient pair,
+        minting exactly one queued REPLY only when neither queued nor running
+        ownership exists. Runs inside an open transaction (no commit).
+
+        ``seq`` must be the just-appended conversational message sequence;
+        the speaker is excluded by the caller. A missing pair row is created
+        with acknowledged = seq - 1 (no historic replay) so Phase 1 delivery
+        for a newly-seen pair starts at this message.
+        """
+        now = _now().isoformat()
+        row = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        ).fetchone()
+        if row is None:
+            # New pair: seed acknowledged = seq - 1 (tail before this message),
+            # required = seq, and mint one queued wake covering seq..seq.
+            token = self._mint_reply_invocation_uncommitted(
+                thread_id, agent_name, seq,
+            )
+            self._conn.execute(
+                "INSERT INTO thread_reply_delivery_state "
+                "(thread_id, agent_name, acknowledged_through_seq, "
+                "required_through_seq, queued_invocation_token, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (thread_id, agent_name, seq - 1, seq, token, now),
+            )
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=token,
+                coalesced=False, from_seq=seq, through_seq=seq,
+            )
+
+        acknowledged = int(row["acknowledged_through_seq"] or 0)
+        required = int(row["required_through_seq"] or 0)
+        queued = row["queued_invocation_token"]
+        running = row["running_invocation_token"]
+        if seq <= required:
+            # Idempotent safety: already covered by the required watermark.
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=None,
+                coalesced=True, from_seq=acknowledged + 1, through_seq=required,
+            )
+
+        new_required = seq
+        if queued is not None or running is not None:
+            # Coalesce: raise required only; the existing wake already owns the
+            # delivery obligation.
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
+                "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                (new_required, now, thread_id, agent_name),
+            )
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=None,
+                coalesced=True,
+                from_seq=acknowledged + 1, through_seq=new_required,
+            )
+
+        # No queued/running ownership: mint one queued wake covering
+        # acknowledged+1 .. seq.
+        from_seq = acknowledged + 1
+        token = self._mint_reply_invocation_uncommitted(
+            thread_id, agent_name, from_seq,
+        )
+        self._conn.execute(
+            "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
+            "queued_invocation_token = ?, updated_at = ? "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (new_required, token, now, thread_id, agent_name),
+        )
+        return ThreadReplyArrival(
+            agent_name=agent_name, invocation_token=token,
+            coalesced=False, from_seq=from_seq, through_seq=new_required,
+        )
+
+    @_synchronized
+    def record_conversational_arrival(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
+        recipients: list[str],
+    ) -> tuple[int, list[ThreadReplyArrival]]:
+        """Atomic conversational-arrival: append the message and, for every
+        recipient (already excluding the speaker), raise required_through_seq
+        and create/coalesce exactly one queued REPLY.
+
+        Returns (seq, arrivals). ``arrivals`` carry the newly-minted queue
+        tokens (invocation_token is None when coalesced); the caller enqueues
+        them ONLY after this transaction commits.
+        """
+        arrivals: list[ThreadReplyArrival] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=kind,
+                body_markdown=body_markdown,
+                attachments=attachments,
+                sent_from_task_id=sent_from_task_id,
+            )
+            for name in recipients:
+                arrivals.append(
+                    self._apply_arrival_uncommitted(thread_id, name, seq)
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return seq, arrivals
+
+    def _settle_reply_uncommitted(
+        self,
+        token: str,
+        *,
+        outcome: str,
+        decline_reason: str | None = None,
+    ) -> ThreadReplySettlement | None:
+        """Settle a conversational REPLY terminal path inside the open
+        transaction. Returns None when ``token`` is not the running token of
+        any delivery-state row (caller falls back to the legacy terminal path).
+
+        Settlement contract (brief item 4):
+          * reply/decline acknowledge ONLY the claimed coverage
+            (``running_through``). The agent's own reply sequence is never
+            part of its own required range (recipients exclude the speaker),
+            so acknowledging through the claimed range never swallows an
+            arrival that landed after the prompt was built.
+          * arrivals during the run (``required > running_through``) yield
+            exactly one post-settlement follow-on covering the retained
+            unacknowledged range; it is the single wake for all of them.
+          * failed/timeout do NOT advance acknowledgement, mint no immediate
+            retry, and leave ``retry_required`` (``required > acknowledged``)
+            for the next conversational arrival to cover.
+        """
+        now = _now().isoformat()
+        row = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE running_invocation_token = ? OR queued_invocation_token = ?",
+            (token, token),
+        ).fetchone()
+        if row is None:
+            return None
+        thread_id = row["thread_id"]
+        agent_name = row["agent_name"]
+        acknowledged = int(row["acknowledged_through_seq"] or 0)
+        required = int(row["required_through_seq"] or 0)
+        if row["running_invocation_token"] == token:
+            running_through = int(row["running_through_seq"] or 0)
+        else:
+            # A queued (not-yet-claimed) token: its delivery coverage is
+            # acknowledged+1 .. required. Declining/replying to the whole
+            # unclaimed wake acknowledges that full coverage.
+            running_through = required
+
+        if outcome == "reply":
+            status = ThreadInvocationStatus.CONSUMED.value
+        elif outcome == "decline":
+            status = ThreadInvocationStatus.DECLINED.value
+        elif outcome == "timeout":
+            status = ThreadInvocationStatus.TIMEOUT.value
+        else:
+            status = ThreadInvocationStatus.FAILED.value
+        # reply/decline acknowledge exactly the claimed coverage; failure and
+        # timeout leave the previously acknowledged watermark untouched.
+        new_ack = running_through if outcome in ("reply", "decline") else acknowledged
+
+        self._conn.execute(
+            "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (status, decline_reason, now, token),
+        )
+        terminal_reason = (
+            decline_reason if outcome in ("failed", "timeout") else None
+        )
+        self._conn.execute(
+            "UPDATE thread_reply_delivery_state SET "
+            "queued_invocation_token = NULL, "
+            "running_invocation_token = NULL, running_from_seq = NULL, "
+            "running_through_seq = NULL, acknowledged_through_seq = ?, "
+            "last_terminal_reason = ?, last_terminal_at = ?, updated_at = ? "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (new_ack, terminal_reason, now, now, thread_id, agent_name),
+        )
+
+        follow_on: str | None = None
+        if outcome in ("reply", "decline") and required > new_ack:
+            # Exactly one follow-on covering arrivals strictly after the
+            # immutable running range (``required > running_through``). Its
+            # triggering_seq is the first unacknowledged sequence.
+            follow_on = self._mint_reply_invocation_uncommitted(
+                thread_id, agent_name, new_ack + 1,
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "queued_invocation_token = ?, updated_at = ? "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (follow_on, now, thread_id, agent_name),
+            )
+
+        return ThreadReplySettlement(
+            thread_id=thread_id,
+            agent_name=agent_name,
+            outcome=outcome,  # type: ignore[arg-type]
+            acknowledged_through_seq=new_ack,
+            required_through_seq=required,
+            # ``retry_required`` is the residual-obligation diagnostic: True
+            # only when the range is still unacknowledged AND no follow-on wake
+            # was minted to carry it (failure/timeout). A reply/decline that
+            # minted a follow-on has an active queued wake, so it is not
+            # retry_required.
+            retry_required=(required > new_ack and follow_on is None),
+            follow_on_token=follow_on,
+        )
+
+    @_synchronized
+    def settle_conversational_reply(
+        self,
+        *,
+        token: str,
+        outcome: str,
+        decline_reason: str | None = None,
+    ) -> ThreadReplySettlement | None:
+        """Public settlement seam for a conversational REPLY terminal path.
+
+        Returns None when the token is not the running token of any delivery-
+        state row (BOOTSTRAP/TASK_FOLLOWUP, or an already-settled/stale REPLY);
+        the caller then applies the legacy terminal transition.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            settlement = self._settle_reply_uncommitted(
+                token,
+                outcome=outcome,
+                decline_reason=decline_reason,
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return settlement
+
+    @_synchronized
+    def reply_conversational(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        body_markdown: str | None,
+        attachments: list[ThreadAttachment] | None,
+        token: str,
+        token_purpose: ThreadInvocationPurpose,
+    ) -> tuple[int, ThreadReplySettlement | None, list[ThreadReplyArrival]]:
+        """Atomic reply: append the reply message, settle the held token, and
+        broadcast to every OTHER participant.
+
+        Returns (seq, settlement, arrivals). ``settlement`` is None for a
+        non-REPLY token (BOOTSTRAP/TASK_FOLLOWUP use the legacy consume); the
+        broadcast to other participants always uses the coalescing arrival path
+        (replacing the legacy per-recipient REPLY mint).
+        """
+        now = _now().isoformat()
+        arrivals: list[ThreadReplyArrival] = []
+        settlement: ThreadReplySettlement | None = None
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_markdown,
+                attachments=attachments,
+            )
+            if token_purpose is ThreadInvocationPurpose.REPLY:
+                settlement = self._settle_reply_uncommitted(
+                    token,
+                    outcome="reply",
+                )
+                if settlement is None:
+                    # Legacy/stale pending REPLY not owned by delivery state:
+                    # fall back to the legacy consume transition.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'consumed', "
+                        "consumed_at = ? WHERE invocation_token = ? "
+                        "AND status = 'pending'",
+                        (now, token),
+                    )
+            else:
+                self._conn.execute(
+                    "UPDATE thread_invocations SET status = 'consumed', "
+                    "consumed_at = ? WHERE invocation_token = ? "
+                    "AND status = 'pending'",
+                    (now, token),
+                )
+            for p in self._conn.execute(
+                "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall():
+                name = p["agent_name"]
+                if name == speaker:
+                    continue
+                arrivals.append(
+                    self._apply_arrival_uncommitted(thread_id, name, seq)
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return seq, settlement, arrivals
+
+    @_synchronized
+    def claim_conversational_reply(
+        self, token: str,
+    ) -> ThreadReplyClaim | None:
+        """Durable queued→running CAS for a conversational REPLY.
+
+        Succeeds only when ``token`` is the pair's queued_invocation_token AND
+        the receipt is a pending, unstarted, same-pair REPLY. In one
+        transaction it transfers queued→running, snapshots the immutable
+        inclusive range (running_from = acknowledged + 1, running_through =
+        required), and stamps started_at. A duplicate/stale job returns None so
+        the runner no-ops before any prompt/subprocess work.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT * FROM thread_reply_delivery_state "
+                "WHERE queued_invocation_token = ?",
+                (token,),
+            ).fetchone()
+            if row is None or row["running_invocation_token"] is not None:
+                self._conn.commit()
+                return None
+            inv = self._conn.execute(
+                "SELECT * FROM thread_invocations WHERE invocation_token = ?",
+                (token,),
+            ).fetchone()
+            valid = (
+                inv is not None
+                and inv["thread_id"] == row["thread_id"]
+                and inv["agent_name"] == row["agent_name"]
+                and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                and inv["status"] == ThreadInvocationStatus.PENDING.value
+                and inv["started_at"] is None
+            )
+            if not valid:
+                self._conn.commit()
+                return None
+            acknowledged = int(row["acknowledged_through_seq"] or 0)
+            required = int(row["required_through_seq"] or 0)
+            running_from = acknowledged + 1
+            running_through = required
+            self._conn.execute(
+                "UPDATE thread_invocations SET started_at = ? "
+                "WHERE invocation_token = ? AND status = 'pending'",
+                (now, token),
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "queued_invocation_token = NULL, "
+                "running_invocation_token = ?, running_from_seq = ?, "
+                "running_through_seq = ?, updated_at = ? "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (token, running_from, running_through, now,
+                 row["thread_id"], row["agent_name"]),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return ThreadReplyClaim(
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            invocation_token=token,
+            acknowledged_through_seq=acknowledged,
+            required_through_seq=required,
+            running_from_seq=running_from,
+            running_through_seq=running_through,
+        )
+
+    @_synchronized
+    def discard_reply_delivery(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str | None = None,
+        decline_reason: str,
+        status: ThreadInvocationStatus = ThreadInvocationStatus.FAILED,
+    ) -> int:
+        """Terminalize owned conversational REPLY state with an explicit
+        discard boundary (abort / archive / participant removal).
+
+        Terminalizes every pending REPLY invocation for (thread_id[,
+        agent_name]) under ``status`` + ``decline_reason``, clears the queued/
+        running ownership slots + range, and advances acknowledged to required
+        so no queued/running/retry_required obligation survives and a later
+        message starts after the boundary. Never touches BOOTSTRAP /
+        TASK_FOLLOWUP rows and never resurrects a discarded wake.
+        Returns the number of reply invocation rows terminalized.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if agent_name is None:
+                cursor = self._conn.execute(
+                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                    "consumed_at = ? WHERE thread_id = ? AND status = 'pending' "
+                    "AND purpose = 'reply'",
+                    (status.value, decline_reason, now, thread_id),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                    "consumed_at = ? WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply'",
+                    (status.value, decline_reason, now, thread_id, agent_name),
+                )
+            if agent_name is None:
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "acknowledged_through_seq = required_through_seq, "
+                    "queued_invocation_token = NULL, "
+                    "running_invocation_token = NULL, running_from_seq = NULL, "
+                    "running_through_seq = NULL, "
+                    "last_terminal_reason = ?, last_terminal_at = ?, "
+                    "updated_at = ? WHERE thread_id = ?",
+                    (decline_reason, now, now, thread_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "acknowledged_through_seq = required_through_seq, "
+                    "queued_invocation_token = NULL, "
+                    "running_invocation_token = NULL, running_from_seq = NULL, "
+                    "running_through_seq = NULL, "
+                    "last_terminal_reason = ?, last_terminal_at = ?, "
+                    "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                    (decline_reason, now, now, thread_id, agent_name),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return cursor.rowcount
+
+    @_synchronized
+    def list_reply_delivery_projections(
+        self, thread_id: str,
+    ) -> list[ReplyDeliveryProjection]:
+        """Pair-level reply_delivery projection for a thread (server contract).
+
+        Derived from ``thread_reply_delivery_state`` only — never fabricated
+        from per-message invocation rows. A fully-settled pair (nothing queued/
+        running/required) is omitted; terminal history remains on the
+        per-message responder strips. ``coalesced_message_count`` is the number
+        of transcript rows the wake's range covers (COUNT, not subtraction).
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state WHERE thread_id = ? "
+            "ORDER BY agent_name",
+            (thread_id,),
+        ).fetchall()
+        out: list[ReplyDeliveryProjection] = []
+        for row in rows:
+            acknowledged = int(row["acknowledged_through_seq"] or 0)
+            required = int(row["required_through_seq"] or 0)
+            queued = row["queued_invocation_token"]
+            running = row["running_invocation_token"]
+            running_from = row["running_from_seq"]
+            running_through = row["running_through_seq"]
+            started_at = None
+            if running is not None:
+                state = "running"
+                from_seq = int(running_from or 0)
+                through_seq = int(running_through or 0)
+                inv = self._conn.execute(
+                    "SELECT started_at FROM thread_invocations "
+                    "WHERE invocation_token = ?",
+                    (running,),
+                ).fetchone()
+                if inv is not None:
+                    started_at = inv["started_at"]
+            elif queued is not None:
+                state = "queued"
+                from_seq = acknowledged + 1
+                through_seq = required
+            elif required > acknowledged:
+                state = "retry_required"
+                from_seq = acknowledged + 1
+                through_seq = required
+            else:
+                continue  # fully settled — omit from the live projection
+            cnt = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM thread_messages "
+                "WHERE thread_id = ? AND seq >= ? AND seq <= ?",
+                (thread_id, from_seq, through_seq),
+            ).fetchone()
+            out.append(ReplyDeliveryProjection(
+                agent_name=row["agent_name"],
+                state=state,  # type: ignore[arg-type]
+                from_seq=from_seq,
+                through_seq=through_seq,
+                coalesced_message_count=int(cnt["n"]),
+                started_at=started_at,
+                updated_at=row["updated_at"],
+                last_terminal_reason=row["last_terminal_reason"],
+            ))
+        return out
 
     @_synchronized
     def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:

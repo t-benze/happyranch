@@ -936,16 +936,28 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
-    before_invocations = len(org_state.db.list_thread_invocations(tid))
+    before = org_state.db.list_reply_delivery_projections(tid)
+    assert {p.agent_name: (p.state, p.through_seq) for p in before} == {
+        "dev_agent": ("queued", 1),
+        "qa_engineer": ("queued", 1),
+    }
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/send",
         json={"body_markdown": "any thoughts?"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    after_invocations = len(org_state.db.list_thread_invocations(tid))
-    # Broadcast model: /send mints REPLY for every participant (2 agents).
-    assert after_invocations == before_invocations + 2
+    # Broadcast + coalescing: /send raises each participant's required
+    # watermark without minting a second wake — still one queued wake per
+    # participant, now covering both messages (through_seq == 2).
+    after = org_state.db.list_reply_delivery_projections(tid)
+    by_agent = {p.agent_name: p for p in after}
+    assert set(by_agent) == {"dev_agent", "qa_engineer"}
+    assert by_agent["dev_agent"].state == "queued"
+    assert by_agent["dev_agent"].from_seq == 1
+    assert by_agent["dev_agent"].through_seq == 2
+    assert by_agent["qa_engineer"].state == "queued"
+    assert by_agent["qa_engineer"].through_seq == 2
 
 
 def test_thread_send_accepts_attachment_only(client, auth_headers, org_state) -> None:
@@ -3480,3 +3492,262 @@ def test_thread_messages_pagination_no_more_for_short_thread(tmp_home, app, org_
     assert "next_since_seq" in data
     assert data["next_since_seq"] is not None, "even a single message should report next_since_seq"
     assert len(data["messages"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# GitHub #688 Phase 1 Slice B — reply_delivery contract + route settlement
+# ---------------------------------------------------------------------------
+
+
+def test_get_thread_reply_delivery_projection_queued(tmp_home, app, org_state, auth_headers):
+    """GET /threads/{id} carries the pair-level reply_delivery projection with
+    truthful queued state, inclusive range and store-computed coalesced count."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={
+            "subject": "Refund policy",
+            "recipients": ["dev_agent", "qa_engineer"],
+            "body_markdown": "should we cap?",
+        },
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    # A second message coalesces into the same queued wake (range 1..2).
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "any thoughts?"},
+        headers=auth_headers,
+    )
+
+    body = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers,
+    ).json()
+    rd = {p["agent_name"]: p for p in body["reply_delivery"]}
+    assert set(rd) == {"dev_agent", "qa_engineer"}
+    for p in rd.values():
+        assert p["state"] == "queued"
+        assert p["from_seq"] == 1
+        assert p["through_seq"] == 2
+        assert p["coalesced_message_count"] == 2
+        assert p["started_at"] is None  # queued never renders as a subprocess
+        assert p["last_terminal_reason"] is None
+    # Historical per-message responder strips remain (terminal + queued history
+    # grouped by triggering seq, unchanged by Slice B).
+    strips = body["messages"][0]["responder_status"]
+    assert {s["agent_name"] for s in strips} == {"dev_agent", "qa_engineer"}
+    assert all(s["status"] == "queued" for s in strips)
+
+
+def test_thread_and_messages_reply_delivery_parity(tmp_home, app, org_state, auth_headers):
+    """GET /threads/{id} and GET /threads/{id}/messages agree on the pair-level
+    projection (same typed contract on both surfaces)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    thread_body = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers,
+    ).json()
+    msgs_body = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/messages", headers=auth_headers,
+    ).json()
+    assert msgs_body["reply_delivery"] == thread_body["reply_delivery"]
+    assert msgs_body["reply_delivery"][0]["agent_name"] == "dev_agent"
+    assert msgs_body["reply_delivery"][0]["state"] == "queued"
+
+
+def test_reply_route_settles_claimed_range_and_schedules_followon(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A route reply settles the claimed running range through the store and
+    schedules exactly one follow-on for arrivals during the run plus the
+    broadcast wake for other participants (atomic ordering preserved)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    dev_inv = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.agent_name == "dev_agent"
+    )
+    # Claim dev_agent's wake (as the runner would) → running range 1..1.
+    claim = org_state.db.claim_conversational_reply(dev_inv.invocation_token)
+    assert claim is not None and claim.running_through_seq == 1
+    # Arrival during the run: founder /send raises dev_agent required to 2.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "m2-in-run"},
+        headers=auth_headers,
+    )
+    # dev_agent replies via the route.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={"thread_id": tid, "invocation_token": dev_inv.invocation_token,
+              "speaker": "dev_agent", "body_markdown": "my reply",
+              "in_response_to_seq": 2},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    dev_state = org_state.db.get_reply_delivery_state(tid, "dev_agent")
+    assert dev_state is not None
+    assert dev_state.acknowledged_through_seq == 1  # claimed coverage only
+    assert dev_state.required_through_seq == 2
+    assert dev_state.queued_invocation_token is not None  # one follow-on
+    assert dev_state.running_invocation_token is None
+    assert (
+        org_state.db.get_invocation_any_status(dev_inv.invocation_token).status
+        is ThreadInvocationStatus.CONSUMED
+    )
+    # Exactly one follow-on REPLY for dev_agent; qa_engineer keeps its single
+    # coalesced wake (the broadcast coalesces into it — no duplicate pair row).
+    from runtime.models import ThreadInvocation
+    pending = [
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.status is ThreadInvocationStatus.PENDING
+    ]
+    assert {i.agent_name for i in pending} == {"dev_agent", "qa_engineer"}
+    qa = next(i for i in pending if i.agent_name == "qa_engineer")
+    # qa_engineer's original wake (triggering m1) now covers 1..3 via coalescing.
+    assert qa.triggering_seq == 1
+    qa_rd = next(
+        p for p in org_state.db.list_reply_delivery_projections(tid)
+        if p.agent_name == "qa_engineer"
+    )
+    assert qa_rd.state == "queued"
+    assert qa_rd.from_seq == 1 and qa_rd.through_seq == 3
+    assert qa_rd.coalesced_message_count == 3
+
+
+def test_decline_route_settles_claimed_range(tmp_home, app, org_state, auth_headers):
+    """A route decline settles through the store: claimed range acknowledged,
+    invocation DECLINED, no transcript row."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    inv = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.agent_name == "dev_agent"
+    )
+    org_state.db.claim_conversational_reply(inv.invocation_token)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/decline",
+        json={"thread_id": tid, "invocation_token": inv.invocation_token,
+              "speaker": "dev_agent", "reason": "nothing to add",
+              "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert (
+        org_state.db.get_invocation_any_status(inv.invocation_token).status
+        is ThreadInvocationStatus.DECLINED
+    )
+    dev_state = org_state.db.get_reply_delivery_state(tid, "dev_agent")
+    assert dev_state is not None
+    assert dev_state.acknowledged_through_seq == 1
+    assert dev_state.queued_invocation_token is None
+    assert dev_state.running_invocation_token is None
+    # Silent decline: no transcript row beyond the original message.
+    msgs = org_state.db.list_thread_messages(tid)
+    assert all(m.kind.value != "decline" for m in msgs)
+
+
+def test_abort_replies_discards_state_no_resurrection(tmp_home, app, org_state, auth_headers):
+    """Founder abort terminalizes owned REPLY rows and clears state through an
+    explicit boundary; a later message starts a FRESH wake, not a resurrection."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    old_token = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.agent_name == "dev_agent"
+    ).invocation_token
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies", headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    # No live projection, no pending REPLYs.
+    assert org_state.db.list_reply_delivery_projections(tid) == []
+    pending = [
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.status is ThreadInvocationStatus.PENDING
+    ]
+    assert pending == []
+    assert (
+        org_state.db.get_invocation_any_status(old_token).status
+        is ThreadInvocationStatus.FAILED
+    )
+
+    # A later conversational message creates a fresh wake after the boundary.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "m2-after-abort"},
+        headers=auth_headers,
+    )
+    new_inv = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.status is ThreadInvocationStatus.PENDING
+    )
+    assert new_inv.invocation_token != old_token  # no resurrection
+    assert new_inv.triggering_seq == 2
+    rd = org_state.db.list_reply_delivery_projections(tid)
+    assert len(rd) == 1 and rd[0].state == "queued"
+    assert rd[0].from_seq == 2 and rd[0].through_seq == 2
+
+
+def test_archive_discards_reply_delivery_state(tmp_home, app, org_state, auth_headers):
+    """Archiving a thread discards owned reply-delivery state with an explicit
+    boundary; the archived thread's live projection is empty."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "m2"},
+        headers=auth_headers,
+    )
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done"}, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert org_state.db.list_reply_delivery_projections(tid) == []
+    state = org_state.db.get_reply_delivery_state(tid, "dev_agent")
+    assert state is not None
+    assert state.queued_invocation_token is None
+    assert state.running_invocation_token is None
+    assert state.acknowledged_through_seq == state.required_through_seq == 2
+    pending = [
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.status is ThreadInvocationStatus.PENDING
+    ]
+    assert pending == []

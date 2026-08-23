@@ -640,8 +640,10 @@ def test_reply_delivery_state_table_idempotent_create(tmp_path):
 
 
 def test_reply_delivery_state_dark_under_existing_paths(tmp_path):
-    """Existing REPLY mint path does not populate the new table (control pairs
-    remain inactive until Slice B wires activation)."""
+    """The LEGACY direct-mint path (append_thread_message + mint_thread_invocation)
+    does not populate the delivery-state table: Slice B's store-owned writers
+    (record_conversational_arrival / reply_conversational) are the only producers,
+    so a legacy/control path can never accidentally create pair state."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -1659,3 +1661,692 @@ def test_cutover_legacy_pending_deep_stack_parameterized(tmp_path, n):
     assert db2.cutover_thread_reply_delivery_state("THR-001") == []
     assert len(_pending_reply_rows(db2, "THR-001", "alice")) == 1
     assert len(_pending_reply_rows(db2, "THR-001", "bob")) == 1
+
+
+# ── GitHub #688 Phase 1 Slice B: route/runner activation store ops ───────
+# The atomic arrival / claim / settle / discard / projection operations that
+# wire the Slice-A additive table into the writer routes and the runner.
+# These are the store-owned state transitions; routes and the runner must
+# never open-code the queued/running token invariants.
+
+
+def _thread_with_agents(db, *agents, subject="x"):
+    db.insert_thread(ThreadRecord(id="THR-001", subject=subject))
+    for a in agents:
+        db.add_thread_participant("THR-001", a, added_by="founder")
+    return "THR-001"
+
+
+def test_record_conversational_arrival_burst_one_queued_per_pair(tmp_path):
+    """A burst of N messages creates at most one unstarted REPLY per
+    (thread_id, agent_name): the first arrival mints one queued wake covering
+    the whole range, later arrivals only advance required_through_seq."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+
+    seq, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice", "bob"],
+    )
+    assert seq == 1
+    by_name = {a.agent_name: a for a in arrivals}
+    assert set(by_name) == {"alice", "bob"}
+    assert by_name["alice"].coalesced is False
+    assert by_name["alice"].from_seq == 1 and by_name["alice"].through_seq == 1
+    alice_token = by_name["alice"].invocation_token
+    assert alice_token is not None
+    bob_token = by_name["bob"].invocation_token
+    assert bob_token is not None
+
+    # Messages 2..4 coalesce into the existing wakes: no new queue tokens.
+    for i in range(2, 5):
+        _, arrivals = db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice", "bob"],
+        )
+        for a in arrivals:
+            assert a.coalesced is True
+            assert a.invocation_token is None
+            assert a.through_seq == i
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.acknowledged_through_seq == 0
+    assert st.required_through_seq == 4
+    assert st.queued_invocation_token == alice_token
+    assert st.running_invocation_token is None
+
+    # Exactly one pending REPLY per pair.
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+    assert _pending_reply_rows(db, "THR-001", "alice")[0].invocation_token == alice_token
+
+
+def test_record_conversational_arrival_idempotent_replay_noop(tmp_path):
+    """Re-arrival of an already-covered sequence is a no-op (duplicate
+    notification safety): no token, required watermark unchanged."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    seq, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    assert seq == 1
+    assert arrivals[0].invocation_token is not None
+
+    # Replay the same message seq (e.g. a duplicate notification path).
+    seq2, arrivals2 = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1-dup",
+        recipients=["alice"],
+    )
+    assert seq2 == 2  # a NEW transcript row always appends
+    assert arrivals2[0].coalesced is True
+    assert arrivals2[0].invocation_token is None
+    assert arrivals2[0].through_seq == 2
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.required_through_seq == 2
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_record_conversational_arrival_coalesces_while_running(tmp_path):
+    """An arrival while a REPLY is running raises required only; it must not
+    touch the running token, the immutable range, or create a queued token."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    # Transcript rows 1..3 exist; a running wake covers 1..3 (claimed from ack=0).
+    for i in range(1, 4):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+        )
+    running_token = _seed_running_state(db, "THR-001", "alice", ack=0, req=3)
+    before = db.get_reply_delivery_state("THR-001", "alice")
+    assert before is not None and before.running_invocation_token == running_token
+
+    seq, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m4",
+        recipients=["alice"],
+    )
+    assert seq == 4
+    assert arrivals[0].coalesced is True
+    assert arrivals[0].invocation_token is None
+    after = db.get_reply_delivery_state("THR-001", "alice")
+    assert after is not None
+    assert after.required_through_seq == 4
+    assert after.running_invocation_token == running_token
+    assert after.running_from_seq == 1
+    assert after.running_through_seq == 3
+    assert after.queued_invocation_token is None
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_claim_conversational_reply_transfers_queued_to_running(tmp_path):
+    """The durable queued→running CAS stamps started_at and snapshots the
+    inclusive range (acknowledged+1 .. required) atomically."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    seq, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+    for i in range(2, 5):
+        db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice"],
+        )
+
+    claim = db.claim_conversational_reply(token)
+    assert claim is not None
+    assert claim.thread_id == "THR-001"
+    assert claim.agent_name == "alice"
+    assert claim.acknowledged_through_seq == 0
+    assert claim.running_from_seq == 1
+    assert claim.running_through_seq == 4
+    assert claim.required_through_seq == 4
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token == token
+    assert st.running_from_seq == 1
+    assert st.running_through_seq == 4
+    inv = db.get_invocation_any_status(token)
+    assert inv is not None
+    assert inv.status is ThreadInvocationStatus.PENDING
+    assert inv.started_at is not None  # working evidence for recovery
+
+
+def test_claim_conversational_reply_stale_duplicate_returns_none(tmp_path):
+    """A stale/duplicate queue notification no-ops: the CAS only succeeds once
+    for the pair's queued token, before any provider/prompt work."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+
+    assert db.claim_conversational_reply(token) is not None
+    # Second notification for the same token: the slot now holds it as running,
+    # so the queued→running CAS must miss (no double claim, no re-prompt).
+    assert db.claim_conversational_reply(token) is None
+    # A token with no delivery-state row (e.g. BOOTSTRAP/TASK_FOLLOWUP or a
+    # random/foreign token) never claims.
+    assert db.claim_conversational_reply("no-such-token") is None
+
+
+def test_claim_conversational_reply_rejects_mismatched_invocation(tmp_path):
+    """Claim is refused when the queued token's invocation is not a pending
+    same-pair REPLY (fail closed — never launch an unowned token)."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+
+    # Consume the invocation row directly (simulates an already-settled receipt
+    # still referenced by a stale queued slot).
+    db.consume_invocation(token)
+    assert db.claim_conversational_reply(token) is None
+
+
+def test_settle_reply_acks_claimed_range_only_and_mints_single_followon(tmp_path):
+    """A successful reply acknowledges ONLY the claimed coverage
+    (running_through); an arrival during the run yields exactly one
+    post-settlement follow-on covering the retained range."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+    for i in range(2, 5):
+        db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice"],
+        )
+    claim = db.claim_conversational_reply(token)
+    assert claim is not None and claim.running_through_seq == 4
+
+    # Arrival during the run: raises required to 5.
+    db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m5-in-run",
+        recipients=["alice"],
+    )
+
+    settlement = db.settle_conversational_reply(
+        token=token, outcome="reply",
+    )
+    assert settlement is not None
+    assert settlement.outcome == "reply"
+    assert settlement.acknowledged_through_seq == 4  # claimed coverage only
+    assert settlement.required_through_seq == 5
+    assert settlement.follow_on_token is not None  # exactly one follow-on
+    assert settlement.retry_required is False
+
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.acknowledged_through_seq == 4
+    assert st.required_through_seq == 5
+    assert st.running_invocation_token is None
+    assert st.queued_invocation_token == settlement.follow_on_token
+    assert st.last_terminal_reason is None  # successful reply leaves no reason
+
+    # The follow-on is the single pending REPLY and covers the retained range.
+    pending = _pending_reply_rows(db, "THR-001", "alice")
+    assert len(pending) == 1
+    assert pending[0].invocation_token == settlement.follow_on_token
+    assert pending[0].triggering_seq == 5
+
+    # Original token is CONSUMED; no duplicate follow-on can be minted because
+    # settling the same token again is a no-op (slots are clear).
+    assert (
+        db.get_invocation_any_status(token).status
+        is ThreadInvocationStatus.CONSUMED
+    )
+    assert db.settle_conversational_reply(token=token, outcome="reply") is None
+
+
+def test_settle_decline_acks_claimed_range_only_and_mints_single_followon(tmp_path):
+    """A silent decline acknowledges only the claimed range; arrivals during
+    the run yield exactly one follow-on. No transcript row, no turns bump."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+    for i in range(2, 5):
+        db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice"],
+        )
+    db.claim_conversational_reply(token)
+    # Arrival during the run → required 5.
+    db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m5-in-run",
+        recipients=["alice"],
+    )
+
+    settlement = db.settle_conversational_reply(
+        token=token, outcome="decline", decline_reason="nothing to add",
+    )
+    assert settlement is not None
+    assert settlement.acknowledged_through_seq == 4
+    assert settlement.follow_on_token is not None
+    assert (
+        db.get_invocation_any_status(token).status
+        is ThreadInvocationStatus.DECLINED
+    )
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_settle_failure_and_timeout_leave_retry_required_no_followon(tmp_path):
+    """Failure/timeout do not advance acknowledgement, mint no immediate
+    retry (no hot loop), and leave retry_required for the next arrival."""
+    for idx, (outcome, status) in enumerate((
+        ("failed", ThreadInvocationStatus.FAILED),
+        ("timeout", ThreadInvocationStatus.TIMEOUT),
+    )):
+        db = Database(tmp_path / f"happyranch-{idx}.db")
+        _thread_with_agents(db, "alice")
+        _, arrivals = db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+            recipients=["alice"],
+        )
+        token = arrivals[0].invocation_token
+        for i in range(2, 5):
+            db.record_conversational_arrival(
+                thread_id="THR-001", speaker="founder",
+                kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+                recipients=["alice"],
+            )
+        db.claim_conversational_reply(token)
+        db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="m5-in-run",
+            recipients=["alice"],
+        )
+
+        settlement = db.settle_conversational_reply(
+            token=token, outcome=outcome, decline_reason="provider boom",
+        )
+        assert settlement is not None
+        assert settlement.acknowledged_through_seq == 0  # untouched
+        assert settlement.required_through_seq == 5
+        assert settlement.follow_on_token is None  # no hot loop
+        assert settlement.retry_required is True
+        st = db.get_reply_delivery_state("THR-001", "alice")
+        assert st is not None
+        assert st.queued_invocation_token is None
+        assert st.running_invocation_token is None
+        assert st.last_terminal_reason == "provider boom"
+        assert (
+            db.get_invocation_any_status(token).status is status
+        )
+        # No immediate retry minted: zero pending REPLYs after failure.
+        assert len(_pending_reply_rows(db, "THR-001", "alice")) == 0
+
+        # The NEXT conversational arrival covers the retained + new range with
+        # exactly one queued wake (retry-required delivery).
+        _, arrivals2 = db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="m6-next",
+            recipients=["alice"],
+        )
+        assert arrivals2[0].invocation_token is not None
+        assert arrivals2[0].from_seq == 1  # retained unacknowledged range
+        assert arrivals2[0].through_seq == 6
+        assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_settle_stale_token_returns_none(tmp_path):
+    """Settling a token that owns no delivery-state slot returns None so the
+    caller applies the legacy terminal transition (BOOTSTRAP/TASK_FOLLOWUP,
+    or an already-settled REPLY)."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice"],
+    )
+    token = arrivals[0].invocation_token
+    db.claim_conversational_reply(token)
+    db.settle_conversational_reply(token=token, outcome="decline")
+    # Already settled → None (no double settlement, no second follow-on).
+    assert db.settle_conversational_reply(token=token, outcome="decline") is None
+    # A BOOTSTRAP token is never owned by delivery state.
+    boot = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    assert (
+        db.settle_conversational_reply(
+            token=boot.invocation_token, outcome="decline",
+        ) is None
+    )
+
+
+def test_reply_conversational_atomic_append_settle_broadcast(tmp_path):
+    """Reply ordering is material: append the reply, settle the speaker's
+    claimed range, schedule broadcast arrivals to the OTHER participants,
+    all in one commit. The speaker never wakes for their own reply."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+    # bob holds a running REPLY covering 1..1 with an in-run arrival at 2.
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="alice",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["bob"],
+    )
+    bob_token = arrivals[0].invocation_token
+    db.claim_conversational_reply(bob_token)
+    db.record_conversational_arrival(
+        thread_id="THR-001", speaker="alice",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m2-in-run",
+        recipients=["bob"],
+    )
+
+    seq, settlement, broadcast = db.reply_conversational(
+        thread_id="THR-001",
+        speaker="bob",
+        body_markdown="my reply",
+        attachments=[],
+        token=bob_token,
+        token_purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert seq == 3
+    assert settlement is not None
+    assert settlement.acknowledged_through_seq == 1  # claimed coverage only
+    assert settlement.follow_on_token is not None  # covers in-run message 2
+    bob_state = db.get_reply_delivery_state("THR-001", "bob")
+    assert bob_state is not None
+    assert bob_state.acknowledged_through_seq == 1
+    assert bob_state.required_through_seq == 2
+    assert bob_state.queued_invocation_token == settlement.follow_on_token
+
+    # Broadcast: alice (the only other participant) gets a queued wake for the
+    # reply; bob is NOT woken for his own reply.
+    by_name = {a.agent_name: a for a in broadcast}
+    assert set(by_name) == {"alice"}
+    assert by_name["alice"].invocation_token is not None
+    assert by_name["alice"].from_seq == 3 and by_name["alice"].through_seq == 3
+    alice_state = db.get_reply_delivery_state("THR-001", "alice")
+    assert alice_state is not None
+    assert alice_state.acknowledged_through_seq == 2
+    assert alice_state.required_through_seq == 3
+
+    # Exactly one pending REPLY each.
+    assert len(_pending_reply_rows(db, "THR-001", "bob")) == 1
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+    assert (
+        db.get_invocation_any_status(bob_token).status
+        is ThreadInvocationStatus.CONSUMED
+    )
+
+
+def test_reply_conversational_non_reply_token_uses_legacy_consume(tmp_path):
+    """A BOOTSTRAP/TASK_FOLLOWUP token replying through the reply route keeps
+    the legacy consume — no delivery-state settlement is involved."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+    boot = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    seq, settlement, broadcast = db.reply_conversational(
+        thread_id="THR-001",
+        speaker="bob",
+        body_markdown="bootstrap reply",
+        attachments=[],
+        token=boot.invocation_token,
+        token_purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    assert settlement is None  # legacy path, no delivery-state settlement
+    assert seq == 1
+    assert (
+        db.get_invocation_any_status(boot.invocation_token).status
+        is ThreadInvocationStatus.CONSUMED
+    )
+    # Broadcast still wakes the other participant.
+    assert {a.agent_name for a in broadcast} == {"alice"}
+    # No delivery-state row was created for the BOOTSTRAP speaker's pair.
+    assert db.get_reply_delivery_state("THR-001", "bob") is None
+
+
+def test_discard_reply_delivery_no_resurrection(tmp_path):
+    """Founder abort / archive discards through an explicit boundary: owned
+    REPLY rows terminalize once, state clears, and a later message starts a
+    FRESH wake — the discarded tokens never resurrect."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice", "bob"],
+    )
+    alice_token = arrivals[0].invocation_token
+    bob_token = next(a.invocation_token for a in arrivals if a.agent_name == "bob")
+    db.claim_conversational_reply(alice_token)
+    db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m2-in-run",
+        recipients=["alice", "bob"],
+    )
+
+    aborted = db.discard_reply_delivery(
+        "THR-001", decline_reason="founder_aborted",
+    )
+    # alice's running + queued-side and bob's queued REPLY rows all terminalize.
+    assert aborted >= 2
+    for token in (alice_token, bob_token):
+        inv = db.get_invocation_any_status(token)
+        assert inv is not None and inv.status is ThreadInvocationStatus.FAILED
+        assert inv.decline_reason == "founder_aborted"
+    # State cleared to the boundary: acknowledged == required, no slots.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.acknowledged_through_seq == st.required_through_seq == 2
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+    # Live projection is empty (nothing queued/running/retry-required).
+    assert db.list_reply_delivery_projections("THR-001") == []
+    # No resurrection: zero pending REPLYs.
+    assert _pending_reply_rows(db, "THR-001", "alice") == []
+    assert _pending_reply_rows(db, "THR-001", "bob") == []
+
+    # A later message starts a fresh wake after the boundary.
+    _, arrivals2 = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m3-after-abort",
+        recipients=["alice"],
+    )
+    assert arrivals2[0].invocation_token is not None
+    assert arrivals2[0].from_seq == 3  # after the explicit discard boundary
+    assert arrivals2[0].invocation_token != alice_token  # no resurrection
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_discard_reply_delivery_agent_scoped(tmp_path):
+    """Participant removal discards only the removed pair's state; other
+    participants' wakes are untouched."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice", "bob"],
+    )
+    alice_token = arrivals[0].invocation_token
+    bob_token = next(a.invocation_token for a in arrivals if a.agent_name == "bob")
+
+    removed = db.discard_reply_delivery(
+        "THR-001", agent_name="alice",
+        decline_reason="participant_removed",
+        status=ThreadInvocationStatus.DECLINED,
+    )
+    assert removed == 1
+    assert (
+        db.get_invocation_any_status(alice_token).status
+        is ThreadInvocationStatus.DECLINED
+    )
+    assert (
+        db.get_invocation_any_status(bob_token).status
+        is ThreadInvocationStatus.PENDING
+    )
+    alice_state = db.get_reply_delivery_state("THR-001", "alice")
+    assert alice_state is not None
+    assert alice_state.queued_invocation_token is None
+    bob_state = db.get_reply_delivery_state("THR-001", "bob")
+    assert bob_state is not None
+    assert bob_state.queued_invocation_token == bob_token
+
+
+def test_reply_delivery_projection_states_truthful(tmp_path):
+    """The pair-level projection truthfully distinguishes queued, working, and
+    retry_required with inclusive ranges and a store-computed coalesced count;
+    fully-settled pairs are omitted and no subprocess is fabricated."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice", "bob")
+
+    # queued state (alice) + running state (bob).
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m1",
+        recipients=["alice", "bob"],
+    )
+    alice_token = arrivals[0].invocation_token
+    bob_token = next(a.invocation_token for a in arrivals if a.agent_name == "bob")
+    for i in range(2, 5):
+        db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice", "bob"],
+        )
+    db.claim_conversational_reply(bob_token)
+
+    proj = {p.agent_name: p for p in db.list_reply_delivery_projections("THR-001")}
+    assert set(proj) == {"alice", "bob"}
+    alice = proj["alice"]
+    assert alice.state == "queued"
+    assert alice.from_seq == 1 and alice.through_seq == 4
+    assert alice.coalesced_message_count == 4
+    assert alice.started_at is None  # queued is not a running subprocess
+    bob = proj["bob"]
+    assert bob.state == "running"
+    assert bob.from_seq == 1 and bob.through_seq == 4
+    assert bob.started_at is not None  # working evidence only from started_at
+
+    # retry_required after a failed run with in-run arrivals.
+    db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="m5-in-run",
+        recipients=["bob"],
+    )
+    db.settle_conversational_reply(
+        token=bob_token, outcome="failed", decline_reason="boom",
+    )
+    proj2 = {p.agent_name: p for p in db.list_reply_delivery_projections("THR-001")}
+    assert proj2["bob"].state == "retry_required"
+    assert proj2["bob"].from_seq == 1
+    assert proj2["bob"].through_seq == 5
+    assert proj2["bob"].last_terminal_reason == "boom"
+    assert proj2["bob"].started_at is None  # diagnostic, not a live subprocess
+
+    # Fully-settled pair (decline the alice wake) is omitted from the live
+    # projection (terminal history stays on per-message responder strips).
+    db.settle_conversational_reply(token=alice_token, outcome="decline")
+    proj3 = {p.agent_name: p for p in db.list_reply_delivery_projections("THR-001")}
+    assert "alice" not in proj3
+
+
+def test_concurrent_arrivals_never_duplicate_queued_winner(tmp_path):
+    """Concurrent arrival notifications for one pair serialize on the store's
+    re-entrant lock + BEGIN IMMEDIATE: exactly one queued winner survives and
+    the pair never holds two unstarted REPLYs."""
+    import threading
+
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    barrier = threading.Barrier(8)
+    minted: list[str] = []
+
+    def post(i: int) -> None:
+        barrier.wait()
+        _, arrivals = db.record_conversational_arrival(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{i}",
+            recipients=["alice"],
+        )
+        tok = arrivals[0].invocation_token
+        if tok is not None:
+            minted.append(tok)
+
+    threads = [threading.Thread(target=post, args=(i,)) for i in range(1, 9)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(minted) == 1
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.required_through_seq == 8
+    assert st.queued_invocation_token == minted[0]
+    assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
+
+
+def test_task_followup_mint_never_touches_delivery_state(tmp_path):
+    """TASK_FOLLOWUP minting is a causal one-shot direct mint: it creates no
+    reply-delivery-state row, claims nothing, and settles through the legacy
+    path (settle_conversational_reply returns None for its token)."""
+    db = Database(tmp_path / "happyranch.db")
+    _thread_with_agents(db, "alice")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="dispatch",
+    )
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        "THR-001", agent_name="alice", triggering_seq=1,
+    )
+    assert inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
+    # No delivery-state row is created by the followup mint.
+    assert db.list_reply_delivery_states() == []
+    # The followup token is not claimable and not settleable via the store.
+    assert db.claim_conversational_reply(inv.invocation_token) is None
+    assert (
+        db.settle_conversational_reply(
+            token=inv.invocation_token, outcome="decline",
+        ) is None
+    )
+    # Legacy terminal transition applies instead.
+    db.mark_invocation_declined(inv.invocation_token, decline_reason=None)
+    assert (
+        db.get_invocation_any_status(inv.invocation_token).status
+        is ThreadInvocationStatus.DECLINED
+    )
+    assert db.list_reply_delivery_states() == []

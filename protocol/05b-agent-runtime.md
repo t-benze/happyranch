@@ -53,6 +53,27 @@ The session-not-found eviction fallback in ``run_invocation`` also forwards
 the model on its clean-slate retry — both the initial resume attempt and the
 fallback full-prompt launch receive the same ``model`` value.
 
+**Thread reply delivery lifecycle (GH-688 Phase 1).** Conversational
+``REPLY`` wakes are coalesced and durably tracked per ``(thread_id,
+agent_name)`` in the additive ``thread_reply_delivery_state`` table. The store
+owns every state transition: ``record_conversational_arrival`` appends a
+message and raises/creates at most one queued wake per pair in one
+transaction; ``claim_conversational_reply`` is the durable queued→running CAS
+a runner must pass before any prompt or provider work (a stale/duplicate
+queue notification no-ops there); ``settle_conversational_reply`` is the
+single seam for every terminal path (reply, silent decline, clean-no-callback,
+provider failure, timeout, materialization failure). A successful/declined
+range acknowledges only the claimed coverage; arrivals during the run yield
+exactly one follow-on; failures leave ``retry_required`` for the next
+conversational arrival (no hot loop). Abort/archive/participant-removal
+discard through an explicit boundary and never resurrect. At daemon startup,
+``_sweep_on_startup`` replaces only the conversational ``REPLY`` portion of
+the generic reaper with store-owned recovery: valid queued wakes are retained
+and re-enqueued, an interrupted running ``REPLY`` becomes exactly one
+``daemon_restart`` replacement, and ``BOOTSTRAP`` / ``TASK_FOLLOWUP`` keep the
+generic reaper exactly. See ``docs/agent-guides/features-and-invariants.md`` →
+Thread Broadcast Routing for the full contract.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
