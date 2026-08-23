@@ -2797,3 +2797,179 @@ def test_attach_upload_sends_multipart(capsys):
         assert "storage_key: mockup_png-abc123" in out
     finally:
         Path(fixture_path).unlink(missing_ok=True)
+
+
+# ── TASK-5522: derived work-status summary in `happyranch details` ──────────
+#
+# The summary must be human-readable, must distinguish heartbeat/liveness
+# from actual agent-written updates, and must never claim a substantive
+# update where only a heartbeat was observed.
+
+
+def _details_output(client, capsys, *, task_id="T-1"):
+    """Run cmd_details against a stubbed client and return captured stdout."""
+    from cli.main import cmd_details
+    with patch("cli.main.OpcClient.from_env", return_value=client), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_details(Namespace(org=None, task_id=task_id, full=False))
+    return capsys.readouterr().out
+
+
+def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    base_task = {
+        "task_id": "T-1", "team": "engineering", "status": "in_progress",
+        "assigned_agent": "dev_agent", "brief": "b",
+        "created_at": "2026-08-23T10:00:00+00:00",
+        "updated_at": "2026-08-23T10:00:00+00:00",
+        "last_heartbeat": "2026-08-23T10:29:00+00:00",
+    }
+    base_task.update(task or {})
+    response.json.return_value = {
+        "task": base_task, "results": [], "audit_log": [],
+        "work_status": ws,
+    }
+    client.get.return_value = response
+    return client
+
+
+def test_cmd_details_shows_newly_started_with_no_update(capsys):
+    """(a) newly-started: start + fresh heartbeat, no receipt yet — the CLI
+    must say 'No substantive update recorded', never imply one."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "newly_started",
+        "label": "Newly started — awaiting first update",
+        "reason": None,
+        "session_start_ts": "2026-08-23T10:05:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    assert "Work status: Newly started — awaiting first update" in out
+    assert "Start:      " in out and "2026-08-23" in out
+    assert "Heartbeat:" in out and "(fresh)" in out
+    assert "No substantive update recorded" in out
+
+
+def test_cmd_details_shows_recent_progress_message(capsys):
+    """(b) recent progress: time + concise agent-written content."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "recent_progress",
+        "label": "Recent update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T10:05:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": {
+            "timestamp": "2026-08-23T10:28:30+00:00",
+            "message": "Phase 3 of 6: tests passing",
+            "agent": "dev_agent",
+        },
+    })
+    out = _details_output(client, capsys)
+    assert "Work status: Recent update recorded" in out
+    assert "Phase 3 of 6: tests passing" in out
+    assert "Update:" in out
+
+
+def test_cmd_details_stale_but_alive_no_receipt(capsys):
+    """(c) stale-but-alive without any receipt: explicit actionable label."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_no_receipt",
+        "label": "Stale-but-alive — no substantive update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    assert "Stale-but-alive — no substantive update recorded" in out
+    assert "No substantive update recorded" in out
+
+
+def test_cmd_details_stale_but_alive_old_receipt(capsys):
+    """(d) stale-but-alive with an old receipt: shows the old content + label."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_old_receipt",
+        "label": "Stale-but-alive — last update older than 5 minutes",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": {
+            "timestamp": "2026-08-23T10:00:00+00:00",
+            "message": "old milestone",
+            "agent": "dev_agent",
+        },
+    })
+    out = _details_output(client, capsys)
+    assert "Stale-but-alive — last update older than 5 minutes" in out
+    assert "old milestone" in out
+
+
+def test_cmd_details_heartbeat_never_renders_as_progress(capsys):
+    """Honesty fence: a fresh heartbeat with NO progress receipt must produce
+    the explicit no-substantive-update line — never an 'Update' line built
+    from the heartbeat."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_no_receipt",
+        "label": "Stale-but-alive — no substantive update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    # The heartbeat IS shown as liveness…
+    assert "Heartbeat:" in out
+    # …and the Update line is the explicit observed truth — never a message
+    # invented from the heartbeat.
+    assert "Update:     No substantive update recorded" in out
+    assert "Phase" not in out
+    assert "10:29:00" not in out.replace("Heartbeat:", "")  # hb ts never becomes update content
+
+
+def test_cmd_details_terminal_shows_not_applicable_without_liveness(capsys):
+    """Terminal task: explicit not-applicable; no heartbeat implying liveness."""
+    client = _stub_detail_response({
+        "applicable": False,
+        "state": "not_applicable",
+        "label": "Not applicable",
+        "reason": "terminal",
+        "session_start_ts": None,
+        "heartbeat": {"timestamp": None, "freshness": "unavailable"},
+        "latest_progress": None,
+    }, task={"status": "completed", "last_heartbeat": None})
+    out = _details_output(client, capsys)
+    assert "Work status: Not applicable" in out
+    assert "Reason:     terminal" in out
+    assert "Heartbeat:" not in out
+    assert "No substantive update recorded" not in out
+
+
+def test_cmd_details_legacy_daemon_falls_back_to_heartbeat_line(capsys):
+    """Old daemon/test fixture without work_status: legacy heartbeat line
+    still renders for in_progress tasks (no regression)."""
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "task": {
+            "task_id": "T-1", "team": "engineering", "status": "in_progress",
+            "assigned_agent": "dev_agent", "brief": "b",
+            "created_at": "2026-08-23T10:00:00+00:00",
+            "updated_at": "2026-08-23T10:00:00+00:00",
+            "last_heartbeat": "2026-08-23T10:29:00+00:00",
+        },
+        "results": [],
+        "audit_log": [],
+    }
+    client.get.return_value = response
+    out = _details_output(client, capsys)
+    assert "Heartbeat:" in out
+    assert "Work status:" not in out

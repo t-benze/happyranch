@@ -146,6 +146,43 @@ def cmd_tasks(args: argparse.Namespace) -> None:
 
 
 
+def _print_work_status(ws: dict) -> None:
+    """Render the derived work-status summary (TASK-5522) compactly.
+
+    Always distinguishes the heartbeat/liveness observation from an actual
+    agent-written update: the heartbeat line is explicitly labeled with its
+    freshness, and the update line comes ONLY from a real ``progress`` audit
+    receipt — never from a heartbeat. States that cannot claim a receipt say
+    so explicitly instead of implying activity.
+    """
+    label = ws.get("label") or ws.get("state") or "unknown"
+    print(f"Work status: {label}")
+    if not ws.get("applicable"):
+        reason = ws.get("reason")
+        if reason:
+            print(f"  Reason:     {reason}")
+        return
+    if ws.get("session_start_ts"):
+        print(f"  Start:      {_fmt_ts(ws['session_start_ts'])}")
+    hb = ws.get("heartbeat") or {}
+    if hb.get("timestamp"):
+        freshness = hb.get("freshness") or "unavailable"
+        print(f"  Heartbeat:  {_fmt_ts(hb['timestamp'])} ({freshness})")
+    elif hb.get("freshness") == "unavailable":
+        print("  Heartbeat:  none observed")
+    prog = ws.get("latest_progress")
+    if prog and prog.get("timestamp"):
+        msg = prog.get("message")
+        if msg:
+            clipped = msg if len(msg) <= 80 else msg[:77] + "..."
+            print(f'  Update:     {_fmt_ts(prog["timestamp"])} — "{clipped}"')
+        else:
+            print(f"  Update:     {_fmt_ts(prog['timestamp'])} (content unavailable)")
+    else:
+        # Explicit actionable no-substantive-update state — never silence.
+        print("  Update:     No substantive update recorded")
+
+
 def cmd_details(args: argparse.Namespace) -> None:
     """Show status of a specific task."""
     try:
@@ -185,11 +222,17 @@ def cmd_details(args: argparse.Namespace) -> None:
     print(f"Brief:      {task['brief']}")
     print(f"Created:    {_fmt_ts(task['created_at'])}")
     print(f"Updated:    {_fmt_ts(task['updated_at'])}")
-    # Liveness — useful only while a subprocess is alive. After terminal
-    # transitions the heartbeat is stale by definition (queue worker
-    # cancelled the heartbeat coroutine on completion), so suppress to
-    # avoid implying the task is still moving.
-    if task["status"] == "in_progress" and task.get("last_heartbeat"):
+    # Work-status summary (TASK-5522): derived server-side from the task
+    # record + audit rows. Rendered when the envelope carries it; falls back
+    # to the legacy heartbeat line for older daemons/fixtures.
+    ws = body.get("work_status")
+    if isinstance(ws, dict):
+        _print_work_status(ws)
+    elif task["status"] == "in_progress" and task.get("last_heartbeat"):
+        # Liveness — useful only while a subprocess is alive. After terminal
+        # transitions the heartbeat is stale by definition (queue worker
+        # cancelled the heartbeat coroutine on completion), so suppress to
+        # avoid implying the task is still moving.
         print(f"Heartbeat:  {_fmt_ts(task['last_heartbeat'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")

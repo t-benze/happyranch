@@ -80,6 +80,34 @@ happyranch assistant
 `happyranch assistant init` and `happyranch assistant register` manage the
 assistant. It does not take `--org`.
 
+### Task work-status summary (TASK-5522)
+
+`happyranch details <task_id>` prints a compact **Work status** block derived
+server-side from the task record + audit rows (`runtime/daemon/work_status.py`)
+and served on the existing task-detail envelope — no extra endpoint:
+
+```
+Work status: Stale-but-alive — no substantive update recorded
+  Start:      2026-08-23 21:06:02
+  Heartbeat:  2026-08-23 21:39:30 (fresh)
+  Update:     No substantive update recorded
+```
+
+- The **Start** line is the current-session `session_start` audit timestamp
+  (latest assigned-agent session; a prior session's receipts never count).
+- The **Heartbeat** line is the last heartbeat with an explicit freshness
+  suffix using the existing 60-second semantics (`fresh`/`stale`/
+  `unavailable`) — it never claims execution progress.
+- The **Update** line comes ONLY from a real `progress` audit receipt
+  (timestamp + concise agent-written milestone). When none is in scope it
+  prints the explicit `No substantive update recorded`; a live session whose
+  start or last receipt is ≥ 5 minutes old renders `Stale-but-alive …`
+  (policy `STALE_PROGRESS_AFTER_SECONDS = 300`).
+- Terminal / pending / escalated / parked-on-block tasks print `Not
+  applicable` with a reason — never an implied live agent.
+
+The full audit log (including inline `progress` messages) is unchanged.
+
 The founder-facing web surface is the **A-mode Cmd-K dock** (structured chat
 docked in the AppShell, toggled via the TopBar / Cmd-K shortcut). Assistant
 configuration (status / init / register / repair) is served over four HTTP routes

@@ -150,7 +150,57 @@ export interface TaskDetailResponse {
   /** DERIVE from escalation_superseded audit: successor task_id when this
    *  task was auto-resolved to SUPERSEDED. Null otherwise. */
   superseded_by_task_id: string | null;
+  /** TASK-5522: read-only derived work-status summary. Present on every
+   *  envelope; the server always derives it from the task record + audit
+   *  rows (session_start / progress). Absent only from legacy-daemon or
+   *  stubbed fixtures. */
+  work_status: WorkStatusResponse | null;
   [extra: string]: unknown;
+}
+
+/** Machine state of the derived work-status summary (TASK-5522).
+ *
+ * (a)-(d) apply only to the live-task shape (in_progress, no block_kind)
+ * with a FRESH observed heartbeat; every other shape is explicitly
+ * not_applicable, and stale/absent heartbeat liveness is its own honest
+ * state rather than being papered over with a progress label.
+ */
+export type WorkStatusState =
+  | 'newly_started'          // (a) no receipt yet, session start < 5m
+  | 'recent_progress'        // (b) latest current-session receipt < 5m
+  | 'stale_no_receipt'       // (c) no receipt, session start >= 5m
+  | 'stale_old_receipt'      // (d) latest current-session receipt >= 5m
+  | 'heartbeat_stale'        // live shape but heartbeat >= 60s old
+  | 'heartbeat_unavailable'  // live shape, no heartbeat observed
+  | 'unavailable'            // cannot derive (absent/malformed audit data)
+  | 'not_applicable';        // terminal / pending / escalated / parked-on-block
+
+/** Read-only derived work-status summary for the task-detail envelope. */
+export interface WorkStatusResponse {
+  applicable: boolean;
+  state: WorkStatusState;
+  /** Human phrase — says what is OBSERVED; never claims execution progress
+   *  from a heartbeat and never claims a receipt when only liveness exists. */
+  label: string;
+  /** not_applicable / unavailable discriminator: terminal | pending |
+   *  escalated | blocked | no_session_start | unassigned. Null otherwise. */
+  reason: string | null;
+  /** Latest assigned-agent session_start timestamp (current-session lower
+   *  boundary). Null when not derivable. */
+  session_start_ts: string | null;
+  heartbeat: {
+    timestamp: string | null;
+    /** Existing 60-second heartbeat freshness semantics (2 missed 30s
+     *  intervals) — never a new monitor/reaper threshold. */
+    freshness: 'fresh' | 'stale' | 'unavailable';
+  };
+  /** Latest current-session progress receipt; `message` is null when the
+   *  stored content is absent/malformed (unavailable, never fabricated). */
+  latest_progress: {
+    timestamp: string;
+    message: string | null;
+    agent: string;
+  } | null;
 }
 
 /** Audit-log entry shape (mirror of `audit_log` table rows). */

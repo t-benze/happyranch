@@ -49,6 +49,41 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
+## Derived Work-Status Summary (TASK-5522)
+
+`GET /tasks/{task_id}` carries a read-only `work_status` envelope key derived
+server-side (`runtime/daemon/work_status.py`) from the task record plus its
+existing audit rows — **no schema change, no synthetic audits, no background
+monitor**. It exposes only: the current-session start (latest assigned-agent
+`session_start` audit), the last heartbeat with an explicit freshness label,
+and the timestamp + concise agent-written message of the latest current-
+session `progress` receipt. Chain of thought, command stdout, workspace
+paths, session ids, and arbitrary audit payloads are never exposed.
+
+State machine (live-task shape = `in_progress` + `block_kind IS NULL`):
+
+| state | meaning |
+|---|---|
+| `newly_started` | fresh heartbeat; no current-session receipt; session start < 5m old |
+| `recent_progress` | fresh heartbeat; latest current-session receipt < 5m old |
+| `stale_no_receipt` | fresh heartbeat; no receipt; session start ≥ 5m old |
+| `stale_old_receipt` | fresh heartbeat; latest receipt ≥ 5m old |
+| `heartbeat_stale` | live shape but heartbeat ≥ 60s old (existing zombie-reaper freshness semantics) |
+| `heartbeat_unavailable` | live shape, no heartbeat observed |
+| `unavailable` | cannot derive (missing session_start, unassigned, malformed historic data) |
+| `not_applicable` | terminal / pending / escalated / in_progress parked-on-block (`reason` discriminates) |
+
+Policies: `STALE_PROGRESS_AFTER_SECONDS = 300` (5-minute display/derivation
+policy — it never reaps or acts); heartbeat freshness reuses the existing
+60-second semantics (`2 × HEARTBEAT_INTERVAL_SECONDS`). The current-session
+lower boundary is the latest assigned-agent `session_start`; a prior
+session's `progress` receipts must never satisfy the new session. Labels say
+what is observed — a fresh heartbeat is never presented as substantive
+progress, and absent/malformed data is surfaced as unavailable, never
+fabricated. Both `happyranch details` and the Tasks UI render this summary;
+`protocol/skills/start-task/SKILL.md` §5 makes the corresponding worker
+checkpoint policy concrete.
+
 ## Manager Decision Contract
 
 Team-manager completion payloads carry two fields:

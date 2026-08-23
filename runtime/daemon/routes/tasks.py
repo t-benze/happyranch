@@ -19,6 +19,7 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
+from runtime.daemon.work_status import derive_work_status
 from runtime.infrastructure.task_attachment_store import (
     MAX_TASK_ATTACHMENTS_PER_TASK,
     MAX_TASK_ATTACHMENT_BYTES,
@@ -409,6 +410,11 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "blocked_on_jobs": blocked_on_jobs,
         "active_chain": active_chain,
         "superseded_by_task_id": superseded_by_task_id,
+        # TASK-5522: read-only derived work-status summary. Built from the
+        # task record (last_heartbeat) plus the existing audit rows
+        # (session_start / progress) — no schema, no synthetic audits, no
+        # background monitor. See runtime/daemon/work_status.py.
+        "work_status": derive_work_status(task, audit_log),
     }
 
 
