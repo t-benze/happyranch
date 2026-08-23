@@ -123,8 +123,46 @@ consecutive 30-day windows — do not expect an immediate file-size drop, since
 row deletion does not shrink SQLite on its own.
 
 **Never** delete `metrics.db`, `metrics.db-wal`, or `metrics.db-shm` by hand,
-and never run VACUUM/checkpoint manually outside a founder-approved
-maintenance window; retention pruning is the only sanctioned row-removal path.
+and never run VACUUM/checkpoint manually outside the daemon-owned maintenance
+operation below; retention pruning and the explicit maintenance operation are
+the only sanctioned row-removal / compaction paths.
+
+### POST /api/v1/metrics/maintenance — explicit quiescent maintenance
+
+A daemon-owned maintenance operation (bearer-authed, founder-explicit) that
+runs ONLY through `MetricsStore` — never a filesystem delete and never shell
+SQLite. Requires explicit confirmation (`confirm_quiescent: true`) AND a
+quiescent daemon (no nonterminal task, no running job, no active executor
+session); otherwise it refuses with HTTP 409 (`confirmation_required` /
+`not_quiescent`). On confirmed quiescence it runs under a single store lock:
+prune (unchanged 30-day strict-before cutoff) → WAL checkpoint (TRUNCATE) →
+`PRAGMA integrity_check` (fail closed on non-`ok`) → `VACUUM` → post-vacuum
+integrity + health evidence.
+
+```bash
+happyranch metrics maintenance --confirm-quiescent
+```
+
+**Request** `POST /api/v1/metrics/maintenance` body: `{"confirm_quiescent": true}`.
+
+**Response** `200 OK` reports before/after DB+WAL bytes, row count, cutoff,
+page/free-list counts, duration, checkpoint and integrity results, and pruned
+count. No raw task/thread/org identifiers are ever returned.
+
+**Failure & recovery.** Any checkpoint/integrity/VACUUM error returns HTTP 500
+(`maintenance_failed`) — never a partial success — and logs recovery guidance.
+Pre-existing valid history remains queryable. Recovery requires a fresh
+explicit invocation; there is no automatic retry. The periodic writer
+continues to catch and log its own persistence failures without crashing the
+scheduler loops. A successful `VACUUM` is the only evidence of physical space
+reclamation; do not claim reclamation without it.
+
+**Validating the projected steady-state reduction.** The bounded-cardinality
+route-template labels only shrink storage as old raw-path rows age out of the
+30-day window and a successful maintenance `VACUUM` runs. To validate, compare
+the persist-cycle telemetry (`serialized_bytes`, `route_label_count`) plus the
+maintenance `before`/`after` `db_bytes` across two full 30-day windows — the
+projected 48–57% drop appears only after the old unbounded-label rows are gone.
 
 ### GET /api/v1/metrics/history — persisted snapshot history
 
