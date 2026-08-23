@@ -27,6 +27,8 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    ThreadReplyDeliveryState,
+    ThreadReplyRecoveryEntry,
     ThreadScopedAttachment,
     ThreadStatus,
     TokenUsage,
@@ -991,6 +993,32 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
+
+            -- GitHub #688 Phase 1 Slice A: additive, provider-neutral
+            -- per-(thread_id, agent_name) conversational REPLY delivery state.
+            -- Intentionally dark until Slice B wires the route/runner
+            -- activation; no existing writer/runner path reads or writes it.
+            -- Invocation rows in ``thread_invocations`` remain the immutable
+            -- per-attempt authority; this table only records which single
+            -- queued/running REPLY token currently owns each pair's delivery
+            -- obligation plus the acknowledged/required watermarks.
+            CREATE TABLE IF NOT EXISTS thread_reply_delivery_state (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                acknowledged_through_seq INTEGER NOT NULL DEFAULT 0,
+                required_through_seq INTEGER NOT NULL DEFAULT 0,
+                queued_invocation_token TEXT,
+                running_invocation_token TEXT,
+                running_from_seq INTEGER,
+                running_through_seq INTEGER,
+                last_terminal_reason TEXT,
+                last_terminal_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_reply_delivery_state_thread
+                ON thread_reply_delivery_state(thread_id);
 
             CREATE TABLE IF NOT EXISTS jobs (
                 id                       TEXT PRIMARY KEY,
@@ -5386,6 +5414,318 @@ class Database:
             )
         self._conn.commit()
         return cursor.rowcount
+
+    # ── GitHub #688 Phase 1 Slice A: reply delivery state store ──────────
+    #
+    # HANDOFF CONTRACT (Slice B):
+    #   These primitives are intentionally UNHOOKED in Slice A. Slice B MUST
+    #   call them atomically with its route/runner activation:
+    #     * cutover_thread_reply_delivery_state(thread_id) — once per thread at
+    #       activation (and again on reopen; it is idempotent) to seed/coalesce
+    #       per-pair state from any legacy pending REPLY rows.
+    #     * recover_reply_delivery_state() — at startup, before thread workers
+    #       start, replacing the conversational REPLY portion of
+    #       _sweep_on_startup's generic reaper (Branch 6). Enqueue the returned
+    #       tokens AFTER commit. BOOTSTRAP and TASK_FOLLOWUP keep the generic
+    #       reaper's daemon_restart semantics.
+    #   The claim (queued → running CAS) and settlement primitives are Slice B;
+    #   routes/runner must NOT open-code the queued/running token transitions.
+
+    def _row_to_reply_delivery_state(self, row) -> ThreadReplyDeliveryState:
+        return ThreadReplyDeliveryState(
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            acknowledged_through_seq=int(row["acknowledged_through_seq"] or 0),
+            required_through_seq=int(row["required_through_seq"] or 0),
+            queued_invocation_token=row["queued_invocation_token"],
+            running_invocation_token=row["running_invocation_token"],
+            running_from_seq=row["running_from_seq"],
+            running_through_seq=row["running_through_seq"],
+            last_terminal_reason=row["last_terminal_reason"],
+            last_terminal_at=row["last_terminal_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @_synchronized
+    def get_reply_delivery_state(
+        self, thread_id: str, agent_name: str,
+    ) -> ThreadReplyDeliveryState | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        row = cursor.fetchone()
+        return self._row_to_reply_delivery_state(row) if row else None
+
+    @_synchronized
+    def list_reply_delivery_states(self) -> list[ThreadReplyDeliveryState]:
+        """Every per-pair reply delivery state row (diagnostic surface)."""
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "ORDER BY thread_id, agent_name",
+        )
+        return [self._row_to_reply_delivery_state(r) for r in cursor.fetchall()]
+
+    def _thread_tail_seq(self, thread_id: str) -> int:
+        """Highest transcript seq for ``thread_id`` (0 for an empty thread)."""
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS tail "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        return int(row["tail"])
+
+    def _mint_reply_invocation_uncommitted(
+        self, thread_id: str, agent_name: str, triggering_seq: int,
+    ) -> str:
+        """INSERT a pending REPLY invocation row inside the open transaction.
+
+        Mirrors ``mint_thread_invocation`` without committing so the caller can
+        bundle the mint with the state transition in one atomic transaction.
+        Returns the generated invocation token.
+        """
+        import uuid as _uuid
+        token = _uuid.uuid4().hex
+        now = _now().isoformat()
+        self._conn.execute(
+            "INSERT INTO thread_invocations (thread_id, agent_name, "
+            "invocation_token, triggering_seq, purpose, status, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (thread_id, agent_name, token, triggering_seq,
+             ThreadInvocationPurpose.REPLY.value, now),
+        )
+        return token
+
+    @_synchronized
+    def cutover_thread_reply_delivery_state(
+        self, thread_id: str,
+    ) -> list[ThreadReplyDeliveryState]:
+        """Idempotently initialize per-pair reply delivery state for a thread.
+
+        Callable explicitly by Slice B (per thread at activation / on reopen);
+        Slice A does NOT auto-run it. For every CURRENT participant pair that
+        has no state row yet:
+
+          * no legacy pending REPLY → seed acknowledged_through_seq and
+            required_through_seq to the thread tail (no queued/running token):
+            Phase 1 starts at cutover and creates no historic work.
+          * legacy pending REPLY(s) → derive ``from_seq`` = MIN(triggering_seq)
+            across that pair's pending REPLYs; terminalize exactly those rows
+            (status='failed', decline_reason='coalesced_cutover'); mint exactly
+            one replacement pending REPLY and record it as queued, covering
+            ``from_seq`` .. current tail (acknowledged = from_seq - 1,
+            required = tail).
+
+        Idempotent: a pair that already has a state row is left untouched, so
+        repeat invocation/reopen never duplicates a queued wake or
+        re-terminalizes rows. Only REPLY rows are touched — TASK_FOLLOWUP and
+        BOOTSTRAP are never terminalized or minted here, and
+        ``last_resumed_seq`` is never read.
+        """
+        now = _now().isoformat()
+        tail = self._thread_tail_seq(thread_id)
+        participants = [
+            p.agent_name for p in self.list_thread_participants(thread_id)
+        ]
+        created: list[ThreadReplyDeliveryState] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for agent_name in participants:
+                existing = self._conn.execute(
+                    "SELECT 1 FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                if existing is not None:
+                    continue  # already cut over — idempotent no-op
+
+                # Legacy pending REPLYs for this pair (never BOOTSTRAP /
+                # TASK_FOLLOWUP).
+                legacy = self._conn.execute(
+                    "SELECT MIN(triggering_seq) AS from_seq "
+                    "FROM thread_invocations "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply'",
+                    (thread_id, agent_name),
+                ).fetchone()
+                from_seq = legacy["from_seq"]
+                if from_seq is not None:
+                    # Terminalize exactly those legacy pending REPLYs with an
+                    # explicit coalesced_cutover receipt.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'coalesced_cutover', consumed_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ? "
+                        "AND status = 'pending' AND purpose = 'reply'",
+                        (now, thread_id, agent_name),
+                    )
+                    # Mint exactly one replacement queued REPLY covering
+                    # from_seq .. tail.
+                    token = self._mint_reply_invocation_uncommitted(
+                        thread_id, agent_name, from_seq,
+                    )
+                    self._conn.execute(
+                        "INSERT INTO thread_reply_delivery_state "
+                        "(thread_id, agent_name, acknowledged_through_seq, "
+                        "required_through_seq, queued_invocation_token, "
+                        "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (thread_id, agent_name, from_seq - 1, tail, token, now),
+                    )
+                else:
+                    # No legacy pending REPLY: seed to tail, nothing queued.
+                    self._conn.execute(
+                        "INSERT INTO thread_reply_delivery_state "
+                        "(thread_id, agent_name, acknowledged_through_seq, "
+                        "required_through_seq, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (thread_id, agent_name, tail, tail, now),
+                    )
+                row = self._conn.execute(
+                    "SELECT * FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                created.append(self._row_to_reply_delivery_state(row))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return created
+
+    @_synchronized
+    def recover_reply_delivery_state(self) -> list[ThreadReplyRecoveryEntry]:
+        """Durable reply-delivery recovery (Slice A ships it UNHOOKED).
+
+        Slice B must call this at startup (before thread workers start) and
+        enqueue the returned tokens after commit, replacing the conversational
+        REPLY portion of the generic reaper. Contract per state row:
+
+          * queued token set, running clear → validate it is a pending
+            same-pair REPLY. Valid → retain and return it. Otherwise fail
+            closed: clear the queued slot, record a diagnostic, return nothing.
+          * running token set → validate it is a same-pair REPLY. Invalid →
+            fail closed (clear running, diagnostic, no runnable token, never
+            launch unowned work). Valid → terminalize ONLY that owned attempt
+            as daemon_restart, preserve the unacknowledged required range,
+            clear running, mint/record exactly one replacement queued REPLY and
+            return it.
+
+        Repeat recovery is idempotent: after a running row is replaced its slot
+        holds a queued token, so a second pass retains rather than re-mints.
+        BOOTSTRAP / TASK_FOLLOWUP rows are never touched.
+        """
+        now = _now().isoformat()
+        results: list[ThreadReplyRecoveryEntry] = []
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE queued_invocation_token IS NOT NULL "
+            "OR running_invocation_token IS NOT NULL "
+            "ORDER BY thread_id, agent_name",
+        ).fetchall()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                thread_id = row["thread_id"]
+                agent_name = row["agent_name"]
+                running_token = row["running_invocation_token"]
+                queued_token = row["queued_invocation_token"]
+
+                if running_token is not None:
+                    inv = self._conn.execute(
+                        "SELECT * FROM thread_invocations "
+                        "WHERE invocation_token = ?",
+                        (running_token,),
+                    ).fetchone()
+                    valid_running = (
+                        inv is not None
+                        and inv["thread_id"] == thread_id
+                        and inv["agent_name"] == agent_name
+                        and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                    )
+                    if not valid_running:
+                        # Fail closed: clear running, never launch unowned work.
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "running_invocation_token = NULL, "
+                            "running_from_seq = NULL, "
+                            "running_through_seq = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            ("invalid_running_token_on_recovery", now, now,
+                             thread_id, agent_name),
+                        )
+                    else:
+                        # Terminalize the interrupted owned attempt as
+                        # daemon_restart (only if still pending; the generic
+                        # reaper may already have done so).
+                        if inv["status"] == ThreadInvocationStatus.PENDING.value:
+                            self._conn.execute(
+                                "UPDATE thread_invocations SET status = 'failed', "
+                                "decline_reason = 'daemon_restart', consumed_at = ? "
+                                "WHERE invocation_token = ? AND status = 'pending'",
+                                (now, running_token),
+                            )
+                        # Preserve the unacknowledged range: the replacement
+                        # starts at acknowledged + 1 through required.
+                        acknowledged = int(row["acknowledged_through_seq"] or 0)
+                        replacement = self._mint_reply_invocation_uncommitted(
+                            thread_id, agent_name, acknowledged + 1,
+                        )
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "running_invocation_token = NULL, "
+                            "running_from_seq = NULL, "
+                            "running_through_seq = NULL, "
+                            "queued_invocation_token = ?, "
+                            "last_terminal_reason = 'daemon_restart', "
+                            "last_terminal_at = ?, updated_at = ? "
+                            "WHERE thread_id = ? AND agent_name = ?",
+                            (replacement, now, now, thread_id, agent_name),
+                        )
+                        results.append(ThreadReplyRecoveryEntry(
+                            thread_id=thread_id,
+                            agent_name=agent_name,
+                            invocation_token=replacement,
+                            kind="replacement_queued",
+                        ))
+                        continue
+
+                if queued_token is not None:
+                    inv = self._conn.execute(
+                        "SELECT * FROM thread_invocations "
+                        "WHERE invocation_token = ?",
+                        (queued_token,),
+                    ).fetchone()
+                    valid_queued = (
+                        inv is not None
+                        and inv["thread_id"] == thread_id
+                        and inv["agent_name"] == agent_name
+                        and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                        and inv["status"] == ThreadInvocationStatus.PENDING.value
+                    )
+                    if valid_queued:
+                        results.append(ThreadReplyRecoveryEntry(
+                            thread_id=thread_id,
+                            agent_name=agent_name,
+                            invocation_token=queued_token,
+                            kind="retained_queued",
+                        ))
+                    else:
+                        # Fail closed: clear the queued slot, return nothing.
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "queued_invocation_token = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            ("invalid_queued_token_on_recovery", now, now,
+                             thread_id, agent_name),
+                        )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return results
 
     @_synchronized
     def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:
