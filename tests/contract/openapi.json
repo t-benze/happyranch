@@ -376,6 +376,20 @@
         ]
       }
     },
+    "/api/v1/metrics/maintenance": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs": {
       "GET": {
         "params": [

@@ -14,6 +14,12 @@ from typing import Any
 # Maximum number of latency samples retained per route.
 _RING_SIZE = 1024
 
+# Stable bounded fallback labels for requests that never matched a route
+# template and for requests whose handler raised.  These carry no dynamic
+# identifiers, so they can never reintroduce unbounded HTTP-label cardinality.
+UNMATCHED_ROUTE = "__unmatched__"
+ERROR_ROUTE = "__error__"
+
 
 class _RouteHistogram:
     """Bounded ring buffer of raw latencies for a single route.
@@ -70,6 +76,23 @@ def _quantile(sorted_vals: list[float], q: float) -> float:
         return sorted_vals[lo]
     frac = idx - lo
     return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def route_template_label(method: str, route: Any) -> str:
+    """Return the bounded ``METHOD /template`` label for a matched route.
+
+    ``route`` is the resolved Starlette/FastAPI route (or ``None`` when no
+    route matched).  Its ``.path`` is the route *template* (e.g.
+    ``/api/v1/orgs/{slug}/tasks/{task_id}/completion``), so dynamic IDs for
+    the same handler coalesce into a single histogram.  When no route matched,
+    returns a stable per-method ``METHOD __unmatched__`` fallback that admits
+    no path or ID material.
+    """
+    if route is not None:
+        path = getattr(route, "path", None)
+        if isinstance(path, str) and path:
+            return f"{method} {path}"
+    return f"{method} {UNMATCHED_ROUTE}"
 
 
 class MetricsRegistry:

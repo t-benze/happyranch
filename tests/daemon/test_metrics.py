@@ -5,7 +5,14 @@ import time
 
 import pytest
 
-from runtime.daemon.metrics import MetricsRegistry, _RouteHistogram, _quantile
+from runtime.daemon.metrics import (
+    ERROR_ROUTE,
+    UNMATCHED_ROUTE,
+    MetricsRegistry,
+    _RouteHistogram,
+    _quantile,
+    route_template_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +260,84 @@ def test_snapshot_shape_pr2_populated() -> None:
     assert isinstance(snap["http"], dict)
     assert "work_hours_scheduler" in snap["loops"]
     assert "GET /" in snap["http"]
+
+
+# ---------------------------------------------------------------------------
+# Route-template labels (TASK-5443 remediation) — bounded cardinality
+# ---------------------------------------------------------------------------
+
+class _FakeRoute:
+    def __init__(self, path: str | None) -> None:
+        self.path = path
+
+
+def test_route_template_label_uses_matched_template() -> None:
+    route = _FakeRoute("/api/v1/orgs/{slug}/tasks/{task_id}/completion")
+    assert (
+        route_template_label("POST", route)
+        == "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion"
+    )
+
+
+def test_route_template_label_none_route_falls_back() -> None:
+    assert route_template_label("GET", None) == "GET __unmatched__"
+    assert route_template_label("POST", None) == "POST __unmatched__"
+
+
+def test_route_template_label_missing_path_attr_falls_back() -> None:
+    assert route_template_label("GET", object()) == "GET __unmatched__"
+
+
+def test_route_template_label_empty_path_falls_back() -> None:
+    assert route_template_label("GET", _FakeRoute("")) == "GET __unmatched__"
+
+
+def test_fallback_and_error_labels_admit_no_id() -> None:
+    """Unmatched/error labels are constant per-method and can never carry an ID."""
+    assert UNMATCHED_ROUTE == "__unmatched__"
+    assert ERROR_ROUTE == "__error__"
+    for method in ("GET", "POST", "DELETE", "PATCH", "PUT"):
+        label = route_template_label(method, None)
+        assert label == f"{method} __unmatched__"
+        assert "TASK-" not in label
+        assert "{" not in label and "}" not in label
+        assert "/" not in label.split(method + " ")[1]
+
+
+def test_dynamic_ids_coalesce_via_template() -> None:
+    """Two records for the same template produce ONE histogram (no ID split)."""
+    registry = MetricsRegistry()
+    tpl = "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion"
+    registry.record_http_latency(tpl, 0.010)
+    registry.record_http_latency(tpl, 0.020)
+    snap = registry.snapshot()
+    assert snap["http"][tpl]["count"] == 2
+    non_aggregate = [k for k in snap["http"] if k != "__all__"]
+    assert non_aggregate == [tpl]
+
+
+def test_distinct_templates_do_not_coalesce() -> None:
+    registry = MetricsRegistry()
+    a = "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion"
+    b = "GET /api/v1/orgs/{slug}/threads/{thread_id}"
+    registry.record_http_latency(a, 0.010)
+    registry.record_http_latency(b, 0.020)
+    snap = registry.snapshot()
+    assert {a, b} <= set(snap["http"].keys())
+    assert snap["http"][a]["count"] == 1
+    assert snap["http"][b]["count"] == 1
+
+
+def test_aggregate_count_remains_correct_with_templates() -> None:
+    """The '__all__' aggregate spans every template label exactly once per record."""
+    registry = MetricsRegistry()
+    a = "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion"
+    b = "GET /api/v1/orgs/{slug}/threads/{thread_id}"
+    registry.record_http_latency(a, 0.010)
+    registry.record_http_latency(a, 0.020)
+    registry.record_http_latency(b, 0.030)
+    snap = registry.snapshot()
+    assert snap["http"]["__all__"]["count"] == 3
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 
 from runtime.config import settings
 from runtime.daemon.dispatcher import Dispatcher
+from runtime.daemon.metrics import ERROR_ROUTE, route_template_label
 from runtime.daemon.routes import (
     adapters,
     agents,
@@ -328,10 +329,22 @@ def create_app(state: DaemonState) -> FastAPI:
     @app.middleware("http")
     async def _metrics_timing_middleware(request: Request, call_next):
         t0 = _time.monotonic()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Record the bounded per-method error label, then re-raise the
+            # original exception so FastAPI's error handling still runs.
+            elapsed = _time.monotonic() - t0
+            request.app.state.daemon.metrics_registry.record_http_latency(
+                f"{request.method} {ERROR_ROUTE}", elapsed
+            )
+            raise
         elapsed = _time.monotonic() - t0
-        route_key = f"{request.method} {request.url.path}"
-        request.app.state.daemon.metrics_registry.record_http_latency(route_key, elapsed)
+        # Label by the matched route TEMPLATE (resolved by call_next), never by
+        # the literal request.url.path — dynamic IDs must coalesce, not grow
+        # unbounded histogram cardinality.
+        label = route_template_label(request.method, request.scope.get("route"))
+        request.app.state.daemon.metrics_registry.record_http_latency(label, elapsed)
         return response
 
     app.include_router(health.router, prefix="/api/v1")

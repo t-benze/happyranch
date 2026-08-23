@@ -11,8 +11,13 @@ import pytest
 
 from runtime.config import Settings
 from runtime.daemon.metrics_store import (
+    MetricsMaintenanceError,
     MetricsStore,
+    SNAPSHOT_FORMAT_VERSION,
+    SNAPSHOT_FORMAT_VERSION_KEY,
     compose_metrics_snapshot,
+    daemon_is_quiescent,
+    maybe_persist_metrics_snapshot,
     _RETENTION_DAYS,
 )
 from runtime.daemon.state import DaemonState
@@ -462,3 +467,206 @@ class TestPeriodicWriterIntegration:
 
         # Loop didn't crash — we got two ticks
         assert tick_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Snapshot format version (TASK-5443) — additive version stamp + legacy read
+# ---------------------------------------------------------------------------
+
+class TestSnapshotFormatVersion:
+    def test_compose_stamps_format_version(self) -> None:
+        state = DaemonState.idle(Settings())
+        snap = compose_metrics_snapshot(state)
+        assert SNAPSHOT_FORMAT_VERSION == 2
+        assert snap[SNAPSHOT_FORMAT_VERSION_KEY] == SNAPSHOT_FORMAT_VERSION
+
+    def test_persisted_payload_is_byte_identical_to_composer(self) -> None:
+        """The shared composer is the single source for both live + persisted
+        snapshots: the stored JSON must decode to exactly the composed dict."""
+        state = DaemonState.idle(Settings())
+        composed = compose_metrics_snapshot(state)
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        state.metrics_store.append_snapshot(now.isoformat(), composed)
+        row = state.metrics_store.query()[0]
+        assert json.loads(row["snapshot_json"]) == composed
+        assert json.loads(row["snapshot_json"])[SNAPSHOT_FORMAT_VERSION_KEY] == 2
+
+    def test_legacy_row_without_version_stays_readable(self, tmp_path: Path) -> None:
+        """Historical rows without format_version (raw-path labels) are read
+        back verbatim and never rewritten."""
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        legacy = {
+            "uptime_seconds": 1.0,
+            "http": {"GET /api/v1/orgs/tourism-org/tasks/TASK-1": {"count": 1}},
+        }
+        store.append_snapshot(
+            datetime(2026, 7, 4, tzinfo=timezone.utc).isoformat(), legacy
+        )
+        rows = store.query()
+        assert len(rows) == 1
+        decoded = json.loads(rows[0]["snapshot_json"])
+        assert decoded == legacy
+        assert SNAPSHOT_FORMAT_VERSION_KEY not in decoded  # untouched legacy row
+
+
+# ---------------------------------------------------------------------------
+# prune() returns deleted-row count (TASK-5443)
+# ---------------------------------------------------------------------------
+
+class TestPruneRowCount:
+    def test_prune_returns_deleted_count(self, tmp_path: Path) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        old = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        recent = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        store.append_snapshot(old.isoformat(), {"n": 1})
+        store.append_snapshot(recent.isoformat(), {"n": 2})
+        cutoff = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        assert store.prune(cutoff.isoformat()) == 1
+        assert store.prune(cutoff.isoformat()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Storage health + maintenance (TASK-5443)
+# ---------------------------------------------------------------------------
+
+class TestMetricsStoreMaintenance:
+    def test_health_reports_non_sensitive_aggregates(self, tmp_path: Path) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        t = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        store.append_snapshot(t.isoformat(), {"n": 1})
+        h = store.health()
+        assert h["row_count"] == 1
+        assert h["oldest_captured_at"] == t.isoformat()
+        assert h["newest_captured_at"] == t.isoformat()
+        assert h["page_count"] >= 1
+        assert h["freelist_count"] >= 0
+        assert h["db_bytes"] > 0
+        assert h["wal_bytes"] >= 0
+
+    def test_maintenance_prunes_and_passes_integrity(self, tmp_path: Path) -> None:
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        old = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        boundary = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        store.append_snapshot(old.isoformat(), {"n": 1})
+        store.append_snapshot(boundary.isoformat(), {"n": 2})
+
+        cutoff = datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat()
+        report = store.maintenance(cutoff)
+
+        assert report["pruned_rows"] == 1
+        assert report["integrity_check_before_vacuum"] == "ok"
+        assert report["integrity_check_after_vacuum"] == "ok"
+        assert report["before"]["row_count"] == 2
+        assert report["after"]["row_count"] == 1
+        assert report["cutoff"] == cutoff
+        assert report["duration_seconds"] >= 0
+        assert set(report["checkpoint"].keys()) == {
+            "busy", "log_frames", "checkpointed_frames",
+        }
+        # exact retention boundary: the boundary row is retained
+        rows = store.query()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["snapshot_json"]) == {"n": 2}
+
+    def test_maintenance_integrity_failure_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-`ok` integrity check raises (never a false success) and
+        pre-existing valid history remains queryable."""
+        store = MetricsStore(str(tmp_path / "metrics.db"))
+        recent = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        store.append_snapshot(recent.isoformat(), {"n": 1})
+        monkeypatch.setattr(store, "_integrity_check_locked", lambda: "not ok")
+
+        with pytest.raises(MetricsMaintenanceError):
+            store.maintenance(datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat())
+
+        # history still queryable (no file deletion / connection teardown)
+        rows = store.query()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["snapshot_json"]) == {"n": 1}
+
+
+# ---------------------------------------------------------------------------
+# Quiescence helper (TASK-5443)
+# ---------------------------------------------------------------------------
+
+class TestDaemonQuiescence:
+    def test_idle_is_quiescent(self) -> None:
+        state = DaemonState.idle(Settings())
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is True
+        assert result["nonterminal_tasks"] == 0
+        assert result["running_jobs"] == 0
+        assert result["active_executor_sessions"] == 0
+
+    def test_detects_nonterminal_task(self) -> None:
+        state = DaemonState.idle(Settings())
+
+        class _Db:
+            def get_nonterminal_task_ids(self):
+                return ["TASK-1"]
+
+            def list_jobs_db(self, status):
+                return []
+
+        class _Sessions:
+            def count_active(self):
+                return 0
+
+        class _Org:
+            def __init__(self):
+                self.db = _Db()
+                self.sessions = _Sessions()
+
+        state.orgs["alpha"] = _Org()
+        result = daemon_is_quiescent(state)
+        assert result["quiescent"] is False
+        assert result["nonterminal_tasks"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Persistence telemetry (TASK-5443)
+# ---------------------------------------------------------------------------
+
+class TestPersistenceTelemetry:
+    def test_maybe_persist_logs_deterministic_record(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        from runtime.runtime import RuntimeDir
+
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        state = DaemonState.from_runtime(rt, Settings())
+        state._last_metrics_snapshot_at = 0.0
+        state.metrics_registry.record_http_latency("GET /a", 0.01)
+        state.metrics_registry.record_http_latency("POST /b", 0.02)
+
+        now = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO):
+            maybe_persist_metrics_snapshot(state, now)
+
+        records = [r for r in caplog.records if r.message == "metrics snapshot persisted"]
+        assert len(records) == 1
+        rec = records[0]
+        # 3 distinct labels: GET /a, POST /b, __all__ (count only — no raw IDs)
+        assert rec.route_label_cardinality == 3
+        assert rec.serialized_snapshot_bytes > 0
+        assert rec.pruned_rows == 0
+        assert rec.row_count == 1
+        assert rec.db_bytes > 0
+        assert rec.page_count >= 1
+        assert rec.freelist_count >= 0
+
+    def test_maybe_persist_failure_does_not_crash(self, tmp_path: Path) -> None:
+        from runtime.runtime import RuntimeDir
+
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        state = DaemonState.from_runtime(rt, Settings())
+        state._last_metrics_snapshot_at = 0.0
+        state.metrics_store.append_snapshot = (
+            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        )
+        now = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        maybe_persist_metrics_snapshot(state, now)  # must not raise

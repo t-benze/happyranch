@@ -66,15 +66,37 @@ The daemon persists runtime metrics as a time-series of full snapshots in a
 
 The snapshot payload is the same dict returned by `GET /api/v1/metrics`:
 `MetricsRegistry.snapshot()` plus live pull-gauges (`tasks`, `jobs_in_flight`,
-`executor_sessions_active`, `run_step_queue_depth`). Both the route and the
-periodic writer call the shared `compose_metrics_snapshot(state)` helper in
-`runtime/daemon/metrics_store.py` so the persisted payload stays byte-identical
-to the live route response.
+`executor_sessions_active`, `run_step_queue_depth`) plus an additive
+`format_version` marker. Both the route and the periodic writer call the shared
+`compose_metrics_snapshot(state)` helper in `runtime/daemon/metrics_store.py`
+so the persisted payload stays byte-identical to the live route response.
+
+**HTTP labels are route templates.** The timing middleware labels each request
+by the matched route TEMPLATE after routing resolves (e.g.
+`POST /api/v1/orgs/{slug}/tasks/{task_id}/completion`), never the literal
+`request.url.path`. Dynamic org/task/thread IDs therefore coalesce into one
+bounded histogram per route template. A request that matches no route records
+`METHOD __unmatched__`; a handler that raises records `METHOD __error__` (then
+re-raises). The `__all__` aggregate bucket is unchanged.
+
+**Snapshot format version.** New snapshots carry `"format_version": 2`
+(route-template labels). Historical rows predate this field and used raw
+URL-path labels; a MISSING `format_version` is treated as legacy/raw-label
+format and stays fully readable. Rows are never rewritten in place — legacy
+rows age out under the unchanged 30-day retention.
+
+**Telemetry.** Each successful persist emits a structured log record
+(`metrics snapshot persisted`) with non-sensitive aggregates only: route-label
+cardinality (count, not the labels), serialized snapshot bytes, prune count,
+and storage health (row count, oldest/newest capture, DB/WAL bytes, page and
+free-list counts). No task/thread/org identifiers are logged.
 
 The store is constructed at daemon startup on `DaemonState` (from
 `DaemonState.from_runtime` or `DaemonState.idle`). Schema creation is
 idempotent (`CREATE TABLE IF NOT EXISTS`); re-initializing the store after a
-restart is a no-op.
+restart is a no-op. A single shared connection (guarded by a threading lock)
+serializes all query/write/maintenance access so history reads and the
+maintenance route cannot interleave.
 
 **Compatibility:** v0 (DB-backed enrollments) and v1 (flat single-org) runtimes
 both get the store on startup — the store is created on demand regardless of
@@ -114,6 +136,36 @@ GET /api/v1/metrics/history?since=<ISO>&until=<ISO>&limit=<int>
 When `since` and `until` are both omitted, returns the `limit` most recent rows.
 When the daemon state is idle (`metrics_store` is `None`), returns
 `{"snapshots": []}` gracefully (never 500).
+
+### POST /api/v1/metrics/maintenance — explicit quiescent maintenance
+
+A daemon-owned maintenance operation (bearer-authed, founder-explicit) that
+runs ONLY through `MetricsStore` — never a filesystem delete and never shell
+SQLite. Requires explicit confirmation (`confirm_quiescent: true`) AND a
+quiescent daemon (no nonterminal task, no running job, no active executor
+session); otherwise it refuses with HTTP 409. On confirmed quiescence it runs:
+prune (unchanged 30-day cutoff) → WAL checkpoint (TRUNCATE) →
+`PRAGMA integrity_check` (fail closed on non-`ok`) → `VACUUM` → post-vacuum
+integrity + health evidence.
+
+```bash
+happyranch metrics maintenance --confirm-quiescent
+```
+
+**Request** `POST /api/v1/metrics/maintenance` body: `{"confirm_quiescent": true}`.
+
+**Response** `200 OK` reports before/after DB+WAL bytes, row count, cutoff,
+page/free-list counts, duration, checkpoint and integrity results, and pruned
+count.
+
+**Failure & recovery.** Any failure returns HTTP 500 (`maintenance_failed`) —
+never a partial success — and logs recovery guidance. Pre-existing valid
+history remains queryable. Recovery requires a fresh explicit invocation; there
+is no automatic retry. The periodic writer continues to catch and log its own
+persistence failures without crashing the scheduler loops.
+
+**Never** hand-edit or delete `metrics.db`, `metrics.db-wal`, or
+`metrics.db-shm`; all pruning/checkpoint/vacuum goes through the store.
 
 ## System Assistant
 
