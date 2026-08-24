@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.models import ThreadMessageKind
+from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
 
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering", role: str = "worker") -> None:
@@ -601,3 +601,150 @@ def test_no_callback_after_reprompt_with_infra_is_infra_fail(
         s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
     )
     assert alpha_entry["category"] == "infra_fail"
+
+
+# ---------------------------------------------------------------------------
+# TASK-5553: authoritative purpose on the wire — classification/dedup must
+# use thread_invocations.purpose, never the triggering row kind.
+# ---------------------------------------------------------------------------
+
+
+def test_responder_status_carries_purpose_on_both_endpoints(
+    client, org_slug, three_agent_thread, db,
+):
+    """Every responder_status entry carries the authoritative invocation
+    purpose: 'reply' for message-row REPLY wakes, 'task_followup' for the
+    system-row followup wake — on BOTH GET /threads/{id} and /messages.
+    The same agent can appear with DIFFERENT purposes on different rows; the
+    wire must never blur them."""
+    thread_id = three_agent_thread
+    token = _post_followup_system_row(db, thread_id, agent="alpha", kind_tag="task_completed")
+    db.stamp_invocation_started(token, session_id=None)
+
+    for path in (f"/threads/{thread_id}", f"/threads/{thread_id}/messages"):
+        r = client.get(f"/api/v1/orgs/{org_slug}{path}")
+        assert r.status_code == 200, r.text
+        msgs = r.json()["messages"]
+        kickoff = next(m for m in msgs if m["kind"] == "message")
+        sys_msg = next(m for m in msgs if m["kind"] == "system")
+        # Kickoff REPLY wakes are all purpose='reply'.
+        assert {s["purpose"] for s in kickoff["responder_status"]} == {"reply"}
+        # Alpha's followup wake on the system row is purpose='task_followup'.
+        alpha_followup = next(
+            s for s in sys_msg["responder_status"] if s["agent_name"] == "alpha"
+        )
+        assert alpha_followup["purpose"] == "task_followup"
+        assert alpha_followup["status"] == "working"
+
+
+def test_system_row_anchored_reply_range_carries_purpose_reply(
+    client, org_slug, three_agent_thread, db,
+):
+    """GH-688 duplicate-responder regression (founder THR-198 seq 77): a
+    coalesced conversational REPLY whose delivery range STARTS on a SYSTEM row
+    still carries purpose='reply' on the wire. The follow-on REPLY mint keys
+    the first unacknowledged sequence, which can be a system divider (system
+    seq 39 + founder message seq 40 + REPLY running range 39-40). The web
+    selector must classify it as a REPLY — owned by the pair projection —
+    never infer a special purpose from the triggering row kind."""
+    thread_id = three_agent_thread
+    # Claim alpha's kickoff REPLY (running range 1..1).
+    alpha_inv = next(
+        i for i in db.list_thread_invocations(thread_id)
+        if i.agent_name == "alpha" and i.purpose.value == "reply"
+    )
+    claim = db.claim_conversational_reply(alpha_inv.invocation_token)
+    assert claim is not None and claim.running_through_seq == 1
+    # A SYSTEM row lands at seq 2 (resumed divider — no arrivals).
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker="founder",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "resumed", "status": "ok"},
+    )
+    # Founder message at seq 3 coalesces into alpha's running wake.
+    seq, _ = db.record_conversational_arrival(
+        thread_id=thread_id, speaker="founder", kind=ThreadMessageKind.MESSAGE,
+        body_markdown="any thoughts?",
+        recipients=["alpha", "bravo", "charlie"],
+    )
+    assert seq == sys_seq + 1
+    # Settle the claimed range (1..1): required(3) > ack(1) → exactly one
+    # follow-on REPLY whose triggering_seq is the first unacknowledged seq —
+    # 2, the SYSTEM row. This is the founder's exact edge.
+    settlement = db.settle_conversational_reply(
+        token=alpha_inv.invocation_token, outcome="reply",
+    )
+    assert settlement is not None and settlement.follow_on_token is not None
+    follow_on = db.get_invocation_any_status(settlement.follow_on_token)
+    assert follow_on.triggering_seq == sys_seq
+    assert follow_on.purpose is ThreadInvocationPurpose.REPLY
+    # The runner claims the follow-on (queued→running CAS) as it would.
+    follow_claim = db.claim_conversational_reply(settlement.follow_on_token)
+    assert follow_claim is not None
+    assert follow_claim.running_from_seq == sys_seq
+    assert follow_claim.running_through_seq == seq
+
+    for path in (f"/threads/{thread_id}", f"/threads/{thread_id}/messages"):
+        r = client.get(f"/api/v1/orgs/{org_slug}{path}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        sys_msg = next(m for m in data["messages"] if m["seq"] == sys_seq)
+        alpha_entry = next(
+            s for s in sys_msg["responder_status"] if s["agent_name"] == "alpha"
+        )
+        # The system-row responder is a REPLY, not a special wake: purpose is
+        # authoritative, and the status shows an in-flight working reply.
+        assert alpha_entry["purpose"] == "reply"
+        assert alpha_entry["status"] == "working"
+        # The pair projection owns the range starting at the system row — the
+        # web layer uses (purpose='reply' + pair ownership) to render exactly
+        # one replying row.
+        rd = {p["agent_name"]: p for p in data["reply_delivery"]}
+        assert rd["alpha"]["state"] == "running"
+        assert rd["alpha"]["from_seq"] == sys_seq
+        assert rd["alpha"]["through_seq"] == seq
+
+
+def test_system_row_anchored_reply_terminal_replied_marker(
+    client, org_slug, three_agent_thread, db,
+):
+    """A system-row-anchored REPLY that settles reads 'replied' on its system
+    row (per-message terminal marker restored for system-row ranges) with the
+    authoritative purpose still intact."""
+    thread_id = three_agent_thread
+    alpha_inv = next(
+        i for i in db.list_thread_invocations(thread_id)
+        if i.agent_name == "alpha" and i.purpose.value == "reply"
+    )
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker="founder",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "resumed", "status": "ok"},
+    )
+    seq, _ = db.record_conversational_arrival(
+        thread_id=thread_id, speaker="founder", kind=ThreadMessageKind.MESSAGE,
+        body_markdown="any thoughts?",
+        recipients=["alpha", "bravo", "charlie"],
+    )
+    assert seq == sys_seq + 1
+    # Directly anchor a fresh REPLY on the system row (as the store's follow-on
+    # mint does) and settle it as replied.
+    anchored = db.mint_thread_invocation(
+        thread_id=thread_id, agent_name="alpha",
+        triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='consumed', consumed_at=datetime('now') "
+        "WHERE invocation_token=?",
+        (anchored.invocation_token,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    sys_msg = next(m for m in r.json()["messages"] if m["seq"] == sys_seq)
+    alpha_entry = next(
+        s for s in sys_msg["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["purpose"] == "reply"
+    assert alpha_entry["status"] == "replied"
+    assert alpha_entry["responded_at"] is not None

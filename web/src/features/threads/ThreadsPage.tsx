@@ -1155,13 +1155,16 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
   );
   const pairLiveAgents = useMemo(() => new Set(pairLive.map((e) => e.agent_name)), [pairLive]);
   // Inferred in-flight rows NOT covered by a pair entry. Suppression is
-  // purpose/triggering-row-aware (GH-688 Phase 1 Slice C reviewer finding):
-  // only a conversational REPLY wake (hangs off a MESSAGE row) is masked when
-  // the store projection already owns that agent's pair. Special-purpose
-  // wakes (TASK_FOLLOWUP / BOOTSTRAP hang off system rows and are
-  // intentionally outside reply_delivery) are ALWAYS preserved — even when
-  // the same agent concurrently holds a REPLY pair, so the followup
-  // in-flight strip keeps working (THR-061).
+  // purpose-aware (GH-688 Phase 1 Slice C reviewer finding; TASK-5553): only a
+  // conversational REPLY wake — identified by the AUTHORITATIVE wire purpose
+  // carried from thread_invocations, never by the triggering row's kind — is
+  // masked when the store projection already owns that agent's pair.
+  // Special-purpose wakes (TASK_FOLLOWUP / BOOTSTRAP) are intentionally
+  // outside reply_delivery and ALWAYS preserved — even when the same agent
+  // concurrently holds a REPLY pair, so the followup in-flight strip keeps
+  // working (THR-061). A REPLY whose coalesced range anchors on a SYSTEM row
+  // still reads purpose='reply' on the wire and is therefore suppressed next
+  // to its pair row — exactly one replying bubble (founder THR-198 seq 77).
   const inferredInFlight = useMemo(
     () =>
       selectInFlightResponders(messages).filter(
@@ -1204,13 +1207,21 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
             {/* System rows — centered "· system event · broadcast to all"
-                divider (THR-061 a-thread-detail .sys), not a chat bubble. */}
+                divider (THR-061 a-thread-detail .sys), not a chat bubble.
+                Terminal responder history (incl. a system-row-anchored REPLY
+                range that settled) renders as the same light strip below the
+                divider (TASK-5553): ResponderStatusStrip filters to terminal
+                states only, so in-flight rows never duplicate the tail
+                TypingBubbles. */}
             {variant === 'system' ? (
-              <SystemDivider
-                timestamp={m.created_at}
-                systemPayload={m.system_payload}
-                slug={slug}
-              />
+              <>
+                <SystemDivider
+                  timestamp={m.created_at}
+                  systemPayload={m.system_payload}
+                  slug={slug}
+                />
+                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
+              </>
             ) : (
               // Turn = per-sender avatar square + chat-bubble body column
               // (THR-061 a-thread-detail .turn). The responder strip aligns

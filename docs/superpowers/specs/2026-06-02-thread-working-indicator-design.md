@@ -16,8 +16,19 @@
 > are unchanged; and (b) special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP),
 > which hang off system rows and are intentionally outside `reply_delivery`
 > (preserved even when the same agent concurrently holds a conversational
-> REPLY pair — inferred-row suppression is purpose/triggering-row-aware,
-> never agent-name-only).
+> REPLY pair).
+> **TASK-5553 purpose fidelity.** Every `responder_status` wire entry now
+> carries the authoritative invocation `purpose` (`reply` | `task_followup`;
+> BOOTSTRAP stays excluded from the grouped query), so in-flight
+> classification/dedup uses the wire purpose — NEVER the triggering row's
+> kind. A coalesced REPLY delivery range can anchor on a SYSTEM row (the
+> follow-on mint keys the first unacknowledged sequence, which may be a
+> system divider); with the wire purpose that REPLY is correctly suppressed
+> next to its store-projected pair row (exactly one replying bubble) while a
+> same-agent TASK_FOLLOWUP stays visible. Suppression is therefore
+> purpose-aware, never agent-name-only. Terminal per-message responder
+> history also renders under SYSTEM rows, so a settled system-row-anchored
+> REPLY range shows its terminal `replied` marker.
 > The transcript-tail bubbles for conversational pairs now render the honest
 > store projection — queued pairs show a coalesced count + inclusive range
 > with static styling (never an active-subprocess claim), running pairs show
