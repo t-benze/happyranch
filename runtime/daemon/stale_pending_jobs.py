@@ -108,11 +108,12 @@ def scan_org_root_stale_pending(
     For an EXISTING store this uses ``scan_stale_pending_jobs_readonly``: the
     source is never durably touched — a cleanly-closed store is read via an
     ``immutable=1`` SQLite connection, and an active-WAL store (``-wal``/``-shm``
-    present) is read via an internally managed temporary snapshot that byte-
-    copies the source DB and ``-wal`` into a private temp dir and opens ONLY
-    the copy (SQLite's WAL reader, even ``mode=ro``, mutates the source
-    ``-shm`` — proved by TASK-5517 — so the source is never opened with
-    SQLite). A legacy pre-migration DB stays byte-identical across scans, and
+    present) is read DIRECTLY via a genuine read-only WAL-aware connection
+    (``mode=ro``) on the source itself (founder ruling TASK-5542): source DB
+    and ``-wal`` stay byte-identical before/after every observation, only
+    transient source ``-shm`` reader/lock/index-byte and mtime changes may
+    occur during the read, and no snapshot/temp directory is created
+    anywhere. A legacy pre-migration DB stays byte-identical across scans, and
     a malformed/irrelevant store fails closed (raises) without mutation.
     """
     from runtime.infrastructure.database import scan_stale_pending_jobs_readonly

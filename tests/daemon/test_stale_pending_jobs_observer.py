@@ -533,13 +533,16 @@ def test_startup_observation_includes_broken_org_root(tmp_path: Path, tmp_home, 
 
 
 # ---------------------------------------------------------------------------
-# Active-WAL observation: byte-preserving internal snapshot (TASK-5532, third
-# substantive fix-forward). SQLite's WAL reader — even ``mode=ro`` — updates
-# shared-memory reader/lock state; an independent review (TASK-5517) proved it
-# mutates an existing source ``-shm``. These tests pin the replacement seam:
-# the source is NEVER opened with SQLite — a private temp snapshot of the
-# source DB + ``-wal`` is opened instead — so every source byte AND mtime is
-# unchanged and a WAL-only candidate is still observed.
+# Active-WAL observation: DIRECT read-only connection on the source (TASK-5542,
+# fourth-round founder correction). The temporary snapshot/copy machinery is
+# retired entirely. SQLite's WAL reader — even ``mode=ro`` — updates
+# shared-memory reader/lock/index state in the source ``-shm`` while a read is
+# active (proved by TASK-5517); the founder contract EXPLICITLY permits
+# transient source ``-shm`` reader/lock/index-byte changes and mtime changes
+# during a read. The hard contract: source ``happyranch.db`` and
+# ``happyranch.db-wal`` byte-identical before/after every observation, no
+# job/task/audit row or schema write, and no snapshot/temp directory created
+# anywhere (especially under an org root).
 # ---------------------------------------------------------------------------
 
 
@@ -569,8 +572,9 @@ def _store_hashes(org_root: Path) -> dict[str, str | None]:
 
 
 def _store_mtimes(org_root: Path) -> dict[str, int | None]:
-    """mtime (ns) of every source store file — captured for the founder ruling
-    that a source ``-shm`` mtime touch would need to be documented."""
+    """mtime (ns) of every source store file. The founder contract (TASK-5542)
+    explicitly permits transient source ``-shm`` mtime changes during a read;
+    the values are captured and REPORTED factually, never pinned byte-equal."""
     return {
         name: (org_root / name).stat().st_mtime_ns
         if (org_root / name).exists() else None
@@ -598,15 +602,14 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     tmp_path: Path,
 ):
     """MANDATORY deterministic proof at the ACTUAL production scanner seam
-    (TASK-5532): hold a writer OPEN with a candidate committed only to the
+    (TASK-5542): hold a writer OPEN with a candidate committed only to the
     WAL; call the production all-org route; assert the candidate is observed;
-    hash every source DB/-wal/-shm byte-for-byte before/after and assert
-    identical hashes; capture mtimes and document the factual result.
-
-    Against the prior mechanism (``mode=ro`` on the source) this test is RED:
-    the reviewer's independent probe (TASK-5517) proved SQLite's read-only WAL
-    reader mutates the existing source ``-shm`` bytes. It passes only for a
-    mechanism that never opens the source with SQLite.
+    assert source ``happyranch.db`` and ``happyranch.db-wal`` SHA-256 are
+    byte-identical before/after; assert row/schema/audit state unchanged;
+    record the actual source ``-shm`` existence/hash/mtime behavior WITHOUT
+    requiring byte equality (transient reader/lock/index-byte and mtime
+    changes during a read are explicitly permitted); assert no snapshot/temp
+    directory is created anywhere (especially under the org root).
     """
     rt = RuntimeDir.init(tmp_path / "runtime")
     writer = _open_active_wal_org(rt, "happyranch")
@@ -618,8 +621,10 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     # The candidate is committed ONLY to the WAL — the main DB never got it.
     assert _wal_only_row_count(db_path) == []
 
-    before_hashes = _store_hashes(org_root)
+    before = _store_hashes(org_root)
     before_mtimes = _store_mtimes(org_root)
+    shm_before_exists = (org_root / "happyranch.db-shm").exists()
+    org_files_before = sorted(p.name for p in org_root.iterdir())
     leftovers_before = set(
         p.name for p in Path(tempfile.gettempdir()).glob("happyranch-stale-scan-*")
     )
@@ -629,12 +634,40 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     assert [f["id"] for f in results["happyranch"]] == ["JOB-WAL"]
     assert results["happyranch"][0]["task_id"] == "TASK-001"
 
-    # Founder ruling: source DB/-wal/-shm must have NO byte changes.
-    assert _store_hashes(org_root) == before_hashes
-    # Factual mtime result: the source is only read() — no source mtime
-    # (including -shm) changes either (better than the ruling's allowance).
-    assert _store_mtimes(org_root) == before_mtimes
-    # The internal snapshot is cleaned safely — no temp leftovers.
+    after = _store_hashes(org_root)
+    after_mtimes = _store_mtimes(org_root)
+
+    # CONTRACT: source main DB and -wal byte-identical before/after.
+    assert after["happyranch.db"] == before["happyranch.db"], (
+        "source happyranch.db changed"
+    )
+    assert after["happyranch.db-wal"] == before["happyranch.db-wal"], (
+        "source happyranch.db-wal changed"
+    )
+
+    # Factual -shm behavior: existence, hash and mtime are recorded WITHOUT
+    # byte-equality assertions (transient reader/lock/index changes and mtime
+    # changes during a read are explicitly permitted by the founder contract).
+    shm = org_root / "happyranch.db-shm"
+    assert shm.exists() == shm_before_exists, (
+        f"source -shm existence changed: before={shm_before_exists} "
+        f"after={shm.exists()}"
+    )
+    assert after["happyranch.db-shm"] is not None
+    assert after_mtimes["happyranch.db-shm"] is not None
+    print(
+        "[active-wal-observer] source -shm factual behavior: "
+        f"exists_before={shm_before_exists} exists_after={shm.exists()} "
+        f"sha256_before={before['happyranch.db-shm']} "
+        f"sha256_after={after['happyranch.db-shm']} "
+        f"mtime_ns_before={before_mtimes['happyranch.db-shm']} "
+        f"mtime_ns_after={after_mtimes['happyranch.db-shm']}"
+    )
+
+    # No snapshot/temp directory created anywhere (especially under org root)
+    # — the snapshot machinery is retired.
+    assert sorted(p.name for p in org_root.iterdir()) == org_files_before
+    assert not list(org_root.rglob("happyranch-stale-scan-*"))
     leftovers_after = set(
         p.name for p in Path(tempfile.gettempdir()).glob("happyranch-stale-scan-*")
     )
@@ -650,101 +683,127 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     writer.close()
 
 
-def test_active_wal_scan_retries_on_transient_source_change_then_succeeds(
+def test_active_wal_scan_reads_source_directly_with_no_snapshot(
     tmp_path: Path, monkeypatch,
 ):
-    """A source that changes mid-copy (a checkpoint/commit straddling the DB
-    and WAL copies) is detected by the size/mtime guard and re-copied: the
-    retry succeeds, the candidate is observed, and the source stays
-    byte-identical."""
+    """The active-WAL route opens the SOURCE itself with a genuine read-only
+    connection (``mode=ro``) — no snapshot copy, no temp DB, no URI pointing
+    anywhere but the source store file."""
     import runtime.infrastructure.database as database_mod
 
     rt = RuntimeDir.init(tmp_path / "runtime")
     writer = _open_active_wal_org(rt, "happyranch")
     org_root = rt.orgs_dir / "happyranch"
+    db_path = org_root / "happyranch.db"
 
-    real_sig = database_mod._file_sig
-    calls = {"n": 0}
+    real_connect = database_mod.sqlite3.connect
+    uris: list[str] = []
 
-    def flaky_sig(path):
-        calls["n"] += 1
-        # First snapshot attempt reports the source as changed on every stat
-        # (4 sig calls: db before/after + wal before/after); from attempt 2
-        # the stat is stable so the snapshot lands.
-        if calls["n"] <= 4:
-            return (calls["n"], 0, 0)
-        return real_sig(path)
+    def recording_connect(database, **kw):
+        uris.append(str(database))
+        return real_connect(database, **kw)
 
-    monkeypatch.setattr(database_mod, "_file_sig", flaky_sig)
+    monkeypatch.setattr(database_mod.sqlite3, "connect", recording_connect)
 
-    before = _store_hashes(org_root)
     results = scan_all_org_stale_pending(rt, now=_now())
     assert [f["id"] for f in results["happyranch"]] == ["JOB-WAL"]
-    assert calls["n"] > 4  # at least one retry occurred, then success
-    assert _store_hashes(org_root) == before
+
+    wal_read_uris = [u for u in uris if "mode=ro" in u]
+    assert wal_read_uris, f"no mode=ro URI recorded: {uris}"
+    assert all(
+        u.startswith(f"file:{db_path}?mode=ro") for u in wal_read_uris
+    ), f"reader opened a non-source URI: {wal_read_uris}"
+    assert not any(
+        "snapshot.db" in u or "stale-scan" in u for u in uris
+    ), f"a snapshot/temp URI was opened: {uris}"
     writer.close()
 
 
-def test_active_wal_scan_persistent_incoherence_fails_closed_without_source_mutation(
+def test_active_wal_scan_never_creates_temp_dirs_under_org_root(
     tmp_path: Path, monkeypatch,
 ):
-    """If the source keeps changing mid-copy (never a coherent pair) the
-    observer gives up and FAILS CLOSED after bounded retries — it never
-    returns a partial/incoherent view as if authoritative — and the source
-    stays byte-identical with no sidecar added."""
+    """Hostile TMPDIR regression (TASK-5539 HIGH finding, founder TASK-5542
+    fourth-round ruling): the observer must create NO snapshot/temp directory
+    anywhere — especially under an org root. This points the process temp
+    directory INSIDE the org root and forces ``tempfile.mkdtemp`` to raise if
+    called; the production active-WAL scan must neither create any file under
+    the org root nor invoke the temp machinery at all.
+
+    RED against the prior snapshot mechanism (head 337acd06): that code
+    called ``tempfile.mkdtemp(prefix='happyranch-stale-scan-')`` and, when
+    the temp parent resolved under an org root, created and wrote
+    ``happyranch-stale-scan-*`` there (independent reviewer probe TASK-5539
+    reproduced the write).
+    """
+    import tempfile as tempfile_mod
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    writer = _open_active_wal_org(rt, "happyranch")
+    org_root = rt.orgs_dir / "happyranch"
+
+    # Hostile: resolve the process temp dir INSIDE the org root.
+    hostile_temp = org_root / "tmp"
+    hostile_temp.mkdir()
+    monkeypatch.setattr(tempfile_mod, "gettempdir", lambda: str(hostile_temp))
+    mkdtemp_calls = {"n": 0}
+
+    def hostile_mkdtemp(*args, **kwargs):
+        mkdtemp_calls["n"] += 1
+        raise AssertionError(
+            "observer must never call tempfile.mkdtemp (snapshot machinery retired)"
+        )
+
+    monkeypatch.setattr(tempfile_mod, "mkdtemp", hostile_mkdtemp)
+
+    org_files_before = sorted(p.name for p in org_root.iterdir())
+    results = scan_all_org_stale_pending(rt, now=_now())
+    assert [f["id"] for f in results["happyranch"]] == ["JOB-WAL"]
+
+    # No scanner temp dir anywhere under the org root; nothing new at all.
+    assert mkdtemp_calls["n"] == 0
+    assert sorted(p.name for p in org_root.iterdir()) == org_files_before
+    assert not list(org_root.rglob("happyranch-stale-scan-*"))
+    writer.close()
+
+
+def test_active_wal_scan_read_error_fails_closed_without_source_mutation(
+    tmp_path: Path, monkeypatch,
+):
+    """An I/O error while the direct reader is open propagates (fail closed)
+    with zero source mutation: no bytes change, no files created."""
     import runtime.infrastructure.database as database_mod
 
     rt = RuntimeDir.init(tmp_path / "runtime")
     writer = _open_active_wal_org(rt, "happyranch")
     org_root = rt.orgs_dir / "happyranch"
 
-    calls = {"n": 0}
+    real_connect = database_mod.sqlite3.connect
 
-    def always_changing(path):
-        calls["n"] += 1
-        return (calls["n"], 0, 0)
+    def failing_connect(database, **kw):
+        if str(database).startswith("file:") and "mode=ro" in str(database):
+            raise sqlite3.DatabaseError("injected read failure")
+        return real_connect(database, **kw)
 
-    monkeypatch.setattr(database_mod, "_file_sig", always_changing)
+    monkeypatch.setattr(database_mod.sqlite3, "connect", failing_connect)
 
     before = _store_hashes(org_root)
     files_before = sorted(p.name for p in org_root.iterdir())
     with pytest.raises(sqlite3.DatabaseError):
         scan_all_org_stale_pending(rt, now=_now())
-    assert _store_hashes(org_root) == before
+    after = _store_hashes(org_root)
+    # Hard contract: source main DB and -wal byte-identical.
+    assert after["happyranch.db"] == before["happyranch.db"]
+    assert after["happyranch.db-wal"] == before["happyranch.db-wal"]
     assert sorted(p.name for p in org_root.iterdir()) == files_before
-    # Bounded: every retry attempt ran (each attempt makes >=3 sig calls:
-    # before-db, before-wal, then the after-db check short-circuits the pair).
-    assert calls["n"] >= 3 * database_mod._SNAPSHOT_MAX_ATTEMPTS
     writer.close()
 
 
-def test_active_wal_scan_copy_failure_fails_closed_without_source_mutation(
-    tmp_path: Path, monkeypatch,
-):
-    """An OS-level copy failure propagates (fail closed) with zero source
-    mutation: no bytes change, no sidecars created."""
-    import runtime.infrastructure.database as database_mod
-
-    rt = RuntimeDir.init(tmp_path / "runtime")
-    writer = _open_active_wal_org(rt, "happyranch")
-    org_root = rt.orgs_dir / "happyranch"
-
-    def boom(src, dst):
-        raise OSError("injected copy failure")
-
-    monkeypatch.setattr(database_mod, "_copy_file", boom)
-
-    before = _store_hashes(org_root)
-    with pytest.raises(OSError):
-        scan_all_org_stale_pending(rt, now=_now())
-    assert _store_hashes(org_root) == before
-    writer.close()
-
-
-def test_active_wal_malformed_store_fails_closed_through_snapshot(tmp_path: Path):
+def test_active_wal_malformed_store_fails_closed_direct_read(tmp_path: Path):
     """A malformed store that ALSO carries -wal/-shm sidecars (the active-WAL
-    shape) still fails closed (DatabaseError) through the internal snapshot
-    path, leaving every source byte untouched."""
+    shape) still fails closed (DatabaseError) through the direct read-only
+    reader. Hard contract: source main DB and ``-wal`` stay byte-identical;
+    the ``-shm`` is the explicitly-permitted shared-memory surface — its
+    existence/hash/mtime are recorded, never pinned byte-equal."""
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -755,18 +814,35 @@ def test_active_wal_malformed_store_fails_closed_through_snapshot(tmp_path: Path
     )
     (org_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
     before = _store_hashes(org_root)
+    files_before = sorted(p.name for p in org_root.iterdir())
+    shm_before_exists = (org_root / "happyranch.db-shm").exists()
 
     with pytest.raises(sqlite3.DatabaseError):
         scan_all_org_stale_pending(rt, now=_now())
 
-    assert _store_hashes(org_root) == before
+    after = _store_hashes(org_root)
+    assert after["happyranch.db"] == before["happyranch.db"]
+    assert after["happyranch.db-wal"] == before["happyranch.db-wal"]
+    # Accepted reader effect: SQLite WAL-init may create the source -shm when
+    # it was absent (explicitly-permitted -shm existence change); no other
+    # new file appears.
+    assert set(sorted(p.name for p in org_root.iterdir())) - set(files_before) <= {
+        "happyranch.db-shm"
+    }
+    print(
+        "[active-wal-observer][malformed] source -shm factual behavior: "
+        f"exists_before={shm_before_exists} "
+        f"exists_after={(org_root / 'happyranch.db-shm').exists()}"
+    )
 
 
-def test_active_wal_pre_migration_store_fails_closed_through_snapshot(tmp_path: Path):
+def test_active_wal_pre_migration_store_fails_closed_direct_read(tmp_path: Path):
     """An EXISTING pre-migration store (legacy ``script_requests`` shape) that
-    carries -wal/-shm sidecars fails closed (no jobs table) through the
-    snapshot path and is never migrated/altered — the source bytes stay
-    identical."""
+    carries -wal/-shm sidecars fails closed (no jobs table) through the direct
+    read-only reader and is never migrated/altered. Hard contract: source main
+    DB and ``-wal`` stay byte-identical; the ``-shm`` is the explicitly-
+    permitted shared-memory surface (existence/hash/mtime recorded, not
+    pinned byte-equal)."""
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -776,8 +852,20 @@ def test_active_wal_pre_migration_store_fails_closed_through_snapshot(tmp_path: 
     # Simulate a legacy store that was left WAL-active (crash leftovers).
     (org_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
     before = _store_hashes(org_root)
+    files_before = sorted(p.name for p in org_root.iterdir())
+    shm_before_exists = (org_root / "happyranch.db-shm").exists()
 
     with pytest.raises(sqlite3.OperationalError):
         scan_all_org_stale_pending(rt, now=_now())
 
-    assert _store_hashes(org_root) == before
+    after = _store_hashes(org_root)
+    assert after["happyranch.db"] == before["happyranch.db"]
+    assert after["happyranch.db-wal"] == before["happyranch.db-wal"]
+    assert set(sorted(p.name for p in org_root.iterdir())) - set(files_before) <= {
+        "happyranch.db-shm"
+    }
+    print(
+        "[active-wal-observer][pre-migration] source -shm factual behavior: "
+        f"exists_before={shm_before_exists} "
+        f"exists_after={(org_root / 'happyranch.db-shm').exists()}"
+    )
