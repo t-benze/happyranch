@@ -164,17 +164,20 @@ _STALE_PENDING_JOBS_SCAN_SQL = (
 )
 
 # Active-WAL observation is a DIRECT read of the source store (founder
-# ruling TASK-5542, fourth round): the temporary snapshot/copy machinery is
+# ruling TASK-5542/TASK-5544): the temporary snapshot/copy machinery is
 # retired entirely. An active-WAL source is opened in place with a genuine
 # SQLite read-only connection (``mode=ro``) which consults the ``-wal`` so
-# WAL-only committed candidates are observed. SQLite's WAL reader — even
-# ``mode=ro`` — updates shared-memory reader/lock/index state in the source
-# ``-shm`` while a read is active (proved by TASK-5517); the founder contract
-# explicitly permits transient source ``-shm`` reader/lock/index-byte and
-# mtime changes during a read. The source main DB and ``-wal`` are NEVER
-# written: a read-only connection cannot append WAL frames, checkpoint,
-# recover, or run DDL/DML, so both stay byte-identical before/after every
-# observation. No snapshot, no copy, no temp directory anywhere.
+# WAL-only committed candidates are observed. The FOUNDER CONTRACT protects
+# the durable source ``happyranch.db`` and ``happyranch.db-wal`` BYTES ONLY:
+# SQLite's WAL reader — even ``mode=ro`` — initializes WAL shared memory and
+# may CREATE, MODIFY, or REMOVE the WAL-index ``happyranch.db-shm`` as
+# transient reader/lock/index behavior, and that is explicitly permitted
+# (TASK-5544 ruling; creation/modification/removal are all allowed, and no
+# ``-shm`` existence/hash/mtime identity is ever asserted). The source main
+# DB and ``-wal`` are NEVER written: a read-only connection cannot append WAL
+# frames, checkpoint, recover, or run DDL/DML, so both stay byte-identical
+# before/after every observation. No snapshot, no copy, no temp directory
+# anywhere.
 
 
 def _scan_stale_pending_jobs_direct_wal(
@@ -192,9 +195,12 @@ def _scan_stale_pending_jobs_direct_wal(
     frames, checkpoint, or recover), so both files stay byte-identical
     before/after every observation and no row/schema/audit state can change.
 
-    Transient source ``-shm`` reader/lock/index-byte changes and mtime
-    changes during a read are explicitly permitted by the founder contract
-    (TASK-5542); no ``-shm`` change is asserted or documented as byte-safe.
+    SQLite's WAL reader may CREATE, MODIFY, or REMOVE the source
+    ``-shm`` (WAL-index shared memory) as transient reader/lock/index
+    behavior — explicitly permitted by the founder contract (TASK-5544); no
+    ``-shm`` existence/hash/mtime identity is asserted. Only the durable
+    source ``happyranch.db`` and ``happyranch.db-wal`` bytes are protected
+    (byte-identical before/after).
 
     Fail closed: a missing main DB is handled by the caller (``[]``); a
     malformed main file raises ``sqlite3.DatabaseError`` and a schema without
@@ -215,13 +221,17 @@ def _scan_stale_pending_jobs_direct_wal(
 def scan_stale_pending_jobs_readonly(
     db_path: Path, cutoff_iso: str,
 ) -> list[dict]:
-    """Read-only, sidecar-free stale-pending observation over one org store.
+    """Read-only stale-pending observation over one org store.
 
     THR-195 observation MUST NOT durably mutate any store: it never creates a
     missing DB, never enables WAL, never runs the schema migration guards, and
-    never writes ``-wal``/``-shm`` sidecars. This helper therefore never
-    opens the source with ``Database(db_path)`` (whose ``__init__`` creates
-    the file, enables WAL, and runs migrations).
+    never writes the source ``-wal``. The founder contract (TASK-5544)
+    protects the durable source ``happyranch.db`` and ``happyranch.db-wal``
+    BYTES ONLY — the SQLite WAL-index ``happyranch.db-shm`` may be created,
+    modified, or removed by read-side WAL access and that is explicitly
+    permitted, so no ``-shm`` identity is ever asserted. This helper
+    therefore never opens the source with ``Database(db_path)`` (whose
+    ``__init__`` creates the file, enables WAL, and runs migrations).
 
     Route selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
     checkpoints and removes them on the last close), so the main file holds
@@ -230,17 +240,20 @@ def scan_stale_pending_jobs_readonly(
     loaded org — or crash leftovers), the scan opens the SOURCE directly with
     a genuine read-only WAL-aware connection (``mode=ro``): WAL-only
     committed candidates are observed, the source main DB and ``-wal`` stay
-    byte-identical before/after, and only transient source ``-shm``
-    reader/lock/index-byte and mtime changes may occur during the read
-    (founder contract TASK-5542 — explicitly permitted; no snapshot/copy/temp
+    byte-identical before/after, and the source ``-shm`` is the explicitly
+    permitted shared-memory surface (creation/modification/removal by the
+    WAL reader allowed; founder ruling TASK-5544; no snapshot/copy/temp
     directory is used). Either way the scan sees every committed candidate
-    row and writes nothing to any source file.
+    row and durably writes only the permitted ``-shm`` shared-memory surface
+    (which it may create or remove) — never the source ``.db``/``-wal``.
 
     A missing DB file returns ``[]`` — nothing to observe, nothing created.
     A store that cannot be read (malformed file, or a pre-migration/
     irrelevant schema without a ``jobs`` table) raises
-    ``sqlite3.DatabaseError``/``OperationalError``: fail closed — never
-    mutate, never fabricate candidates.
+    ``sqlite3.DatabaseError``/``OperationalError``: fail closed at this leaf —
+    never mutate, never fabricate candidates; the all-org coordinator
+    (``scan_all_org_stale_pending``) isolates and logs such a failure so it
+    cannot abort daemon startup or suppress other org roots.
     """
     if not db_path.is_file():
         return []

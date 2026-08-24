@@ -173,7 +173,12 @@ async def _lifespan(app: FastAPI):
     # Registry-wide: scans EVERY org root discovered via
     # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
     # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
-    # Read-only connections only: never creates/migrates/writes a store.
+    # Read-only connections only: never creates/migrates/writes a store (the
+    # founder contract protects the durable source ``.db``/``-wal`` bytes;
+    # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
+    # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
+    # per-org observation failure is logged with org/root/error context and
+    # isolated, so it cannot abort daemon startup or suppress other org roots.
     # Surfaces a recurrence of the historical submission-to-dispatch
     # orphan; deliberately NOT a reaper — no automatic mutation.
     if state.runtime is not None:

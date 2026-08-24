@@ -19,6 +19,7 @@ import pytest
 from runtime.daemon.stale_pending_jobs import (
     STALE_PENDING_JOB_MAX_AGE,
     scan_all_org_stale_pending,
+    scan_org_root_stale_pending,
     scan_org_stale_pending,
 )
 from runtime.infrastructure.database import Database
@@ -376,11 +377,16 @@ def test_existing_db_bytes_schema_sidecars_unchanged_across_repeated_scans(tmp_p
     assert after["files"] == before["files"] == ["happyranch.db"]
 
 
-def test_legacy_pre_migration_db_never_migrated_or_mutated(tmp_path: Path):
+def test_legacy_pre_migration_db_never_migrated_or_mutated(tmp_path: Path, caplog):
     """An EXISTING pre-migration store (legacy ``script_requests`` shape) is
-    never migrated by observation: the scan fails closed (no ``jobs`` table)
-    and leaves bytes/schema/sidecars untouched — where ``Database(db_path)``
-    would have RENAMED the table and added columns (durable mutation)."""
+    never migrated by observation: the LEAF scan fails closed (no ``jobs``
+    table — never fabricates candidates) and the all-org coordinator logs the
+    failure with org/root/error context and isolates it (the org reports
+    empty; other org roots keep scanning; daemon startup stays live) — where
+    ``Database(db_path)`` would have RENAMED the table and added columns
+    (durable mutation)."""
+    import logging
+
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -389,18 +395,35 @@ def test_legacy_pre_migration_db_never_migrated_or_mutated(tmp_path: Path):
     _legacy_script_requests_db(org_root / "happyranch.db")
     before = _snapshot_store(org_root)
 
+    # Leaf fail-closed: the single-org read raises (never fabricates, never
+    # migrates). The all-org coordinator converts this into a logged,
+    # isolated empty result so startup continues.
     with pytest.raises(sqlite3.OperationalError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
 
     after = _snapshot_store(org_root)
+    assert results == {"happyranch": []}
     assert after["bytes"] == before["bytes"]
     assert after["schema"] == before["schema"]
     assert after["files"] == before["files"] == ["happyranch.db"]
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "OperationalError" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
 
 
-def test_malformed_db_fails_closed_without_durable_mutation(tmp_path: Path):
-    """A malformed/irrelevant store fails closed (raises) without durable
-    mutation: no bytes change, no sidecars created, repeated scans idempotent."""
+def test_malformed_db_fails_closed_without_durable_mutation(tmp_path: Path, caplog):
+    """A malformed/irrelevant store fails closed at the leaf (raises) without
+    durable mutation, and the all-org coordinator logs + isolates the failure:
+    no bytes change, no sidecars created (the malformed main file has no
+    ``-wal``, so the read-only path is ``immutable=1`` and creates nothing),
+    repeated scans idempotent."""
+    import logging
+
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -410,17 +433,30 @@ def test_malformed_db_fails_closed_without_durable_mutation(tmp_path: Path):
     db_path.write_bytes(b"this is not a sqlite database at all\x00\x01" * 8)
     before = _snapshot_store(org_root)
 
+    # Leaf fail-closed: the single-org read raises (never fabricates).
     with pytest.raises(sqlite3.DatabaseError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
 
     after = _snapshot_store(org_root)
+    assert results == {"happyranch": []}
     assert after["bytes"] == before["bytes"]
     assert after["files"] == before["files"] == ["happyranch.db"]
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "DatabaseError" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
 
 
-def test_irrelevant_legacy_store_no_jobs_table_fails_closed(tmp_path: Path):
+def test_irrelevant_legacy_store_no_jobs_table_fails_closed(tmp_path: Path, caplog):
     """A legacy store with only an unrelated table (no ``jobs`` at all) fails
-    closed instead of fabricating candidates or mutating."""
+    closed at the leaf instead of fabricating candidates or mutating; the
+    all-org coordinator logs and isolates the failure."""
+    import logging
+
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -433,12 +469,22 @@ def test_irrelevant_legacy_store_no_jobs_table_fails_closed(tmp_path: Path):
     conn.close()
     before = _snapshot_store(org_root)
 
+    # Leaf fail-closed: the single-org read raises (never fabricates).
     with pytest.raises(sqlite3.OperationalError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
 
     after = _snapshot_store(org_root)
+    assert results == {"happyranch": []}
     assert after["bytes"] == before["bytes"]
     assert after["files"] == before["files"] == ["happyranch.db"]
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "OperationalError" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
 
 
 # ---------------------------------------------------------------------------
@@ -534,12 +580,13 @@ def test_startup_observation_includes_broken_org_root(tmp_path: Path, tmp_home, 
 
 # ---------------------------------------------------------------------------
 # Active-WAL observation: DIRECT read-only connection on the source (TASK-5542,
-# fourth-round founder correction). The temporary snapshot/copy machinery is
-# retired entirely. SQLite's WAL reader — even ``mode=ro`` — updates
-# shared-memory reader/lock/index state in the source ``-shm`` while a read is
-# active (proved by TASK-5517); the founder contract EXPLICITLY permits
-# transient source ``-shm`` reader/lock/index-byte changes and mtime changes
-# during a read. The hard contract: source ``happyranch.db`` and
+# fourth-round founder correction; contract binding per founder ruling
+# TASK-5544). The temporary snapshot/copy machinery is retired entirely.
+# SQLite's WAL reader — even ``mode=ro`` — initializes WAL shared memory and
+# may CREATE, MODIFY, or REMOVE the source ``-shm`` (WAL-index) as transient
+# reader/lock/index behavior; the founder contract EXPLICITLY permits -shm
+# creation/modification/removal and asserts NO -shm existence/hash/mtime
+# identity. The hard contract: source ``happyranch.db`` and
 # ``happyranch.db-wal`` byte-identical before/after every observation, no
 # job/task/audit row or schema write, and no snapshot/temp directory created
 # anywhere (especially under an org root).
@@ -572,9 +619,10 @@ def _store_hashes(org_root: Path) -> dict[str, str | None]:
 
 
 def _store_mtimes(org_root: Path) -> dict[str, int | None]:
-    """mtime (ns) of every source store file. The founder contract (TASK-5542)
-    explicitly permits transient source ``-shm`` mtime changes during a read;
-    the values are captured and REPORTED factually, never pinned byte-equal."""
+    """mtime (ns) of every source store file. The founder contract (TASK-5544)
+    permits the SQLite WAL reader to create/modify/remove the source ``-shm``
+    and lets ``-shm`` mtime change; the values are captured and REPORTED
+    factually, never pinned byte-equal (only ``.db``/``-wal`` identity is)."""
     return {
         name: (org_root / name).stat().st_mtime_ns
         if (org_root / name).exists() else None
@@ -602,14 +650,16 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     tmp_path: Path,
 ):
     """MANDATORY deterministic proof at the ACTUAL production scanner seam
-    (TASK-5542): hold a writer OPEN with a candidate committed only to the
-    WAL; call the production all-org route; assert the candidate is observed;
-    assert source ``happyranch.db`` and ``happyranch.db-wal`` SHA-256 are
-    byte-identical before/after; assert row/schema/audit state unchanged;
-    record the actual source ``-shm`` existence/hash/mtime behavior WITHOUT
-    requiring byte equality (transient reader/lock/index-byte and mtime
-    changes during a read are explicitly permitted); assert no snapshot/temp
-    directory is created anywhere (especially under the org root).
+    (founder ruling TASK-5544): hold a writer OPEN with a candidate committed
+    only to the WAL; call the production all-org route; assert the candidate
+    is observed; assert source ``happyranch.db`` and ``happyranch.db-wal``
+    SHA-256 are byte-identical before/after; assert row/schema/audit state
+    unchanged; record the actual source ``-shm`` existence/hash/mtime
+    behavior WITHOUT any identity requirement — the founder contract permits
+    the WAL reader to CREATE, MODIFY, or REMOVE the source ``-shm``, so
+    absent-before/present-after (and any byte change) is accepted; assert no
+    snapshot/temp directory is created anywhere (especially under the org
+    root).
     """
     rt = RuntimeDir.init(tmp_path / "runtime")
     writer = _open_active_wal_org(rt, "happyranch")
@@ -646,15 +696,11 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     )
 
     # Factual -shm behavior: existence, hash and mtime are recorded WITHOUT
-    # byte-equality assertions (transient reader/lock/index changes and mtime
-    # changes during a read are explicitly permitted by the founder contract).
+    # any identity assertion. The founder contract (TASK-5544) permits
+    # SQLite's WAL reader to create/modify/remove the source -shm as
+    # transient reader/lock/index behavior, so absent-before/present-after
+    # and any byte/mtime change are accepted — never pinned.
     shm = org_root / "happyranch.db-shm"
-    assert shm.exists() == shm_before_exists, (
-        f"source -shm existence changed: before={shm_before_exists} "
-        f"after={shm.exists()}"
-    )
-    assert after["happyranch.db-shm"] is not None
-    assert after_mtimes["happyranch.db-shm"] is not None
     print(
         "[active-wal-observer] source -shm factual behavior: "
         f"exists_before={shm_before_exists} exists_after={shm.exists()} "
@@ -665,8 +711,12 @@ def test_active_wal_scan_observes_wal_only_candidate_without_source_mutation(
     )
 
     # No snapshot/temp directory created anywhere (especially under org root)
-    # — the snapshot machinery is retired.
-    assert sorted(p.name for p in org_root.iterdir()) == org_files_before
+    # — the snapshot machinery is retired. The ONLY permitted new file is the
+    # source -shm (WAL-index shared memory the reader may create); no other
+    # file may appear.
+    assert set(sorted(p.name for p in org_root.iterdir())) - set(
+        org_files_before
+    ) <= {"happyranch.db-shm"}
     assert not list(org_root.rglob("happyranch-stale-scan-*"))
     leftovers_after = set(
         p.name for p in Path(tempfile.gettempdir()).glob("happyranch-stale-scan-*")
@@ -767,10 +817,13 @@ def test_active_wal_scan_never_creates_temp_dirs_under_org_root(
 
 
 def test_active_wal_scan_read_error_fails_closed_without_source_mutation(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, caplog,
 ):
-    """An I/O error while the direct reader is open propagates (fail closed)
-    with zero source mutation: no bytes change, no files created."""
+    """An I/O error while the direct reader is open fails closed with zero
+    source mutation: the LEAF raises, and the all-org coordinator logs the
+    failure with context and isolates it (org reports empty; startup stays
+    live). No bytes change, no files created beyond the permitted ``-shm``."""
+    import logging
     import runtime.infrastructure.database as database_mod
 
     rt = RuntimeDir.init(tmp_path / "runtime")
@@ -788,22 +841,39 @@ def test_active_wal_scan_read_error_fails_closed_without_source_mutation(
 
     before = _store_hashes(org_root)
     files_before = sorted(p.name for p in org_root.iterdir())
+    # Leaf fail-closed: the single-org read raises (never fabricates).
     with pytest.raises(sqlite3.DatabaseError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
     after = _store_hashes(org_root)
     # Hard contract: source main DB and -wal byte-identical.
     assert after["happyranch.db"] == before["happyranch.db"]
     assert after["happyranch.db-wal"] == before["happyranch.db-wal"]
-    assert sorted(p.name for p in org_root.iterdir()) == files_before
+    assert set(sorted(p.name for p in org_root.iterdir())) - set(files_before) <= {
+        "happyranch.db-shm"
+    }
+    assert results == {"happyranch": []}
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "injected read failure" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
     writer.close()
 
 
-def test_active_wal_malformed_store_fails_closed_direct_read(tmp_path: Path):
+def test_active_wal_malformed_store_fails_closed_direct_read(
+    tmp_path: Path, caplog,
+):
     """A malformed store that ALSO carries -wal/-shm sidecars (the active-WAL
     shape) still fails closed (DatabaseError) through the direct read-only
     reader. Hard contract: source main DB and ``-wal`` stay byte-identical;
-    the ``-shm`` is the explicitly-permitted shared-memory surface — its
-    existence/hash/mtime are recorded, never pinned byte-equal."""
+    the ``-shm`` is the explicitly-permitted shared-memory surface — SQLite's
+    WAL reader may create/modify/remove it, so its existence/hash/mtime are
+    recorded, never pinned. The all-org coordinator logs + isolates the
+    failure (org reports empty; startup stays live)."""
+    import logging
+
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -817,8 +887,12 @@ def test_active_wal_malformed_store_fails_closed_direct_read(tmp_path: Path):
     files_before = sorted(p.name for p in org_root.iterdir())
     shm_before_exists = (org_root / "happyranch.db-shm").exists()
 
+    # Leaf fail-closed: the single-org read raises (never fabricates).
     with pytest.raises(sqlite3.DatabaseError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
 
     after = _store_hashes(org_root)
     assert after["happyranch.db"] == before["happyranch.db"]
@@ -829,6 +903,12 @@ def test_active_wal_malformed_store_fails_closed_direct_read(tmp_path: Path):
     assert set(sorted(p.name for p in org_root.iterdir())) - set(files_before) <= {
         "happyranch.db-shm"
     }
+    assert results == {"happyranch": []}
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "DatabaseError" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
     print(
         "[active-wal-observer][malformed] source -shm factual behavior: "
         f"exists_before={shm_before_exists} "
@@ -836,13 +916,18 @@ def test_active_wal_malformed_store_fails_closed_direct_read(tmp_path: Path):
     )
 
 
-def test_active_wal_pre_migration_store_fails_closed_direct_read(tmp_path: Path):
+def test_active_wal_pre_migration_store_fails_closed_direct_read(
+    tmp_path: Path, caplog,
+):
     """An EXISTING pre-migration store (legacy ``script_requests`` shape) that
     carries -wal/-shm sidecars fails closed (no jobs table) through the direct
     read-only reader and is never migrated/altered. Hard contract: source main
     DB and ``-wal`` stay byte-identical; the ``-shm`` is the explicitly-
-    permitted shared-memory surface (existence/hash/mtime recorded, not
-    pinned byte-equal)."""
+    permitted shared-memory surface (creation/modification/removal allowed;
+    existence/hash/mtime recorded, not pinned). The all-org coordinator logs +
+    isolates the failure (org reports empty; startup stays live)."""
+    import logging
+
     rt = RuntimeDir.init(tmp_path / "runtime")
     org_root = rt.orgs_dir / "happyranch"
     org_root.mkdir(parents=True)
@@ -855,8 +940,12 @@ def test_active_wal_pre_migration_store_fails_closed_direct_read(tmp_path: Path)
     files_before = sorted(p.name for p in org_root.iterdir())
     shm_before_exists = (org_root / "happyranch.db-shm").exists()
 
+    # Leaf fail-closed: the single-org read raises (never fabricates).
     with pytest.raises(sqlite3.OperationalError):
-        scan_all_org_stale_pending(rt, now=_now())
+        scan_org_root_stale_pending(org_root, now=_now())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
 
     after = _store_hashes(org_root)
     assert after["happyranch.db"] == before["happyranch.db"]
@@ -864,8 +953,222 @@ def test_active_wal_pre_migration_store_fails_closed_direct_read(tmp_path: Path)
     assert set(sorted(p.name for p in org_root.iterdir())) - set(files_before) <= {
         "happyranch.db-shm"
     }
+    assert results == {"happyranch": []}
+    assert any(
+        "stale-pending observation failed for org happyranch" in r.message
+        and "OperationalError" in r.message
+        for r in caplog.records
+    ), "failure was swallowed silently"
     print(
         "[active-wal-observer][pre-migration] source -shm factual behavior: "
         f"exists_before={shm_before_exists} "
         f"exists_after={(org_root / 'happyranch.db-shm').exists()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Startup-safe seam (founder ruling TASK-5544): a per-org observation failure
+# is logged with org/root/error context and isolated — it cannot abort daemon
+# startup and cannot suppress the other org roots. The leaf
+# (scan_org_root_stale_pending / scan_stale_pending_jobs_readonly) still fails
+# closed; the all-org coordinator converts the failure into a logged, empty
+# result for that org.
+# ---------------------------------------------------------------------------
+
+
+def test_all_org_scan_isolates_failing_roots_and_keeps_scanning(
+    tmp_path: Path, caplog,
+):
+    """REGISTRY-route regression (founder ruling TASK-5544): malformed and
+    pre-migration WAL-sidecar org roots must not abort the registry scan,
+    suppress other org roots, or be swallowed silently. The production all-org
+    route logs each failure with org/root/error context, reports the failing
+    org empty, and still observes a separate healthy org's candidate. Source
+    DB and -wal bytes of every failing root stay byte-identical; the ``-shm``
+    is the permitted shared-memory surface (may be created/changed). No
+    ordinary row/schema/audit mutation anywhere.
+    """
+    import logging
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+
+    # Healthy org with a stale never-started pending candidate.
+    healthy = _seed_org(rt, "alpha")
+    _seed_task(healthy, "TASK-516", TaskStatus.FAILED)
+    _seed_job(
+        healthy, job_id="JOB-002", task_id="TASK-516",
+        created_at=_z(_now() - timedelta(days=89)),
+        review_required=True,
+    )
+    healthy.close()
+
+    # Malformed WAL-sidecar root (garbage DB + stray -wal).
+    bad_root = rt.orgs_dir / "bad"
+    bad_root.mkdir(parents=True)
+    (bad_root / "org").mkdir()
+    (bad_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    (bad_root / "happyranch.db").write_bytes(
+        b"this is not a sqlite database at all\x00\x01" * 8
+    )
+    (bad_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
+    bad_before = _store_hashes(bad_root)
+    bad_files_before = sorted(p.name for p in bad_root.iterdir())
+
+    # Pre-migration WAL-sidecar root (legacy script_requests + stray -wal).
+    legacy_root = rt.orgs_dir / "legacy"
+    legacy_root.mkdir(parents=True)
+    (legacy_root / "org").mkdir()
+    (legacy_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    _legacy_script_requests_db(legacy_root / "happyranch.db")
+    (legacy_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
+    legacy_before = _store_hashes(legacy_root)
+    legacy_files_before = sorted(p.name for p in legacy_root.iterdir())
+
+    with caplog.at_level(logging.WARNING):
+        results = scan_all_org_stale_pending(rt, now=_now())
+
+    # Healthy org STILL observed — the failing roots did not suppress it, and
+    # the scan completed (startup stays live).
+    assert [f["id"] for f in results["alpha"]] == ["JOB-002"]
+    assert results["bad"] == [] and results["legacy"] == []
+
+    # No silent swallowing: each failing root logged with org/root/error
+    # context (slug + root path + exception type).
+    messages = " || ".join(r.message for r in caplog.records)
+    assert "stale-pending observation failed for org bad" in messages
+    assert "stale-pending observation failed for org legacy" in messages
+    assert "DatabaseError" in messages and "OperationalError" in messages
+    assert "runtime/orgs/bad" in messages and "runtime/orgs/legacy" in messages  # root-path context retained
+
+    # Source bytes preserved for both failing roots (DB + -wal identical;
+    # -shm is the permitted shared-memory surface).
+    bad_after = _store_hashes(bad_root)
+    assert bad_after["happyranch.db"] == bad_before["happyranch.db"]
+    assert bad_after["happyranch.db-wal"] == bad_before["happyranch.db-wal"]
+    assert set(sorted(p.name for p in bad_root.iterdir())) - set(
+        bad_files_before
+    ) <= {"happyranch.db-shm"}
+    legacy_after = _store_hashes(legacy_root)
+    assert legacy_after["happyranch.db"] == legacy_before["happyranch.db"]
+    assert legacy_after["happyranch.db-wal"] == legacy_before["happyranch.db-wal"]
+    assert set(sorted(p.name for p in legacy_root.iterdir())) - set(
+        legacy_files_before
+    ) <= {"happyranch.db-shm"}
+
+    # No ordinary row/schema/audit mutation on the healthy org.
+    read = sqlite3.connect(
+        f"file:{rt.orgs_dir / 'alpha' / 'happyranch.db'}?immutable=1", uri=True
+    )
+    try:
+        row = read.execute(
+            "SELECT status, started_at FROM jobs WHERE id='JOB-002'"
+        ).fetchone()
+        audit = read.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    finally:
+        read.close()
+    assert row == ("pending", None)
+    assert audit == 0
+
+
+def test_startup_survives_observation_failure_of_broken_org_root(
+    tmp_path: Path, tmp_home, caplog,
+):
+    """LIFESPAN-route regression (founder ruling TASK-5544): the REAL daemon
+    startup must survive a per-org observation failure. An org root that
+    reached ``broken_orgs`` (its DB was valid at load time, then became
+    unreadable before the observation scan — corrupt on disk) is still in the
+    registry and reaches the scan; the failure is logged with org/root/error
+    context, the healthy org's candidate is still observed, and the daemon
+    stays live. Source DB/-wal bytes of the failing root stay identical.
+    """
+    from fastapi.testclient import TestClient
+    import logging
+
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    # Healthy org with a stale pending job.
+    alpha = _seed_org(rt, "alpha")
+    _seed_task(alpha, "TASK-516", TaskStatus.FAILED)
+    _seed_job(
+        alpha, job_id="JOB-002", task_id="TASK-516",
+        created_at=_z(_now() - timedelta(days=89)),
+        review_required=True,
+    )
+    alpha.close()
+    # Broken org root: valid teams.yaml but a drifted agent → OrgState.load
+    # fails (OrgConsistencyError → broken_orgs). Its DB is valid at load
+    # time; we corrupt the file AFTER state construction so the observation
+    # scan (registry-wide, includes broken roots) hits an unreadable store.
+    broken_root = rt.orgs_dir / "broken"
+    broken_root.mkdir(parents=True)
+    (broken_root / "org").mkdir()
+    (broken_root / "org" / "teams.yaml").write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [dev_agent]\n"
+    )
+    (broken_root / "org" / "agents").mkdir()
+    paths = OrgPaths(root=broken_root)
+    manager = AgentDef(
+        name="solo_manager",
+        team="missing_team",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are solo.\n",
+        description="Solo",
+    )
+    (paths.agents_dir / "solo_manager.md").write_text(render_agent_text(manager))
+    broken_db = Database(broken_root / "happyranch.db")
+    _seed_task(broken_db, "TASK-777", TaskStatus.FAILED)
+    _seed_job(
+        broken_db, job_id="JOB-777", task_id="TASK-777",
+        created_at=_z(_now() - timedelta(days=60)),
+    )
+    broken_db.close()
+
+    state = DaemonState.from_runtime(rt, Settings())
+    assert "broken" in state.broken_orgs  # drifted agent refused by load
+    assert "broken" not in state.orgs
+    # Corrupt the broken org's DB file AFTER load: the scan now hits a
+    # malformed store (the exact per-org read failure the startup-safe seam
+    # must survive). Snapshot the corrupted bytes so the assertion proves the
+    # scan changed nothing.
+    (broken_root / "happyranch.db").write_bytes(
+        b"this is not a sqlite database at all\x00\x01" * 8
+    )
+    (broken_root / "happyranch.db-wal").write_bytes(b"\x00" * 4096)
+    broken_before = _store_hashes(broken_root)
+    broken_files_before = sorted(p.name for p in broken_root.iterdir())
+    app = create_app(state)
+
+    with caplog.at_level(logging.WARNING, logger="happyranch.daemon"):
+        with TestClient(app) as client:
+            # Daemon startup stayed LIVE despite the failing org root.
+            assert client.get("/healthz").status_code in (200, 404)
+
+    messages = " ".join(r.message for r in caplog.records)
+    # Healthy org still observed — the failing root did not suppress it.
+    assert "JOB-002" in messages
+    # Failure logged with org/root/error context — not swallowed silently.
+    assert "stale-pending observation failed for org broken" in messages
+    assert "file is not a database" in messages or "DatabaseError" in messages
+
+    # Source bytes preserved for the failing root (DB + -wal identical; the
+    # -shm is the permitted shared-memory surface).
+    broken_after = _store_hashes(broken_root)
+    assert broken_after["happyranch.db"] == broken_before["happyranch.db"]
+    assert broken_after["happyranch.db-wal"] == broken_before["happyranch.db-wal"]
+    assert set(sorted(p.name for p in broken_root.iterdir())) - set(
+        broken_files_before
+    ) <= {"happyranch.db-shm"}

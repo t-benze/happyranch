@@ -84,12 +84,26 @@ def scan_all_org_stale_pending(
     ``RuntimeDir.iter_org_roots`` appears in the result (orgs with no stale
     rows map to an empty list, giving the family-style zero-row control a
     voice). Org dirs without a DB yet map to an empty list.
+
+    Startup-safe seam (founder ruling TASK-5544): each org root is observed
+    INDEPENDENTLY. A per-org observation failure (malformed file, legacy/
+    pre-migration schema without a ``jobs`` table, a locked DB, or any other
+    SQLite read error) is logged with org/root/error context and that org
+    maps to an empty list — it cannot abort daemon startup and cannot
+    suppress the other org roots. Failures are never swallowed silently.
     """
     results: dict[str, list[dict]] = {}
     for slug, root in runtime.iter_org_roots():
-        results[slug] = scan_org_root_stale_pending(
-            root, now=now, max_age=max_age,
-        )
+        try:
+            results[slug] = scan_org_root_stale_pending(
+                root, now=now, max_age=max_age,
+            )
+        except Exception as exc:  # per-org isolation — never abort startup
+            logger.warning(
+                "stale-pending observation failed for org %s (root %s): %s: %s",
+                slug, root, type(exc).__name__, exc,
+            )
+            results[slug] = []
     return results
 
 
@@ -109,12 +123,16 @@ def scan_org_root_stale_pending(
     source is never durably touched — a cleanly-closed store is read via an
     ``immutable=1`` SQLite connection, and an active-WAL store (``-wal``/``-shm``
     present) is read DIRECTLY via a genuine read-only WAL-aware connection
-    (``mode=ro``) on the source itself (founder ruling TASK-5542): source DB
-    and ``-wal`` stay byte-identical before/after every observation, only
-    transient source ``-shm`` reader/lock/index-byte and mtime changes may
-    occur during the read, and no snapshot/temp directory is created
-    anywhere. A legacy pre-migration DB stays byte-identical across scans, and
-    a malformed/irrelevant store fails closed (raises) without mutation.
+    (``mode=ro``) on the source itself. The FOUNDER CONTRACT (TASK-5544)
+    protects the durable source ``happyranch.db`` and ``happyranch.db-wal``
+    BYTES ONLY: both stay byte-identical before/after every observation,
+    while the SQLite WAL-index ``happyranch.db-shm`` may be created,
+    modified, or removed by read-side WAL access (explicitly permitted
+    transient reader/lock/index behavior — no ``-shm`` identity is asserted),
+    and no snapshot/temp directory is created anywhere. A legacy
+    pre-migration DB stays byte-identical across scans, and a
+    malformed/irrelevant store fails closed (raises) without mutation — the
+    all-org coordinator isolates and logs that failure so startup continues.
     """
     from runtime.infrastructure.database import scan_stale_pending_jobs_readonly
 
