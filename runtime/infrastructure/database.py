@@ -17,6 +17,8 @@ from runtime.models import (
     AuthorityCandidate,
     AuthorityEvaluation,
     AuthorityFenceResult,
+    AuthorityRedactionClass,
+    AuthorityRetentionClass,
     BlockKind,
     DreamKbCandidate,
     DreamRecord,
@@ -64,6 +66,56 @@ class AuthorityAuditMigrationRefusal(Exception):
     data are left intact for inspection."""
 
 
+# Corrected DB-level lifecycle-guard trigger body. Requires the referenced
+# ``authority_evaluations`` row's disposition to exactly mirror the candidate's
+# frozen disposition (created -> evaluated: NEW.disposition; evaluated ->
+# consumed: OLD.disposition), so an append-only escalate evaluation can never
+# durably freeze a continue_same_root candidate. Used by BOTH the fresh
+# ``_create_authority_tables`` script and the legacy retrofit, so the two
+# surfaces can never drift.
+_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_lifecycle_guard
+                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+                ON authority_candidates
+                FOR EACH ROW
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                    WHERE NOT (
+                        -- created -> evaluated: requires a committed evaluation row
+                        -- whose disposition exactly equals the freshly set
+                        -- disposition (NULL -> value), so an append-only escalate
+                        -- evaluation can never freeze a continue_same_root candidate;
+                        -- consumed_at is still NULL.
+                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                         AND NEW.lifecycle_state = 'evaluated'
+                         AND NEW.disposition IS NOT NULL
+                         AND NEW.consumed_at IS NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = NEW.disposition))
+                        OR
+                        -- evaluated -> consumed: exactly-once; disposition frozen;
+                        -- a committed evaluation row with the SAME frozen
+                        -- disposition must exist; consumed_at is stamped exactly
+                        -- once (NULL -> value).
+                        (OLD.lifecycle_state = 'evaluated'
+                         AND NEW.lifecycle_state = 'consumed'
+                         AND NEW.disposition IS OLD.disposition
+                         AND OLD.consumed_at IS NULL
+                         AND NEW.consumed_at IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = OLD.disposition))
+                        OR
+                        -- no-op on the guarded columns (e.g. updated_at-only writes).
+                        (NEW.lifecycle_state = OLD.lifecycle_state
+                         AND NEW.disposition IS OLD.disposition
+                         AND NEW.consumed_at IS OLD.consumed_at)
+                    );
+                END;
+"""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -104,6 +156,21 @@ def _parse_authority_fence_results(raw: str | None) -> dict[str, AuthorityFenceR
         return None
     data = json.loads(raw)
     return {name: AuthorityFenceResult.model_validate(value) for name, value in data.items()}
+
+
+def _validate_authority_class(value: str, field: str, enum_cls) -> str:
+    """Validate a controlled retention/redaction classification value.
+
+    Raises ValueError for any value outside the closed vocabulary — the caller
+    must fail loudly BEFORE any durable write, so a bad classification can
+    never be swallowed by conflict handling into a phantom CAS loser.
+    """
+    allowed = {member.value for member in enum_cls}
+    if value not in allowed:
+        raise ValueError(
+            f"{field} must be one of: {', '.join(sorted(allowed))}; got {value!r}"
+        )
+    return value
 
 
 def _serialize_authority_fence_results(
@@ -385,6 +452,7 @@ class Database:
         self._create_tables()
         self._create_authority_tables()
         self._retrofit_authority_audit_fk_if_needed()
+        self._retrofit_authority_lifecycle_trigger_if_needed()
         self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
@@ -1750,7 +1818,7 @@ class Database:
         transition (created -> evaluated -> consumed) performed only through
         the persistence API below.
         """
-        self._conn.executescript("""
+        self._conn.executescript(f"""
             CREATE TABLE IF NOT EXISTS authority_candidates (
                 id                       TEXT PRIMARY KEY,
                 claim_key                TEXT NOT NULL UNIQUE,
@@ -1873,43 +1941,13 @@ class Database:
             -- through a raw ``Database.execute`` UPDATE. Only the intended finite
             -- transitions are permitted, disposition and consumed_at are immutable
             -- once set, and the ``evaluated``/``consumed`` states require a
-            -- consistent ``authority_evaluations`` row for the candidate. The
-            -- trigger body references ``authority_evaluations`` (created above),
-            -- which SQLite resolves at trigger execution time.
-            CREATE TRIGGER IF NOT EXISTS authority_candidates_lifecycle_guard
-                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
-                ON authority_candidates
-                FOR EACH ROW
-                BEGIN
-                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
-                    WHERE NOT (
-                        -- created -> evaluated: requires a committed evaluation row
-                        -- and a freshly set disposition (NULL -> value);
-                        -- consumed_at is still NULL.
-                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
-                         AND NEW.lifecycle_state = 'evaluated'
-                         AND NEW.disposition IS NOT NULL
-                         AND NEW.consumed_at IS NULL
-                         AND EXISTS (SELECT 1 FROM authority_evaluations e
-                                     WHERE e.candidate_id = NEW.id))
-                        OR
-                        -- evaluated -> consumed: exactly-once; disposition frozen;
-                        -- a committed evaluation row must exist; consumed_at
-                        -- stamped exactly once (NULL -> value).
-                        (OLD.lifecycle_state = 'evaluated'
-                         AND NEW.lifecycle_state = 'consumed'
-                         AND NEW.disposition IS OLD.disposition
-                         AND OLD.consumed_at IS NULL
-                         AND NEW.consumed_at IS NOT NULL
-                         AND EXISTS (SELECT 1 FROM authority_evaluations e
-                                     WHERE e.candidate_id = NEW.id))
-                        OR
-                        -- no-op on the guarded columns (e.g. updated_at-only writes).
-                        (NEW.lifecycle_state = OLD.lifecycle_state
-                         AND NEW.disposition IS OLD.disposition
-                         AND NEW.consumed_at IS OLD.consumed_at)
-                    );
-                END;
+            -- consistent ``authority_evaluations`` row for the candidate whose
+            -- disposition exactly mirrors the candidate's frozen disposition.
+            -- The trigger body references ``authority_evaluations`` (created above),
+            -- which SQLite resolves at trigger execution time. Databases created at
+            -- earlier reviewed heads that already carry the weaker trigger body are
+            -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
+            {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
             """)
         self._conn.commit()
 
@@ -2017,6 +2055,33 @@ class Database:
         except Exception:
             self._conn.rollback()
             raise
+
+    def _retrofit_authority_lifecycle_trigger_if_needed(self) -> None:
+        """Idempotent forward retrofit of the lifecycle-guard trigger body.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` inside ``_create_authority_tables`` is
+        a no-op on a database that already carries the trigger, so a database
+        created at an earlier reviewed head (which embedded the weaker body
+        that accepted ANY evaluation row) would keep the weak body forever.
+        This retrofit drops and recreates the trigger ONLY when the stored
+        body is the legacy one (detected by the missing disposition-mirroring
+        condition); on every later open it is a no-op, so a database never
+        carries per-boot DDL churn and the ``-wal``/``-shm`` history stays
+        stable. The recreated body is the exact
+        ``_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`` constant used by
+        ``_create_authority_tables``, so the two surfaces cannot drift.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'"
+            " AND name='authority_candidates_lifecycle_guard'"
+        ).fetchone()
+        if row is not None and "e.disposition = NEW.disposition" in row["sql"]:
+            return
+        self._conn.execute(
+            "DROP TRIGGER IF EXISTS authority_candidates_lifecycle_guard"
+        )
+        self._conn.execute(_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL)
+        self._conn.commit()
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
         """Add scope columns and make task_id nullable for conversation usage."""
@@ -7891,6 +7956,14 @@ class Database:
         ``won=False`` — the documented loser result. Callers must never assert
         incidental thread ordering; the UNIQUE constraint, not scheduling, is
         the arbiter. No evaluator is invoked and no consumption occurs here.
+
+        Controlled inputs (``snapshot_retention_class``/
+        ``snapshot_redaction_class``) are validated against their closed
+        vocabulary and raise ``ValueError`` before any durable write.
+        Non-uniqueness constraint failures raise ``sqlite3.IntegrityError``;
+        only the deterministic id/``claim_key`` uniqueness race is mapped to
+        the ``(candidate_id, won=False)`` loser result — never a phantom loser
+        with no row.
         """
         # Pre-serialization validation — reject prose/credentials/model exchanges
         # smuggled into digest fields and non-closed fence results BEFORE any row
@@ -7904,6 +7977,15 @@ class Database:
         validate_authority_version(prompt_version, "prompt_version")
         validate_authority_version(model_version, "model_version")
         fence_results_json = _serialize_authority_fence_results(fence_results)
+        # Controlled-input validation BEFORE any durable write: an invalid
+        # snapshot retention/redaction class must fail loudly here, never be
+        # turned by conflict handling into a phantom CAS loser.
+        _validate_authority_class(
+            snapshot_retention_class, "snapshot_retention_class", AuthorityRetentionClass
+        )
+        _validate_authority_class(
+            snapshot_redaction_class, "snapshot_redaction_class", AuthorityRedactionClass
+        )
 
         claim_key = _authority_claim_key(
             root_task_id,
@@ -7915,8 +7997,9 @@ class Database:
         )
         candidate_id = f"AUTH-CAND-{claim_key}"
         now = datetime.now(timezone.utc).isoformat()
-        cur = self._conn.execute(
-            """INSERT OR IGNORE INTO authority_candidates (
+        try:
+            cur = self._conn.execute(
+                """INSERT INTO authority_candidates (
                    id, claim_key, root_task_id, team, manager_agent,
                    manager_session_id, causal_event_id, causal_event_digest,
                    causal_result_id, policy_id, policy_version, policy_digest,
@@ -7955,6 +8038,22 @@ class Database:
                 now,
             ),
         )
+        except sqlite3.IntegrityError as exc:
+            # Scope conflict-to-CAS-loss handling to the intended uniqueness
+            # race ONLY. id (PRIMARY KEY) and claim_key (UNIQUE) are both
+            # derived deterministically from the same claim tuple, so a
+            # UNIQUE/PRIMARYKEY violation means the exact tuple was already
+            # claimed — the documented loser result. Any other constraint
+            # failure (CHECK, NOT NULL, FK) is a real defect and must raise;
+            # it must never masquerade as won=False with a phantom loser id
+            # and no durable row.
+            if exc.sqlite_errorname in (
+                "SQLITE_CONSTRAINT_UNIQUE",
+                "SQLITE_CONSTRAINT_PRIMARYKEY",
+            ):
+                self._conn.rollback()
+                return candidate_id, False
+            raise
         self._conn.commit()
         return candidate_id, cur.rowcount == 1
 

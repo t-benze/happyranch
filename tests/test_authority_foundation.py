@@ -931,6 +931,167 @@ def test_valid_api_round_trip_passes_lifecycle_guard(db):
     assert db.get_authority_candidate(cid).lifecycle_state == AuthorityLifecycleState.CONSUMED
 
 
+# ── Reviewer r1 finding 1: controlled-value validation + CAS-loss scoping ─
+
+def test_claim_rejects_invalid_retention_class_with_no_residue(db):
+    with pytest.raises(ValueError, match="snapshot_retention_class"):
+        _claim(db, snapshot_retention_class="bogus")
+    # No phantom loser id: the invalid claim never reaches a durable write.
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 0
+
+
+def test_claim_rejects_invalid_redaction_class_with_no_residue(db):
+    with pytest.raises(ValueError, match="snapshot_redaction_class"):
+        _claim(db, snapshot_redaction_class="bogus")
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_audit").fetchone()[0] == 0
+
+
+def test_claim_non_uniqueness_constraint_failure_raises_not_phantom_loss(db):
+    # A NOT NULL violation is NOT the CAS uniqueness race: it must raise, never
+    # become won=False with a phantom loser id and no durable row.
+    with pytest.raises(sqlite3.IntegrityError):
+        _claim(db, manager_agent=None)
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 0
+
+
+def test_claim_uniqueness_race_still_returns_loser_with_single_durable_row(db):
+    cid1, won1 = _claim(db)
+    assert won1 is True
+    cid2, won2 = _claim(db)  # same deterministic tuple
+    assert cid2 == cid1 and won2 is False
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 1
+
+
+# ── Reviewer r1 finding 2: lifecycle freeze requires mirrored disposition ──
+
+def test_raw_sql_cannot_freeze_mismatched_evaluation_disposition(db):
+    cid, _ = _claim(db)
+    # An append-only escalate evaluation exists...
+    db.execute(
+        "INSERT INTO authority_evaluations (candidate_id, disposition, disposition_code,"
+        " response_digest, response_retention_class, response_redaction_class, created_at)"
+        " VALUES (?, 'escalate', 'escalate', ?, 'digest_only', 'redacted', 'now')",
+        (cid, _digest("response-0001")),
+    )
+    db._conn.commit()
+    # ...but the candidate must NOT be frozen with a different disposition.
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db.execute(
+            "UPDATE authority_candidates SET lifecycle_state='evaluated',"
+            " disposition='continue_same_root' WHERE id=?",
+            (cid,),
+        )
+    db._conn.rollback()
+    got = db.get_authority_candidate(cid)
+    assert got.lifecycle_state == AuthorityLifecycleState.CREATED
+    assert got.disposition is None
+    # The append-only evaluation row is untouched.
+    assert db._conn.execute(
+        "SELECT disposition FROM authority_evaluations WHERE candidate_id = ?",
+        (cid,),
+    ).fetchone()[0] == "escalate"
+
+
+def test_raw_sql_freeze_with_matching_evaluation_disposition_succeeds(db):
+    cid, _ = _claim(db)
+    db.execute(
+        "INSERT INTO authority_evaluations (candidate_id, disposition, disposition_code,"
+        " response_digest, response_retention_class, response_redaction_class, created_at)"
+        " VALUES (?, 'continue_same_root', 'continue_same_root', ?, 'digest_only',"
+        " 'redacted', 'now')",
+        (cid, _digest("response-0001")),
+    )
+    db._conn.commit()
+    db.execute(
+        "UPDATE authority_candidates SET lifecycle_state='evaluated',"
+        " disposition='continue_same_root' WHERE id=?",
+        (cid,),
+    )
+    got = db.get_authority_candidate(cid)
+    assert got.lifecycle_state == AuthorityLifecycleState.EVALUATED
+    assert got.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
+
+
+def test_lifecycle_guard_trigger_mirrors_evaluation_disposition(db):
+    sql = db._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger'"
+        " AND name='authority_candidates_lifecycle_guard'"
+    ).fetchone()[0]
+    assert "e.disposition = NEW.disposition" in sql
+    assert "e.disposition = OLD.disposition" in sql
+
+
+def test_lifecycle_guard_trigger_retrofits_legacy_db(tmp_path):
+    path = tmp_path / "legacy_lifecycle_trigger.db"
+    db = Database(path)
+    # Simulate a database created at a prior reviewed head: drop the corrected
+    # trigger and install the legacy body (accepts ANY evaluation row).
+    db._conn.execute("DROP TRIGGER authority_candidates_lifecycle_guard")
+    db._conn.executescript(
+        """
+        CREATE TRIGGER authority_candidates_lifecycle_guard
+            BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+            ON authority_candidates
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                WHERE NOT (
+                    (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                     AND NEW.lifecycle_state = 'evaluated'
+                     AND NEW.disposition IS NOT NULL
+                     AND NEW.consumed_at IS NULL
+                     AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                 WHERE e.candidate_id = NEW.id))
+                    OR
+                    (OLD.lifecycle_state = 'evaluated'
+                     AND NEW.lifecycle_state = 'consumed'
+                     AND NEW.disposition IS OLD.disposition
+                     AND OLD.consumed_at IS NULL
+                     AND NEW.consumed_at IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                 WHERE e.candidate_id = NEW.id))
+                    OR
+                    (NEW.lifecycle_state = OLD.lifecycle_state
+                     AND NEW.disposition IS OLD.disposition
+                     AND NEW.consumed_at IS OLD.consumed_at)
+                );
+            END;
+        """
+    )
+    db._conn.commit()
+    cid, won = _claim(db)
+    assert won is True
+    db.close()
+
+    # Reopen: the boot migration replaces the legacy trigger with the
+    # corrected disposition-mirroring body, preserving data.
+    db2 = Database(path)
+    sql = db2._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger'"
+        " AND name='authority_candidates_lifecycle_guard'"
+    ).fetchone()[0]
+    assert "e.disposition = NEW.disposition" in sql
+    assert db2.get_authority_candidate(cid) is not None
+    # The corrected trigger now blocks the mismatched freeze on the migrated DB.
+    db2.execute(
+        "INSERT INTO authority_evaluations (candidate_id, disposition, disposition_code,"
+        " response_digest, response_retention_class, response_redaction_class, created_at)"
+        " VALUES (?, 'escalate', 'escalate', ?, 'digest_only', 'redacted', 'now')",
+        (cid, _digest("response-0001")),
+    )
+    db2._conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match="lifecycle"):
+        db2.execute(
+            "UPDATE authority_candidates SET lifecycle_state='evaluated',"
+            " disposition='continue_same_root' WHERE id=?",
+            (cid,),
+        )
+    db2._conn.rollback()
+    db2.close()
+
+
 # ── Defect C: audit candidate attribution is FK + API enforced ───────────
 
 def test_audit_rejects_missing_candidate_and_leaves_no_orphan(db):
