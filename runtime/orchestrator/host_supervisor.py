@@ -93,14 +93,25 @@ class CancellationToken:
     def cancelled(self) -> bool:
         return self._cancelled.is_set()
 
-    def register(self, control: "_OpaqueCancelControl") -> None:
+    def register(self, control: "_OpaqueCancelControl") -> bool:
         """Bind the opaque cancel control for the **current** attempt.
 
         Latest-wins: a 429 retry starts a fresh attempt with a fresh
         containment handle, so the control must be rebound per attempt; a
-        previous attempt's control is stale by definition."""
+        previous attempt's control is stale by definition.
+
+        The handshake is atomic with respect to launch: when cancellation
+        already fired **before** registration, the control is invoked
+        immediately (replaying the fired token) and ``True`` is returned so
+        the caller abandons the pending handle without launching. Returns
+        ``False`` when the token is not yet fired (the caller's launch fence
+        then arbitrates any cancellation that lands after registration)."""
         with self._lock:
             self._control = control
+            fired = self._cancelled.is_set()
+        if fired:
+            control.invoke()
+        return fired
 
     def set_waker(self, waker: Callable[[], None]) -> None:
         """Wake the blocking admission wait when cancellation fires."""
@@ -910,11 +921,19 @@ class _AttemptContext:
         if receipt is None:
             return
         accountant.account(receipt, capabilities)
-        if (
+        if self.sample_failed():
+            # Census/measurement genuinely failed: tighten admission (fail-closed).
+            accountant.note_measurement_failure()
+        elif (
             receipt.cleanup_status == CleanupStatus.INCOMPLETE
-            or self.sample_failed()
+            and Capability.KILLS_TREE_GUARANTEED in capabilities
+            and not receipt.survivors
         ):
-            # Fail-closed: teardown/census could not be verified.
+            # Guaranteed teardown that could not be verified AND produced no
+            # verified census is an anomaly. Best-effort INCOMPLETE is an
+            # expected outcome for verified detached survivors: ``account``
+            # keeps them censused/charged/visible and blocks only on actual
+            # census/measurement failure or the conservative threshold.
             accountant.note_measurement_failure()
         publisher(receipt)
 
@@ -975,19 +994,41 @@ class _Sampler:
 class _OpaqueCancelControl:
     """Cancellation goes through the containment handle, never a bare PID.
 
-    ``invoke`` freezes CANCELLED (first-wins) and drives the idempotent
-    backend teardown, which is what terminates the descendant tree and
-    unblocks the executor's communicate loop."""
+    ``invoke`` freezes CANCELLED (first-wins) and, once the launch fence has
+    been passed, drives the idempotent backend teardown — which is what
+    terminates the descendant tree and unblocks the executor's communicate
+    loop. Before the fence, a winning cancellation only freezes the terminal
+    reason: the caller's ``fence_launch`` observes it and abandons the
+    pending handle without launching, so cancellation/registration is atomic
+    with respect to launch."""
 
     def __init__(self, supervisor: "HostSessionSupervisor", ctx: _AttemptContext) -> None:
         self._supervisor = supervisor
         self._ctx = ctx
+        self._launch_lock = threading.Lock()
+        self._launched = False
 
     def invoke(self) -> None:
         ctx = self._ctx
         ctx.freeze_terminal(TerminalReason.CANCELLED)
-        if ctx.running() is not None:
+        with self._launch_lock:
+            launched = self._launched
+        if launched:
             self._supervisor._finish_and_reconcile(ctx)
+
+    def fence_launch(self) -> bool:
+        """Atomically gate the launch body against a winning cancellation.
+
+        Returns ``True`` when launch may proceed (this call won the race);
+        ``False`` when cancellation already won — the caller must abandon
+        the pending handle and must not execute the launch body. The fence
+        is one-shot: once passed, the handle is launched and a later
+        cancellation drives idempotent teardown through ``invoke``."""
+        with self._launch_lock:
+            if self._ctx.terminal_reason() is TerminalReason.CANCELLED:
+                return False
+            self._launched = True
+            return True
 
 
 # ── the supervisor ───────────────────────────────────────────────────
@@ -1162,9 +1203,18 @@ class HostSessionSupervisor:
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
                 ctx.set_error("cancelled before launch")
                 return self._outcome(request, ctx, attempt)
-            request.cancellation.register(_OpaqueCancelControl(self, ctx))
+            control = _OpaqueCancelControl(self, ctx)
+            fired = request.cancellation.register(control)
+            # Launch fence: cancellation that wins before launch (already fired at
+            # registration, or landed between registration and this fence) abandons
+            # the pending handle and must not execute the launch body.
+            if fired or not control.fence_launch():
+                self._safe_abandon(self._backend, pending)
+                ctx.freeze_terminal(TerminalReason.CANCELLED)
+                ctx.set_error("cancelled before launch")
+                return self._outcome(request, ctx, attempt)
 
-            # ── launch (still post-admission, post-cancel-check) ──
+            # ── launch (still post-admission, post-fence) ──
             try:
                 running = self._backend.launch(pending, launch_spec)
             except BackendError as exc:

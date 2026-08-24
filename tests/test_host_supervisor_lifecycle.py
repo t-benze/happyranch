@@ -38,6 +38,8 @@ from runtime.orchestrator.host_supervisor import (
     LaunchResult,
     PolicySnapshot,
     ResidueAccountant,
+    _AttemptContext,
+    _OpaqueCancelControl,
     canary_policy,
 )
 from runtime.platform.session_backend import (
@@ -249,6 +251,39 @@ class RecordingPublisher:
     def count(self) -> int:
         with self.lock:
             return len(self.receipts)
+
+
+class PausingToken(CancellationToken):
+    """Test seam: deterministically pause inside ``register()``.
+
+    A concurrent ``cancel()`` can then land in a chosen race window:
+    *before* the real registration (window A: cancellation during
+    registration) or *after* the real registration but before the launch
+    fence (window B: cancellation between registration and launch). The
+    real ``register``/``fence_launch`` logic still runs and is what is
+    under test.
+    """
+
+    def __init__(
+        self,
+        pause_before: threading.Event | None = None,
+        pause_after: threading.Event | None = None,
+    ) -> None:
+        super().__init__()
+        self.pause_before = pause_before
+        self.pause_after = pause_after
+        self.entered_register = threading.Event()
+        self.after_register = threading.Event()
+
+    def register(self, control):
+        self.entered_register.set()
+        if self.pause_before is not None:
+            assert self.pause_before.wait(timeout=10)
+        result = super().register(control)
+        self.after_register.set()
+        if self.pause_after is not None:
+            assert self.pause_after.wait(timeout=10)
+        return result
 
 
 # ── builders ─────────────────────────────────────────────────────────
@@ -570,6 +605,113 @@ def test_finish_cancel_race_is_idempotent():
     assert supervisor._admission.active_count() == 0
 
 
+# ── atomic cancellation/registration vs launch ───────────────────────
+
+
+def _bare_supervisor() -> HostSessionSupervisor:
+    return HostSessionSupervisor(
+        backend=FakeBackend(), policy=make_policy(), publisher=lambda r: None
+    )
+
+
+def test_register_replays_already_fired_token():
+    """A token that fired before registration must invoke the control
+    immediately (replay) and report the fired state, so the launch fence
+    refuses and no launch can follow."""
+    token = CancellationToken()
+    token.cancel()
+    ctx = _AttemptContext("r1", time.monotonic)
+    control = _OpaqueCancelControl(_bare_supervisor(), ctx)
+    fired = token.register(control)
+    assert fired is True
+    assert ctx.terminal_reason() is TerminalReason.CANCELLED
+    # The fence observes the same frozen state and refuses launch.
+    assert control.fence_launch() is False
+
+
+def test_launch_fence_refuses_once_cancellation_wins():
+    token = CancellationToken()
+    ctx = _AttemptContext("r1", time.monotonic)
+    control = _OpaqueCancelControl(_bare_supervisor(), ctx)
+    assert token.register(control) is False  # not yet fired
+    token.cancel()
+    # Cancellation won before launch: the fence refuses (one-shot).
+    assert control.fence_launch() is False
+    assert control.fence_launch() is False
+
+
+def test_launch_fence_allows_when_no_cancellation():
+    """When launch wins the race the fence permits it; a post-launch
+    cancellation still freezes CANCELLED through the control (teardown
+    idempotence covered by test_cancel_mid_run_*)."""
+    token = CancellationToken()
+    ctx = _AttemptContext("r1", time.monotonic)
+    control = _OpaqueCancelControl(_bare_supervisor(), ctx)
+    assert token.register(control) is False
+    assert control.fence_launch() is True
+    token.cancel()
+    assert ctx.terminal_reason() is TerminalReason.CANCELLED
+
+
+def test_cancel_during_registration_never_launches():
+    """Race window A: cancellation fires while registration is in progress.
+
+    The register handshake must replay the already-fired token so the
+    launch fence refuses and no backend handle ever launches."""
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    token = PausingToken(pause_before=threading.Event())
+    t, results = run_in_thread(
+        supervisor, make_request("a", cancellation=token), launch_body=_ok_body
+    )
+    # The run path is inside register(), paused before the real registration.
+    assert token.entered_register.wait(timeout=5)
+    token.cancel()  # cancellation wins while registration is in progress
+    token.pause_before.set()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert outcome.cancelled_while_queued is False
+    # No backend handle launched; the pending handle was abandoned.
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 0
+    assert backend.calls["abandon"] == 1
+    assert backend.calls["finish"] == 0
+    assert publisher.count() == 0
+    # Lease released exactly once.
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+
+
+def test_cancel_between_registration_and_launch_never_launches():
+    """Race window B: cancellation fires after registration but before the
+    launch fence — the fence must observe the frozen CANCELLED and abandon
+    the pending handle without launching."""
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    token = PausingToken(pause_after=threading.Event())
+    t, results = run_in_thread(
+        supervisor, make_request("a", cancellation=token), launch_body=_ok_body
+    )
+    # The real registration completed (token not fired); the run path is
+    # paused before the launch fence.
+    assert token.after_register.wait(timeout=5)
+    token.cancel()  # cancellation wins between registration and the fence
+    token.pause_after.set()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert outcome.cancelled_while_queued is False
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 0
+    assert backend.calls["abandon"] == 1
+    assert backend.calls["finish"] == 0
+    assert publisher.count() == 0
+    assert supervisor._admission.released_total() == 1
+
+
 def test_retry_finishes_attempt_then_reacquires_with_original_age():
     backend = FakeBackend()
     supervisor, publisher = make_supervisor(
@@ -757,6 +899,103 @@ def test_measurement_failure_blocks_best_effort_admission():
     # Census/measurement failure tightens admission (missing enforcement).
     assert supervisor._residue.evaluate().admit is False
     assert supervisor._residue.evaluate().reason == "measurement_unhealthy"
+
+
+# ── incomplete cleanup: capability-conditional measurement health ────
+
+
+def test_best_effort_incomplete_with_below_threshold_survivors_stays_admissible():
+    """Exact review regression: a best-effort backend reporting INCOMPLETE
+    cleanup with verified below-threshold survivors is an expected outcome
+    — residue stays censused/charged/visible in the bounded receipt and
+    admission stays open (no macOS self-DoS)."""
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS,
+        cleanup_status=CleanupStatus.INCOMPLETE,
+        survivors=(_survivor(11),),
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert outcome.cleanup_status is CleanupStatus.INCOMPLETE
+    # Survivor stays censused + visible in the bounded receipt.
+    assert supervisor._residue.census() == (_survivor(11),)
+    assert publisher.receipts[0].survivors == (_survivor(11),)
+    # Below the conservative threshold: admissible, no measurement-unhealthy.
+    assert supervisor._residue.evaluate().admit is True
+    assert supervisor._residue.evaluate().reason is None
+    # A follow-up admission proceeds normally (no self-DoS).
+    outcome2 = supervisor.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome2.terminal_reason is TerminalReason.SUCCESS
+
+
+def test_guaranteed_incomplete_cleanup_marks_measurement_unhealthy():
+    """INCOMPLETE on a guaranteed-cleanup backend with no verified census is
+    an anomaly: teardown could not be verified, so admission tightens
+    (fail-closed)."""
+    backend = FakeBackend(
+        capabilities=GUARANTEED_CAPS,
+        cleanup_status=CleanupStatus.INCOMPLETE,
+        survivors=(),
+    )
+    supervisor, _ = make_supervisor(backend=backend)
+    supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "measurement_unhealthy"
+
+
+def test_best_effort_incomplete_above_threshold_still_blocks():
+    """A conservative survivor-threshold breach blocks even when cleanup
+    reports INCOMPLETE on a best-effort backend."""
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS,
+        cleanup_status=CleanupStatus.INCOMPLETE,
+        survivors=tuple(_survivor(pid) for pid in (11, 12, 13, 14)),  # 4 > 3
+    )
+    supervisor, _ = make_supervisor(backend=backend)
+    supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "survivor_threshold_exceeded"
+
+
+def test_best_effort_incomplete_with_census_failure_still_blocks():
+    """Unavailable census/measurement (sampler raises) tightens admission
+    even when cleanup reports INCOMPLETE on a best-effort backend."""
+
+    class BoomSampler:
+        def __call__(self, running):
+            raise RuntimeError("census boom")
+
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS, cleanup_status=CleanupStatus.INCOMPLETE
+    )
+    supervisor, _ = make_supervisor(
+        backend=backend, sampler=BoomSampler(), sample_interval_seconds=0.001
+    )
+
+    def body(running):
+        time.sleep(0.05)
+        return ok_result()
+
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "measurement_unhealthy"
+
+
+def test_best_effort_incomplete_with_teardown_failure_still_blocks():
+    """A genuine teardown failure (backend.finish raises) remains fail-closed
+    even when the backend is best-effort and cleanup reports INCOMPLETE."""
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS,
+        cleanup_status=CleanupStatus.INCOMPLETE,
+        finish_raises=True,
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.cleanup_error is not None
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "cleanup_failed"
 
 
 # ── reconciliation inputs ────────────────────────────────────────────
