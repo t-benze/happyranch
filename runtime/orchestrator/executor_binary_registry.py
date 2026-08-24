@@ -17,8 +17,11 @@ the lock use the unlocked forms directly to avoid non-reentrant deadlock.
 
 TEST ISOLATION (THR-204 issue 3): every write path fails closed with
 ``RegistryIsolationError`` when a pytest process targets the DEFAULT
-production registry (~/.happyranch/executors.json) without setting
-``HAPPYRANCH_DAEMON_HOME`` to an isolated temporary daemon home.
+production registry (~/.happyranch/executors.json) by any spelling —
+including a ``HAPPYRANCH_DAEMON_HOME`` symlink/alias that resolves there —
+without isolating ``HAPPYRANCH_DAEMON_HOME`` to a temporary daemon home.
+The guard compares CANONICAL (symlink-resolved) targets so an alias can
+never bypass the check.
 """
 
 from __future__ import annotations
@@ -93,7 +96,8 @@ def _assert_write_target_safe() -> None:
 
     Under a test process, refuse to write the default production registry at
     ``~/.happyranch/executors.json`` when ``HAPPYRANCH_DAEMON_HOME`` is not
-    explicitly set (or explicitly points at the default).  A test or
+    explicitly set (or explicitly points at the default, by any spelling —
+    including a symlink/alias that canonicalizes there).  A test or
     integration repro that registers a fake binary under a production
     executor name without isolating the daemon home would otherwise overwrite
     the live registry — this has twice broken live agent invocations
@@ -104,14 +108,19 @@ def _assert_write_target_safe() -> None:
     this.  The daemon (the only legitimate writer of the default registry)
     never runs under pytest, so normal operator registration and fail-closed
     launch behavior are preserved.
+
+    The candidate and protected targets are compared after ``resolve()``
+    (non-strict), so symlinked/aliased spellings are canonicalized without
+    requiring the registry file or its parent to exist.
     """
     if not _is_test_process():
         return
-    path = _registry_path()
-    if path == Path.home() / ".happyranch" / "executors.json":
+    candidate = _registry_path()
+    protected = Path.home() / ".happyranch" / "executors.json"
+    if candidate.resolve() == protected.resolve():
         raise RegistryIsolationError(
             "refusing to write the production executor-binary registry at "
-            f"{path} from a test process. Set HAPPYRANCH_DAEMON_HOME to an "
+            f"{candidate} from a test process. Set HAPPYRANCH_DAEMON_HOME to an "
             "isolated temporary daemon home (e.g. a pytest tmp_path) before "
             "registering executor binaries in tests."
         )

@@ -280,3 +280,112 @@ def test_reads_without_isolation_are_unaffected(prod_sandbox):
     assert load_registry() == {"claude": "/usr/local/bin/claude-real"}
     assert get_binary("claude") == "/usr/local/bin/claude-real"
     assert get_binary("codex") is None
+
+
+# ─────────────────────────────────────────────────────────────────
+# Symlink/alias canonical-target bypass (code-review finding)
+# ─────────────────────────────────────────────────────────────────
+
+
+def test_symlink_alias_daemon_home_cannot_bypass_write_guard(
+    prod_sandbox, tmp_path, monkeypatch
+):
+    """An explicit ``HAPPYRANCH_DAEMON_HOME`` spelled through a symlink alias
+    that RESOLVES to the production default must still fail closed.  The guard
+    must compare canonical targets, not lexical spellings — a lexical-only
+    comparison lets the alias bypass isolation and overwrite pre-existing
+    production entries (code-review finding on PR #710)."""
+    home, registry = prod_sandbox
+    registry.write_text(json.dumps({
+        "claude": "/usr/local/bin/claude-real",
+        "codex": "/usr/local/bin/codex-real",
+    }))
+    before = registry.read_bytes()
+
+    # HAPPYRANCH_DAEMON_HOME IS the daemon home; pointing it at a symlink to
+    # the sandbox's default .happyranch canonicalizes to the protected target.
+    dh_alias = tmp_path / "dh-alias"
+    dh_alias.symlink_to(home / ".happyranch", target_is_directory=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(dh_alias))
+
+    fake = _make_exit0_fake(tmp_path)
+    for attack in (
+        lambda: set_binary("claude", str(fake)),
+        lambda: save_registry({"codex": str(fake)}),
+        lambda: remove_binary("claude"),
+        lambda: remove_binary_conditional("codex", "/usr/local/bin/codex-real"),
+    ):
+        with pytest.raises(RegistryIsolationError):
+            attack()
+
+    # Bytes, entries, and temp-scratch surface unchanged through the alias.
+    assert registry.read_bytes() == before
+    assert json.loads(registry.read_text()) == {
+        "claude": "/usr/local/bin/claude-real",
+        "codex": "/usr/local/bin/codex-real",
+    }
+    assert not (home / ".happyranch" / "executors.json.tmp").exists(), (
+        "no .json.tmp scratch file may appear next to the protected registry"
+    )
+
+
+def test_chained_symlink_alias_daemon_home_cannot_bypass_write_guard(
+    prod_sandbox, tmp_path, monkeypatch
+):
+    """Variant: the alias is a CHAIN of symlinks (alias1 -> alias0 -> the
+    production registry dir).  Canonicalization must resolve through every hop
+    before comparing."""
+    home, registry = prod_sandbox
+    registry.write_text(json.dumps({"claude": "/usr/local/bin/claude-real"}))
+    before = registry.read_bytes()
+
+    hop0 = tmp_path / "dh-alias-0"
+    hop0.symlink_to(home / ".happyranch", target_is_directory=True)
+    hop1 = tmp_path / "dh-alias-1"
+    hop1.symlink_to(hop0, target_is_directory=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(hop1))
+
+    fake = _make_exit0_fake(tmp_path)
+    with pytest.raises(RegistryIsolationError):
+        set_binary("claude", str(fake))
+
+    assert registry.read_bytes() == before
+    assert not (home / ".happyranch" / "executors.json.tmp").exists()
+
+
+def test_dangling_alias_guard_fires_before_creating_parent(tmp_path, monkeypatch):
+    """Even when the production registry does NOT exist yet, an alias that
+    resolves to the default home must fail closed BEFORE any write surface:
+    no mkdir of the parent, no partial setup, no temp scratch file."""
+    home = tmp_path / "prod-home"  # NOTE: .happyranch deliberately absent
+    monkeypatch.setenv("HOME", str(home))
+    # Dangling symlink: target (home/.happyranch) does not exist yet.  A
+    # non-strict resolve() must still canonicalize through it.
+    dh_alias = tmp_path / "dh-alias"
+    dh_alias.symlink_to(home / ".happyranch", target_is_directory=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(dh_alias))
+
+    with pytest.raises(RegistryIsolationError):
+        set_binary("claude", "/tmp/fake-claude")
+
+    assert not (home / ".happyranch").exists()
+    assert not (home / ".happyranch" / "executors.json.tmp").exists()
+    assert not (tmp_path / "executors.json.tmp").exists()
+
+
+def test_isolated_write_through_symlink_still_works(tmp_path, monkeypatch):
+    """A ``HAPPYRANCH_DAEMON_HOME`` that is a symlink to a REAL temp daemon
+    home (not the production default) must keep working — canonical comparison
+    must not break legitimate isolated registration under pytest."""
+    real_iso = tmp_path / "real-iso"
+    real_iso.mkdir()  # the isolated daemon home exists before registration
+    alias = tmp_path / "iso-alias"
+    alias.symlink_to(real_iso, target_is_directory=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(alias))
+    fake = _make_exit0_fake(tmp_path)
+
+    set_binary("claude", str(fake))
+    assert get_binary("claude") == str(fake)
+    assert (real_iso / "executors.json").exists()
+    # Atomic replace leaves no scratch residue after a successful write.
+    assert not (real_iso / "executors.json.tmp").exists()
