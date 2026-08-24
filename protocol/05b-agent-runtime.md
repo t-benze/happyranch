@@ -728,6 +728,37 @@ fields are the preferred surface for all consumers. See the
 unified adapter-runtime architecture spec (§6.3) for dual-read,
 conflict-detection, and no-auto-mutation guarantees.
 
+### Host-session admission and terminal cleanup ordering (THR-207 / TASK-5584)
+
+A daemon-wide ``HostSessionSupervisor`` (``runtime/orchestrator/host_supervisor.py``)
+owns admission and containment ordering for every top-level agent invocation.
+The governing spec is ``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``
+and the platform-neutral backend contract is ``runtime/platform/session_backend.py``.
+
+**Load-bearing ordering invariants** (enforced by the supervisor core; later
+slices wire every ``executor.run`` producer to it):
+
+1. **No agent subprocess launches before admission.** ``backend.prepare`` /
+   ``backend.launch`` and the executor launch body run only after an admission
+   lease is granted. Queued cancellation removes the request with no
+   launch/handle/lease leak.
+2. **Every terminal path finishes containment before lease release**, success
+   included, in the fixed order: freeze terminal result → collect receipt →
+   backend finish (tree teardown + quiescence check) → capability-appropriate
+   residue accounting/reconciliation → publish bounded receipt → release lease
+   exactly once. Cleanup errors never replace the primary terminal reason.
+3. **Cancellation goes through the opaque containment handle**, never a bare
+   PID-only signal, and is idempotent with the executor's own finish.
+4. **Policy snapshots are immutable per invocation** and are explicit canary
+   inputs (Linux `<=11` non-binding shadow; macOS 4 binding; low-single-digit
+   measured cleanup grace), never host-derived permanent defaults.
+
+Slice A ships the contracts + admission + lifecycle core **un-wired**: the
+executor launch bodies, Linux/macOS backends, and daemon shutdown drain are
+later serial slices. ``runtime/platform/isolation.py`` (canonical-skill-store
+integrity + same-owner launch) is layered beneath the supervisor and is
+unchanged by this design.
+
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 
 Built-in and generic-CLI custom executor profiles require a valid explicit

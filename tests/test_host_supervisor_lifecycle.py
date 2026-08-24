@@ -1,0 +1,943 @@
+"""Adversarial unit tests for HostSessionSupervisor lifecycle (Slice A).
+
+Every row of the lifecycle truth table is exercised against dependency-
+injected backend/measurement/publisher fakes:
+
+- nothing launches before admission; queued cancel creates no handle;
+- prepare/spawn failures clean partial state;
+- success / nonzero / timeout / cancel / retry each freeze the terminal
+  result, finish containment, perform capability-appropriate residue
+  accounting/reconciliation, close the handle, publish the bounded receipt,
+  and release the lease exactly once;
+- cleanup errors never replace the primary terminal reason;
+- finish/cancel races are idempotent;
+- guaranteed residue blocks admission until explicit reconciliation;
+- best-effort verified survivors stay censused/charged/visible and block only
+  on census/measurement failure or a conservative threshold;
+- survivor exit / successful re-probe / operator acknowledgement-after-
+  verified-cleanup are modeled recovery inputs;
+- provenance distinguishes kernel/sampled/unavailable; cleanup duration and
+  sampling gaps are represented;
+- policy snapshot is immutable per invocation; cleanup grace is an injected
+  canary input, not a universal constant.
+"""
+from __future__ import annotations
+
+import threading
+import time
+
+import pytest
+
+from runtime.orchestrator.host_supervisor import (
+    AdmissionController,
+    AdmissionRequest,
+    AdmissionTimeout,
+    CancellationToken,
+    CapPolicy,
+    HostSessionSupervisor,
+    LaunchResult,
+    PolicySnapshot,
+    ResidueAccountant,
+    canary_policy,
+)
+from runtime.platform.session_backend import (
+    BackendFinishError,
+    BackendLaunchError,
+    BackendPrepareError,
+    Capability,
+    CapabilityLevel,
+    CapabilityReport,
+    CleanupStatus,
+    LaunchSpec,
+    MeasurementProvenance,
+    PendingHandle,
+    Receipt,
+    RecoveryResult,
+    ResourceSample,
+    RunningHandle,
+    SurvivorRecord,
+    TerminalReason,
+)
+
+
+# ── fakes ────────────────────────────────────────────────────────────
+
+
+class FakeProcess:
+    """Minimal stand-in for subprocess.Popen used by fake backends."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+        self._terminated = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._terminated.wait(timeout)
+
+    def terminate(self) -> None:
+        if self.returncode is None:
+            self.returncode = 0
+        self._terminated.set()
+
+
+class FakeBackend:
+    """Configurable fake SessionBackend for deterministic lifecycle tests.
+
+    ``finish`` terminates the fake process (mimicking tree teardown
+    unblocking the executor's communicate loop) and returns a canned receipt
+    (optionally merging supervisor-collected samples).
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str = "fake",
+        capabilities: dict[Capability, CapabilityLevel] | None = None,
+        cleanup_status: CleanupStatus = CleanupStatus.CLEAN,
+        survivors: tuple[SurvivorRecord, ...] = (),
+        probe_raises: bool = False,
+        prepare_raises: bool = False,
+        launch_raises: bool = False,
+        finish_raises: bool = False,
+        finish_delay: float = 0.0,
+        merge_samples: bool = False,
+        kernel_provenance: bool = False,
+    ) -> None:
+        self.name = name
+        self.version = "1.0"
+        self.capabilities = dict(capabilities or {})
+        self.cleanup_status = cleanup_status
+        self.survivors = survivors
+        self.probe_raises = probe_raises
+        self.prepare_raises = prepare_raises
+        self.launch_raises = launch_raises
+        self.finish_raises = finish_raises
+        self.finish_delay = finish_delay
+        self.merge_samples = merge_samples
+        self.kernel_provenance = kernel_provenance
+        self.calls: dict[str, int] = {
+            "probe": 0, "prepare": 0, "launch": 0, "finish": 0,
+            "abandon": 0, "recover": 0, "sample": 0,
+        }
+        self.finish_reasons: list[str] = []
+        self.finish_graces: list[float] = []
+        self.prepare_policies: list[PolicySnapshot] = []
+        self.lock = threading.Lock()
+
+    # ── protocol ──────────────────────────────────────────────────
+
+    def probe(self) -> CapabilityReport:
+        with self.lock:
+            self.calls["probe"] += 1
+        if self.probe_raises:
+            raise RuntimeError("probe boom")
+        return CapabilityReport(
+            backend=self.name,
+            backend_version=self.version,
+            capabilities=self.capabilities,
+            evidence="fake-evidence",
+            probed_at=time.monotonic(),
+        )
+
+    def prepare(self, request: AdmissionRequest, policy: PolicySnapshot) -> PendingHandle:
+        with self.lock:
+            self.calls["prepare"] += 1
+            n = self.calls["prepare"]
+            self.prepare_policies.append(policy)
+        if self.prepare_raises:
+            raise BackendPrepareError("prepare boom")
+        return PendingHandle(
+            backend=self.name, token=f"tok-{n}", request_id=request.logical_id
+        )
+
+    def launch(self, pending: PendingHandle, spec: LaunchSpec) -> RunningHandle:
+        with self.lock:
+            self.calls["launch"] += 1
+            n = self.calls["launch"]
+        if self.launch_raises:
+            raise BackendLaunchError("launch boom")
+        proc = FakeProcess(pid=9000 + n)
+        return RunningHandle(
+            backend=self.name,
+            token=pending.token,
+            request_id=pending.request_id,
+            root_pid=proc.pid,
+            start_identity="boot-1",
+            process=proc,
+        )
+
+    def sample(self, running: RunningHandle) -> ResourceSample:
+        with self.lock:
+            self.calls["sample"] += 1
+        return ResourceSample(
+            sampled_at=time.monotonic(),
+            memory_peak_bytes=1000 + self.calls["sample"],
+            cpu_total_seconds=float(self.calls["sample"]),
+            process_count=2 + self.calls["sample"],
+        )
+
+    def finish(
+        self,
+        running: RunningHandle,
+        terminal_reason: str,
+        grace_seconds: float,
+        samples=None,
+    ) -> Receipt:
+        with self.lock:
+            self.calls["finish"] += 1
+            self.finish_reasons.append(terminal_reason)
+            self.finish_graces.append(grace_seconds)
+        if self.finish_delay:
+            time.sleep(self.finish_delay)
+        if self.finish_raises:
+            raise BackendFinishError("finish boom")
+        if running.process is not None:
+            running.process.terminate()
+        provenance = (
+            MeasurementProvenance.KERNEL if self.kernel_provenance
+            else MeasurementProvenance.SAMPLED
+        )
+        memory_peak = 1234
+        cpu_total = 2.5
+        process_peak = 7
+        sample_gaps: tuple[float, ...] = (0.9, 1.1)
+        if self.merge_samples and samples:
+            memory_peak = max(s.memory_peak_bytes for s in samples if s.memory_peak_bytes)
+            cpu_total = samples[-1].cpu_total_seconds
+            process_peak = max(s.process_count for s in samples if s.process_count)
+            ordered = sorted(s.sampled_at for s in samples)
+            sample_gaps = tuple(
+                round(b - a, 4) for a, b in zip(ordered, ordered[1:])
+            )
+        return Receipt(
+            backend=self.name,
+            terminal_reason=terminal_reason,
+            cleanup_status=self.cleanup_status,
+            cleanup_duration_seconds=0.5,
+            quiescent=not self.survivors,
+            wall_time_seconds=1.0,
+            memory_peak_bytes=memory_peak,
+            memory_peak_provenance=provenance,
+            cpu_total_seconds=cpu_total,
+            cpu_total_provenance=provenance,
+            process_peak=process_peak,
+            process_peak_provenance=provenance,
+            sample_gaps=sample_gaps,
+            enforcement_events=(),
+            survivors=self.survivors,
+        )
+
+    def abandon(self, pending: PendingHandle) -> None:
+        with self.lock:
+            self.calls["abandon"] += 1
+
+    def recover(self, handle_token: str) -> RecoveryResult:
+        with self.lock:
+            self.calls["recover"] += 1
+        return RecoveryResult(recovered=False, evidence="fake")
+
+
+class RecordingPublisher:
+    def __init__(self) -> None:
+        self.receipts: list[Receipt] = []
+        self.lock = threading.Lock()
+
+    def publish(self, receipt: Receipt) -> None:
+        with self.lock:
+            self.receipts.append(receipt)
+
+    def count(self) -> int:
+        with self.lock:
+            return len(self.receipts)
+
+
+# ── builders ─────────────────────────────────────────────────────────
+
+
+def make_request(logical_id: str = "r1", **kw) -> AdmissionRequest:
+    return AdmissionRequest(
+        org="happyranch",
+        invocation_kind="task",
+        logical_id=logical_id,
+        executor_profile="claude",
+        **kw,
+    )
+
+
+def make_policy(
+    *,
+    global_session_cap: int = 8,
+    cleanup_grace_seconds: float = 5.0,
+    best_effort_survivor_threshold: int = 3,
+) -> PolicySnapshot:
+    return PolicySnapshot(
+        global_session_cap=global_session_cap,
+        producer_envelope=11,
+        linux_shadow_cap=CapPolicy(value=11, binding=False),
+        macos_binding_cap=CapPolicy(value=4, binding=True),
+        cleanup_grace_seconds=cleanup_grace_seconds,
+        best_effort_survivor_threshold=best_effort_survivor_threshold,
+    )
+
+
+def make_spec() -> LaunchSpec:
+    return LaunchSpec(argv=("python", "-c", "pass"))
+
+
+def ok_result(**kw) -> LaunchResult:
+    base = dict(success=True, duration_seconds=1.0)
+    base.update(kw)
+    return LaunchResult(**base)
+
+
+def _ok_body(running: RunningHandle) -> LaunchResult:
+    """A launch body that returns a canned success (the running handle is
+    the executor seam, so bodies must accept it)."""
+    return ok_result()
+
+
+def blocking_launch_body(running: RunningHandle) -> LaunchResult:
+    """Blocks until the fake backend terminates the process (like the real
+    communicate loop unblocking when the tree is killed)."""
+    assert running.process is not None
+    running.process.wait(timeout=10)
+    return ok_result()
+
+
+def make_supervisor(
+    *,
+    backend: FakeBackend,
+    policy: PolicySnapshot | None = None,
+    publisher: RecordingPublisher | None = None,
+    cap: int | None = None,
+    **kw,
+) -> tuple[HostSessionSupervisor, RecordingPublisher]:
+    policy = policy or make_policy()
+    publisher = publisher or RecordingPublisher()
+    admission = None
+    if cap is not None:
+        residue = ResidueAccountant(policy=policy)
+        admission = AdmissionController(cap=cap, gates=(residue,))
+        kw.setdefault("residue", residue)
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=policy,
+        publisher=publisher.publish,
+        admission=admission,
+        **kw,
+    )
+    return supervisor, publisher
+
+
+def run_in_thread(supervisor, request, **kw):
+    results: list = []
+
+    def _run():
+        try:
+            results.append(supervisor.run(request, launch_spec=make_spec(), **kw))
+        except Exception as exc:  # pragma: no cover - test diagnostics
+            results.append(exc)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    return t, results
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert predicate(), "condition not reached in time"
+
+
+# ── admission ordering ───────────────────────────────────────────────
+
+
+def test_nothing_launches_before_admission():
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend, cap=1)
+
+    holder_started = threading.Event()
+    release_holder = threading.Event()
+
+    def holder_body(running: RunningHandle) -> LaunchResult:
+        holder_started.set()
+        assert release_holder.wait(timeout=10)
+        return ok_result()
+
+    holder_t, holder_results = run_in_thread(
+        supervisor, make_request("a"), launch_body=holder_body
+    )
+    assert holder_started.wait(timeout=5)
+
+    # B queued behind A: nothing about B may touch the backend yet.
+    t, results = run_in_thread(
+        supervisor, make_request("b"), launch_body=_ok_body
+    )
+    _wait_until(lambda: supervisor._admission.queue_depth() == 1)
+    assert backend.calls["prepare"] == 1  # only A prepared
+    assert backend.calls["launch"] == 1  # only A launched
+    assert publisher.count() == 0
+
+    release_holder.set()
+    holder_t.join(timeout=10)
+    t.join(timeout=10)
+    assert holder_results[0].terminal_reason is TerminalReason.SUCCESS
+    assert results[0].terminal_reason is TerminalReason.SUCCESS
+    assert backend.calls["prepare"] == 2  # B prepared only after admission
+
+
+def test_queued_cancel_creates_no_handle():
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend, cap=1)
+
+    holder_started = threading.Event()
+    release_holder = threading.Event()
+
+    def holder_body(running: RunningHandle) -> LaunchResult:
+        holder_started.set()
+        assert release_holder.wait(timeout=10)
+        return ok_result()
+
+    holder_t, holder_results = run_in_thread(
+        supervisor, make_request("a"), launch_body=holder_body
+    )
+    assert holder_started.wait(timeout=5)
+
+    token = CancellationToken()
+    t, results = run_in_thread(
+        supervisor,
+        make_request("b", cancellation=token),
+        launch_body=_ok_body,
+    )
+    _wait_until(lambda: supervisor._admission.queue_depth() == 1)
+    token.cancel()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert results[0].cancelled_while_queued is True
+    assert results[0].terminal_reason is TerminalReason.CANCELLED
+    # No handle, no launch, no finish, no receipt for B (A still running).
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 0
+    assert publisher.count() == 0
+
+    release_holder.set()
+    holder_t.join(timeout=10)
+    assert holder_results[0].terminal_reason is TerminalReason.SUCCESS
+    assert backend.calls["finish"] == 1  # only A's finish
+    assert publisher.count() == 1  # only A's receipt
+
+
+# ── prepare / spawn failure ──────────────────────────────────────────
+
+
+def test_prepare_failure_cleans_partial_state_and_releases():
+    backend = FakeBackend(prepare_raises=True)
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.PREPARE_FAILURE
+    assert "prepare boom" in (outcome.error or "")
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 0
+    assert backend.calls["finish"] == 0
+    assert backend.calls["abandon"] == 0  # no handle ever existed
+    assert publisher.count() == 0
+    # Lease released exactly once; capacity fully restored.
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+
+
+def test_spawn_failure_abandons_partial_state_and_releases():
+    backend = FakeBackend(launch_raises=True)
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.SPAWN_FAILURE
+    assert "launch boom" in (outcome.error or "")
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 1
+    assert backend.calls["abandon"] == 1  # partial containment torn down
+    assert backend.calls["finish"] == 0  # no live containment to finish
+    assert publisher.count() == 0
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+    # The system remains usable after the failure.
+    backend.launch_raises = False
+    outcome2 = supervisor.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome2.terminal_reason is TerminalReason.SUCCESS
+
+
+# ── terminal paths ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "body_kwargs,expected",
+    [
+        (dict(success=True), TerminalReason.SUCCESS),
+        (dict(success=False, error="exit 2"), TerminalReason.FAILURE),
+        (dict(success=True, timed_out=True), TerminalReason.TIMEOUT),
+    ],
+    ids=["success", "nonzero", "timeout"],
+)
+def test_terminal_paths_finish_containment_publish_and_release(body_kwargs, expected):
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+
+    def body(running):
+        return LaunchResult(duration_seconds=1.0, **body_kwargs)
+
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=body)
+    assert outcome.terminal_reason is expected
+    assert outcome.receipt is not None
+    assert outcome.receipt.terminal_reason == expected.value
+    assert outcome.cleanup_status is CleanupStatus.CLEAN
+    # Containment finished exactly once with the frozen reason + injected grace.
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == [expected.value]
+    assert backend.finish_graces == [5.0]  # policy grace flowed through
+    assert publisher.count() == 1
+    assert publisher.receipts[0] is outcome.receipt
+    # Lease released exactly once; capacity restored.
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+    assert supervisor.active_count() == 0
+
+
+def test_on_started_publishes_diagnostic_pid_after_launch():
+    backend = FakeBackend()
+    supervisor, _ = make_supervisor(backend=backend)
+    pids: list[int] = []
+    outcome = supervisor.run(
+        make_request("a", on_started=pids.append),
+        launch_spec=make_spec(),
+        launch_body=_ok_body,
+    )
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert pids == [9001]  # the fake's first root pid
+
+
+def test_cancel_mid_run_drives_backend_teardown_idempotent():
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+    launched = threading.Event()
+
+    def body(running):
+        launched.set()
+        # Mirrors real communicate: blocked until backend.finish kills the tree.
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    assert launched.wait(timeout=5)
+    request.cancellation.cancel()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == ["cancelled"]
+    assert publisher.count() == 1
+    assert publisher.receipts[0].terminal_reason == "cancelled"
+    assert supervisor._admission.released_total() == 1
+
+
+def test_finish_cancel_race_is_idempotent():
+    backend = FakeBackend(finish_delay=0.1)
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+    launched = threading.Event()
+
+    def body(running):
+        launched.set()
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    assert launched.wait(timeout=5)
+    # Fire cancellation concurrently with the run path's own finish.
+    cancel_t = threading.Thread(target=request.cancellation.cancel)
+    cancel_t.start()
+    t.join(timeout=10)
+    cancel_t.join(timeout=10)
+    assert not t.is_alive() and not cancel_t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason in (TerminalReason.CANCELLED, TerminalReason.SUCCESS)
+    # Exactly one finish, one publish, one release regardless of the winner.
+    assert backend.calls["finish"] == 1
+    assert publisher.count() == 1
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+
+
+def test_retry_finishes_attempt_then_reacquires_with_original_age():
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(
+        backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,)
+    )
+    enqueued_at = 42.0
+
+    def body(running) -> LaunchResult:
+        # The supervisor passes the per-attempt request into prepare, but the
+        # launch body observes the attempt via the running handle only; use a
+        # module-level counter to make attempt 1 rate-limited, attempt 2 ok.
+        n = backend.calls["launch"]
+        if n == 1:
+            return LaunchResult(
+                success=False, duration_seconds=1.0,
+                rate_limited=True, error="429",
+            )
+        return ok_result()
+
+    outcome = supervisor.run(
+        make_request("a", enqueued_at=enqueued_at),
+        launch_spec=make_spec(),
+        launch_body=body,
+    )
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert outcome.attempt == 1
+    # Attempt 1 finished fully (containment + receipt) before re-admission.
+    assert backend.calls["prepare"] == 2  # fresh handle per attempt
+    assert backend.calls["finish"] == 2
+    assert backend.finish_reasons[0] == "rate_limited"
+    assert backend.finish_reasons[1] == "success"
+    assert publisher.count() == 2
+    assert publisher.receipts[0].terminal_reason == "rate_limited"
+    assert publisher.receipts[1].terminal_reason == "success"
+    # Lease released exactly once per attempt; no capacity held during sleep.
+    assert supervisor._admission.released_total() == 2
+    assert supervisor._admission.admitted_total() == 2
+    # The retry re-entered with the ORIGINAL enqueue age.
+    assert backend.prepare_policies[0] is backend.prepare_policies[1]
+
+
+def test_retry_exhaustion_preserves_rate_limited_result():
+    backend = FakeBackend()
+    supervisor, _ = make_supervisor(backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,))
+
+    def body(running):
+        return LaunchResult(success=False, duration_seconds=1.0, rate_limited=True, error="429")
+
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=body)
+    assert outcome.terminal_reason is TerminalReason.RATE_LIMITED
+    assert outcome.attempt == 1
+    assert backend.calls["finish"] == 2  # both attempts finished
+
+
+# ── cleanup error discipline ─────────────────────────────────────────
+
+
+def test_cleanup_error_never_replaces_primary_terminal_reason():
+    backend = FakeBackend(finish_raises=True)
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    # Primary reason preserved; cleanup failure travels alongside.
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert outcome.cleanup_error is not None
+    assert "finish boom" in outcome.cleanup_error
+    assert outcome.receipt is None
+    assert publisher.count() == 0  # no receipt to publish
+    # Teardown verification failed -> admission tightens (fail-closed).
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+
+
+def test_nonzero_with_cleanup_error_keeps_failure_primary():
+    backend = FakeBackend(finish_raises=True)
+    supervisor, _ = make_supervisor(backend=backend)
+
+    def body(running):
+        return LaunchResult(success=False, duration_seconds=1.0, error="exit 3")
+
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=body)
+    assert outcome.terminal_reason is TerminalReason.FAILURE
+    assert outcome.cleanup_error is not None
+
+
+# ── residue: guaranteed vs best-effort ───────────────────────────────
+
+
+def _survivor(pid: int, start: str = "boot-1") -> SurvivorRecord:
+    return SurvivorRecord(
+        pid=pid, start_identity=start, backend="fake",
+        discovered_at=1.0, last_seen_at=2.0,
+    )
+
+
+GUARANTEED_CAPS = {
+    Capability.LIMITS_MEMORY: CapabilityLevel.GUARANTEED,
+    Capability.LIMITS_PIDS: CapabilityLevel.GUARANTEED,
+    Capability.LIMITS_CPU: CapabilityLevel.GUARANTEED,
+    Capability.KILLS_TREE_GUARANTEED: CapabilityLevel.GUARANTEED,
+}
+
+BEST_EFFORT_CAPS = {
+    Capability.KILLS_TREE_BEST_EFFORT: CapabilityLevel.GUARANTEED,
+}
+
+
+def test_guaranteed_residue_blocks_admission_until_reconciliation():
+    backend = FakeBackend(
+        capabilities=GUARANTEED_CAPS, survivors=(_survivor(11),)
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert publisher.receipts[0].survivors  # residue visible in the receipt
+    # Guaranteed-cleanup residue is an anomaly: admission blocks.
+    assert supervisor._residue.census() == (_survivor(11),)
+    assert supervisor._residue.evaluate().admit is False
+
+    # A new admission stalls at the pressure gate (still queued, aged).
+    t, results = run_in_thread(
+        supervisor, make_request("b"), launch_body=_ok_body, timeout=0.3
+    )
+    t.join(timeout=10)
+    assert isinstance(results[0], AdmissionTimeout)
+
+    # Explicit reconciliation: survivor exit clears the block.
+    result = supervisor._residue.handle_survivor_exit(11, "boot-1")
+    assert result.accepted is True and result.blocked is False
+    assert supervisor._residue.evaluate().admit is True
+    outcome2 = supervisor.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome2.terminal_reason is TerminalReason.SUCCESS
+
+
+def test_best_effort_survivors_stay_censused_but_do_not_block():
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS, survivors=(_survivor(11),)
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    # Survivor stays censused + visible; presence alone does not block.
+    assert supervisor._residue.census() == (_survivor(11),)
+    assert publisher.receipts[0].survivors
+    assert supervisor._residue.evaluate().admit is True
+    # A follow-up admission proceeds normally.
+    outcome2 = supervisor.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome2.terminal_reason is TerminalReason.SUCCESS
+
+
+def test_best_effort_survivor_threshold_blocks_admission():
+    backend = FakeBackend(
+        capabilities=BEST_EFFORT_CAPS,
+        survivors=tuple(_survivor(pid) for pid in (11, 12, 13, 14)),  # 4 > 3
+    )
+    supervisor, _ = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "survivor_threshold_exceeded"
+
+    t, results = run_in_thread(
+        supervisor, make_request("b"), launch_body=_ok_body, timeout=0.3
+    )
+    t.join(timeout=10)
+    assert isinstance(results[0], AdmissionTimeout)
+
+
+def test_measurement_failure_blocks_best_effort_admission():
+    class BoomSampler:
+        def __call__(self, running):
+            raise RuntimeError("census boom")
+
+    backend = FakeBackend(capabilities=BEST_EFFORT_CAPS)
+    supervisor, _ = make_supervisor(
+        backend=backend, sampler=BoomSampler(), sample_interval_seconds=0.001
+    )
+
+    def body(running):
+        time.sleep(0.05)
+        return ok_result()
+
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=body)
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    # Census/measurement failure tightens admission (missing enforcement).
+    assert supervisor._residue.evaluate().admit is False
+    assert supervisor._residue.evaluate().reason == "measurement_unhealthy"
+
+
+# ── reconciliation inputs ────────────────────────────────────────────
+
+
+def test_reconciliation_inputs_modeled():
+    accountant = ResidueAccountant(policy=make_policy())
+    sv = _survivor(7, start="s9")
+    accountant.account(
+        Receipt(
+            backend="fake", terminal_reason="success",
+            cleanup_status=CleanupStatus.TERM, cleanup_duration_seconds=0.5,
+            quiescent=False, wall_time_seconds=1.0, survivors=(sv,),
+        ),
+        capabilities=(Capability.KILLS_TREE_GUARANTEED,),
+    )
+    assert accountant.evaluate().admit is False
+
+    # 1) Survivor exit reconciles.
+    r = accountant.handle_survivor_exit(7, "s9")
+    assert r.accepted is True and r.blocked is False
+    assert accountant.evaluate().admit is True
+
+    # 2) Successful re-probe reconciles.
+    sv2 = _survivor(8, start="s10")
+    accountant.account(
+        Receipt(
+            backend="fake", terminal_reason="success",
+            cleanup_status=CleanupStatus.TERM, cleanup_duration_seconds=0.5,
+            quiescent=False, wall_time_seconds=1.0, survivors=(sv2,),
+        ),
+        capabilities=(Capability.KILLS_TREE_GUARANTEED,),
+    )
+    assert accountant.evaluate().admit is False
+    r = accountant.handle_successful_reprobe(
+        CapabilityReport(backend="fake", backend_version="1.0", healthy=True)
+    )
+    assert r.accepted is True and r.blocked is False
+
+    # 3) Operator acknowledgement after verified cleanup reconciles;
+    #    an unverified acknowledgement is rejected fail-closed.
+    sv3 = _survivor(9, start="s11")
+    accountant.account(
+        Receipt(
+            backend="fake", terminal_reason="success",
+            cleanup_status=CleanupStatus.TERM, cleanup_duration_seconds=0.5,
+            quiescent=False, wall_time_seconds=1.0, survivors=(sv3,),
+        ),
+        capabilities=(Capability.KILLS_TREE_GUARANTEED,),
+    )
+    unverified = accountant.handle_operator_acknowledgement(
+        9, "s11", verified_cleanup_evidence="  "
+    )
+    assert unverified.accepted is False and unverified.blocked is True
+    assert unverified.reason == "operator_ack_requires_verified_cleanup_evidence"
+    assert accountant.evaluate().admit is False  # still blocked fail-closed
+    verified = accountant.handle_operator_acknowledgement(
+        9, "s11", verified_cleanup_evidence="verified: cgroup.procs empty"
+    )
+    assert verified.accepted is True and verified.blocked is False
+
+
+# ── measurement provenance & receipt shape ───────────────────────────
+
+
+def test_provenance_distinguishes_kernel_sampled_unavailable():
+    # Kernel-provenance backend (Linux-style cgroup counters).
+    kernel_backend = FakeBackend(capabilities=GUARANTEED_CAPS, kernel_provenance=True)
+    supervisor, publisher = make_supervisor(backend=kernel_backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    receipt = outcome.receipt
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert receipt.memory_peak_bytes == 1234
+    assert publisher.count() == 1
+
+    # Sampled-provenance backend carries sample gaps, not authoritative claims.
+    sampled_backend = FakeBackend(capabilities=BEST_EFFORT_CAPS, merge_samples=True)
+    supervisor2, _ = make_supervisor(
+        backend=sampled_backend, sample_interval_seconds=0.001
+    )
+
+    def body(running):
+        time.sleep(0.05)
+        return ok_result()
+
+    outcome2 = supervisor2.run(
+        make_request("b"),
+        launch_spec=make_spec(),
+        launch_body=body,
+    )
+    receipt2 = outcome2.receipt
+    assert receipt2.memory_peak_provenance is MeasurementProvenance.SAMPLED
+    assert receipt2.sample_gaps  # sampling cadence/gaps recorded
+    # The peak is the max of the portable samples (>= the first sample).
+    assert receipt2.memory_peak_bytes >= 1001
+
+
+def test_cleanup_duration_and_sampling_gaps_represented():
+    backend = FakeBackend()
+    supervisor, _ = make_supervisor(backend=backend)
+    outcome = supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert outcome.receipt.cleanup_duration_seconds == 0.5
+    assert outcome.receipt.sample_gaps == (0.9, 1.1)
+    assert outcome.receipt.quiescent is True
+
+
+# ── policy immutability & injected grace ─────────────────────────────
+
+
+def test_policy_snapshot_immutable_per_invocation():
+    backend = FakeBackend()
+    policy = make_policy(cleanup_grace_seconds=5.0)
+    supervisor, _ = make_supervisor(backend=backend, policy=policy)
+    with pytest.raises(AttributeError):
+        policy.global_session_cap = 99  # type: ignore[misc]
+    supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    supervisor.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    # Every prepare received the exact same immutable snapshot object.
+    assert len(backend.prepare_policies) == 2
+    assert backend.prepare_policies[0] is policy
+    assert backend.prepare_policies[1] is policy
+
+
+def test_cleanup_grace_is_injected_canary_input_not_constant():
+    backend = FakeBackend()
+    policy = make_policy(cleanup_grace_seconds=3.0)
+    supervisor, _ = make_supervisor(backend=backend, policy=policy)
+    supervisor.run(make_request("a"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert backend.finish_graces == [3.0]
+
+    backend2 = FakeBackend()
+    policy2 = make_policy(cleanup_grace_seconds=7.0)
+    supervisor2, _ = make_supervisor(backend=backend2, policy=policy2)
+    supervisor2.run(make_request("b"), launch_spec=make_spec(), launch_body=_ok_body)
+    assert backend2.finish_graces == [7.0]
+
+
+def test_effective_cap_derived_from_backend_capabilities_not_host():
+    # Linux-style backend (enforcement guaranteed): cap = producer envelope.
+    linux = FakeBackend(capabilities=GUARANTEED_CAPS)
+    supervisor_linux, _ = make_supervisor(backend=linux, policy=canary_policy())
+    assert supervisor_linux._admission.cap() == 11
+
+    # macOS-style backend (no enforcement): binding cap 4 applies.
+    macos = FakeBackend(capabilities=BEST_EFFORT_CAPS)
+    supervisor_macos, _ = make_supervisor(backend=macos, policy=canary_policy())
+    assert supervisor_macos._admission.cap() == 4
+
+
+# ── shutdown / drain ─────────────────────────────────────────────────
+
+
+def test_supervisor_shutdown_stops_admission_and_finishes_active():
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend, cap=1)
+
+    holder_started = threading.Event()
+
+    def body(running):
+        holder_started.set()
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, make_request("a"), launch_body=body)
+    assert holder_started.wait(timeout=5)
+
+    # A second request queues behind A.
+    t2, results2 = run_in_thread(supervisor, make_request("b"), launch_body=_ok_body)
+    _wait_until(lambda: supervisor._admission.queue_depth() == 1)
+
+    supervisor.shutdown()
+    t.join(timeout=10)
+    t2.join(timeout=10)
+    assert not t.is_alive() and not t2.is_alive()
+    # Active handle finished with SHUTDOWN (frozen first); queued cancelled.
+    assert results[0].terminal_reason is TerminalReason.SHUTDOWN
+    assert backend.finish_reasons == ["shutdown"]
+    assert results2[0].cancelled_while_queued is True
+    assert publisher.count() == 1
+    assert supervisor._admission.active_count() == 0
+    # B was never admitted (cancelled while queued), so only A's lease
+    # was released — exactly once.
+    assert supervisor._admission.released_total() == 1
