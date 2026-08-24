@@ -52,7 +52,7 @@ const diagnosticExpression = (probe='default') => `(() => {
   const controlResults=controls.map((el,index)=>{const r=el.getBoundingClientRect();const ancestors=[];let parent=el.parentElement;
     while(parent){const pr=parent.getBoundingClientRect();const style=getComputedStyle(parent);const overflow=[style.overflow,style.overflowX,style.overflowY];
       if(overflow.some((v)=>['hidden','scroll','auto','clip'].includes(v)))ancestors.push({tag:parent.tagName.toLowerCase(),ariaLabel:parent.getAttribute('aria-label'),overflow,rect:rect(parent),clips:r.left<pr.left||r.right>pr.right||r.top<pr.top||r.bottom>pr.bottom});parent=parent.parentElement}
-    el.focus();return{index,tag:el.tagName.toLowerCase(),role:el.getAttribute('role')||(el.tagName==='SUMMARY'?'button':el.tagName.toLowerCase()),accessibleName:el.getAttribute('aria-label')||el.textContent.trim(),expanded:el.parentElement?.tagName==='DETAILS'?el.parentElement.open:el.getAttribute('aria-expanded'),focused:document.activeElement===el,rect:rect(el),viewport:{width:innerWidth,height:innerHeight},inViewport:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,clippingAncestors:ancestors}});
+    return{index,tag:el.tagName.toLowerCase(),role:el.getAttribute('role')||(el.tagName==='SUMMARY'?'button':el.tagName.toLowerCase()),accessibleName:el.getAttribute('aria-label')||el.textContent.trim(),expanded:el.parentElement?.tagName==='DETAILS'?el.parentElement.open:el.getAttribute('aria-expanded'),focused:document.activeElement===el,rect:rect(el),viewport:{width:innerWidth,height:innerHeight},inViewport:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,clippingAncestors:ancestors}});
   const identities=section?[...section.querySelectorAll('li')].map((li)=>li.innerText.trim().split('\\n')):[];
   const sectionRect=section?rect(section):null;const asideRect=aside?rect(aside):null;
   return JSON.stringify({probe:'${probe}',sectionPresent:!!section,asidePresent:!!aside,asideRect,expectedRailWidth:244,railWidthPass:!asideRect||Math.abs(asideRect.width-244)<1,sectionRect,
@@ -64,8 +64,31 @@ function assertState(result,testCase){if((testCase.expectAside??true)!==result.a
   if(testCase.expectSection!==result.sectionPresent)throw new Error(`${testCase.name}: section presence ${result.sectionPresent}`);
   if(testCase.expectText&&!result.bodyText.includes(testCase.expectText))throw new Error(`${testCase.name}: missing ${testCase.expectText}`);
   if(result.sectionPresent&&(!result.sectionInViewport||result.sectionClipped))throw new Error(`${testCase.name}: section clipped/outside viewport`);
-  for(const control of result.controls)if(!control.accessibleName||!control.focused||!control.inViewport||control.clippingAncestors.some((a)=>a.clips))throw new Error(`${testCase.name}: control failed ${JSON.stringify(control)}`);
+  for(const control of result.controls)if(!control.accessibleName||!control.inViewport||control.clippingAncestors.some((a)=>a.clips))throw new Error(`${testCase.name}: control failed ${JSON.stringify(control)}`);
   for(const expected of testCase.identities??[])if(!result.identities.some((parts)=>parts.join(' ').includes(expected)))throw new Error(`${testCase.name}: missing ${expected}`);}
+
+const activeElementExpression = `(() => { const el=document.activeElement; const details=el?.closest?.('details');
+  return JSON.stringify({tag:el?.tagName?.toLowerCase()??null,role:el?.getAttribute?.('role')||(el?.tagName==='SUMMARY'?'button':null),
+    accessibleName:el?.getAttribute?.('aria-label')||el?.textContent?.trim()||null,ariaExpanded:details?details.open:el?.getAttribute?.('aria-expanded')??null,
+    focused:!!el&&el!==document.body&&el!==document.documentElement}); })()`;
+async function driveDisclosureKeyboard(session, expectedName) {
+  const trail=[]; let reached=null;
+  for(let index=0;index<40;index++){await pw(session,['press','Tab']);const active=parseEval(await pw(session,['eval',activeElementExpression]));
+    trail.push({key:'Tab',...active});if(active.tag==='summary'&&active.accessibleName===expectedName){reached=active;break}}
+  if(!reached)throw new Error(`keyboard Tab did not reach ${expectedName}: ${JSON.stringify(trail)}`);
+  if(reached.ariaExpanded!==false||!reached.focused)throw new Error(`keyboard precondition failed: ${JSON.stringify(reached)}`);
+  await pw(session,['press','Shift+Tab']);const shifted=parseEval(await pw(session,['eval',activeElementExpression]));
+  if(shifted.accessibleName===expectedName)throw new Error(`Shift+Tab did not leave disclosure: ${JSON.stringify(shifted)}`);
+  await pw(session,['press','Tab']);const returned=parseEval(await pw(session,['eval',activeElementExpression]));
+  if(returned.accessibleName!==expectedName||!returned.focused)throw new Error(`Tab did not return to disclosure: ${JSON.stringify(returned)}`);
+  await pw(session,['press','Enter']);const afterEnter=parseEval(await pw(session,['eval',activeElementExpression]));
+  if(afterEnter.ariaExpanded!==true||!afterEnter.focused)throw new Error(`Enter did not open disclosure: ${JSON.stringify(afterEnter)}`);
+  await pw(session,['press','Space']);const afterSpace=parseEval(await pw(session,['eval',activeElementExpression]));
+  if(afterSpace.ariaExpanded!==false||!afterSpace.focused)throw new Error(`Space did not close disclosure: ${JSON.stringify(afterSpace)}`);
+  return {reachedElement:{tag:reached.tag,role:reached.role,accessibleName:reached.accessibleName},navigation:{tabTrail:trail,shiftTab:shifted,tabReturn:returned},
+    transitions:[{key:'Enter',preAriaExpanded:returned.ariaExpanded,postAriaExpanded:afterEnter.ariaExpanded,focusedBefore:returned.focused,focusedAfter:afterEnter.focused},
+      {key:'Space',preAriaExpanded:afterEnter.ariaExpanded,postAriaExpanded:afterSpace.ariaExpanded,focusedBefore:afterEnter.focused,focusedAfter:afterSpace.focused}],failureDiagnostics:null};
+}
 
 const cases=[
   {name:'loading-production',viewport:[1440,720],detail:'loading',expectAside:false,expectSection:false,expectText:'Loading messages…'},
@@ -79,8 +102,10 @@ await rm(OUT,{recursive:true,force:true}); await mkdir(OUT,{recursive:true}); co
 for(const testCase of cases){const server=await createServer({root:findDist(),api:apiFor(testCase)});try{for(const theme of ['light','dark']){
   const session=`task5593-${testCase.name}-${theme}`;await pw(session,['open']);try{await pw(session,['resize',String(testCase.viewport[0]),String(testCase.viewport[1])]);
     await pw(session,['goto',`${server.url}${ROUTE}`]);await pw(session,['localstorage-set','happyranch.theme',theme]);await pw(session,['reload']);await sleep(testCase.detail==='error'?1400:700);
-    const queued=testCase.replyDelivery?.filter((item)=>item.state==='queued').length??0;if(queued&&testCase.open){await pw(session,['click',`getByText('${queued} queued ${queued===1?'delivery':'deliveries'}')`]);await pw(session,['press','Tab']);await pw(session,['press','Shift+Tab']);}
-    const result=parseEval(await pw(session,['eval',diagnosticExpression()]));if(testCase.errorControl){const retry=parseEval(await pw(session,['eval',`(()=>{const el=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Retry');if(!el)return JSON.stringify({present:false});el.focus();const r=el.getBoundingClientRect();return JSON.stringify({present:true,accessibleName:el.textContent.trim(),focused:document.activeElement===el,inViewport:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,rect:{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom}})})()`]));result.pageErrorControl=retry;if(!retry.present||!retry.focused||!retry.inViewport||retry.accessibleName!=='Retry')throw new Error('real Retry control failed')}
+    const queued=testCase.replyDelivery?.filter((item)=>item.state==='queued').length??0;
+    const keyboard=queued?await driveDisclosureKeyboard(session,`${queued} queued ${queued===1?'delivery':'deliveries'}`):null;
+    if(keyboard&&testCase.open){await pw(session,['press','Enter']);keyboard.finalEvidenceState=parseEval(await pw(session,['eval',activeElementExpression]));if(keyboard.finalEvidenceState.ariaExpanded!==true)throw new Error(`${testCase.name}: keyboard did not restore requested open screenshot state`)}
+    const result=parseEval(await pw(session,['eval',diagnosticExpression()]));result.keyboardDisclosure=keyboard;if(testCase.errorControl){const retry=parseEval(await pw(session,['eval',`(()=>{const el=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Retry');if(!el)return JSON.stringify({present:false});const r=el.getBoundingClientRect();return JSON.stringify({present:true,accessibleName:el.textContent.trim(),focused:document.activeElement===el,inViewport:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,rect:{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom}})})()`]));result.pageErrorControl=retry;if(!retry.present||!retry.inViewport||retry.accessibleName!=='Retry')throw new Error('real Retry control failed')}
     assertState(result,testCase);results.push({case:testCase.name,theme,...result});await pw(session,['screenshot',`--filename=${join(OUT,`${testCase.name}-${theme}.png`)}`]);
   }finally{await pw(session,['close']).catch(()=>{})}}}finally{server.server.closeAllConnections();await server.close()}}
 
