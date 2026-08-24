@@ -25,6 +25,48 @@ import argparse
 import sys
 
 from cli.client.client import OpcClient
+from runtime.orchestrator.executor_binary_registry import (
+    _registry_path,
+    is_test_process,
+    write_target_is_default_production_registry,
+)
+
+
+# ---------------------------------------------------------------------------
+# Test-context write guard (THR-204 issue 3 / TASK-5579)
+# ---------------------------------------------------------------------------
+
+
+def _assert_operator_register_context() -> None:
+    """Refuse to issue a registration/removal from a TEST context when the
+    daemon this CLI would talk to owns the DEFAULT production registry.
+
+    The daemon-mediated route (``POST /api/v1/executor-binaries/register`` /
+    DELETE) performs its write inside the daemon process, which never runs
+    under pytest — so a repro that shells out to this CLI from a test could
+    overwrite the live production registry under production executor names
+    (the 2026-08-23 THR-204 issue-3 incidents).  The CLI subprocess inherits
+    the test marker (``PYTEST_CURRENT_TEST``) from its pytest parent, so this
+    pre-flight guard refuses BEFORE any HTTP request reaches the daemon.
+
+    Isolation is simply setting ``HAPPYRANCH_DAEMON_HOME`` to a temporary
+    daemon home; operator shells never run under pytest, so legitimate
+    operator registration is unaffected.
+    """
+    if not is_test_process():
+        return
+    if not write_target_is_default_production_registry():
+        return
+
+    print(
+        "error: refusing to register executor binaries into the production "
+        "executor-binary registry at "
+        f"{_registry_path()} from a test context. Set "
+        "HAPPYRANCH_DAEMON_HOME to an isolated temporary daemon home (e.g. a "
+        "pytest tmp_path) before registering executor binaries in tests.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def cmd_executor_binaries_register(args: argparse.Namespace) -> None:
@@ -53,6 +95,10 @@ def cmd_executor_binaries_register(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # THR-204 issue 3 / TASK-5579: refuse pre-flight when a test context
+    # would target the DEFAULT production registry through the daemon.
+    _assert_operator_register_context()
 
     client = OpcClient.from_env()
 
@@ -140,6 +186,10 @@ def cmd_executor_binaries_remove(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # THR-204 issue 3 / TASK-5579: refuse pre-flight when a test context
+    # would target the DEFAULT production registry through the daemon.
+    _assert_operator_register_context()
 
     client = OpcClient.from_env()
 

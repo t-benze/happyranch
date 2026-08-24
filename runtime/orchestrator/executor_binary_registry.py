@@ -21,7 +21,15 @@ production registry (~/.happyranch/executors.json) by any spelling —
 including a ``HAPPYRANCH_DAEMON_HOME`` symlink/alias that resolves there —
 without isolating ``HAPPYRANCH_DAEMON_HOME`` to a temporary daemon home.
 The guard compares CANONICAL (symlink-resolved) targets so an alias can
-never bypass the check.
+never bypass the check.  The daemon-mediated route (``happyranch
+ executor-binaries register`` / ``remove`` CLI, and the daemon's register
+/delete routes) is covered at every surface where the caller's test context
+is visible: the CLI refuses pre-flight under a test context (TASK-5579), and
+a daemon launched BY a test harness inherits the same marker and fails
+closed with a clean 403 before any write surface (registry bytes unchanged).
+The production daemon never runs under pytest, so operator registration via
+CLI/web/onboarding is unaffected.  See
+``tests/test_executor_binary_registry_daemon_isolation.py``.
 """
 
 from __future__ import annotations
@@ -78,17 +86,38 @@ class RegistryIsolationError(RuntimeError):
     """
 
 
-def _is_test_process() -> bool:
-    """Return True when this process is running under pytest.
+def is_test_process() -> bool:
+    """Return True when this process (or its launch context) is a test process.
 
     Detection uses the ``PYTEST_CURRENT_TEST`` env var pytest exports during
     test execution plus the presence of the ``pytest`` module in this
-    interpreter.  The daemon never runs under pytest, so normal operator
-    registration is unaffected by the write guard.
+    interpreter.  A daemon or CLI subprocess spawned BY a test inherits the
+    env var, so the same detection works at every write surface (in-process
+    registry calls, the ``happyranch executor-binaries`` CLI, and daemons
+    launched by test harnesses).  The production daemon never runs under
+    pytest, so normal operator registration is unaffected by the write guard.
     """
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return True
     return "pytest" in sys.modules
+
+
+def default_registry_path() -> Path:
+    """The default machine-local production registry (~/.happyranch/executors.json)."""
+    return Path.home() / ".happyranch" / "executors.json"
+
+
+def write_target_is_default_production_registry() -> bool:
+    """True when the effective registry write target canonicalizes to the
+    DEFAULT production registry (~/.happyranch/executors.json).
+
+    The candidate and protected targets are compared after non-strict
+    ``Path.resolve()``, so symlinked/aliased spellings (direct, chained, or
+    dangling) are canonicalized without requiring the registry file or its
+    parent to exist — a lexical-only comparison allowed a
+    ``HAPPYRANCH_DAEMON_HOME`` symlink alias to bypass the guard.
+    """
+    return _registry_path().resolve() == default_registry_path().resolve()
 
 
 def _assert_write_target_safe() -> None:
@@ -108,19 +137,13 @@ def _assert_write_target_safe() -> None:
     this.  The daemon (the only legitimate writer of the default registry)
     never runs under pytest, so normal operator registration and fail-closed
     launch behavior are preserved.
-
-    The candidate and protected targets are compared after ``resolve()``
-    (non-strict), so symlinked/aliased spellings are canonicalized without
-    requiring the registry file or its parent to exist.
     """
-    if not _is_test_process():
+    if not is_test_process():
         return
-    candidate = _registry_path()
-    protected = Path.home() / ".happyranch" / "executors.json"
-    if candidate.resolve() == protected.resolve():
+    if write_target_is_default_production_registry():
         raise RegistryIsolationError(
             "refusing to write the production executor-binary registry at "
-            f"{candidate} from a test process. Set HAPPYRANCH_DAEMON_HOME to an "
+            f"{_registry_path()} from a test process. Set HAPPYRANCH_DAEMON_HOME to an "
             "isolated temporary daemon home (e.g. a pytest tmp_path) before "
             "registering executor binaries in tests."
         )
