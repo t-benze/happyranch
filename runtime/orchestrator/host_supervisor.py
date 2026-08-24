@@ -988,19 +988,31 @@ class _Sampler:
             self._stop.wait(self._interval)
 
 
-# ── opaque cancel control ────────────────────────────────────────────
+# ── opaque cancel control / pre-bind terminal gate ────────────────────
 
 
 class _OpaqueCancelControl:
-    """Cancellation goes through the containment handle, never a bare PID.
+    """Cancellation goes through the containment handle, never a bare PID;
+    the same opaque gate carries the daemon-shutdown terminal through the
+    launch-fence-to-running-bind interval.
 
     ``invoke`` freezes CANCELLED (first-wins) and, once the launch fence has
     been passed, drives the idempotent backend teardown — which is what
     terminates the descendant tree and unblocks the executor's communicate
-    loop. Before the fence, a winning cancellation only freezes the terminal
-    reason: the caller's ``fence_launch`` observes it and abandons the
-    pending handle without launching, so cancellation/registration is atomic
-    with respect to launch."""
+    loop. Before the fence, a winning terminal reason (CANCELLED via
+    ``invoke``, or SHUTDOWN via the supervisor drain) only freezes the
+    terminal reason: the caller's ``fence_launch`` observes it and abandons
+    the pending handle without launching, so terminal/launch is atomic.
+    Between the fence and the running-handle bind, the frozen first-wins
+    reason is replayed by ``take_pending_terminal`` immediately upon bind."""
+
+    # Terminal reasons the governing truth table allows to win before the
+    # running handle binds. Both must gate the launch fence and be replayed
+    # at bind; ``freeze_terminal`` is first-wins, so the observed reason is
+    # the genuine winner.
+    _PRE_BIND_TERMINAL = frozenset(
+        (TerminalReason.CANCELLED, TerminalReason.SHUTDOWN)
+    )
 
     def __init__(self, supervisor: "HostSessionSupervisor", ctx: _AttemptContext) -> None:
         self._supervisor = supervisor
@@ -1016,36 +1028,45 @@ class _OpaqueCancelControl:
         if launched:
             self._supervisor._finish_and_reconcile(ctx)
 
+    def _pre_bind_terminal(self) -> TerminalReason | None:
+        """Return the frozen pre-bind terminal winner, if any (first-wins)."""
+        reason = self._ctx.terminal_reason()
+        if reason in self._PRE_BIND_TERMINAL:
+            return reason
+        return None
+
     def fence_launch(self) -> bool:
-        """Atomically gate the launch body against a winning cancellation.
+        """Atomically gate the launch body against a pre-bind terminal winner.
 
         Returns ``True`` when launch may proceed (this call won the race);
-        ``False`` when cancellation already won — the caller must abandon
-        the pending handle and must not execute the launch body. The fence
-        is one-shot: once passed, the handle is launched and a later
-        cancellation drives idempotent teardown through ``invoke``."""
+        ``False`` when a terminal winner (CANCELLED or SHUTDOWN) already
+        froze — the caller must abandon the pending handle and must not
+        execute the launch body. The fence is one-shot: once passed, the
+        handle is launched and a later cancellation drives idempotent
+        teardown through ``invoke`` (a later shutdown through the drain)."""
         with self._launch_lock:
-            if self._ctx.terminal_reason() is TerminalReason.CANCELLED:
+            if self._pre_bind_terminal() is not None:
                 return False
             self._launched = True
             return True
 
-    def take_pending_cancel(self) -> bool:
-        """Replay a cancellation that won after the launch fence.
+    def take_pending_terminal(self) -> TerminalReason | None:
+        """Replay a terminal winner that froze after the launch fence.
 
         Called by the binding thread **immediately after** ``bind_running``.
-        Cancellation that wins between the fence and the running-handle bind
-        cannot drive teardown at the moment it fires — ``invoke`` sees the
-        fence passed but ``ctx.running()`` is still ``None``, so it freezes
-        CANCELLED and returns without finishing. The frozen reason is the
-        durable handoff: this method observes it on bind and the caller skips
-        the launch body and drives the normal idempotent terminal cleanup
-        right away, so the launched tree is torn down exactly once and the
-        invocation never enters a blocking body uncontained. Cancellation
-        that wins after bind is handled directly by ``invoke`` against the
-        bound handle."""
+        A terminal winner (CANCELLED or SHUTDOWN) that lands between the
+        fence and the running-handle bind cannot drive teardown at the
+        moment it fires — ``invoke`` (or the shutdown drain) sees the fence
+        passed but ``ctx.running()`` is still ``None`` — so the frozen
+        first-wins reason is the durable handoff: this method observes it on
+        bind and the caller skips the launch body and drives the normal
+        idempotent terminal cleanup right away, so the launched tree is torn
+        down exactly once and the invocation never enters a blocking body
+        uncontained. Returns the winning reason, or ``None`` when launch may
+        proceed. A terminal that wins after bind is handled directly
+        (``invoke`` / drain finish against the bound handle)."""
         with self._launch_lock:
-            return self._ctx.terminal_reason() is TerminalReason.CANCELLED
+            return self._pre_bind_terminal()
 
 
 # ── the supervisor ───────────────────────────────────────────────────
@@ -1216,20 +1237,15 @@ class HostSessionSupervisor:
                 ctx.set_error(str(exc))
                 return self._outcome(request, ctx, attempt)
             if request.cancellation.cancelled:
-                self._safe_abandon(self._backend, pending)
-                ctx.freeze_terminal(TerminalReason.CANCELLED)
-                ctx.set_error("cancelled before launch")
-                return self._outcome(request, ctx, attempt)
+                return self._abandon_pre_launch(request, ctx, pending, attempt)
             control = _OpaqueCancelControl(self, ctx)
             fired = request.cancellation.register(control)
-            # Launch fence: cancellation that wins before launch (already fired at
-            # registration, or landed between registration and this fence) abandons
-            # the pending handle and must not execute the launch body.
+            # Launch fence: a terminal winner that froze before launch (token
+            # already fired at registration, landed between registration and
+            # this fence, or SHUTDOWN frozen by the daemon drain) abandons the
+            # pending handle and must not execute the launch body.
             if fired or not control.fence_launch():
-                self._safe_abandon(self._backend, pending)
-                ctx.freeze_terminal(TerminalReason.CANCELLED)
-                ctx.set_error("cancelled before launch")
-                return self._outcome(request, ctx, attempt)
+                return self._abandon_pre_launch(request, ctx, pending, attempt)
 
             # ── launch (still post-admission, post-fence) ──
             try:
@@ -1241,12 +1257,13 @@ class HostSessionSupervisor:
                 # Partial containment must still be torn down/verified.
                 return self._outcome(request, ctx, attempt)
             ctx.bind_running(running, grace_seconds)
-            if control.take_pending_cancel():
-                # Cancellation won after the launch fence, before the running
-                # handle was bound. The durable frozen reason is replayed
-                # immediately upon bind: drive the normal idempotent terminal
-                # cleanup (finish -> residue -> publish) without ever entering
-                # the blocking launch body; the run loop releases the lease.
+            if control.take_pending_terminal() is not None:
+                # A pre-bind terminal winner (CANCELLED or SHUTDOWN) froze
+                # after the launch fence, before the running handle was bound.
+                # The durable frozen first-wins reason is replayed immediately
+                # upon bind: drive the normal idempotent terminal cleanup
+                # (finish -> residue -> publish) without ever entering the
+                # blocking launch body; the run loop releases the lease.
                 self._finish_and_reconcile(ctx)
                 return self._outcome(request, ctx, attempt)
             if request.on_started is not None:
@@ -1271,6 +1288,28 @@ class HostSessionSupervisor:
             return self._outcome(request, ctx, attempt)
         finally:
             self._unregister_active(request.logical_id)
+
+    def _abandon_pre_launch(
+        self,
+        request: AdmissionRequest,
+        ctx: _AttemptContext,
+        pending: PendingHandle,
+        attempt: int,
+    ) -> SessionOutcome:
+        """Abandon a prepared-but-not-launched handle after a pre-launch
+        terminal winner and return the outcome.
+
+        ``freeze_terminal`` is first-wins, so if the daemon drain froze
+        SHUTDOWN first it stays the primary reason; the error text names the
+        actual winner."""
+        self._safe_abandon(self._backend, pending)
+        winner = ctx.freeze_terminal(TerminalReason.CANCELLED)
+        ctx.set_error(
+            "cancelled before launch"
+            if winner is TerminalReason.CANCELLED
+            else f"terminal ({winner.value}) before launch"
+        )
+        return self._outcome(request, ctx, attempt)
 
     def _finish_and_reconcile(self, ctx: _AttemptContext) -> None:
         """Idempotent terminal teardown + reconciliation + publish.
@@ -1338,7 +1377,12 @@ class HostSessionSupervisor:
         """Stop admission, cancel queued, and finish active handles.
 
         Active attempts finish with SHUTDOWN as the (frozen, first-wins)
-        terminal reason; their run loops release the lease in ``finally``."""
+        terminal reason; their run loops release the lease in ``finally``.
+        An attempt still between the launch fence and the running-handle
+        bind has ``ctx.running()`` unset here, so the drain only freezes
+        SHUTDOWN; the bind path replays that frozen reason immediately upon
+        bind (``take_pending_terminal``), so containment still finishes
+        without entering the launch body."""
         self._admission.shutdown()
         with self._active_lock:
             contexts = list(self._active.values())

@@ -11,6 +11,9 @@ injected backend/measurement/publisher fakes:
   and release the lease exactly once;
 - cleanup errors never replace the primary terminal reason;
 - finish/cancel races are idempotent;
+- the generic pre-bind terminal handoff (CANCELLED or SHUTDOWN) replays at
+  running-handle bind and refuses launch before the fence — no blocking-body
+  entry, first-wins reason preserved, exactly-once finish/publish/release;
 - guaranteed residue blocks admission until explicit reconciliation;
 - best-effort verified survivors stay censused/charged/visible and block only
   on census/measurement failure or a conservative threshold;
@@ -848,6 +851,243 @@ def test_cancel_during_launch_finish_race_stays_idempotent():
     assert backend.finish_reasons == ["cancelled"]
     assert publisher.count() == 1
     assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+
+
+def test_shutdown_during_backend_launch_finishes_upon_bind_exactly_once():
+    """Daemon shutdown in the fence-to-running-bind window (TASK-5596 [HIGH]
+    reproduction): the drain freezes SHUTDOWN while ``backend.launch`` is
+    still in flight, so the running handle is not yet bound. The frozen
+    first-wins reason must be replayed durably on bind — the blocking launch
+    body is never entered, finish runs exactly once with the shutdown
+    reason, the receipt publishes exactly once, and the lease releases
+    exactly once."""
+    backend = FakeBackend(
+        launch_entered=threading.Event(), launch_release=threading.Event()
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+    body_entered = threading.Event()
+
+    def body(running):
+        body_entered.set()
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    # The run path passed the launch fence and is blocked inside backend.launch
+    # (the running handle is not yet bound).
+    assert backend.launch_entered.wait(timeout=5)
+    supervisor.shutdown()  # drain freezes SHUTDOWN in the fence->bind window
+    backend.launch_release.set()  # launch completes -> running handle binds
+    t.join(timeout=15)
+    assert not t.is_alive()
+    # The invocation never entered the blocking body uncontained.
+    assert not body_entered.is_set()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.SHUTDOWN
+    assert outcome.cancelled_while_queued is False
+    # Exactly-once teardown + publish + release, in the fixed order.
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == ["shutdown"]
+    assert publisher.count() == 1
+    assert publisher.receipts[0].terminal_reason == "shutdown"
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+
+
+def test_shutdown_before_launch_fence_never_launches():
+    """A daemon shutdown that freezes before the launch fence must refuse
+    launch: the fence observes the generic pre-bind terminal winner, the
+    prepared handle is abandoned, and the lease releases without any
+    launch/finish/publish — SHUTDOWN stays the frozen first-wins reason."""
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    token = PausingToken(pause_after=threading.Event())
+    t, results = run_in_thread(
+        supervisor, make_request("a", cancellation=token), launch_body=_ok_body
+    )
+    # The real registration completed (token not fired); the run path is
+    # paused before the launch fence.
+    assert token.after_register.wait(timeout=5)
+    supervisor.shutdown()  # drain freezes SHUTDOWN while the fence is pending
+    token.pause_after.set()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.SHUTDOWN
+    assert outcome.cancelled_while_queued is False
+    # No launch commitment: the prepared handle was abandoned, nothing ran.
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 0
+    assert backend.calls["finish"] == 0
+    assert backend.calls["abandon"] == 1
+    assert publisher.count() == 0
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+
+
+def _stage_pre_bind_terminal_row(source: str, window: str):
+    """Deterministically stage one (source, window) row of the pre-bind
+    terminal transition matrix and run it to a settled terminal state.
+
+    Returns ``(supervisor, publisher, backend, results, body_entered)`` with
+    the run thread joined and terminal state settled."""
+    backend = FakeBackend(
+        launch_entered=threading.Event(), launch_release=threading.Event()
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    body_entered = threading.Event()
+
+    def body(running):
+        body_entered.set()
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    request = make_request("a")
+    if window == "during_registration":
+        request = make_request(
+            "a", cancellation=PausingToken(pause_before=threading.Event())
+        )
+    elif window in ("between_registration_and_fence", "before_fence"):
+        request = make_request(
+            "a", cancellation=PausingToken(pause_after=threading.Event())
+        )
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+
+    if window == "during_registration":
+        # Cancellation wins while registration is paused before the real
+        # register (window A: the register handshake replays the fired token).
+        assert request.cancellation.entered_register.wait(timeout=5)
+        request.cancellation.cancel()
+        request.cancellation.pause_before.set()
+    elif window in ("between_registration_and_fence", "before_fence"):
+        # Real registration done; the run path is paused before the fence.
+        assert request.cancellation.after_register.wait(timeout=5)
+        if source == "cancel":
+            request.cancellation.cancel()
+        else:
+            supervisor.shutdown()  # drain freezes SHUTDOWN pre-fence
+        request.cancellation.pause_after.set()
+    elif window == "fence_to_bind":
+        # The run path passed the fence and is blocked inside backend.launch
+        # (the running handle is not yet bound).
+        assert backend.launch_entered.wait(timeout=5)
+        if source == "cancel":
+            request.cancellation.cancel()
+        elif source == "shutdown":
+            supervisor.shutdown()  # drain freezes SHUTDOWN fence->bind
+        else:  # shutdown_cancel_race — fire both back-to-back (first wins)
+            supervisor.shutdown()
+            request.cancellation.cancel()
+        backend.launch_release.set()  # launch completes -> running handle binds
+    else:  # pragma: no cover - test wiring
+        raise AssertionError(f"unknown window {window!r}")
+
+    t.join(timeout=15)
+    assert not t.is_alive()
+    return supervisor, publisher, backend, results, body_entered
+
+
+@pytest.mark.parametrize(
+    "source,window",
+    [
+        ("cancel", "during_registration"),            # truth table: cancellation
+        ("cancel", "between_registration_and_fence"),  # truth table: cancellation
+        ("shutdown", "before_fence"),                  # truth table: daemon shutdown
+        ("cancel", "fence_to_bind"),                   # window C (retained)
+        ("shutdown", "fence_to_bind"),                 # TASK-5596 [HIGH] repro
+        ("shutdown_cancel_race", "fence_to_bind"),     # first-wins race
+    ],
+)
+def test_pre_bind_terminal_transition_matrix(source, window):
+    """Pre-bind terminal transition matrix (TASK-5596 [HIGH] fix).
+
+    Every terminal source the governing truth table allows to win before the
+    running handle binds — user/task cancellation and daemon shutdown — in
+    every pre-bind window (during registration, between registration and the
+    launch fence, and between the fence and the running-handle bind), plus
+    their first-wins race. Per row: the frozen first-wins terminal reason is
+    preserved in the outcome; the blocking launch body is never entered (no
+    uncontained execution); a launch committed at the fence is finished,
+    published, and released exactly once. Post-bind terminal rows (cancel
+    mid-body, shutdown with a bound handle, clean/nonzero/timeout/retry
+    completion, and finish races) are proven by the dedicated tests above."""
+    supervisor, publisher, backend, results, body_entered = (
+        _stage_pre_bind_terminal_row(source, window)
+    )
+    outcome = results[0]
+    if source == "cancel":
+        assert outcome.terminal_reason is TerminalReason.CANCELLED
+        finish_reason = "cancelled"
+    elif source == "shutdown":
+        assert outcome.terminal_reason is TerminalReason.SHUTDOWN
+        finish_reason = "shutdown"
+    else:  # shutdown_cancel_race — first-wins freeze preserves the winner
+        assert outcome.terminal_reason in (
+            TerminalReason.SHUTDOWN,
+            TerminalReason.CANCELLED,
+        )
+        finish_reason = outcome.terminal_reason.value
+    assert outcome.cancelled_while_queued is False
+    # A pre-bind terminal winner never enters the blocking body uncontained.
+    assert not body_entered.is_set()
+    assert supervisor.active_count() == 0
+    if window == "fence_to_bind":
+        # Launch was committed at the fence; finish/publish/release run
+        # exactly once with the preserved first-wins reason.
+        assert backend.calls["launch"] == 1
+        assert backend.calls["finish"] == 1
+        assert backend.finish_reasons == [finish_reason]
+        assert publisher.count() == 1
+        assert publisher.receipts[0].terminal_reason == finish_reason
+    else:
+        # Pre-fence winners abandon the prepared handle; nothing launches.
+        assert backend.calls["launch"] == 0
+        assert backend.calls["finish"] == 0
+        assert backend.calls["abandon"] == 1
+        assert publisher.count() == 0
+    # The staged lease released exactly once; the admission registry is empty.
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+
+
+def test_pre_bind_terminal_release_wakes_queued_waiter():
+    """A pre-bind terminal release is a normal lease release: a request
+    queued behind the staged attempt is woken into admission and completes,
+    so no wake is lost on the cancellation path. (The shutdown drain's
+    queued-cancellation wake is proven by
+    ``test_supervisor_shutdown_stops_admission_and_finishes_active``.)"""
+    backend = FakeBackend(
+        launch_entered=threading.Event(), launch_release=threading.Event()
+    )
+    supervisor, publisher = make_supervisor(backend=backend, cap=1)
+    request = make_request("a")
+
+    def body(running):
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    assert backend.launch_entered.wait(timeout=5)
+    probe_t, probe_results = run_in_thread(
+        supervisor, make_request("b"), launch_body=_ok_body
+    )
+    _wait_until(lambda: supervisor._admission.queue_depth() == 1)
+    request.cancellation.cancel()  # cancel wins in the fence->bind window
+    backend.launch_release.set()
+    t.join(timeout=15)
+    probe_t.join(timeout=15)
+    assert not t.is_alive() and not probe_t.is_alive()
+    assert results[0].terminal_reason is TerminalReason.CANCELLED
+    # B was woken into admission once A's pre-bind terminal release landed.
+    assert probe_results[0].terminal_reason is TerminalReason.SUCCESS
+    assert backend.finish_reasons == ["cancelled", "success"]
+    assert supervisor._admission.released_total() == 2
     assert supervisor._admission.active_count() == 0
 
 
