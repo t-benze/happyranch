@@ -155,6 +155,125 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
         raise ValueError(f"Invalid cursor: {cursor!r}")
 
 
+# Shared SELECT for the stale never-started pending observation (THR-195): the
+# single source of truth for BOTH the managed-store scan
+# (``Database.list_stale_pending_jobs``) and the read-only registry scan
+# (``scan_stale_pending_jobs_readonly``), so the observation predicate
+# (``status='pending' AND started_at IS NULL AND created_at <= cutoff``) can
+# never drift between the two paths.
+_STALE_PENDING_JOBS_SCAN_SQL = (
+    "SELECT id, task_id, agent_name, title, review_required, created_at "
+    "FROM jobs WHERE status='pending' AND started_at IS NULL "
+    "AND created_at <= ? ORDER BY created_at, id"
+)
+
+# Active-WAL observation is a DIRECT read of the source store (founder
+# ruling TASK-5542/TASK-5544): the temporary snapshot/copy machinery is
+# retired entirely. An active-WAL source is opened in place with a genuine
+# SQLite read-only connection (``mode=ro``) which consults the ``-wal`` so
+# WAL-only committed candidates are observed. The FOUNDER CONTRACT protects
+# the durable source ``happyranch.db`` and ``happyranch.db-wal`` BYTES ONLY:
+# SQLite's WAL reader — even ``mode=ro`` — initializes WAL shared memory and
+# may CREATE, MODIFY, or REMOVE the WAL-index ``happyranch.db-shm`` as
+# transient reader/lock/index behavior, and that is explicitly permitted
+# (TASK-5544 ruling; creation/modification/removal are all allowed, and no
+# ``-shm`` existence/hash/mtime identity is ever asserted). The source main
+# DB and ``-wal`` are NEVER written: a read-only connection cannot append WAL
+# frames, checkpoint, recover, or run DDL/DML, so both stay byte-identical
+# before/after every observation. No snapshot, no copy, no temp directory
+# anywhere.
+
+
+def _scan_stale_pending_jobs_direct_wal(
+    db_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only WAL-aware observation directly on the SOURCE store.
+
+    Founder-authorized fourth-round correction (TASK-5542): the active-WAL
+    source is opened in place with a genuine SQLite read-only connection
+    (``file:...?mode=ro``) for the duration of one query and closed. The
+    reader consults the ``-wal`` so candidates committed only to the WAL are
+    observed; SQLite's own WAL-reader protocol gives every reader a coherent
+    committed view without any copy or stat-guard. The source main DB and
+    ``-wal`` are never written (a read-only connection cannot append WAL
+    frames, checkpoint, or recover), so both files stay byte-identical
+    before/after every observation and no row/schema/audit state can change.
+
+    SQLite's WAL reader may CREATE, MODIFY, or REMOVE the source
+    ``-shm`` (WAL-index shared memory) as transient reader/lock/index
+    behavior — explicitly permitted by the founder contract (TASK-5544); no
+    ``-shm`` existence/hash/mtime identity is asserted. Only the durable
+    source ``happyranch.db`` and ``happyranch.db-wal`` bytes are protected
+    (byte-identical before/after).
+
+    Fail closed: a missing main DB is handled by the caller (``[]``); a
+    malformed main file raises ``sqlite3.DatabaseError`` and a schema without
+    a ``jobs`` table raises ``sqlite3.OperationalError`` — observation never
+    fabricates candidates and never mutates the source.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            _STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def scan_stale_pending_jobs_readonly(
+    db_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only stale-pending observation over one org store.
+
+    THR-195 observation MUST NOT durably mutate any store: it never creates a
+    missing DB, never enables WAL, never runs the schema migration guards, and
+    never writes the source ``-wal``. The founder contract (TASK-5544)
+    protects the durable source ``happyranch.db`` and ``happyranch.db-wal``
+    BYTES ONLY — the SQLite WAL-index ``happyranch.db-shm`` may be created,
+    modified, or removed by read-side WAL access and that is explicitly
+    permitted, so no ``-shm`` identity is ever asserted. This helper
+    therefore never opens the source with ``Database(db_path)`` (whose
+    ``__init__`` creates the file, enables WAL, and runs migrations).
+
+    Route selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
+    checkpoints and removes them on the last close), so the main file holds
+    every committed row — ``immutable=1`` reads it fully and provably cannot
+    create sidecars. When sidecars exist (store open in this process — e.g. a
+    loaded org — or crash leftovers), the scan opens the SOURCE directly with
+    a genuine read-only WAL-aware connection (``mode=ro``): WAL-only
+    committed candidates are observed, the source main DB and ``-wal`` stay
+    byte-identical before/after, and the source ``-shm`` is the explicitly
+    permitted shared-memory surface (creation/modification/removal by the
+    WAL reader allowed; founder ruling TASK-5544; no snapshot/copy/temp
+    directory is used). Either way the scan sees every committed candidate
+    row and durably writes only the permitted ``-shm`` shared-memory surface
+    (which it may create or remove) — never the source ``.db``/``-wal``.
+
+    A missing DB file returns ``[]`` — nothing to observe, nothing created.
+    A store that cannot be read (malformed file, or a pre-migration/
+    irrelevant schema without a ``jobs`` table) raises
+    ``sqlite3.DatabaseError``/``OperationalError``: fail closed at this leaf —
+    never mutate, never fabricate candidates; the all-org coordinator
+    (``scan_all_org_stale_pending``) isolates and logs such a failure so it
+    cannot abort daemon startup or suppress other org roots.
+    """
+    if not db_path.is_file():
+        return []
+    wal = Path(f"{db_path}-wal")
+    shm = Path(f"{db_path}-shm")
+    if wal.exists() or shm.exists():
+        return _scan_stale_pending_jobs_direct_wal(db_path, cutoff_iso)
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(_STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -3004,6 +3123,11 @@ class Database:
         )
 
     @_synchronized
+    def rollback(self) -> None:
+        """Roll back the current transaction — companion to insert_audit_log_uncommitted."""
+        self._conn.rollback()
+
+    @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (task_id,)
@@ -4174,6 +4298,56 @@ class Database:
             tuple(sorted(statuses)),
         ).fetchall()
         return [row["id"] for row in rows]
+
+    @_synchronized
+    def list_stale_pending_jobs(self, cutoff_iso: str) -> list[dict]:
+        """Read-only scan for never-started pending jobs older than ``cutoff_iso``.
+
+        Predicate: ``status='pending' AND started_at IS NULL AND created_at <=
+        cutoff`` — a row that was submitted but never dispatched (no
+        ``transition_job_to_running`` ever stamped ``started_at``) and has
+        reached the observation threshold. Purely observational: callers
+        must NOT use this as a reaper/retry/cancel mechanism. Returns a
+        lightweight dict per row (id/task_id/agent_name/title/review_required/
+        created_at) — not full JobRecords — because this is a diagnostic scan.
+        """
+        rows = self._conn.execute(
+            _STALE_PENDING_JOBS_SCAN_SQL,
+            (cutoff_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def transition_never_started_job_to_failed(
+        self, job_id: str, *, now_iso: str, reason: str,
+    ) -> None:
+        """Guarded bookkeeping transition: pending + never-started → failed.
+
+        The terminalization seam for founder-authorized reconciliation of
+        abandoned never-dispatched jobs (THR-195). Only a row that is STILL
+        ``status='pending'`` AND ``started_at IS NULL`` can be reconciled;
+        any concurrent dispatch (which first transitions to ``running`` and
+        stamps ``started_at``) makes this a no-op ValueError. Mirrors the
+        guarded UPDATE shape of ``transition_job_to_rejected`` — callers get
+        no ad-hoc SQL path.
+
+        The UPDATE is deliberately left UNCOMMITTED: the caller owns the
+        surrounding transaction so this terminalization and its
+        ``job_reconciled_orphaned`` audit row commit atomically
+        (``insert_audit_log_uncommitted`` + ``commit()``) and roll back
+        together on any failure — a terminalized job must never survive
+        without its durable non-live-proof audit record.
+        """
+        cur = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason=?, finished_at=?, "
+            "duration_ms=COALESCE(duration_ms, 0) "
+            "WHERE id=? AND status='pending' AND started_at IS NULL",
+            (reason, now_iso, job_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"not_never_started_pending: job {job_id} cannot be reconciled"
+            )
 
     @_synchronized
     def transition_job_to_rejected(
