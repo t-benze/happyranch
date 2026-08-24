@@ -1619,7 +1619,9 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
 
     expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
     const rail = within(screen.getByLabelText('Reply delivery'));
-    // queued row — coalesced count + inclusive range, never a subprocess claim.
+    // Active work stays visible; queued receipts are compact until disclosed.
+    expect(rail.getByText('dev_agent')).toBeVisible();
+    await userEvent.click(rail.getByText('1 queued delivery'));
     expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
     // running row — replying + immutable range.
     expect(rail.getByText(/replying/)).toBeInTheDocument();
@@ -1645,6 +1647,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     const rail = within(screen.getByLabelText('Reply delivery'));
     // The queued TypingBubble carries the honest caption and aria-label.
     expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
+    await userEvent.click(rail.getByText('1 queued delivery'));
     expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
     expect(rail.queryByText(/replying/)).not.toBeInTheDocument();
   });

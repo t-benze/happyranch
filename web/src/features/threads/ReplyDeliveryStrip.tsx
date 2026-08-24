@@ -29,21 +29,59 @@ export function ReplyDeliveryStrip({
 }): JSX.Element | null {
   if (entries.length === 0) return null;
   const now = nowMs ?? Date.now();
+  const running = entries.filter((entry) => entry.state === 'running');
+  const queued = entries.filter((entry) => entry.state === 'queued');
+  const diagnostics = entries.filter((entry) => entry.state === 'retry_required');
   return (
-    <ul className="space-y-1">
-      {entries.map((e) => (
-        <li key={e.agent_name} className="flex items-baseline gap-1.5">
-          <span
-            aria-hidden="true"
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(e.state)}`}
-          />
-          <span className="text-text-primary truncate font-mono text-xs">{e.agent_name}</span>
-          <span className={`text-caption shrink-0 ${stateClass(e.state)}`}>
-            {replyDeliveryCaption(e, now)}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-2">
+      {entries.length > 1 && (
+        <p className="text-text-disabled text-caption tabular-nums">
+          {entries.length} current deliveries
+        </p>
+      )}
+
+      {running.length > 0 && (
+        <ul aria-label="Active reply deliveries" className="space-y-1.5">
+          {running.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
+        </ul>
+      )}
+
+      {diagnostics.length > 0 && (
+        <ul aria-label="Reply delivery diagnostics" className="space-y-1.5">
+          {diagnostics.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
+        </ul>
+      )}
+
+      {queued.length > 0 && (
+        <details
+          aria-label={`${queued.length} queued ${queued.length === 1 ? 'delivery' : 'deliveries'}`}
+          className="border-border-default rounded-md border"
+        >
+          <summary className="text-text-secondary hover:bg-surface-raised marker:text-text-muted cursor-pointer rounded-md px-2 py-1.5 text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2">
+            {queued.length} queued {queued.length === 1 ? 'delivery' : 'deliveries'}
+          </summary>
+          <ul aria-label="Queued reply delivery details" className="border-border-default space-y-1.5 border-t px-2 py-2">
+            {queued.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function DeliveryRow({ entry, nowMs }: { entry: ReplyDeliveryEntry; nowMs: number }): JSX.Element {
+  return (
+    <li className="flex min-w-0 items-start gap-1.5">
+      <span aria-hidden="true" className={`mt-1 h-1.5 w-1.5 rounded-full ${dotClass(entry.state)}`} />
+      <span className="min-w-0">
+        <span className="text-text-primary block font-mono text-xs leading-tight break-all">
+          {entry.agent_name}
+        </span>
+        <span className={`text-caption block leading-snug break-words ${stateClass(entry.state)}`}>
+          {replyDeliveryCaption(entry, nowMs)}
+        </span>
+      </span>
+    </li>
   );
 }
 
@@ -53,11 +91,12 @@ export function replyDeliveryCaption(
   e: ReplyDeliveryEntry,
   nowMs?: number,
 ): string {
-  const range = `messages ${e.from_seq}–${e.through_seq}`;
+  const singleMessage = e.from_seq === e.through_seq;
+  const range = singleMessage ? `message ${e.from_seq}` : `messages ${e.from_seq}–${e.through_seq}`;
   switch (e.state) {
     case 'queued':
       // queued wake covering N coalesced transcript rows; never a subprocess.
-      return `${e.coalesced_message_count} messages coalesced · ${range}`;
+      return `${e.coalesced_message_count} ${e.coalesced_message_count === 1 ? 'message' : 'messages'} coalesced · ${range}`;
     case 'running': {
       const elapsed = formatElapsed(e.started_at, nowMs ?? Date.now());
       return elapsed ? `replying ${elapsed} · ${range}` : `replying · ${range}`;

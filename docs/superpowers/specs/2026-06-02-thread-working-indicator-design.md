@@ -30,8 +30,13 @@
 > history also renders under SYSTEM rows, so a settled system-row-anchored
 > REPLY range shows its terminal `replied` marker.
 > The transcript-tail bubbles for conversational pairs now render the honest
-> store projection — queued pairs show a coalesced count + inclusive range
-> with static styling (never an active-subprocess claim), running pairs show
+> store projection. In the rail, running pairs stay individually visible
+> first with full wrapping identities; static queued pairs are grouped behind
+> a native accessible disclosure with truthful singular/plural counts and
+> inclusive ranges; retry-required diagnostics remain visible. Fully settled
+> pairs are absent from the live projection and remain inspectable through
+> terminal per-message history. Queued tail bubbles show a coalesced count +
+> inclusive range with static styling (never an active-subprocess claim), running pairs show
 > the claimed immutable range with `started_at` as the only subprocess
 > evidence, and `retry_required` pairs stay off the tail (they are a rail
 > diagnostic). The SSE invalidation contract below still keeps the pair
