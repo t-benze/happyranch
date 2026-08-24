@@ -14,17 +14,30 @@
 > `queued|working` split from `started_at`, the SSE invalidation contract,
 > and the elapsed ticker) for: (a) terminal responder history strips, which
 > are unchanged; and (b) special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP),
-> which hang off system rows and are intentionally outside `reply_delivery`
-> (preserved even when the same agent concurrently holds a conversational
-> REPLY pair — inferred-row suppression is purpose/triggering-row-aware,
-> never agent-name-only).
+> which are intentionally outside `reply_delivery` (preserved even when the
+> same agent concurrently holds a conversational REPLY pair).
+> **TASK-5553 purpose fidelity.** Every `responder_status` wire entry now
+> carries the authoritative invocation `purpose` (`reply` | `task_followup`;
+> BOOTSTRAP stays excluded from the grouped query), so in-flight
+> classification/dedup uses the wire purpose — NEVER the triggering row's
+> kind. A coalesced REPLY delivery range can anchor on a SYSTEM row (the
+> follow-on mint keys the first unacknowledged sequence, which may be a
+> system divider); with the wire purpose that REPLY is correctly suppressed
+> next to its store-projected pair row (exactly one replying bubble) while a
+> same-agent TASK_FOLLOWUP stays visible. Suppression is therefore
+> purpose-aware, never agent-name-only.
 > The transcript-tail bubbles for conversational pairs now render the honest
 > store projection — queued pairs show a coalesced count + inclusive range
 > with static styling (never an active-subprocess claim), running pairs show
 > the claimed immutable range with `started_at` as the only subprocess
 > evidence, and `retry_required` pairs stay off the tail (they are a rail
-> diagnostic). The SSE invalidation contract below still keeps the pair
-> projection fresh: seq-bearing lifecycle events invalidate both
+> diagnostic). The rail "Reply delivery" section (TASK-5553 founder
+> redesign) prioritizes RUNNING rows (full caption inline), collapses queued
+> and retry_required to identity+state lines with an accessible "Details"
+> disclosure for the coalescing detail, never truncates agent identity, and
+> keeps every pair individually visible. The SSE invalidation contract below
+> still keeps the pair projection fresh: seq-bearing lifecycle events
+> invalidate both
 > `thread-messages` and the `thread` detail query (Slice C added the latter
 > so the rail + tail refetch together).
 

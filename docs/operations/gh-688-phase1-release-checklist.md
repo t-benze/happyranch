@@ -23,7 +23,10 @@
 - **Merging this PR is NOT deploying.** The daemon is a long-lived Python
   process; merged code on disk is inert until the process restarts.
 - The **deployment event is a daemon restart** that loads the merged head
-  (Slice A/B/C all land in one restart).
+  (Slice A/B/C all land in one restart). Non-schema UI/API follow-ups to
+  Phase 1 (e.g. TASK-5553 purpose fidelity + Reply delivery rail redesign)
+  activate with the same restart and do **not** change `DEPLOY_EPOCH`
+  semantics or any release criterion below.
 - Record the restart as the **deployment epoch** (`DEPLOY_EPOCH`, UTC
   ISO-8601). Every one-month release query below is measured from this epoch,
   **never from the merge timestamp** — otherwise a deploy gap reads as a

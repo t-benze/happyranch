@@ -1136,7 +1136,7 @@ describe('ThreadsPage — abort replies', () => {
 
   function mkMsgWithResponders(
     seq: number,
-    responders: Array<{ agent_name: string; status: string }>,
+    responders: Array<{ agent_name: string; status: string; purpose?: string }>,
   ) {
     return {
       seq,
@@ -1149,15 +1149,18 @@ describe('ThreadsPage — abort replies', () => {
       attachments: [],
       responder_status: responders.map((r) => ({
         agent_name: r.agent_name,
+        purpose: r.purpose ?? 'reply',
         status: r.status,
         responded_at: null,
         started_at: null,
+        decline_reason: null,
+        category: null,
       })),
     };
   }
 
   function mountThreadWithResponders(
-    responders: Array<{ agent_name: string; status: string }>,
+    responders: Array<{ agent_name: string; status: string; purpose?: string }>,
   ) {
     const thread = mkThread(threadId, 'Test thread');
     server.use(
@@ -1490,14 +1493,18 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
       started_at?: string | null;
       last_terminal_reason?: string | null;
     }>,
-    responders: Array<{ agent_name: string; status: string }> = [],
+    responders: Array<{ agent_name: string; status: string; purpose?: string }> = [],
     // Extra transcript rows beyond the default MESSAGE row — used to hang
     // special-purpose (TASK_FOLLOWUP) in-flight responders off SYSTEM rows,
     // the triggering-row kind they actually attach to (GH-688 Phase 1).
     extraMessages: Array<{
       seq: number;
       kind: 'message' | 'system';
-      responder_status: Array<{ agent_name: string; status: string }>;
+      responder_status: Array<{
+        agent_name: string;
+        status: string;
+        purpose?: string;
+      }>;
     }> = [],
   ) {
     const thread = mkThread(threadId, 'Test thread');
@@ -1522,6 +1529,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
       attachments: [],
       responder_status: responders.map((r) => ({
         agent_name: r.agent_name,
+        purpose: r.purpose ?? 'reply',
         status: r.status,
         responded_at: null,
         started_at: null,
@@ -1545,6 +1553,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
         attachments: [],
         responder_status: em.responder_status.map((r) => ({
           agent_name: r.agent_name,
+          purpose: r.purpose ?? 'reply',
           status: r.status,
           responded_at: null,
           started_at: null,
@@ -1610,11 +1619,15 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
 
     expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
     const rail = within(screen.getByLabelText('Reply delivery'));
-    // queued row — coalesced count + inclusive range, never a subprocess claim.
-    expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
-    // running row — replying + immutable range.
+    // RUNNING row keeps the full caption inline (active delivery priority).
     expect(rail.getByText(/replying/)).toBeInTheDocument();
     expect(rail.getByText(/messages 1–3/)).toBeInTheDocument();
+    // queued row collapses to the short label; coalescing detail is behind
+    // the accessible disclosure.
+    expect(rail.getByText('queued')).toBeInTheDocument();
+    expect(rail.queryByText('3 messages coalesced · messages 2–4')).not.toBeInTheDocument();
+    await userEvent.click(rail.getByRole('button', { name: 'Show qa_engineer reply delivery details' }));
+    expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
     // The transcript tail mirrors the same pair projection.
     expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
     expect(screen.getByLabelText('dev_agent is replying')).toBeInTheDocument();
@@ -1636,8 +1649,10 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     const rail = within(screen.getByLabelText('Reply delivery'));
     // The queued TypingBubble carries the honest caption and aria-label.
     expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
-    expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
+    // Static short label — the coalesced count + range stay collapsed.
+    expect(rail.getByText('queued')).toBeInTheDocument();
     expect(rail.queryByText(/replying/)).not.toBeInTheDocument();
+    expect(rail.queryByText(/coalesced/)).not.toBeInTheDocument();
   });
 
   test('retry_required renders as a rail diagnostic with the last terminal reason', async () => {
@@ -1654,12 +1669,180 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     ]);
 
     expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    // Diagnostic short label collapsed; reason behind the disclosure.
+    expect(rail.getByText('retry required')).toBeInTheDocument();
     expect(
-      screen.getByText('retry required · messages 2–5 · last: timeout'),
+      rail.queryByText('retry required · messages 2–5 · last: timeout'),
+    ).not.toBeInTheDocument();
+    await userEvent.click(rail.getByRole('button', { name: 'Show support_lead reply delivery details' }));
+    expect(
+      rail.getByText('retry required · messages 2–5 · last: timeout'),
     ).toBeInTheDocument();
     // retry_required never renders as typing / a subprocess.
     expect(screen.queryByLabelText('support_lead is replying')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('support_lead is queued')).not.toBeInTheDocument();
+  });
+
+  test('EXACT regression: system seq 39 + founder msg seq 40 + running REPLY range 39-40 renders exactly ONE replying row', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Founder's THR-198 edge: the coalesced REPLY delivery range STARTS on a
+    // SYSTEM row (seq 39, a resumed divider). The REPLY invocation hangs off
+    // that system row with purpose='reply' on the wire — the selector must
+    // classify it as a REPLY (owned by the pair projection) and suppress it,
+    // so only the store-projected pair bubble renders.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'investment_advisor',
+          state: 'running',
+          from_seq: 39,
+          through_seq: 40,
+          coalesced_message_count: 2,
+          started_at: '2026-05-14T00:00:30Z',
+        },
+      ],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'reply' },
+          ],
+        },
+        {
+          seq: 40,
+          kind: 'message',
+          responder_status: [],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Exactly ONE replying row for the single conversational REPLY — no
+    // duplicate from the system-row-anchored invocation.
+    expect(screen.getAllByLabelText('investment_advisor is replying')).toHaveLength(1);
+    // The rail shows the running pair with the inclusive range.
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    expect(rail.getByText(/replying/)).toBeInTheDocument();
+    expect(rail.getByText(/messages 39–40/)).toBeInTheDocument();
+  });
+
+  test('same-agent system-row REPLY range + genuine TASK_FOLLOWUP both stay visible (no agent-only suppression)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // investment_advisor concurrently holds (a) a RUNNING REPLY pair anchored
+    // on system seq 39 (purpose='reply' on the wire) and (b) a working
+    // TASK_FOLLOWUP on system seq 41 (purpose='task_followup'). Suppression
+    // must mask ONLY the REPLY (owned by the pair) — the followup row stays.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'investment_advisor',
+          state: 'running',
+          from_seq: 39,
+          through_seq: 40,
+          coalesced_message_count: 2,
+          started_at: '2026-05-14T00:00:30Z',
+        },
+      ],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'reply' },
+          ],
+        },
+        {
+          seq: 41,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'task_followup' },
+          ],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Pair bubble (REPLY) + preserved special-purpose followup bubble.
+    expect(screen.getAllByLabelText('investment_advisor is replying')).toHaveLength(2);
+  });
+
+  test('system-row-anchored REPLY terminal state restores the per-message replied marker', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // The REPLY anchored on system seq 39 SETTLED (status='replied' on the
+    // wire with purpose='reply'); the transcript must render the terminal
+    // replied marker on that system row (TASK-5553) — the pair projection is
+    // fully settled so the rail section is absent.
+    mountThreadWithReplyDelivery(
+      [],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            {
+              agent_name: 'investment_advisor',
+              status: 'replied',
+              purpose: 'reply',
+            },
+          ],
+        },
+        {
+          seq: 40,
+          kind: 'message',
+          responder_status: [],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Test thread')).toBeInTheDocument();
+    // The system-row replied marker is visible; no fabricated in-flight row.
+    expect(screen.getByText('replied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('investment_advisor is replying')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reply delivery')).not.toBeInTheDocument();
+  });
+
+  test('multi-agent concurrent RUNNING deliveries stay individually visible in the rail', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([
+      {
+        agent_name: 'investment_advisor',
+        state: 'running',
+        from_seq: 39,
+        through_seq: 40,
+        coalesced_message_count: 2,
+        started_at: '2026-05-14T00:00:30Z',
+      },
+      {
+        agent_name: 'ops_lead',
+        state: 'running',
+        from_seq: 41,
+        through_seq: 42,
+        coalesced_message_count: 2,
+        started_at: '2026-05-14T00:00:35Z',
+      },
+      {
+        agent_name: 'qa_engineer',
+        state: 'queued',
+        from_seq: 41,
+        through_seq: 42,
+        coalesced_message_count: 2,
+      },
+    ]);
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    // Both running agents render individually, each with full identity.
+    expect(rail.getByText('investment_advisor')).toBeInTheDocument();
+    expect(rail.getByText('ops_lead')).toBeInTheDocument();
+    expect(rail.getAllByText(/replying/)).toHaveLength(2);
+    // Queued row collapsed below, never merged into a running claim.
+    expect(rail.getByText('qa_engineer')).toBeInTheDocument();
+    expect(rail.getByText('queued')).toBeInTheDocument();
   });
 
   test('omits the Reply delivery section when the projection is empty', async () => {
@@ -1689,7 +1872,9 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
         {
           seq: 2,
           kind: 'system',
-          responder_status: [{ agent_name: 'ops_lead', status: 'working' }],
+          responder_status: [
+            { agent_name: 'ops_lead', status: 'working', purpose: 'task_followup' },
+          ],
         },
       ],
     );
@@ -1705,7 +1890,8 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     // dev_agent concurrently holds a queued conversational REPLY pair (store
     // projection) AND a working TASK_FOLLOWUP wake on a SYSTEM row. The
     // agent-name-only suppression would hide the special-purpose row; the
-    // purpose/triggering-row-aware filter must keep BOTH rows visible.
+    // purpose-aware filter (wire purpose, not row kind) must keep BOTH rows
+    // visible.
     mountThreadWithReplyDelivery(
       [
         {
@@ -1721,7 +1907,9 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
         {
           seq: 2,
           kind: 'system',
-          responder_status: [{ agent_name: 'dev_agent', status: 'working' }],
+          responder_status: [
+            { agent_name: 'dev_agent', status: 'working', purpose: 'task_followup' },
+          ],
         },
       ],
     );
