@@ -1030,6 +1030,23 @@ class _OpaqueCancelControl:
             self._launched = True
             return True
 
+    def take_pending_cancel(self) -> bool:
+        """Replay a cancellation that won after the launch fence.
+
+        Called by the binding thread **immediately after** ``bind_running``.
+        Cancellation that wins between the fence and the running-handle bind
+        cannot drive teardown at the moment it fires — ``invoke`` sees the
+        fence passed but ``ctx.running()`` is still ``None``, so it freezes
+        CANCELLED and returns without finishing. The frozen reason is the
+        durable handoff: this method observes it on bind and the caller skips
+        the launch body and drives the normal idempotent terminal cleanup
+        right away, so the launched tree is torn down exactly once and the
+        invocation never enters a blocking body uncontained. Cancellation
+        that wins after bind is handled directly by ``invoke`` against the
+        bound handle."""
+        with self._launch_lock:
+            return self._ctx.terminal_reason() is TerminalReason.CANCELLED
+
 
 # ── the supervisor ───────────────────────────────────────────────────
 
@@ -1224,6 +1241,14 @@ class HostSessionSupervisor:
                 # Partial containment must still be torn down/verified.
                 return self._outcome(request, ctx, attempt)
             ctx.bind_running(running, grace_seconds)
+            if control.take_pending_cancel():
+                # Cancellation won after the launch fence, before the running
+                # handle was bound. The durable frozen reason is replayed
+                # immediately upon bind: drive the normal idempotent terminal
+                # cleanup (finish -> residue -> publish) without ever entering
+                # the blocking launch body; the run loop releases the lease.
+                self._finish_and_reconcile(ctx)
+                return self._outcome(request, ctx, attempt)
             if request.on_started is not None:
                 request.on_started(running.root_pid)
 

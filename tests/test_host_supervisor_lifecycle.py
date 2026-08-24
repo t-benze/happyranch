@@ -104,6 +104,8 @@ class FakeBackend:
         finish_delay: float = 0.0,
         merge_samples: bool = False,
         kernel_provenance: bool = False,
+        launch_entered: threading.Event | None = None,
+        launch_release: threading.Event | None = None,
     ) -> None:
         self.name = name
         self.version = "1.0"
@@ -117,6 +119,13 @@ class FakeBackend:
         self.finish_delay = finish_delay
         self.merge_samples = merge_samples
         self.kernel_provenance = kernel_provenance
+        # Deterministic backend-launch barrier: ``launch_entered`` is set as
+        # soon as ``launch`` begins (after the launch fence passed); ``launch``
+        # then blocks until ``launch_release``, letting a test cancel in the
+        # fence-to-running-bind interval and prove the pending-cancel handoff.
+        self.launch_entered = launch_entered
+        self.launch_release = launch_release
+        self.last_running: RunningHandle | None = None
         self.calls: dict[str, int] = {
             "probe": 0, "prepare": 0, "launch": 0, "finish": 0,
             "abandon": 0, "recover": 0, "sample": 0,
@@ -158,8 +167,14 @@ class FakeBackend:
             n = self.calls["launch"]
         if self.launch_raises:
             raise BackendLaunchError("launch boom")
+        if self.launch_entered is not None:
+            self.launch_entered.set()
+        if self.launch_release is not None:
+            # Block inside backend.launch (after the launch fence, before the
+            # running handle is bound) until the test releases the barrier.
+            assert self.launch_release.wait(timeout=10)
         proc = FakeProcess(pid=9000 + n)
-        return RunningHandle(
+        running = RunningHandle(
             backend=self.name,
             token=pending.token,
             request_id=pending.request_id,
@@ -167,6 +182,9 @@ class FakeBackend:
             start_identity="boot-1",
             process=proc,
         )
+        with self.lock:
+            self.last_running = running
+        return running
 
     def sample(self, running: RunningHandle) -> ResourceSample:
         with self.lock:
@@ -710,6 +728,127 @@ def test_cancel_between_registration_and_launch_never_launches():
     assert backend.calls["finish"] == 0
     assert publisher.count() == 0
     assert supervisor._admission.released_total() == 1
+
+
+def test_cancel_during_backend_launch_finishes_upon_bind_exactly_once():
+    """Race window C: cancellation fires after the launch fence but before
+    backend.launch returns (the fence-to-running-bind interval).
+
+    The pending cancellation must be durably observed immediately upon bind:
+    the blocking launch body is never entered, teardown (finish) runs exactly
+    once with the cancelled reason, the receipt publishes exactly once, and
+    the lease releases exactly once — the fixed terminal ordering holds."""
+    backend = FakeBackend(
+        launch_entered=threading.Event(), launch_release=threading.Event()
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+    body_entered = threading.Event()
+
+    def body(running):
+        body_entered.set()
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    # The run path passed the launch fence and is blocked inside backend.launch
+    # (the running handle is not yet bound).
+    assert backend.launch_entered.wait(timeout=5)
+    request.cancellation.cancel()  # cancellation wins in the fence->bind window
+    backend.launch_release.set()  # launch completes -> running handle binds
+    t.join(timeout=15)
+    assert not t.is_alive()
+    # The invocation never entered the blocking body uncontained.
+    assert not body_entered.is_set()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert outcome.cancelled_while_queued is False
+    # Exactly-once teardown + publish + release, in the fixed order.
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == ["cancelled"]
+    assert publisher.count() == 1
+    assert publisher.receipts[0].terminal_reason == "cancelled"
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+
+
+def test_cancel_during_launch_normal_completion_race_stays_idempotent():
+    """Adversarial variant: launch completes normally while cancellation fires
+    concurrently in the fence-to-bind window (cancel/normal-completion race).
+
+    Whichever side wins the interleaving, exactly one finish terminates the
+    tree, one receipt publishes, and one lease releases — the invocation
+    cannot remain blocked in the body uncontained (finish terminates the fake
+    process, which is what unblocks a body that did start)."""
+    backend = FakeBackend(
+        launch_entered=threading.Event(), launch_release=threading.Event()
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+
+    def body(running):
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    assert backend.launch_entered.wait(timeout=5)
+    # Release the launch and cancel back-to-back: the bind and the freeze race.
+    backend.launch_release.set()
+    request.cancellation.cancel()
+    t.join(timeout=15)
+    assert not t.is_alive()
+    outcome = results[0]
+    # The body cannot complete before its tree is terminated, so the cancel
+    # always freezes first and wins the primary reason.
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    # Exactly-once finish/publish/release regardless of the interleaving winner.
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == ["cancelled"]
+    assert publisher.count() == 1
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    # The launched tree was terminated (contained), not left live.
+    assert backend.last_running is not None
+    assert backend.last_running.process.returncode is not None
+
+
+def test_cancel_during_launch_finish_race_stays_idempotent():
+    """Adversarial variant: a second cancellation lands while the cancellation-
+    driven finish (driven immediately upon bind) is already in flight
+    (cancel/finish race). finish_once blocks stragglers and returns the same
+    receipt; finalize_once publishes once — the replay composes with the
+    exactly-once guards."""
+    backend = FakeBackend(
+        launch_entered=threading.Event(),
+        launch_release=threading.Event(),
+        finish_delay=0.2,
+    )
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+
+    def body(running):
+        running.process.wait(timeout=10)
+        return ok_result()
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    assert backend.launch_entered.wait(timeout=5)
+    request.cancellation.cancel()  # wins in the fence->bind window
+    backend.launch_release.set()  # bind -> finish driven (in flight 0.2s)
+    # Second cancellation while the replay-driven finish is in flight.
+    _wait_until(lambda: backend.calls["finish"] == 1)
+    request.cancellation.cancel()
+    t.join(timeout=15)
+    assert not t.is_alive()
+    outcome = results[0]
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert backend.calls["finish"] == 1
+    assert backend.finish_reasons == ["cancelled"]
+    assert publisher.count() == 1
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
 
 
 def test_retry_finishes_attempt_then_reacquires_with_original_age():
