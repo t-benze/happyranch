@@ -1,14 +1,33 @@
-# Offline organization relocation — founder-operated manual runbook (THR-187)
+# Offline organization relocation — founder-operated manual runbook (THR-187 / GH-709 Slice A)
 
 > **Status:** a **manual runbook** for a **one-time, founder-supervised,
-> same-slug, offline maintenance-window** move of one existing current-v2 org
-> into an **absent** destination slug on another runtime. It is **not** the
-> deferred automated archive/import/activation product (Slice B/C), it
-> implements no automation, and it makes **no claim** that the shipped runtime
-> enforces any inactive/admission state, rebind, or schedule-rearm gate. The
-> shipped runtime carries only **Slice A** (read-only preflight + founder-only
-> zombie reconciliation). Every command below is an existing, verified surface;
-> none is invented.
+> same-slug, offline maintenance-window** move of one or more existing
+> current-v2 orgs into **absent** destination slugs on another runtime
+> (GH-709 Slice A hardening). It is **not** the deferred automated
+> archive/import/activation product (Slice B/C), it implements no automation,
+> and it makes **no claim** that the shipped runtime enforces any
+> inactive/admission state, rebind, or schedule-rearm gate. The shipped runtime
+> carries only **Slice A** (read-only preflight + founder-only zombie
+> reconciliation).
+>
+> **GH-709 Slice A fixes in this revision:** a `COPYFILE_DISABLE=1` macOS
+> archive recipe (contract-tested; real AppleDouble suppression must be
+> verified on a real macOS machine — §4), retaining rejection of any `._*`
+> member; staged-DB validation through `immutable=1` read-only URI opens that
+> create no `-wal`/`-shm`; an exact transfer-operation artifact gate (legitimate
+> `artifacts/**/*.tar.gz` evidence passes); a founder decision on terminal
+> historical job records (retained, never mutated, streams not transported); a
+> loader-backed multi-org inventory with a durable per-org operation ledger;
+> a mandatory post-publication agent-readiness gate; and destination
+> launch/child-CLI diagnostics.
+>
+> **Honesty boundary (binding).** Slices B/C/D *runtime* guarantees (an
+> automated importer, online transfer fences, batch automation, an exhaustive
+> readiness command) are **not shipped** by this PR. The multi-org inventory,
+> per-org operation ledger, readiness checks, and diagnostics below are
+> **operator-enforced**: the founder runs them manually and records the
+> results; nothing in the shipped runtime verifies them. Every command below
+> is an existing, verified surface; none is invented.
 >
 > Evidence for each statement is the shipped code at the current head and the
 > Step-0 evidence gate
@@ -28,7 +47,13 @@ It is **not** any of: a clone; a source deletion (source deletion is a separate,
 later decision — §8); a merge/overwrite of two orgs; a credential or
 daemon-token transfer; an automatic rebind/rearm; an online fence or retry
 protocol; a v0/v1 layout conversion (every non-current-v2 layout is a named
-refusal, never an auto-upgrade).
+refusal, never an auto-upgrade); an automatic importer or first-class
+relocation tool (Slices B/C/D are not shipped — see the honesty boundary
+above); a batch-atomic protocol (each org publishes independently, a later
+failure never rolls back an already-published org, and no successful org
+masks a failure — §1.1, §8); or credential/token-residue inspection or
+cleanup (a separate, founder-authorized task; do **not** combine destructive
+cleanup with this relocation).
 
 **Placeholders** (define once; all are absolute, resolved, non-symlink paths):
 
@@ -43,6 +68,7 @@ refusal, never an auto-upgrade).
 | `STAGE` | private staging dir; on the **destination** machine it **must** be `$DST_RUNTIME/orgs/_pending/$OP` so publication is a same-filesystem rename (§6). On the source machine use `$SRC_RUNTIME/orgs/_pending/$OP` (also reserved) or any other private dir **outside** `$SRC`. |
 | `INBOX` | destination **receive** dir, e.g. `$DST_RUNTIME/orgs/_pending/$OP.inbox/` — absolute, founder-private (`chmod 700`), **outside** both `$STAGE` and `$DST`; holds `org-archive.tar.gz`, `manifest.txt`, and the recorded `archive.sha256` receipt (§5) |
 | `HR_CHECKOUT` | absolute path to the **version-matched** HappyRanch checkout used to deploy the destination daemon — the checkout whose code (including `runtime/portability/roots.py`) matches the running destination deployment. Its **supported environment** is uv (`pyproject.toml` requires-python `>=3.12,<3.15`; `uv.lock` pinned). Used **only** for the offline classifier gate (§5 step 7); it is **not** the live daemon and serves no route |
+| `LEDGER` | per-org operation ledger path (§1.1), e.g. `$DST_RUNTIME/orgs/_pending/<batch>-ledger.md`; records per-org phase, evidence, and founder-approved exceptions (including runbook-created source sidecars, §3) |
 
 Hard requirements:
 
@@ -66,6 +92,58 @@ Hard requirements:
   before any publication. The destination daemon stays stopped; the online
   `/portability-preflight` route is a **source-only** seam and cannot run
   against the stopped destination.
+
+### 1.1 Loader-backed org inventory and the per-org operation ledger (multi-org batches)
+
+The runbook below is written single-org, but a real runtime may hold several
+orgs. **Never inventory by globbing directories under `$SRC_RUNTIME/orgs/`**:
+reserved and non-org directories (`_pending`, `_archive`, `worktrees`,
+`_pending/$OP`, `_pending/$OP.inbox`) are not loadable orgs even though they
+are direct children. Inventory through the **same loader the runtime uses**,
+`RuntimeDir.iter_org_roots` (`runtime/runtime.py`): a loadable org is a
+slug-matching directory (`^[a-z0-9-]{1,40}$`) that is not `_pending`/`_archive`
+and that contains `org/teams.yaml`. Run this offline from the version-matched
+`HR_CHECKOUT` (both daemons may be stopped):
+
+```bash
+set -euo pipefail
+cd "$HR_CHECKOUT" && uv run python - "$SRC_RUNTIME" <<'PY'
+import sys
+from pathlib import Path
+from runtime.runtime import RuntimeDir
+rt = RuntimeDir.load(Path(sys.argv[1]))
+for slug, root in sorted(rt.iter_org_roots()):
+    print(f"{slug}  {root}")
+PY
+```
+
+Cross-check while the source daemon is up with `happyranch orgs` (§2 step 1
+window); the daemon's `/api/v1/orgs` route lists the same loadable set. Treat
+any direct child the loader does **not** yield as **not an org** — leave it
+untouched (e.g. a sibling `worktrees/` directory stays in place).
+
+**Per-org operation identity and ledger.** For a batch, give **each org its
+own** operation id and paths: `OP_<slug>` (e.g. `2026-08-25-thr187-family`),
+`STAGE_<slug>` = `$DST_RUNTIME/orgs/_pending/$OP_<slug>`, and
+`INBOX_<slug>` = `$DST_RUNTIME/orgs/_pending/$OP_<slug>.inbox`. Every org runs
+§3–§6 independently: unique export, transfer, stage, validation, and publish
+decision. **Maintain one durable per-org operation ledger** at a founder-private
+path, e.g. `$DST_RUNTIME/orgs/_pending/<batch>-ledger.md` (under the reserved
+slug, so it is never enumerated as an org). For every org, record a row with:
+slug, `OP_<slug>`, current phase (`inventory → exported → validated →
+published → zero-gated → started → ready` or `blocked`), the evidence paths
+(archive receipt, staged manifest diff, classifier output, zero-count output),
+and any **founder-approved exception** (e.g. terminal historical job paths,
+§4/§5 step 9). Update the ledger at **every** phase transition, including
+failures. The ledger is the operator-enforced record the brief/issue require:
+- each org validates and publishes **independently** — a later org's failure
+  never rolls back an org already published;
+- source copies and operation evidence stay in place for every org (failed or
+  not) — never delete them during the batch (§8);
+- a failing org is recorded `blocked` with evidence and never masked by a
+  sibling's success: the destination starts only after **every requested org**
+  is either `published` + `zero-gated` or explicitly `blocked` with recorded
+  evidence and a founder decision to proceed without it (§7).
 
 ## 2. Slice-A preflight / readiness
 
@@ -163,18 +241,10 @@ checkpointed rows (Step-0 harness fixture (d) proves a raw `.db` copy reads
 0 rows where a logical snapshot reads the committed rows). The logical snapshot
 below reads through WAL without mutating or checkpointing the source.
 
-**2. Logical snapshot (no source mutation).** Use the `sqlite3` backup API
-through a read-only open. First verify your `sqlite3` build supports it on a
-throwaway database:
-
-```bash
-set -euo pipefail
-tmp=$(mktemp -d) && sqlite3 "$tmp/t.db" "CREATE TABLE t(x);" && \
-  sqlite3 -readonly "$tmp/t.db" ".backup '$tmp/s.db'" && \
-  sqlite3 "$tmp/s.db" "PRAGMA integrity_check;" && rm -rf "$tmp"   # expect "ok"
-```
-
-Then take the real snapshot:
+**2. Logical snapshot (no source mutation, no created sidecars).** Take the
+snapshot with the stdlib `sqlite3` backup API from the version-matched
+`HR_CHECKOUT` (no CLI dependency, and the destination is forced to
+rollback-journal mode so **no `-wal`/`-shm` is ever created at `$STAGE`**):
 
 ```bash
 set -euo pipefail
@@ -184,19 +254,79 @@ if test -e "$SRC/happyranch.db-wal" || test -e "$SRC/happyranch.db-shm"; then
   echo "SIDECAR PRESENT — STOP: do not open SQLite" >&2
   exit 1
 fi
-sqlite3 -readonly "$SRC/happyranch.db" ".backup '$STAGE/happyranch.db'"
+cd "$HR_CHECKOUT" && uv run python - "$SRC/happyranch.db" "$STAGE/happyranch.db" <<'PY'
+import sqlite3, sys
+src, dest = sys.argv[1], sys.argv[2]
+reader = sqlite3.connect(f"file:{src}?mode=ro", uri=True)   # WAL-aware read
+writer = sqlite3.connect(dest)
+writer.execute("PRAGMA journal_mode=DELETE")                # no -wal/-shm at stage
+reader.backup(writer)
+writer.execute("PRAGMA journal_mode=DELETE")                # re-assert after header copy
+writer.close()
+reader.close()
+PY
+# The read-only SOURCE reader can itself create a -wal/-shm pair beside the
+# source (a SQLite read-only WAL reader initializes WAL shared memory —
+# verified; this is runbook-created residue, not evidence of live access). The
+# pre-open gate proved neither existed, so any sidecar present NOW was created
+# by this very command in the exclusive stopped-daemon window. Record it in the
+# operation ledger, then remove exactly those two files so the source is left
+# byte-clean. Never delete a sidecar that existed before the gate — the gate
+# refuses those and they stay untouched (never delete pre-existing sidecars).
+if test -e "$SRC/happyranch.db-wal" || test -e "$SRC/happyranch.db-shm"; then
+  echo "runbook-created source sidecar after backup (pre-gate proved none existed)" \
+    | tee -a "$LEDGER" >&2
+  rm -f "$SRC/happyranch.db-wal" "$SRC/happyranch.db-shm"
+  if test -e "$SRC/happyranch.db-wal" || test -e "$SRC/happyranch.db-shm"; then
+    echo "SOURCE SIDECAR NOT REMOVED — STOP and inspect" >&2
+    exit 1
+  fi
+  echo "operation-created source sidecars removed — source clean"
+fi
 ```
 
-(There is no fictional `happyranch export` command; `.backup ?DB? FILE` with
-default DB `main` is the real primitive.)
+`$LEDGER` is the per-org operation ledger path (§1.1); for a single-org move
+use any founder-private path. The removal above is **exactly scoped**: it runs
+only when the immediately-preceding gate proved both files absent, so it can
+only ever remove files this runbook just created.
 
-**3. Validate the staged snapshot:**
+(There is no fictional `happyranch export` command; `sqlite3.Connection.backup`
+is the real primitive.)
+
+**3. Validate the staged snapshot (immutable read-only, no sidecars).** The
+staged file is the **completed logical snapshot** — the `sqlite3 .backup` API
+folds every committed row into the main file, so `$STAGE/happyranch.db` is
+self-contained and has no WAL of its own. Validate it with a URI `immutable=1`
+read-only open, which **never creates `-wal`/`-shm`** (an ordinary or `mode=ro`
+open can create sidecars; the repo's stale-job observer records this property).
+Immutable reads only the main file, so it is safe **only** because the snapshot
+is complete — **immutable must never replace the WAL-aware source backup**
+in §3 step 2 (the source may hold committed-but-uncheckpointed WAL frames that
+immutable would silently miss). Ordering is strict: prove no pre-existing
+candidate sidecars first, validate, then prove none were created:
 
 ```bash
 set -euo pipefail
-sqlite3 "$STAGE/happyranch.db" "PRAGMA integrity_check;"    # expect "ok"
-sqlite3 "$STAGE/happyranch.db" "PRAGMA foreign_key_check;"  # expect no rows
+# 1. prove no pre-existing sidecars beside the staged candidate
+if test -e "$STAGE/happyranch.db-wal" || test -e "$STAGE/happyranch.db-shm"; then
+  echo "STAGED SIDECAR PRESENT — STOP: do not open the staged DB" >&2
+  exit 1
+fi
+# 2. immutable read-only validation (absolute path; sqlite3 CLI enables URIs)
+sqlite3 "file:$STAGE/happyranch.db?immutable=1" "PRAGMA integrity_check;"    # expect "ok"
+sqlite3 "file:$STAGE/happyranch.db?immutable=1" "PRAGMA foreign_key_check;"  # expect no rows
+# 3. prove the validation created no sidecars (no self-induced residue)
+if test -e "$STAGE/happyranch.db-wal" || test -e "$STAGE/happyranch.db-shm"; then
+  echo "VALIDATION CREATED A SIDECAR — STOP: investigate before continuing" >&2
+  exit 1
+fi
+echo "staged snapshot valid; no sidecars created"
 ```
+
+If the `sqlite3` CLI rejects the URI form, use the equivalent Python stdlib
+check from the version-matched `HR_CHECKOUT` (`sqlite3.connect("file:<abs>?immutable=1", uri=True)`)
+— same URI semantics. Do **not** fall back to an ordinary `sqlite3 "$DB"` open;
+that is the sidecar-creating path this runbook forbids.
 
 ## 4. Build the allow-listed manifest and archive (portable roots only)
 
@@ -206,19 +336,40 @@ classify_root_entries` approves. It is **not** the bare `ALLOWED_ROOTS` set:
 `ALLOWED_ROOTS` alone would silently drop agent memory and valid legacy skills.
 
 Portable roots: the logical `happyranch.db` snapshot (not a raw copy); `org/`
-(whole tree); `artifacts/`, `kb/`, `threads/`, `task-attachments/`, `jobs/`,
-`dreams/`, `work_hours/`, `schedules/`, `talks/`; `skills/` only where each
-package passes the classifier's legacy-skill validation; and
-`workspaces/<agent>/memory/**` **only**.
+(whole tree); `artifacts/`, `kb/`, `threads/`, `task-attachments/`, `dreams/`,
+`work_hours/`, `schedules/`, `talks/`; `skills/` only where each package passes
+the classifier's legacy-skill validation; and `workspaces/<agent>/memory/**`
+**only**. **`jobs/` is deliberately not carried** — see the terminal-job policy
+below.
+
+**Terminal historical job records (founder policy, GH-709).** Job rows live in
+the snapshot `happyranch.db` and **travel inside it, retained untouched**: no
+row is mutated, no `stdout_path`/`stderr_path`/`cwd_hint` value is rewritten,
+and there is no importer/rebase in the shipped runtime (Slice B/C). The
+**machine-local stream files** (`jobs/JOB-NNN.out|err` — the stdout/stderr
+bytes) are **not transported**: `jobs/` is excluded from the payload below.
+Because the retained rows still hold source-absolute stream paths, historical
+stream links (`happyranch jobs output <id>` / `happyranch jobs tail <id>` on
+terminal rows) **may be unavailable (empty) after relocation** — documented,
+expected, and not a gate failure (§5 step 9). This is safe because the §2
+preflight requires **zero pending/running jobs** before export, so every
+carried job row is terminal (`completed`/`failed`/`rejected`), and only
+`pending` rows are launchable — a terminal row can never be re-launched, so a
+legacy `cwd_hint` value is never executed on the destination.
 
 Never carried: `happyranch.db-wal`/`-shm`; generated markers
 (`.hr_review_renamed`, `.org_settings_seeded`); `dashboard_projection.json`;
 caches (`.pytest_cache`, `.DS_Store`); legacy residue DBs (`audit.db`,
-`db.sqlite3`) unless zero-byte-and-excluded by the classifier; every
+`db.sqlite3`) unless zero-byte-and-excluded by the classifier; the `jobs/`
+directory (machine-local stdout/stderr streams, §4 terminal-job policy); every
 `workspaces/*` subtree except `memory` (including `output`, `repos`,
 bootstrap/settings); and any unknown or nonregular entry. **Any direct child
 the classifier does not explicitly allow or explicitly exclude is a rejection
-— stop, do not guess.**
+— stop, do not guess.** (The shipped classifier still allow-lists `jobs/` as a
+whole-tree root; this runbook's §4 recipe simply does not copy it. An archive
+that nonetheless contains `jobs/` members carries inert bytes whose stored
+absolute-path links will not resolve on the destination — record it in the
+ledger and investigate, but do not treat the bytes as a portable resource.)
 
 Copy the allow-listed roots into `$STAGE/org-payload/` (place the snapshot as
 `org-payload/happyranch.db`). For the memory-only carve-out, use a
@@ -229,7 +380,10 @@ whose `--include`/`--exclude` semantics differ from GNU rsync, so a portable
 ```bash
 set -euo pipefail
 mkdir -p "$STAGE/org-payload"
-# … copy each whole-tree portable root (org, kb, talks, …) with cp -R …
+# copy each whole-tree portable root with cp -R — the allow-listed set from
+# the paragraph above, EXCLUDING jobs/ (terminal-job policy) and workspaces/
+# (memory carve-out handled by the loop below): org, artifacts, kb, threads,
+# task-attachments, dreams, work_hours, schedules, talks, skills (valid pkgs)
 cp "$STAGE/happyranch.db" "$STAGE/org-payload/happyranch.db"
 while IFS= read -r memdir; do
   rel="${memdir#"$SRC"/}"                 # e.g. workspaces/alice/memory
@@ -260,6 +414,13 @@ set -euo pipefail
 (cd "$STAGE/org-payload" && find . -type f -print0 | LC_ALL=C sort -z | \
   xargs -0 shasum -a 256) > "$STAGE/manifest.txt"        # macOS
 # Linux: replace shasum -a 256 with sha256sum
+# macOS/BSD tar: COPYFILE_DISABLE=1 suppresses synthetic AppleDouble ._* members
+# emitted from extended attributes (xattrs) of copied files. On Linux GNU tar
+# ignores the variable — harmless. Do NOT drop it on macOS. (Real AppleDouble
+# suppression is a macOS behavior; verify the recipe on a real macOS machine
+# before relying on it — the runbook's member screen in §5 still rejects any
+# injected ._* member, which is the authoritative fail-closed backstop.)
+export COPYFILE_DISABLE=1
 tar -czf "$STAGE/org-archive.tar.gz" -C "$STAGE/org-payload" .
 shasum -a 256 "$STAGE/org-archive.tar.gz" | awk '{print $1}' > "$STAGE/archive.sha256"
 # archive.sha256 = the 64-char hex digest; transfer it with the archive + manifest (§5)
@@ -347,6 +508,11 @@ Reject the archive — do **not** extract — if **any** of these hold:
 - **nonregular entry**: a `members-typed.txt` line does **not** begin with `d`
   (directory) or `-` (regular file) — this rejects symlinks (`l`), hardlinks
   (`h`), block/char devices (`b`/`c`), FIFOs (`p`), and sockets (`s`);
+- **AppleDouble `._*` member**: a member basename begins with `._` — synthetic
+  macOS metadata emitted from extended attributes. §4 suppresses it with
+  `COPYFILE_DISABLE=1`, but this screen must still **reject any injected
+  `._*` member** (defense in depth; the rejection below is the authoritative
+  fail-closed backstop, independent of the tar version used);
 - **unallowlisted member**: a member path is not under one of the §4 portable
   roots (`happyranch.db`, `org/`, `kb/`, `talks/`, `threads/`,
   `task-attachments/`, `jobs/`, `dreams/`, `work_hours/`, `schedules/`,
@@ -354,6 +520,15 @@ Reject the archive — do **not** extract — if **any** of these hold:
 - **smuggled transfer/inbox artifact**: a member named `org-archive.tar.gz`,
   `manifest.txt`, `archive.sha256`, `members.txt`, `members-typed.txt`, or
   `staged-manifest.txt` appears anywhere in the archive.
+
+The screen is deliberately **name/type exact**, not extension-wide: a
+legitimate evidence bundle `artifacts/evidence/report.tar.gz` passes every
+check (it is not one of the six operation filenames and is under an allowed
+root), while `org-archive.tar.gz` or `manifest.txt` at any depth is rejected
+as a smuggled transfer artifact. `jobs/` members are still allowed here (the
+shipped classifier allow-lists `jobs/`); per §4's terminal-job policy this
+runbook does not transport `jobs/` itself, so an archive that contains them
+was not produced by §4 — note it in the operation ledger (§1.1).
 
 ```bash
 set -euo pipefail
@@ -364,6 +539,7 @@ if grep -nE '^/' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then fail
 if grep -nE '(^|/)\.\.(/|$)' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi          # `..` traversal
 dups=$(sort "$INBOX/members-norm.txt" | uniq -d); if test -n "$dups"; then printf '%s\n' "$dups" >> "$INBOX/rejections.txt"; failed=1; fi   # duplicate path
 if grep -vE '^total ' "$INBOX/members-typed.txt" | grep -nE '^[^d-]' >> "$INBOX/rejections.txt"; then failed=1; fi   # symlink/hardlink/device/FIFO/socket
+if grep -nE '(^|/)\._' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi              # AppleDouble ._* member (macOS xattr artifact)
 if grep -nEv '^(happyranch\.db|(org|artifacts|kb|threads|task-attachments|jobs|dreams|work_hours|schedules|talks|skills)(/.*)?|workspaces(/[^/]+(/memory(/.*)?)?)?)$' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi   # unallowlisted member
 if grep -nE '(^|/)(org-archive\.tar\.gz|manifest\.txt|archive\.sha256|members\.txt|members-typed\.txt|staged-manifest\.txt)$' "$INBOX/members-norm.txt" >> "$INBOX/rejections.txt"; then failed=1; fi   # smuggled transfer/inbox artifact
 if test "$failed" -ne 0; then
@@ -507,17 +683,40 @@ echo "manifest matches"
 ```
 
 Then run `PRAGMA integrity_check` (expect `ok`) and `PRAGMA foreign_key_check`
-(expect no rows) against the staged `happyranch.db`:
+(expect no rows) against the **published-shape** staged `happyranch.db` — the
+same immutable read-only validation as §3 step 3, with the same strict
+ordering: prove no pre-existing candidate sidecars first, open with a URI
+`immutable=1` (creates no `-wal`/`-shm`), then prove none were created. This
+ordering is what makes the staged tree **byte-stable after validation**: the
+manifest diff above ran first, the immutable checks below mutate nothing, so
+no validation step can create `-wal`/`-shm` residue that would later trip the
+§6 final layout gate or cause self-induced manifest drift:
 
 ```bash
 set -euo pipefail
-sqlite3 "$STAGE/happyranch.db" "PRAGMA integrity_check;"     # expect "ok"
-sqlite3 "$STAGE/happyranch.db" "PRAGMA foreign_key_check;"   # expect no rows
+if test -e "$STAGE/happyranch.db-wal" || test -e "$STAGE/happyranch.db-shm"; then
+  echo "STAGED SIDECAR PRESENT — STOP" >&2
+  exit 1
+fi
+sqlite3 "file:$STAGE/happyranch.db?immutable=1" "PRAGMA integrity_check;"     # expect "ok"
+sqlite3 "file:$STAGE/happyranch.db?immutable=1" "PRAGMA foreign_key_check;"   # expect no rows
+if test -e "$STAGE/happyranch.db-wal" || test -e "$STAGE/happyranch.db-shm"; then
+  echo "VALIDATION CREATED A SIDECAR — STOP" >&2
+  exit 1
+fi
+echo "staged DB valid; no sidecars created"
 ```
 
 As the manual form of the deferred reference validation, confirm each DB-held
 filesystem reference in the Step-0 consumer map (C1–C13) resolves to a staged
-regular file with no symlink/escape. Treat any missing, escaping, symlinked, or
+regular file with no symlink/escape — **with one recorded founder-approved
+exception**: **C4/C5 (`jobs.stdout_path` / `jobs.stderr_path` / `jobs.cwd_hint`)**
+hold terminal rows that this runbook retains **unrewritten** while not
+transporting the machine-local stream bytes (§4); their stored source-absolute
+paths are therefore **expected to be unresolvable after relocation**, and
+historical stream links may be unavailable — this is not a gate failure, but
+it must be recorded as the per-org founder-approved exception in the
+operation ledger (§1.1). Treat any other missing, escaping, symlinked, or
 data-shaped refusal — populated `custom_skill_versions.references_manifest` /
 `assets_manifest` (C12b/C12c) or a populated `skill_lifecycle_packages` legacy
 table (C13) — as a stop. If you cannot confirm a consumer resolves, escalate;
@@ -538,18 +737,31 @@ sharing that runtime).
 1. **Re-check the slug is absent immediately before publish** (repeat §5 step 2).
 2. **Prove `$STAGE` holds exactly the future org root — no transfer or inbox
    artifacts.** Immediately before the rename, re-run the §5 step 8 direct-child
-   layout check and confirm no archive/manifest/checksum/inbox artifact is
-   present anywhere in `$STAGE`:
+   layout check and confirm none of the **exact operation transfer-artifact
+   filenames** (`org-archive.tar.gz`, `manifest.txt`, `archive.sha256`,
+   `members.txt`, `members-typed.txt`, `staged-manifest.txt`) is present
+   anywhere in `$STAGE`, and that no `happyranch.db-wal`/`-shm` sidecar exists:
 
    ```bash
    set -euo pipefail
-   find "$STAGE" \( -name '*.tar.gz' -o -name 'manifest.txt' \
+   find "$STAGE" \( -name 'org-archive.tar.gz' -o -name 'manifest.txt' \
      -o -name 'archive.sha256' -o -name 'members.txt' \
      -o -name 'members-typed.txt' -o -name 'staged-manifest.txt' \) -print
-   # must print NOTHING
+   # must print NOTHING — exact operation artifact names only, NOT extension-wide
+   if test -e "$STAGE/happyranch.db-wal" || test -e "$STAGE/happyranch.db-shm"; then
+     echo "STAGED SIDECAR PRESENT — STOP: no pre-existing candidate sidecars" >&2
+     exit 1
+   fi
    find "$STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort
    # must list only a subset of the §4 roots (happyranch.db, org, kb, …, workspaces)
    ```
+
+   The gate matches the **six exact operation filenames** — it does **not**
+   reject `*.tar.gz` extension-wide. Legitimate archived evidence bundles such
+   as `artifacts/evidence/report.tar.gz` pass the classifier (§5 step 7), the
+   manifest, and this final layout gate; only a member actually named
+   `org-archive.tar.gz` (or one of the other five operation names) is a
+   transfer/inbox artifact.
 
    `$STAGE` must be the future org root **exactly** — not a container holding a
    nested root (e.g. an `org-payload/` subdirectory) and not a directory holding
@@ -585,26 +797,46 @@ sharing that runtime).
 
 ## 7. Mandatory pre-start zero-count gate, then start and verify
 
-**Before any destination start**, run two **separate, read-only** queries
-against the **published** `$DST/happyranch.db`. The destination may start only
-if **both** print `|0`:
+**Before any destination start**, run three **separate, read-only** queries
+against the **published** `$DST/happyranch.db` — the published DB is the
+staged logical snapshot renamed into place (§6), so it is self-contained and
+validated with the same `immutable=1` read-only URI as §3 step 3 / §5 step 9:
+prove no sidecars first, then query (immutable creates no `-wal`/`-shm`, so
+this gate cannot dirty the published org). The destination may start only if
+**all three** print `|0`:
 
 ```bash
 set -euo pipefail
-sqlite3 -readonly "$DST/happyranch.db" \
+if test -e "$DST/happyranch.db-wal" || test -e "$DST/happyranch.db-shm"; then
+  echo "PUBLISHED SIDECAR PRESENT — STOP" >&2
+  exit 1
+fi
+sqlite3 "file:$DST/happyranch.db?immutable=1" \
   "SELECT 'schedules_armed_or_firing', COUNT(*) FROM schedules WHERE status IN ('armed','firing');"
-sqlite3 -readonly "$DST/happyranch.db" \
+sqlite3 "file:$DST/happyranch.db?immutable=1" \
   "SELECT 'tasks_pending_in_progress_escalated', COUNT(*) FROM tasks WHERE status IN ('pending','in_progress','escalated');"
+sqlite3 "file:$DST/happyranch.db?immutable=1" \
+  "SELECT 'jobs_pending_running', COUNT(*) FROM jobs WHERE status IN ('pending','running');"
 ```
 
-If either count is nonzero, **stop**: do not patch the DB, do not overwrite, do
-not start. The export was not taken from a quiescent source — preserve
-everything (§8) and redo the export after resolving quiescence at the source
-(§2). The status strings come from the current runtime code
-(`ScheduleStatus.armed`/`firing`, `TaskStatus.pending`/`in_progress`/
-`escalated` in `runtime/models.py`); the tables are `schedules` and `tasks`
-with a `status TEXT` column (`runtime/infrastructure/database.py`), and the
-per-org DB file is `happyranch.db` (`runtime/orchestrator/_paths.py`).
+The third query closes the §4 terminal-job contract: only terminal job rows
+(`completed`/`failed`/`rejected`) are carried (the §2 preflight refused any
+pending/running job at the source), and a terminal row can never be
+re-launched, so the destination must see zero launchable jobs. If **any** count
+is nonzero, **stop**: do not patch the DB, do not overwrite, do not start. The
+export was not taken from a quiescent source — preserve everything (§8) and
+redo the export after resolving quiescence at the source (§2). The status
+strings come from the current runtime code (`ScheduleStatus.armed`/`firing`,
+`TaskStatus.pending`/`in_progress`/`escalated`, `JobStatus.pending`/`running`
+in `runtime/models.py`); the tables are `schedules`, `tasks`, and `jobs` with
+a `status TEXT` column (`runtime/infrastructure/database.py`), and the per-org
+DB file is `happyranch.db` (`runtime/orchestrator/_paths.py`).
+
+**Batch:** run this gate for **every published org** in the batch before any
+start, and record each org's counts in the operation ledger (§1.1). The
+destination starts **once**, only after every requested org is either
+`published` + zero-gated or explicitly `blocked` with recorded evidence and a
+founder decision to proceed without it. A single start serves the whole set.
 
 This query is a **manual safety precondition** — it is not a shipped feature,
 not a disarm command, and it performs no mutation.
@@ -630,10 +862,144 @@ restored root containing `org/teams.yaml` is therefore discovered and loaded as
 a **normal active org**. First load may perform ordinary existing DB migrations
 or settings seeding — there is no data-safe inactive state.
 
-**Rebinding target-local executors/adapters** and **later re-arming schedules**
-are ordinary operator work *after* start; the runtime does **not** enforce
-either, and neither blocks startup. This manual start is allowed only because
-the §7 zero-count gate passed and the source was quiescent when exported.
+**Rebinding target-local executors/adapters**, **regenerating agent
+workspaces**, and **re-arming schedules** are **mandatory operator work
+before any work resumes** — see §7.1. The runtime does **not** enforce any of
+them and does not block startup; the runbook makes them gating because the
+relocated org is otherwise not launch-ready (GH-709 finding 2). This manual
+start is allowed only because the §7 zero-count gate passed and the source was
+quiescent when exported.
+
+### 7.1 Mandatory post-publication readiness — before any work resumes
+
+The relocated orgs are discovered and loaded as **normal active orgs**, but the
+classifier carries **no generated workspace content** — `AGENTS.md`, `CLAUDE.md`,
+settings, skills links, `repos/`, `output/` are excluded by design; only
+`workspaces/<agent>/memory/**` travels. **No agent can launch until the
+workspace is regenerated and the executor-specific readiness marker exists.**
+Until the gate below passes, do **not** dispatch tasks, resume threads, or
+allow any agent invocation. The runtime does **not** verify any of this — the
+gate is operator-enforced (honesty boundary in the header).
+
+1. **Destination executor inventory (before any init).** For every selected
+   org, list the **active AgentDef roster only** — the approved agent markdown
+   files `$DST/org/agents/*.md` (exclude the `_pending/` and `_terminated/`
+   subdirectories; they are enrollment/archive records, never agents to
+   initialize). From each file's frontmatter, read the `executor:` profile
+   name. Then verify on the **destination machine** (machine-global stores —
+   never copy the source machine's registries; paths/adapters are
+   machine-local):
+   - **built-in profiles** `claude`, `codex`, `opencode`, `pi` are registered
+     in code (`runtime/adapters` catalog) — no registration needed;
+   - **custom profiles** must exist in the destination machine-global
+     `executor_profiles.yaml` (`<daemon-home>/executor_profiles.yaml`, the
+     runtime executor store); a referenced name that is absent there is a
+     **blocked agent** — register the profile on the destination
+     (`happyranch executors register|runtime-register` with an `hrreg_` token)
+     before it can ever launch;
+   - **binaries**: `happyranch executor-binaries list` must show every
+     required built-in/custom executor kind with status `valid` (registered
+     absolute path exists and is executable). Registration-only resolution
+     (`runtime/orchestrator/executors.py::_resolve_binary`) never falls back
+     to PATH discovery — a stale/missing registration blocks the agent with an
+     actionable message;
+   - record the per-org blocked-agent list (if any) in the operation ledger;
+     a blocked agent must never be reported `done`.
+2. **Regenerate workspaces from the active AgentDef roster only.** Run
+   `happyranch init-agent --org <slug> <agent>` **per active agent by name**
+   (the roster from step 1). Prefer per-agent invocation: the bulk form
+   (`happyranch init-agent --org <slug>`) historically unions workspace
+   directories and can admit a stray/reserved directory; the per-agent form
+   targets exactly one AgentDef and can never touch `_pending`/`_terminated`
+   or write bootstrap material into archive roots. Repository-backed agents
+   will reclone/reconcile their configured repositories — an expected side
+   effect of workspace regeneration.
+3. **Verify the exact readiness marker is a regular file — do not trust the
+   `done` phase.** The bulk/per-agent init stream can emit `done` without the
+   marker existing (GH-709 finding 2). After each agent's init, verify the
+   marker for its **selected executor profile**: `claude` →
+   `workspaces/<agent>/.claude/skills/start-task/SKILL.md`; `codex`,
+   `opencode`, `pi` → `workspaces/<agent>/AGENTS.md`; a custom profile → its
+   registered `readiness_marker_fragment` (a missing/absent profile falls back
+   to `AGENTS.md` in code, but the agent is **not launchable** — step 1's
+   registration check is the gate):
+
+   ```bash
+   set -euo pipefail
+   # per active agent, per its resolved profile marker — example for claude
+   marker="$DST/workspaces/<agent>/.claude/skills/start-task/SKILL.md"
+   if ! test -f "$marker"; then
+     echo "READINESS MARKER MISSING for <agent> — STOP: agent is not launch-ready" >&2
+     exit 1
+   fi
+   ```
+
+4. **Zero live tasks/jobs + schedules paused.** Re-run the §7 zero-count gate
+   on each published org (schedules/tasks/jobs all `|0`) immediately before
+   resuming work, and confirm every schedule is `paused` (or otherwise not
+   `armed`/`firing`) until **explicit operator re-arm** — do not rely on the
+   relocated DB's schedule status surviving the move as "ready to run".
+   Re-arm schedules one at a time only after the readiness gate passes.
+5. **Record the ledger row** per org: `ready` (all agents bootstrapped,
+   markers regular files, zero live work) or `blocked` with the blocked-agent
+   list and evidence (§1.1).
+
+This is the manual form of the deferred "exhaustive readiness report" product
+feature; it is **not shipped** — nothing below verifies it, so the founder
+must actually run it and keep the ledger.
+
+### 7.2 Launch and daemon-child CLI diagnostics (noninteractive/remote shells)
+
+The destination must be startable from the **exact shell that will run the
+start** — a remote noninteractive SSH shell may not source the user profile
+and can silently lose `uv`/`happyranch` from `PATH`. The shipped
+`scripts/daemon.sh start` backgrounds bare `uv` and reports only a five-second
+timeout (GH-709 finding 5); the in-script preflight is a Slice-B runtime fix
+that is **not shipped**. Until it lands, run these operator diagnostics
+**before** `scripts/daemon.sh start` from that exact environment:
+
+```bash
+set -euo pipefail
+# launch diagnostics — must pass in the noninteractive launch shell
+if ! command -v uv >/dev/null 2>&1; then
+  echo "STOP: uv is not on PATH in the launch shell." >&2
+  echo "  daemon.sh backgrounds bare 'uv'; a stripped PATH causes a silent 5s" >&2
+  echo "  start timeout (GH-709 finding 5). Re-invoke with the supported" >&2
+  echo "  environment (e.g. a login shell, or PATH=<explicit uv dir>:$PATH)." >&2
+  exit 1
+fi
+uv --version
+# version-matched runtime line (must match the source deployment's checkout)
+(cd "$HR_CHECKOUT" && uv run python --version)   # requires-python >=3.12,<3.15
+```
+
+There is **no automatic download, no arbitrary PATH fallback, and no
+alternate CLI selection**: if `uv` is missing in the launch shell, resolve the
+environment (or install uv at its documented path) and re-verify — never point
+the daemon at a different toolchain or a copied binary.
+
+**Daemon-child CLI probe (after start, before any agent work).** Agent
+callbacks and skills invoke bare `happyranch` inside executor children. The
+daemon prepends the standard tool dirs (`/opt/homebrew/bin`, `/usr/local/bin`,
+`~/.local/bin`) to its own `PATH` at startup when absent and passes that
+environment to children (`runtime/orchestrator/executors.py::_normalize_path`
+/ `_callee_env`); a source/dev daemon does **not** auto-prepend its checkout's
+`.venv/bin`. So `happyranch` must be resolvable from the daemon environment —
+for a source deployment a stable `~/.local/bin/happyranch` install/symlink is
+a valid operator recovery (this is what restored the completed relocation):
+
+```bash
+set -euo pipefail
+command -v happyranch || { echo "STOP: happyranch not resolvable in the daemon environment" >&2; exit 1; }
+happyranch doctor   # must PASS: the editable-install pointer resolves to the
+                    # version-matched checkout used to deploy this daemon
+```
+
+`happyranch doctor` (exit 0) proves the CLI the children will invoke is the
+**matching checkout/CLI/runtime environment** of the source deployment, not a
+stale or alternate install. A failing/exit-1/2 doctor is a **stop**: repair the
+editable pointer non-destructively (the command prints the exact `PYTHONPATH=`
+one-off remedy) and re-verify; never select a different CLI.
 
 ## 8. Failure handling and escalation
 
@@ -642,11 +1008,31 @@ the §7 zero-count gate passed and the source was quiescent when exported.
   `_pending/$OP` and the receive inbox `_pending/$OP.inbox` — after inspection,
   with both daemons stopped. Never `rm -rf` broadly, never touch `_pending`
   beyond your own operation directories. Re-run from §2 after fixing the cause.
+- **Batch: a failing org never rolls back a published org, and no successful
+  org masks a failure (§1.1).** Each org's validation/publish decision is
+  independent. A candidate that fails validation stays staged (or is cleaned
+  per the bullet above) and is recorded `blocked` in the operation ledger with
+  its evidence; orgs that already published are **not** reverted, and their
+  source copies and evidence remain untouched. The destination starts only
+  after every requested org is `published` + zero-gated or explicitly
+  `blocked` with a founder decision (§7) — a sibling's success never hides a
+  failure from the ledger.
+- **Terminal-job exception recording.** Any per-org founder-approved exception
+  (notably the C4/C5 terminal historical job path disposition, §4/§5 step 9)
+  must be recorded **per org** in the operation ledger — never carried silently
+  as a batch-wide exception.
 - **After publication but before start** (a nonzero §7 count or a failed §6
   postcondition): do **not** overwrite, re-run, or merge the published tree, and
   do **not** hand-edit the DB. Leave the destination **stopped**, preserve the
   source intact, record the evidence (the §7 counts, `scripts/daemon.sh status`,
   the §6 postcondition output), and escalate.
+- **Post-start / readiness failure** (a §7.1 blocked agent, a missing
+  readiness marker, a failed §7.2 diagnostic): do **not** resume work. Leave
+  the affected agent(s) unlaunchable, keep schedules paused, record the
+  blocked list in the ledger, and resolve through the documented surfaces
+  (`happyranch executor-binaries register`, executor profile registration,
+  `happyranch init-agent`, the `PYTHONPATH=` doctor remedy) before re-running
+  the readiness gate.
 - **Post-start:** verify discovery/health via the existing documented surfaces.
   If the relocated org does not appear or the health check fails, leave the
   destination stopped and escalate with the recorded evidence.
@@ -665,12 +1051,35 @@ runbook's success criteria do not include it.
 - Eligibility: `runtime/portability/eligibility.py` (`compute_eligibility`).
 - Preflight/reconcile routes: `runtime/daemon/routes/portability.py`
   (`GET /portability-preflight`, `POST /reconcile-portability`).
-- Daemon lifecycle: `scripts/daemon.sh` (`start` / `stop [--force]` / `status`).
+- Daemon lifecycle: `scripts/daemon.sh` (`start` / `stop [--force]` / `status`;
+  note the bare-`uv` background at `start`, §7.2).
 - Runtime layout + reserved slugs: `runtime/runtime.py`
-  (`RuntimeDir.iter_org_roots`, `_RESERVED_ORG_SLUGS`).
+  (`RuntimeDir.iter_org_roots`, `_RESERVED_ORG_SLUGS`, `_SLUG_RE`) — the
+  loader-backed inventory recipe in §1.1.
 - Per-org DB filename: `runtime/orchestrator/_paths.py` (`db_path` →
   `happyranch.db`).
-- Status enums + tables: `runtime/models.py` (`TaskStatus`, `ScheduleStatus`);
-  `runtime/infrastructure/database.py` (`tasks`, `schedules`).
+- Status enums + tables: `runtime/models.py` (`TaskStatus`, `ScheduleStatus`,
+  `JobStatus`); `runtime/infrastructure/database.py` (`tasks`, `schedules`,
+  `jobs`).
 - DB-to-filesystem reference map:
   `docs/superpowers/specs/org-portability-reference-consumers.md`.
+- Job stream reads use the stored absolute `stdout_path`/`stderr_path`
+  (`runtime/daemon/routes/jobs.py` tail/read) — the reason historical stream
+  links may be unavailable after relocation (§4). Only `pending` rows launch;
+  terminal rows are never re-launched (§7).
+- Executor registration/readiness: `runtime/orchestrator/executor_registry.py`
+  (`ExecutorRegistry.get_profile`, `readiness_marker_fragment`),
+  `runtime/adapters/__init__.py` (`_BUILTIN_CATALOG` markers),
+  `runtime/orchestrator/runtime_executor_store.py`
+  (`<daemon-home>/executor_profiles.yaml`),
+  `runtime/orchestrator/executor_binary_registry.py`
+  (`<daemon-home>/executors.json`), `cli/commands/executor_binaries.py`
+  (`happyranch executor-binaries list`), `cli/commands/executors.py`.
+- Daemon-child PATH: `runtime/orchestrator/executors.py` (`_normalize_path`,
+  `_callee_env`, `_resolve_binary`) — registration-only binary resolution, no
+  PATH fallback (§7.2).
+- CLI editable-install health: `cli/commands/doctor.py` (`happyranch doctor`).
+- Workspace regeneration: `runtime/daemon/routes/agents.py` (`init_agents`,
+  `ContextBuilder.ensure_workspace_ready`), `cli/commands/agents.py`
+  (`happyranch init-agent`); the runbook deliberately drives it per active
+  AgentDef and verifies the marker itself (§7.1).

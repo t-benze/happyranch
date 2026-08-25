@@ -282,6 +282,15 @@ write site) to filesystem bytes under the org root.
   `job_id` on the destination. **Flagged** as the highest-risk import-time
   re-resolution point; Slice B/C must own it (see §9 — it is classified, so it
   is *not* a STOP).
+
+  **Manual Slice-A disposition (GH-709, founder decision — current runbook
+  `docs/operations/offline-organization-relocation.md` §4/§5 step 9):** the
+  manual runbook retains terminal job rows **untouched** (no mutation, no
+  rebase of `stdout_path`/`stderr_path`), does **not** transport the
+  machine-local stream files (`jobs/` is excluded from its payload), and
+  documents that historical stream links may be unavailable (empty) after
+  relocation. The import-time rebase-or-rederive rule remains a Slice B/C
+  deliverable; the manual procedure does **not** implement it.
 - **Fixtures:** FX-C4-ABS, FX-C4-MISSING.
 
 ### C5 — `jobs.cwd_hint` / `jobs.cwd_resolved` → workspace cwd
@@ -334,6 +343,16 @@ write site) to filesystem bytes under the org root.
   stale-able absolute display/inspection field and **cannot redeem an unsafe
   `cwd_hint`**. Do **not** describe an invalid `cwd_hint` as "carried
   harmlessly."
+
+  **Manual Slice-A disposition (GH-709, founder decision — current runbook
+  §4/§5 step 9):** the manual runbook does **not** rewrite `cwd_hint` (no row
+  mutation) and relies on quiescence for safety: the §2 preflight requires
+  zero `pending`/`running` jobs before export, so every carried job row is
+  terminal, and only `pending` rows are launchable (`routes/jobs.py` refuses
+  non-`pending` launches) — a terminal row can never be re-launched, so a
+  legacy `cwd_hint` is never executed on the destination. The staged-DB
+  route-compatible validation of `cwd_hint` remains a Slice B/C import
+  deliverable.
 - **Fixtures:** FX-C5-REL, FX-C5-NESTED, FX-C5-ABS, FX-C5-DOTDOT.
 
 ### C6 — `dreams.transcript_path` → `DreamStore` (display-only; re-derived)
@@ -1526,4 +1545,8 @@ than resolved by documentation invention:
 `jobs.stdout_path` / `jobs.stderr_path` absolute-path re-resolution (C4) is the
 single highest-risk import-time re-resolution point; it must be addressed with
 an explicit rebase-or-rederive rule before import lands, and covered by a
-fixture (FX-C4-ABS) that asserts the destination reads the rebased path.
+fixture (FX-C4-ABS) that asserts the destination reads the rebased path. The
+manual Slice-A runbook (GH-709) does **not** ship that rule: it retains
+terminal rows untouched, does not transport the machine-local stream bytes, and
+documents that historical stream links may be unavailable after relocation
+(C4/C5 notes above) — the import rule remains a Slice B/C deliverable.
