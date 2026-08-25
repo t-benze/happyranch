@@ -403,6 +403,15 @@ export function describeAuditEntry(e: AuditEntry): AuditNarrative {
     case 'thread_unpinned':
       withScope('unpinned', 'a thread');
       break;
+    case 'thread_mention_routing_changed': {
+      // THR-198 Slice B: actor toggled a thread's mention-routing switch;
+      // payload carries the new boolean state (mirrors the runtime single
+      // writer in database.py).
+      withScope('changed mention routing on', 'a thread');
+      const v = p['mention_routing_enabled'];
+      detail = typeof v === 'boolean' ? (v ? 'enabled' : 'disabled') : null;
+      break;
+    }
     case 'thread_invocation_failed': {
       if (scope) segs.push(tx(' — a thread invocation failed in '), rf(scope), tx('.'));
       else segs.push(tx(' — a thread invocation failed.'));

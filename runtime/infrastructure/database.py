@@ -50,7 +50,11 @@ from runtime.models import (
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
-from runtime.daemon.thread_mentions import parse_mentions, valid_mentions
+from runtime.daemon.thread_mentions import (
+    parse_mentions,
+    resolve_wake_set,
+    valid_mentions,
+)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -6839,6 +6843,20 @@ class Database:
             parse_mentions(body_markdown), participants, speaker,
         )
 
+    def _thread_mention_routing_enabled(self, thread_id: str) -> bool:
+        """Read the thread's per-thread mention-routing switch (THR-198).
+
+        Additive column with NOT NULL DEFAULT 1; a missing thread is treated
+        as enabled (the ratified default) so routing never silently widens on
+        a stale read inside a write transaction. Called under the connection
+        lock by the conversational seams only.
+        """
+        row = self._conn.execute(
+            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+        return bool(row["mention_routing_enabled"]) if row else True
+
     @_synchronized
     def record_conversational_arrival(
         self,
@@ -6862,6 +6880,9 @@ class Database:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            mentions = self._derive_conversational_mentions(
+                thread_id, speaker, kind, body_markdown,
+            )
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -6869,11 +6890,25 @@ class Database:
                 body_markdown=body_markdown,
                 attachments=attachments,
                 sent_from_task_id=sent_from_task_id,
-                mentions=self._derive_conversational_mentions(
-                    thread_id, speaker, kind, body_markdown,
+                mentions=mentions,
+            )
+            # Phase-2 mention routing (THR-198, Slice B): the wake set is
+            # resolved at write time from the persisted structured mention
+            # signal + the thread's default-enabled setting. Disabled or
+            # zero-valid fall back to the full recipient broadcast; valid
+            # mentions narrow to exactly that stable set. ``recipients`` is
+            # the caller-declared broadcast candidate set (participants minus
+            # speaker at every call site), so the broadcast fallback is
+            # byte-identical to pre-Slice-B behavior.
+            wake_set = resolve_wake_set(
+                mentions or [],
+                recipients,
+                speaker,
+                mention_routing_enabled=self._thread_mention_routing_enabled(
+                    thread_id,
                 ),
             )
-            for name in recipients:
+            for name in wake_set:
                 arrivals.append(
                     self._apply_arrival_uncommitted(thread_id, name, seq)
                 )
@@ -7058,15 +7093,16 @@ class Database:
                     (thread_id,),
                 ).fetchall()
             ]
+            mentions = valid_mentions(
+                parse_mentions(body_markdown), participants, speaker,
+            )
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
                 kind=ThreadMessageKind.MESSAGE,
                 body_markdown=body_markdown,
                 attachments=attachments,
-                mentions=valid_mentions(
-                    parse_mentions(body_markdown), participants, speaker,
-                ),
+                mentions=mentions,
             )
             if token_purpose is ThreadInvocationPurpose.REPLY:
                 settlement = self._settle_reply_uncommitted(
@@ -7089,9 +7125,23 @@ class Database:
                     "AND status = 'pending'",
                     (now, token),
                 )
-            for name in participants:
-                if name == speaker:
-                    continue
+            # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
+            # the broadcast at write time from the persisted structured
+            # mention signal + the thread setting. TASK_FOLLOWUP and BOOTSTRAP
+            # are ISOLATED — they keep the full participants-minus-speaker
+            # broadcast and are never mention-routed.
+            if token_purpose is ThreadInvocationPurpose.REPLY:
+                wake_set = resolve_wake_set(
+                    mentions, participants, speaker,
+                    mention_routing_enabled=self._thread_mention_routing_enabled(
+                        thread_id,
+                    ),
+                )
+            else:
+                wake_set = [
+                    name for name in participants if name != speaker
+                ]
+            for name in wake_set:
                 arrivals.append(
                     self._apply_arrival_uncommitted(thread_id, name, seq)
                 )
@@ -7573,6 +7623,71 @@ class Database:
                 agent=actor,
                 action="thread_pinned" if pinned else "thread_unpinned",
                 payload={"pinned": pinned},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def set_thread_mention_routing_uncommitted(
+        self, thread_id: str, *, enabled: bool,
+    ) -> None:
+        """Toggle a thread's mention-routing switch WITHOUT committing
+        (THR-198 Slice B).
+
+        Same contract as ``set_thread_pinned_uncommitted``: the caller owns
+        the surrounding transaction so the toggle and its
+        ``thread_mention_routing_changed`` audit row are atomic.
+        """
+        self._conn.execute(
+            "UPDATE threads SET mention_routing_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, thread_id),
+        )
+
+    @_synchronized
+    def set_thread_mention_routing_with_audit(
+        self, thread_id: str, *, enabled: bool, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder toggle of per-thread mention routing + audit row
+        (THR-198 Slice B).
+
+        ONE rollback-safe transaction: the authoritative
+        ``mention_routing_enabled`` read, the idempotence decision, the state
+        UPDATE, and the ``thread_mention_routing_changed`` audit row commit
+        together — and roll back together on ANY failure — so the setting can
+        never survive without its audit row and concurrent same-state
+        requests yield exactly one audit row for the one durable transition.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-*
+        scope (``task_id`` = thread id), the founder ``actor``, and the
+        ``{mention_routing_enabled}`` payload shape.
+
+        Returns True when a durable transition occurred; False for a
+        same-state (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT mention_routing_enabled FROM threads WHERE id = ?",
+                (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            currently_enabled = bool(row["mention_routing_enabled"])
+            if currently_enabled == enabled:
+                self._conn.rollback()
+                return False
+            self.set_thread_mention_routing_uncommitted(
+                thread_id, enabled=enabled,
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_mention_routing_changed",
+                payload={"mention_routing_enabled": enabled},
             )
             self._conn.commit()
             return True

@@ -156,7 +156,9 @@ def _create_agent_thread_locked(
     tokens_to_enqueue: list[str] = [
         a.invocation_token for a in arrivals if a.invocation_token is not None
     ]
-    return thread_id, seq, tokens_to_enqueue, addressed_agents
+    # Slice B: report the ACTUAL wake set (mention-narrowed when the thread
+    # setting is enabled and valid mentions exist), not the broadcast set.
+    return thread_id, seq, tokens_to_enqueue, [a.agent_name for a in arrivals]
 
 
 class AttachmentRefBody(BaseModel):
@@ -560,7 +562,7 @@ async def _compose_thread_multipart(
     return {
         "thread_id": thread_id,
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -681,7 +683,7 @@ async def compose_thread(
     return {
         "thread_id": thread_id,
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -911,7 +913,7 @@ async def _compose_agent_thread_multipart(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "composed_by": body.composer,
         "composed_from_task_id": body.task_id,
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -1006,7 +1008,7 @@ async def compose_thread_as_agent(
     composed_from_task_id = body.task_id
 
     async with org.db_lock:
-        thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
+        thread_id, seq, tokens_to_enqueue, wake_recipients = _create_agent_thread_locked(
             org,
             composer=body.composer,
             subject=subject,
@@ -1033,7 +1035,7 @@ async def compose_thread_as_agent(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "composed_by": body.composer,
         "composed_from_task_id": composed_from_task_id,
-        "pending_replies": addressed_agents,
+        "pending_replies": wake_recipients,
     }
 
 
@@ -1078,6 +1080,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "last_speaker": t.last_speaker,
         "pinned": t.pinned_at is not None,
         "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
+        "mention_routing_enabled": t.mention_routing_enabled,
         "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
     }
 
@@ -2347,7 +2350,7 @@ async def _send_thread_message_inprocess(
         status="open",
     )
 
-    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": [a.agent_name for a in arrivals]}
 
 
 async def _post_agent_message(
@@ -2398,7 +2401,7 @@ async def _post_agent_message(
         status="open",
     )
 
-    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": [a.agent_name for a in arrivals]}
 
 
 @router.post("/threads/{thread_id}/send")
@@ -2861,6 +2864,44 @@ async def set_thread_pin_endpoint(
                 "thread_id": thread_id, "pinned": body.pinned, "idempotent": True,
             }
     return {"thread_id": thread_id, "pinned": body.pinned}
+
+
+class SetThreadMentionRoutingBody(BaseModel):
+    # Strict bool: mention routing is a boolean contract — "yes"/1/etc. must
+    # not silently coerce into an enable/disable (THR-198, mirrors /pin).
+    mention_routing_enabled: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/{thread_id}/mention-routing")
+async def set_thread_mention_routing_endpoint(
+    slug: str, thread_id: str, body: SetThreadMentionRoutingBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    async with org.db_lock:
+        # Atomic (THR-198 Slice B): authoritative ``mention_routing_enabled``
+        # read + idempotence decision + state UPDATE + ``
+        # thread_mention_routing_changed`` audit row happen in ONE
+        # rollback-safe transaction under this lock. Concurrent same/opposite
+        # requests re-read durable state inside their transaction (never a
+        # stale pre-lock snapshot), so no transition is misclassified and an
+        # audit failure rolls back the toggle — no durable unaudited
+        # transition.
+        transitioned = org.db.set_thread_mention_routing_with_audit(
+            thread_id, enabled=body.mention_routing_enabled,
+        )
+        if not transitioned:
+            # Same-state no-op: nothing to write, nothing to audit.
+            return {
+                "thread_id": thread_id,
+                "mention_routing_enabled": body.mention_routing_enabled,
+                "idempotent": True,
+            }
+    return {
+        "thread_id": thread_id,
+        "mention_routing_enabled": body.mention_routing_enabled,
+    }
 
 
 # ---------------------------------------------------------------------------
