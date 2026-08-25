@@ -773,9 +773,21 @@ producers, providers, and profiles. Governing spec:
   cap (4) applies — missing enforcement tightens admission.
 - **Cancellation routes through the opaque containment handle**, idempotent
   with the executor's own finish; the PID remains a diagnostic only.
+- **Ownership transfers atomically at admission grant**: the controller
+  creates the ownership record under its lock and keeps it in its registry
+  until lease release; the durable first-wins terminal reason lives on that
+  record from grant; the daemon drain iterates the same registry, so a
+  shutdown that fires when or immediately after admission is granted is
+  durably observed by the attempt's next gate (no launch, or exactly-once
+  containment before release).
 
-Slice A ships the admission core **un-wired**; later slices attach every
-``executor.run`` producer (task, thread, dream, wake, schedule) to it.
+Slice A wires **exactly one** narrow production producer per the
+founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires
+(`runtime/daemon/schedule_runner.py`) run through the supervisor with the
+honest no-enforcement ``PassthroughBackend``, and the daemon drain calls
+``supervisor.shutdown()`` in the app lifespan finally. The remaining
+producers (task, thread, dream, wake) stay structurally unchanged; later
+serial slices attach them to the same contract.
 
 ### Timeout handling
 

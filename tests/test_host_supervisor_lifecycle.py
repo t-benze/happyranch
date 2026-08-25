@@ -41,6 +41,7 @@ from runtime.orchestrator.host_supervisor import (
     LaunchResult,
     PolicySnapshot,
     ResidueAccountant,
+    SessionOutcome,
     _AttemptContext,
     _OpaqueCancelControl,
     canary_policy,
@@ -307,6 +308,31 @@ class PausingToken(CancellationToken):
         return result
 
 
+class PausingController(AdmissionController):
+    """Test seam: deterministically pause between the admission grant and
+    ``_execute_attempt``'s first gate (the grant-to-registration window,
+    TASK-5600 [HIGH]).
+
+    ``acquire`` grants the lease (creating the ownership record in the
+    registry), then blocks until the test releases the pause. A concurrent
+    ``supervisor.shutdown()`` (or token ``cancel()``) therefore lands
+    **after ownership transferred but before the attempt's first gate** —
+    the exact window the drain previously missed.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.granted = threading.Event()
+        self.release = threading.Event()
+
+    def acquire(self, request, timeout=None):
+        lease = super().acquire(request, timeout=timeout)
+        if lease is not None:
+            self.granted.set()
+            assert self.release.wait(timeout=10)
+        return lease
+
+
 # ── builders ─────────────────────────────────────────────────────────
 
 
@@ -366,14 +392,15 @@ def make_supervisor(
     policy: PolicySnapshot | None = None,
     publisher: RecordingPublisher | None = None,
     cap: int | None = None,
+    admission: AdmissionController | None = None,
     **kw,
 ) -> tuple[HostSessionSupervisor, RecordingPublisher]:
     policy = policy or make_policy()
     publisher = publisher or RecordingPublisher()
-    admission = None
     if cap is not None:
         residue = ResidueAccountant(policy=policy)
-        admission = AdmissionController(cap=cap, gates=(residue,))
+        if admission is None:
+            admission = AdmissionController(cap=cap, gates=(residue,))
         kw.setdefault("residue", residue)
     supervisor = HostSessionSupervisor(
         backend=backend,
@@ -637,39 +664,39 @@ def _bare_supervisor() -> HostSessionSupervisor:
 
 def test_register_replays_already_fired_token():
     """A token that fired before registration must invoke the control
-    immediately (replay) and report the fired state, so the launch fence
-    refuses and no launch can follow."""
+    immediately (replay) so the frozen CANCELLED reason is durable on the
+    ownership record before the launch gate runs."""
     token = CancellationToken()
     token.cancel()
-    ctx = _AttemptContext("r1", time.monotonic)
+    ctx = _AttemptContext("r1", 0, time.monotonic)
     control = _OpaqueCancelControl(_bare_supervisor(), ctx)
     fired = token.register(control)
     assert fired is True
     assert ctx.terminal_reason() is TerminalReason.CANCELLED
-    # The fence observes the same frozen state and refuses launch.
-    assert control.fence_launch() is False
+    # The launch gate observes the same frozen state and refuses launch.
+    assert ctx.commit_launch() is False
 
 
 def test_launch_fence_refuses_once_cancellation_wins():
     token = CancellationToken()
-    ctx = _AttemptContext("r1", time.monotonic)
+    ctx = _AttemptContext("r1", 0, time.monotonic)
     control = _OpaqueCancelControl(_bare_supervisor(), ctx)
     assert token.register(control) is False  # not yet fired
     token.cancel()
-    # Cancellation won before launch: the fence refuses (one-shot).
-    assert control.fence_launch() is False
-    assert control.fence_launch() is False
+    # Cancellation won before launch: the launch gate refuses (one-shot).
+    assert ctx.commit_launch() is False
+    assert ctx.commit_launch() is False
 
 
 def test_launch_fence_allows_when_no_cancellation():
-    """When launch wins the race the fence permits it; a post-launch
+    """When launch wins the race the gate permits it; a post-launch
     cancellation still freezes CANCELLED through the control (teardown
     idempotence covered by test_cancel_mid_run_*)."""
     token = CancellationToken()
-    ctx = _AttemptContext("r1", time.monotonic)
+    ctx = _AttemptContext("r1", 0, time.monotonic)
     control = _OpaqueCancelControl(_bare_supervisor(), ctx)
     assert token.register(control) is False
-    assert control.fence_launch() is True
+    assert ctx.commit_launch() is True
     token.cancel()
     assert ctx.terminal_reason() is TerminalReason.CANCELLED
 
@@ -940,8 +967,16 @@ def _stage_pre_bind_terminal_row(source: str, window: str):
     backend = FakeBackend(
         launch_entered=threading.Event(), launch_release=threading.Event()
     )
-    supervisor, publisher = make_supervisor(backend=backend)
     body_entered = threading.Event()
+    supervisor = publisher = None
+    controller = None
+    if window == "post_grant":
+        # Ownership transferred at grant; the run thread pauses between
+        # acquire() returning and _execute_attempt's first gate.
+        controller = PausingController(cap=8, monotonic=time.monotonic)
+        supervisor, publisher = make_supervisor(backend=backend, admission=controller)
+    else:
+        supervisor, publisher = make_supervisor(backend=backend)
 
     def body(running):
         body_entered.set()
@@ -959,7 +994,16 @@ def _stage_pre_bind_terminal_row(source: str, window: str):
         )
     t, results = run_in_thread(supervisor, request, launch_body=body)
 
-    if window == "during_registration":
+    if window == "post_grant":
+        # The lease is granted (ownership in the registry) and the run thread
+        # is paused before its first gate. Fire the terminal source now.
+        assert controller.granted.wait(timeout=5)
+        if source == "cancel":
+            request.cancellation.cancel()
+        else:
+            supervisor.shutdown()  # drain freezes SHUTDOWN on the ownership
+        controller.release.set()
+    elif window == "during_registration":
         # Cancellation wins while registration is paused before the real
         # register (window A: the register handshake replays the fired token).
         assert request.cancellation.entered_register.wait(timeout=5)
@@ -996,27 +1040,30 @@ def _stage_pre_bind_terminal_row(source: str, window: str):
 @pytest.mark.parametrize(
     "source,window",
     [
-        ("cancel", "during_registration"),            # truth table: cancellation
+        ("shutdown", "post_grant"),              # TASK-5600 [HIGH] repro
+        ("cancel", "post_grant"),                # cancellation after grant
+        ("cancel", "during_registration"),        # truth table: cancellation
         ("cancel", "between_registration_and_fence"),  # truth table: cancellation
-        ("shutdown", "before_fence"),                  # truth table: daemon shutdown
-        ("cancel", "fence_to_bind"),                   # window C (retained)
-        ("shutdown", "fence_to_bind"),                 # TASK-5596 [HIGH] repro
-        ("shutdown_cancel_race", "fence_to_bind"),     # first-wins race
+        ("shutdown", "before_fence"),             # truth table: daemon shutdown
+        ("cancel", "fence_to_bind"),              # window C (retained)
+        ("shutdown", "fence_to_bind"),            # TASK-5596 [HIGH] repro
+        ("shutdown_cancel_race", "fence_to_bind"),  # first-wins race
     ],
 )
 def test_pre_bind_terminal_transition_matrix(source, window):
-    """Pre-bind terminal transition matrix (TASK-5596 [HIGH] fix).
+    """Pre-bind terminal transition matrix (TASK-5600 [HIGH] fix).
 
     Every terminal source the governing truth table allows to win before the
     running handle binds — user/task cancellation and daemon shutdown — in
-    every pre-bind window (during registration, between registration and the
-    launch fence, and between the fence and the running-handle bind), plus
-    their first-wins race. Per row: the frozen first-wins terminal reason is
-    preserved in the outcome; the blocking launch body is never entered (no
-    uncontained execution); a launch committed at the fence is finished,
-    published, and released exactly once. Post-bind terminal rows (cancel
-    mid-body, shutdown with a bound handle, clean/nonzero/timeout/retry
-    completion, and finish races) are proven by the dedicated tests above."""
+    every pre-bind window (after grant but before the first gate, during
+    registration, between registration and the launch gate, and between the
+    launch gate and the running-handle bind), plus their first-wins race.
+    Per row: the frozen first-wins terminal reason is preserved in the
+    outcome; the blocking launch body is never entered (no uncontained
+    execution); a launch committed at the gate is finished, published, and
+    released exactly once. Post-bind terminal rows (cancel mid-body, shutdown
+    with a bound handle, clean/nonzero/timeout/retry completion, and finish
+    races) are proven by the dedicated tests above."""
     supervisor, publisher, backend, results, body_entered = (
         _stage_pre_bind_terminal_row(source, window)
     )
@@ -1038,22 +1085,204 @@ def test_pre_bind_terminal_transition_matrix(source, window):
     assert not body_entered.is_set()
     assert supervisor.active_count() == 0
     if window == "fence_to_bind":
-        # Launch was committed at the fence; finish/publish/release run
+        # Launch was committed at the gate; finish/publish/release run
         # exactly once with the preserved first-wins reason.
         assert backend.calls["launch"] == 1
         assert backend.calls["finish"] == 1
         assert backend.finish_reasons == [finish_reason]
         assert publisher.count() == 1
         assert publisher.receipts[0].terminal_reason == finish_reason
+    elif window == "post_grant":
+        # Ownership transferred at grant but no gate ran yet: a shutdown
+        # winner refuses before ANY handle exists; a cancellation winner is
+        # replayed at registration and abandons the prepared handle. Nothing
+        # launches either way.
+        assert backend.calls["launch"] == 0
+        assert backend.calls["finish"] == 0
+        assert publisher.count() == 0
+        if source == "shutdown":
+            assert backend.calls["prepare"] == 0
+            assert backend.calls["abandon"] == 0
+        else:
+            assert backend.calls["prepare"] == 1
+            assert backend.calls["abandon"] == 1
     else:
-        # Pre-fence winners abandon the prepared handle; nothing launches.
+        # Pre-gate winners abandon the prepared handle; nothing launches.
         assert backend.calls["launch"] == 0
         assert backend.calls["finish"] == 0
         assert backend.calls["abandon"] == 1
         assert publisher.count() == 0
-    # The staged lease released exactly once; the admission registry is empty.
+    # The staged lease released exactly once; the ownership registry is empty.
     assert supervisor._admission.released_total() == 1
     assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.ownerships_snapshot() == ()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "success",
+        "failure",
+        "timeout",
+        "cancel_pre_launch",
+        "cancel_mid_body",
+        "shutdown_pre_launch",
+        "shutdown_mid_body",
+        "rate_limited_retry",
+        "queued_cancel",
+        "queued_shutdown",
+    ],
+)
+def test_no_leaked_active_registration_or_lost_attempt(kind):
+    """Ownership-registry sweep: after EVERY terminal path the ownership
+    registry is empty (no leaked active registration), the admission lease
+    counter returns to zero, and the invocation produced a terminal outcome
+    (no lost attempt)."""
+    barrier = kind in (
+        "cancel_mid_body", "shutdown_mid_body", "queued_cancel", "queued_shutdown",
+    )
+    backend = FakeBackend(
+        launch_entered=threading.Event() if barrier else None,
+        launch_release=threading.Event() if barrier else None,
+    )
+    supervisor, publisher = make_supervisor(backend=backend, cap=1)
+
+    def body(running):
+        if kind in ("cancel_mid_body", "shutdown_mid_body"):
+            running.process.wait(timeout=10)
+            return ok_result()
+        return ok_result()
+
+    request = make_request("a")
+    if kind == "cancel_pre_launch":
+        request = make_request(
+            "a", cancellation=PausingToken(pause_before=threading.Event())
+        )
+    elif kind == "shutdown_pre_launch":
+        request = make_request(
+            "a", cancellation=PausingToken(pause_after=threading.Event())
+        )
+
+    if kind in ("queued_cancel", "queued_shutdown"):
+        # The holder occupies the single slot (blocked inside backend.launch);
+        # B queues behind it and is removed without launch.
+        holder_t, holder_results = run_in_thread(
+            supervisor, request, launch_body=_ok_body
+        )
+        assert backend.launch_entered.wait(timeout=5)
+        req_b = make_request("b")
+        t2, results2 = run_in_thread(supervisor, req_b, launch_body=_ok_body)
+        _wait_until(lambda: supervisor._admission.queue_depth() == 1)
+        if kind == "queued_cancel":
+            req_b.cancellation.cancel()
+        else:
+            supervisor.shutdown()
+        backend.launch_release.set()
+        t2.join(timeout=10)
+        holder_t.join(timeout=10)
+        assert results2[0].cancelled_while_queued is True
+        if kind == "queued_shutdown":
+            assert holder_results[0].terminal_reason is TerminalReason.SHUTDOWN
+        assert supervisor._admission.ownerships_snapshot() == ()
+        assert supervisor._admission.active_count() == 0
+        assert supervisor.active_count() == 0
+        assert publisher.count() == 1
+        return
+
+    t, results = run_in_thread(supervisor, request, launch_body=body)
+    if kind == "cancel_pre_launch":
+        assert request.cancellation.entered_register.wait(timeout=5)
+        request.cancellation.cancel()
+        request.cancellation.pause_before.set()
+    elif kind == "shutdown_pre_launch":
+        assert request.cancellation.after_register.wait(timeout=5)
+        supervisor.shutdown()
+        request.cancellation.pause_after.set()
+    elif kind == "cancel_mid_body":
+        assert backend.launch_entered.wait(timeout=5)
+        request.cancellation.cancel()
+        backend.launch_release.set()
+    elif kind == "shutdown_mid_body":
+        assert backend.launch_entered.wait(timeout=5)
+        supervisor.shutdown()
+        backend.launch_release.set()
+    elif kind == "rate_limited_retry":
+        backend = FakeBackend()
+        supervisor, publisher = make_supervisor(
+            backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,)
+        )
+        attempts = {"n": 0}
+
+        def retry_body(running):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                return LaunchResult(
+                    success=False, duration_seconds=1.0,
+                    rate_limited=True, error="429",
+                )
+            return ok_result()
+
+        outcome = supervisor.run(
+            make_request("a"), launch_spec=make_spec(), launch_body=retry_body
+        )
+        assert outcome.terminal_reason is TerminalReason.SUCCESS
+        assert supervisor._admission.ownerships_snapshot() == ()
+        assert supervisor._admission.active_count() == 0
+        assert supervisor.active_count() == 0
+        return
+
+    t.join(timeout=15)
+    assert not t.is_alive()
+    outcome = results[0]
+    # Every invocation reaches a terminal outcome (no lost attempt) and the
+    # registry returns to empty (no leaked active registration).
+    assert outcome.terminal_reason is not None
+    assert isinstance(outcome, SessionOutcome)
+    assert supervisor._admission.ownerships_snapshot() == ()
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+
+
+def test_shutdown_before_admission_never_runs():
+    """Matrix row: daemon shutdown fires BEFORE the invocation requests
+    admission. The acquire is refused (no lease, no handle, no launch), the
+    outcome reports cancelled-while-queued, and nothing is registered."""
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    supervisor.shutdown()
+    outcome = supervisor.run(
+        make_request("a"), launch_spec=make_spec(), launch_body=_ok_body
+    )
+    assert outcome.cancelled_while_queued is True
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert backend.calls["prepare"] == 0
+    assert backend.calls["launch"] == 0
+    assert backend.calls["finish"] == 0
+    assert publisher.count() == 0
+    assert supervisor._admission.released_total() == 0
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.ownerships_snapshot() == ()
+    assert supervisor.active_count() == 0
+
+
+def test_cancellation_before_admission_never_runs():
+    """Matrix row: cancellation fires BEFORE the invocation requests
+    admission. The acquire is refused immediately (no lease, no handle, no
+    launch)."""
+    backend = FakeBackend()
+    supervisor, publisher = make_supervisor(backend=backend)
+    request = make_request("a")
+    request.cancellation.cancel()
+    outcome = supervisor.run(
+        request, launch_spec=make_spec(), launch_body=_ok_body
+    )
+    assert outcome.cancelled_while_queued is True
+    assert outcome.terminal_reason is TerminalReason.CANCELLED
+    assert backend.calls["prepare"] == 0
+    assert backend.calls["launch"] == 0
+    assert publisher.count() == 0
+    assert supervisor._admission.ownerships_snapshot() == ()
 
 
 def test_pre_bind_terminal_release_wakes_queued_waiter():

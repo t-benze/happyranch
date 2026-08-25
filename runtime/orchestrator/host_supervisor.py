@@ -1,23 +1,26 @@
 """HostSessionSupervisor: daemon-wide admission + session lifecycle core.
 
 Slice A (THR-207 rulings 1/2/3/4/5/6 as amended; governing spec
-``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``) ships the
-**pure, platform-neutral core** of the host-resource concurrency architecture:
+``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``, with the
+founder-approved real-caller amendment THR-207 seq 41-44) ships the
+platform-neutral core plus **exactly one** wired production producer:
 
 * capability/report/sample/receipt/opaque-handle contracts — see
   ``runtime/platform/session_backend.py``;
 * one daemon-wide **FIFO-with-aging admission** controller;
-* the **HostSessionSupervisor lifecycle** that owns the load-bearing
-  ordering: *admission acquire → prepare → launch → run → freeze terminal
-  result → finish containment → residue accounting/reconciliation → publish
-  bounded receipt → release lease (exactly once)*.
+* the **HostSessionSupervisor lifecycle** as ONE atomic ownership protocol:
+  ownership transfers at admission grant (the ownership record is created
+  atomically under the controller lock and stays in its registry until lease
+  release); the durable first-wins terminal reason lives on that record from
+  grant; the launch gate and bind-time observation read the same record; the
+  daemon drain iterates the same registry — so a shutdown that fires when or
+  immediately after admission is granted can never miss an admitted attempt;
+* schedule fires (``runtime/daemon/schedule_runner.py``) run through the
+  supervisor via the honest no-enforcement ``PassthroughBackend``; the
+  daemon drain calls ``shutdown()`` in the app lifespan finally. Task, thread,
+  dream, and wake producers stay structurally unchanged.
 
-No production wiring ships in this slice: executors do not yet call this
-module, no Linux/macOS backends exist, no routes/metrics/audit/config expose
-it, and ``runtime/platform/isolation.py`` is untouched. Later serial slices
-wire the executors, backends, and observability against these contracts.
-
-Load-bearing ordering invariants (enforced here, honored by later wiring):
+Load-bearing ordering invariants (enforced here, honored by wiring):
 
 1. **Nothing launches before admission.** ``backend.prepare``/``backend.launch``
    and the launch body run only after an admission lease is granted.
@@ -327,15 +330,28 @@ class AdmissionTimeout(Exception):
 class AdmissionLease:
     """Held lease for one admitted invocation. Release exactly once.
 
-    Double-release is a fail-closed error — the supervisor's retry loop
-    releases in a ``finally`` so the lease is always released exactly once
-    per attempt.
+    The lease carries the **ownership record** (an :class:`_AttemptContext`)
+    created atomically at grant: ownership transfers the instant admission is
+    granted, so the daemon drain always observes the attempt — including one
+    still between grant and its first gate — and can freeze the durable
+    first-wins terminal reason on it. Double-release is a fail-closed error —
+    the supervisor's retry loop releases in a ``finally`` so the lease is
+    always released exactly once per attempt.
     """
 
-    def __init__(self, controller: "AdmissionController") -> None:
+    def __init__(
+        self, controller: "AdmissionController", ctx: "_AttemptContext"
+    ) -> None:
         self._controller = controller
+        self._ctx = ctx
+        self._lease_id: int | None = None
         self._released = False
         self._lock = threading.Lock()
+
+    @property
+    def ctx(self) -> "_AttemptContext":
+        """The ownership record bound to this lease (created at grant)."""
+        return self._ctx
 
     def release(self) -> None:
         with self._lock:
@@ -388,6 +404,15 @@ class AdmissionController:
         self._queue: deque[_QueuedRequest] = deque()
         self._active = 0
         self._shutdown = False
+        self._shutdown_generation = 0
+        self._next_lease_id = 0
+        # Atomic ownership registry: every admitted-but-not-yet-released
+        # attempt, keyed by lease id. The ownership record (``_AttemptContext``)
+        # is created HERE at grant, under the controller lock — the single
+        # point where a request transitions from queued to owned. The drain
+        # freezes the durable first-wins terminal reason on every record it
+        # finds, so no admitted attempt can ever be absent from a shutdown.
+        self._ownerships: dict[int, _AttemptContext] = {}
         self._admitted_total = 0
         self._released_total = 0
         self._cancelled_queued_total = 0
@@ -433,6 +458,24 @@ class AdmissionController:
         with self._cv:
             return self._shutdown
 
+    def shutdown_generation(self) -> int:
+        """Current shutdown generation (incremented by ``shutdown``).
+
+        An ownership record's ``granted_generation`` records the generation at
+        the instant admission granted it; after a shutdown the current value is
+        strictly greater for every attempt granted before it."""
+        with self._cv:
+            return self._shutdown_generation
+
+    def ownerships_snapshot(self) -> tuple["_AttemptContext", ...]:
+        """Every admitted-but-not-yet-released ownership record.
+
+        The drain iterates this set — never a separately-maintained active
+        registry — so an attempt granted immediately before shutdown is always
+        observed and frozen durably before it can launch."""
+        with self._cv:
+            return tuple(self._ownerships.values())
+
     # ── lifecycle ─────────────────────────────────────────────────
 
     def acquire(
@@ -464,18 +507,38 @@ class AdmissionController:
                 if self._shutdown:
                     self._queue.remove(entry)
                     return None
+                # A fired token is checked BEFORE the admit decision so a
+                # queued cancellation can never be granted (it is removed
+                # without launch, no handle, no lease).
+                if request.cancellation.cancelled:
+                    self._queue.remove(entry)
+                    self._cancelled_queued_total += 1
+                    return None
                 if entry is self._queue[0] and self._active < self._cap:
                     verdict = self._gates_verdict_locked()
                     if verdict.admit:
                         self._queue.popleft()
                         self._active += 1
                         self._admitted_total += 1
-                        return AdmissionLease(self)
+                        # ── ownership transfer (atomic with grant) ──
+                        # The ownership record is created here, under the
+                        # controller lock, and stays in the registry until the
+                        # lease releases. From this instant the attempt is
+                        # owned: the drain can freeze a durable first-wins
+                        # terminal reason on it and no launch can happen
+                        # unowned.
+                        self._next_lease_id += 1
+                        lease_id = self._next_lease_id
+                        ctx = _AttemptContext(
+                            request.logical_id,
+                            granted_generation=self._shutdown_generation,
+                            monotonic=self._monotonic,
+                        )
+                        self._ownerships[lease_id] = ctx
+                        lease = AdmissionLease(self, ctx)
+                        lease._lease_id = lease_id
+                        return lease
                     entry.stall_reason = verdict.reason
-                if request.cancellation.cancelled:
-                    self._queue.remove(entry)
-                    self._cancelled_queued_total += 1
-                    return None
                 if deadline is not None:
                     remaining = deadline - self._monotonic()
                     if remaining <= 0:
@@ -501,6 +564,11 @@ class AdmissionController:
                 raise RuntimeError("admission underflow: released with no active lease")
             self._active -= 1
             self._released_total += 1
+            # Remove the ownership record: the attempt is fully terminal and
+            # the drain must no longer see it. Keyed by lease id so a retry's
+            # re-acquire never collides with a stale record.
+            if lease._lease_id is not None:
+                self._ownerships.pop(lease._lease_id, None)
             self._cv.notify_all()
 
     def wake(self) -> None:
@@ -513,13 +581,18 @@ class AdmissionController:
             self._cv.notify_all()
 
     def shutdown(self) -> None:
-        """Stop admission and cancel every queued request.
+        """Stop admission, advance the shutdown generation, and cancel every
+        queued request.
 
         Active invocations keep their leases until their own finish; the
-        supervisor's drain handles them. Queued waiters observe ``None`` on
-        wake (nothing launched, no handle)."""
+        supervisor's drain freezes the durable SHUTDOWN reason on every
+        ownership record and finishes bound handles. Queued waiters observe
+        ``None`` on wake (nothing launched, no handle). The generation bump
+        makes ``shutdown`` observable: an ownership record granted before it
+        has ``granted_generation < shutdown_generation()``."""
         with self._cv:
             self._shutdown = True
+            self._shutdown_generation += 1
             self._cv.notify_all()
 
 
@@ -737,17 +810,36 @@ class SessionOutcome:
 
 
 class _AttemptContext:
-    """Serializes terminal-reason freezing and idempotent finish.
+    """The atomic **ownership record** for one admitted attempt.
 
-    Finish/cancel races are resolved by first-wins terminal freezing plus a
-    once-guard on ``finish_once``: whichever thread arrives second blocks
-    until the in-flight finish lands its receipt and returns the same
-    receipt. Release of the admission lease is owned by the run loop, not
-    this context.
+    Created by :class:`AdmissionController.acquire` **at grant**, under the
+    controller lock, and registered in the controller's ownership registry
+    until the lease releases. It serializes terminal-reason freezing and
+    idempotent finish, and it is the single durable authority for the
+    first-wins terminal reason from the instant ownership transfers:
+
+    * the daemon drain and the opaque cancel control both freeze the reason
+      here (first wins);
+    * the launch gate (:meth:`commit_launch`) refuses launch atomically when a
+      winner already froze;
+    * the bind-time observation (:meth:`terminal_reason` checked after
+      ``bind_running``) replays a winner that froze between commitment and
+      bind, so the blocking body is never entered uncontained;
+    * ``finish_once``/``finalize_once`` run containment, residue accounting,
+      and receipt publication exactly once.
+
+    Release of the admission lease is owned by the run loop, not this
+    context.
     """
 
-    def __init__(self, logical_id: str, monotonic: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        logical_id: str,
+        granted_generation: int,
+        monotonic: Callable[[], float],
+    ) -> None:
         self._logical_id = logical_id
+        self._granted_generation = granted_generation
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -758,6 +850,7 @@ class _AttemptContext:
         self._retry_worthy = False
         self._running: RunningHandle | None = None
         self._grace_seconds: float = 5.0
+        self._launch_committed = False
         self._finish_done = False
         self._finish_in_progress = False
         self._finalized = False
@@ -765,6 +858,30 @@ class _AttemptContext:
         self._samples: list[ResourceSample] = []
         self._sample_errors = 0
         self._started_at: float = monotonic()
+
+    # ── ownership ────────────────────────────────────────────────
+
+    def granted_generation(self) -> int:
+        """Shutdown generation at the instant admission granted the lease.
+
+        After a shutdown that fired after this grant, the controller's current
+        generation is strictly greater — the durable proof that the attempt
+        was granted before the shutdown generation became active."""
+        with self._lock:
+            return self._granted_generation
+
+    def commit_launch(self) -> bool:
+        """Atomic launch gate: refuse when a terminal winner already froze.
+
+        This is the **single** gate between prepare and launch. A terminal
+        reason frozen at or after grant (shutdown drain, cancellation replay)
+        refuses; otherwise the attempt owns the launch and any later terminal
+        reason drives idempotent containment. One-shot per attempt."""
+        with self._lock:
+            if self._terminal_reason is not None:
+                return False
+            self._launch_committed = True
+            return True
 
     # ── terminal freeze ───────────────────────────────────────────
 
@@ -988,85 +1105,34 @@ class _Sampler:
             self._stop.wait(self._interval)
 
 
-# ── opaque cancel control / pre-bind terminal gate ────────────────────
+# ── opaque cancel control ────────────────────────────────────────────
 
 
 class _OpaqueCancelControl:
-    """Cancellation goes through the containment handle, never a bare PID;
-    the same opaque gate carries the daemon-shutdown terminal through the
-    launch-fence-to-running-bind interval.
+    """Thin bridge between the caller-owned ``CancellationToken`` and the
+    ownership record.
 
-    ``invoke`` freezes CANCELLED (first-wins) and, once the launch fence has
-    been passed, drives the idempotent backend teardown — which is what
-    terminates the descendant tree and unblocks the executor's communicate
-    loop. Before the fence, a winning terminal reason (CANCELLED via
-    ``invoke``, or SHUTDOWN via the supervisor drain) only freezes the
-    terminal reason: the caller's ``fence_launch`` observes it and abandons
-    the pending handle without launching, so terminal/launch is atomic.
-    Between the fence and the running-handle bind, the frozen first-wins
-    reason is replayed by ``take_pending_terminal`` immediately upon bind."""
+    Cancellation goes through the containment handle, never a bare PID.
+    ``invoke`` freezes CANCELLED (first-wins) on the durable ownership record
+    and, once the running handle is bound, drives idempotent containment.
 
-    # Terminal reasons the governing truth table allows to win before the
-    # running handle binds. Both must gate the launch fence and be replayed
-    # at bind; ``freeze_terminal`` is first-wins, so the observed reason is
-    # the genuine winner.
-    _PRE_BIND_TERMINAL = frozenset(
-        (TerminalReason.CANCELLED, TerminalReason.SHUTDOWN)
-    )
+    A cancellation that lands before the running handle binds needs no
+    window-specific handling: the frozen reason is durably observed by the
+    ownership gates — the post-register gate, the :meth:`_AttemptContext
+    .commit_launch` launch gate, or the bind-time observation — whichever runs
+    next. There is no parallel pre-bind terminal set and no replay method:
+    the ownership record IS the handoff.
+    """
 
     def __init__(self, supervisor: "HostSessionSupervisor", ctx: _AttemptContext) -> None:
         self._supervisor = supervisor
         self._ctx = ctx
-        self._launch_lock = threading.Lock()
-        self._launched = False
 
     def invoke(self) -> None:
         ctx = self._ctx
         ctx.freeze_terminal(TerminalReason.CANCELLED)
-        with self._launch_lock:
-            launched = self._launched
-        if launched:
+        if ctx.running() is not None:
             self._supervisor._finish_and_reconcile(ctx)
-
-    def _pre_bind_terminal(self) -> TerminalReason | None:
-        """Return the frozen pre-bind terminal winner, if any (first-wins)."""
-        reason = self._ctx.terminal_reason()
-        if reason in self._PRE_BIND_TERMINAL:
-            return reason
-        return None
-
-    def fence_launch(self) -> bool:
-        """Atomically gate the launch body against a pre-bind terminal winner.
-
-        Returns ``True`` when launch may proceed (this call won the race);
-        ``False`` when a terminal winner (CANCELLED or SHUTDOWN) already
-        froze — the caller must abandon the pending handle and must not
-        execute the launch body. The fence is one-shot: once passed, the
-        handle is launched and a later cancellation drives idempotent
-        teardown through ``invoke`` (a later shutdown through the drain)."""
-        with self._launch_lock:
-            if self._pre_bind_terminal() is not None:
-                return False
-            self._launched = True
-            return True
-
-    def take_pending_terminal(self) -> TerminalReason | None:
-        """Replay a terminal winner that froze after the launch fence.
-
-        Called by the binding thread **immediately after** ``bind_running``.
-        A terminal winner (CANCELLED or SHUTDOWN) that lands between the
-        fence and the running-handle bind cannot drive teardown at the
-        moment it fires — ``invoke`` (or the shutdown drain) sees the fence
-        passed but ``ctx.running()`` is still ``None`` — so the frozen
-        first-wins reason is the durable handoff: this method observes it on
-        bind and the caller skips the launch body and drives the normal
-        idempotent terminal cleanup right away, so the launched tree is torn
-        down exactly once and the invocation never enters a blocking body
-        uncontained. Returns the winning reason, or ``None`` when launch may
-        proceed. A terminal that wins after bind is handled directly
-        (``invoke`` / drain finish against the bound handle)."""
-        with self._launch_lock:
-            return self._pre_bind_terminal()
 
 
 # ── the supervisor ───────────────────────────────────────────────────
@@ -1075,11 +1141,21 @@ class _OpaqueCancelControl:
 class HostSessionSupervisor:
     """Owns admission + containment ordering for one logical invocation.
 
-    Constructed once per daemon process in a later slice; this slice
-    exercises it with dependency-injected backend/measurement/publisher
-    fakes. The backend is injected (the daemon selects it by platform via
-    the backend factory in a later slice); the publisher receives bounded
-    receipts for later projection into health/metrics/audit payloads.
+    Constructed once per daemon process (real-caller wiring: schedule fires
+    in this slice); exercised with dependency-injected
+    backend/measurement/publisher fakes in the unit suites. The backend is
+    injected (the daemon selects it by platform via the backend factory in a
+    later slice); the publisher receives bounded receipts for later
+    projection into health/metrics/audit payloads.
+
+    The lifecycle is **one atomic ownership protocol**: ownership transfers
+    at admission grant (the ``AdmissionController`` creates the ownership
+    record under its lock and keeps it in its registry until the lease
+    releases); the durable first-wins terminal reason lives on that record;
+    the launch gate and the bind-time observation both read the same record;
+    and the drain always iterates the controller registry, never a separate
+    active set, so a shutdown that fires when or immediately after admission
+    is granted can never miss an admitted attempt.
     """
 
     def __init__(
@@ -1129,9 +1205,9 @@ class HostSessionSupervisor:
         else:
             self._sampler = None
             self._sample_interval_seconds = 0.0
-        # Active attempt contexts for bounded drain on shutdown.
-        self._active: dict[str, _AttemptContext] = {}
-        self._active_lock = threading.Lock()
+        # No separate active registry: the admission controller's ownership
+        # registry IS the active set (created atomically at grant), so the
+        # drain always sees every admitted attempt.
 
     # ── capability probing ────────────────────────────────────────
 
@@ -1198,6 +1274,7 @@ class HostSessionSupervisor:
             try:
                 outcome = self._execute_attempt(
                     request,
+                    ctx=lease.ctx,
                     launch_spec=launch_spec,
                     launch_body=launch_body,
                     grace_seconds=grace,
@@ -1221,95 +1298,109 @@ class HostSessionSupervisor:
         self,
         request: AdmissionRequest,
         *,
+        ctx: _AttemptContext,
         launch_spec: LaunchSpec,
         launch_body: Callable[[RunningHandle], LaunchResult],
         grace_seconds: float,
         attempt: int,
     ) -> SessionOutcome:
-        ctx = _AttemptContext(request.logical_id, self._monotonic)
-        self._register_active(request.logical_id, ctx)
+        """Run one granted attempt to a terminal outcome under its ownership
+        record.
+
+        ``ctx`` is the ownership record created atomically at grant and
+        registered in the admission controller until lease release. The
+        durable first-wins terminal reason lives on it from the instant of
+        grant: every gate below is the SAME mechanism — observe
+        ``ctx.terminal_reason()`` — so a shutdown/cancellation that fires in
+        any window (grant→registration, registration→prepare, prepare→launch
+        commitment, commitment→bind, after bind/body) is durably observed and
+        drives idempotent containment before the lease releases."""
+        # ── ownership gate (grant→registration) ──
+        # A terminal winner (daemon shutdown drained at/after grant) already
+        # froze on the ownership record: refuse before any handle exists.
+        if ctx.terminal_reason() is not None:
+            return self._outcome(request, ctx, attempt)
+        # ── prepare (never before admission) ──
         try:
-            # ── prepare (never before admission) ──────────────────
-            try:
-                pending = self._backend.prepare(request, self._policy)
-            except BackendError as exc:
-                ctx.freeze_terminal(TerminalReason.PREPARE_FAILURE)
-                ctx.set_error(str(exc))
-                return self._outcome(request, ctx, attempt)
-            if request.cancellation.cancelled:
-                return self._abandon_pre_launch(request, ctx, pending, attempt)
-            control = _OpaqueCancelControl(self, ctx)
-            fired = request.cancellation.register(control)
-            # Launch fence: a terminal winner that froze before launch (token
-            # already fired at registration, landed between registration and
-            # this fence, or SHUTDOWN frozen by the daemon drain) abandons the
-            # pending handle and must not execute the launch body.
-            if fired or not control.fence_launch():
-                return self._abandon_pre_launch(request, ctx, pending, attempt)
-
-            # ── launch (still post-admission, post-fence) ──
-            try:
-                running = self._backend.launch(pending, launch_spec)
-            except BackendError as exc:
-                self._safe_abandon(self._backend, pending)
-                ctx.freeze_terminal(TerminalReason.SPAWN_FAILURE)
-                ctx.set_error(str(exc))
-                # Partial containment must still be torn down/verified.
-                return self._outcome(request, ctx, attempt)
-            ctx.bind_running(running, grace_seconds)
-            if control.take_pending_terminal() is not None:
-                # A pre-bind terminal winner (CANCELLED or SHUTDOWN) froze
-                # after the launch fence, before the running handle was bound.
-                # The durable frozen first-wins reason is replayed immediately
-                # upon bind: drive the normal idempotent terminal cleanup
-                # (finish -> residue -> publish) without ever entering the
-                # blocking launch body; the run loop releases the lease.
-                self._finish_and_reconcile(ctx)
-                return self._outcome(request, ctx, attempt)
-            if request.on_started is not None:
-                request.on_started(running.root_pid)
-
-            # ── sampling ──────────────────────────────────────────
-            sampler = self._start_sampler(running, ctx)
-
-            # ── launch body ───────────────────────────────────────
-            try:
-                result = launch_body(running)
-            except Exception as exc:  # launch body never replaces terminal state
-                ctx.set_error(f"launch body raised: {exc}")
-                ctx.freeze_terminal(TerminalReason.FAILURE)
-            else:
-                ctx.set_launch_result(result)
-            finally:
-                self._stop_sampler(sampler, ctx)
-
-            # ── finish + residue + publish (idempotent w/ cancel) ─
+            pending = self._backend.prepare(request, self._policy)
+        except BackendError as exc:
+            ctx.freeze_terminal(TerminalReason.PREPARE_FAILURE)
+            ctx.set_error(str(exc))
+            return self._outcome(request, ctx, attempt)
+        # ── bind the per-attempt opaque cancel control; a token that already
+        # fired is replayed (first-wins). ──
+        control = _OpaqueCancelControl(self, ctx)
+        fired = request.cancellation.register(control)
+        if fired:
+            ctx.freeze_terminal(TerminalReason.CANCELLED)
+        # ── ownership gate (registration→launch commitment) ──
+        # A terminal winner frozen during prepare/registration abandons the
+        # pending handle without launching.
+        if ctx.terminal_reason() is not None:
+            self._abandon_pre_launch(ctx, pending, attempt)
+            return self._outcome(request, ctx, attempt)
+        # ── launch commitment: the single atomic gate ──
+        if not ctx.commit_launch():
+            self._abandon_pre_launch(ctx, pending, attempt)
+            return self._outcome(request, ctx, attempt)
+        # ── launch ──
+        try:
+            running = self._backend.launch(pending, launch_spec)
+        except BackendError as exc:
+            self._safe_abandon(self._backend, pending)
+            ctx.freeze_terminal(TerminalReason.SPAWN_FAILURE)
+            ctx.set_error(str(exc))
+            # Partial containment must still be torn down/verified.
+            return self._outcome(request, ctx, attempt)
+        ctx.bind_running(running, grace_seconds)
+        # ── bind-time observation ──
+        # A terminal winner that froze between the launch commitment and the
+        # running-handle bind is durably observed here: containment finishes
+        # without ever entering the blocking launch body, and the run loop
+        # releases the lease exactly once.
+        if ctx.terminal_reason() is not None:
             self._finish_and_reconcile(ctx)
             return self._outcome(request, ctx, attempt)
+        if request.on_started is not None:
+            request.on_started(running.root_pid)
+
+        # ── sampling ──────────────────────────────────────────────
+        sampler = self._start_sampler(running, ctx)
+
+        # ── launch body ───────────────────────────────────────────
+        try:
+            result = launch_body(running)
+        except Exception as exc:  # launch body never replaces terminal state
+            ctx.set_error(f"launch body raised: {exc}")
+            ctx.freeze_terminal(TerminalReason.FAILURE)
+        else:
+            ctx.set_launch_result(result)
         finally:
-            self._unregister_active(request.logical_id)
+            self._stop_sampler(sampler, ctx)
+
+        # ── finish + residue + publish (idempotent w/ cancel) ─
+        self._finish_and_reconcile(ctx)
+        return self._outcome(request, ctx, attempt)
 
     def _abandon_pre_launch(
         self,
-        request: AdmissionRequest,
         ctx: _AttemptContext,
         pending: PendingHandle,
         attempt: int,
-    ) -> SessionOutcome:
+    ) -> None:
         """Abandon a prepared-but-not-launched handle after a pre-launch
-        terminal winner and return the outcome.
+        terminal winner.
 
         ``freeze_terminal`` is first-wins, so if the daemon drain froze
         SHUTDOWN first it stays the primary reason; the error text names the
-        actual winner."""
+        actual winner. The caller returns the outcome via ``_outcome``."""
         self._safe_abandon(self._backend, pending)
-        winner = ctx.freeze_terminal(TerminalReason.CANCELLED)
+        winner = ctx.terminal_reason() or ctx.freeze_terminal(TerminalReason.CANCELLED)
         ctx.set_error(
             "cancelled before launch"
             if winner is TerminalReason.CANCELLED
             else f"terminal ({winner.value}) before launch"
         )
-        return self._outcome(request, ctx, attempt)
 
     def _finish_and_reconcile(self, ctx: _AttemptContext) -> None:
         """Idempotent terminal teardown + reconciliation + publish.
@@ -1359,34 +1450,26 @@ class HostSessionSupervisor:
         except Exception as exc:
             logger.warning("backend.abandon(%r) raised: %s", pending.token, exc)
 
-    # ── active registry / drain / shutdown ───────────────────────
-
-    def _register_active(self, logical_id: str, ctx: _AttemptContext) -> None:
-        with self._active_lock:
-            self._active[logical_id] = ctx
-
-    def _unregister_active(self, logical_id: str) -> None:
-        with self._active_lock:
-            self._active.pop(logical_id, None)
+    # ── drain / shutdown ────────────────────────────────────────
 
     def active_count(self) -> int:
-        with self._active_lock:
-            return len(self._active)
+        """Admitted-but-not-yet-released attempts (the ownership registry)."""
+        return len(self._admission.ownerships_snapshot())
 
     def shutdown(self) -> None:
-        """Stop admission, cancel queued, and finish active handles.
+        """Stop admission, cancel queued, and finish every owned attempt.
 
-        Active attempts finish with SHUTDOWN as the (frozen, first-wins)
-        terminal reason; their run loops release the lease in ``finally``.
-        An attempt still between the launch fence and the running-handle
-        bind has ``ctx.running()`` unset here, so the drain only freezes
-        SHUTDOWN; the bind path replays that frozen reason immediately upon
-        bind (``take_pending_terminal``), so containment still finishes
-        without entering the launch body."""
+        Ownership transferred at grant: every admitted attempt — including
+        one still between grant and its first gate — is in the admission
+        controller's ownership registry, so the drain always freezes the
+        durable first-wins SHUTDOWN reason on it. The attempt observes the
+        frozen reason at its next gate: refusing launch before any handle
+        (grant→registration, registration→launch commitment), or finishing
+        containment exactly once if the launch was already committed
+        (fence→bind via the bind-time observation, or after bind directly).
+        The run loops release the leases exactly once in ``finally``."""
         self._admission.shutdown()
-        with self._active_lock:
-            contexts = list(self._active.values())
-        for ctx in contexts:
+        for ctx in self._admission.ownerships_snapshot():
             ctx.freeze_terminal(TerminalReason.SHUTDOWN)
             if ctx.running() is not None:
                 ctx.finish_once(self._backend)
@@ -1410,3 +1493,42 @@ class HostSessionSupervisor:
     def _stop_sampler(self, sampler: _Sampler | None, ctx: _AttemptContext) -> None:
         if sampler is not None:
             sampler.stop()
+
+
+# ── daemon construction (real-caller wiring) ─────────────────────────
+
+
+def build_default_host_supervisor(
+    *,
+    backend: SessionBackend | None = None,
+    policy: PolicySnapshot | None = None,
+    publisher: Callable[[Receipt], None] | None = None,
+) -> HostSessionSupervisor:
+    """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice A).
+
+    Exactly ONE production producer — schedule fires — runs through the
+    returned supervisor; task/thread/dream/wake producers stay structurally
+    unchanged. The backend is the honest no-enforcement ``PassthroughBackend``
+    (no Linux/macOS containment ships in this slice; missing enforcement
+    tightens admission via the binding macOS canary cap of 4, which never
+    binds the single schedule worker). The publisher logs bounded receipts —
+    no metrics/audit/health payload expansion.
+    """
+    from runtime.platform.passthrough_backend import PassthroughBackend
+
+    return HostSessionSupervisor(
+        backend=backend or PassthroughBackend(),
+        policy=policy or canary_policy(),
+        publisher=publisher or _log_bounded_receipt,
+    )
+
+
+def _log_bounded_receipt(receipt: Receipt) -> None:
+    """Log one bounded receipt (no metrics/audit surface expansion)."""
+    logger.info(
+        "host session receipt: terminal=%s cleanup=%s quiescent=%s wall=%.1fs",
+        receipt.terminal_reason,
+        receipt.cleanup_status.value,
+        receipt.quiescent,
+        receipt.wall_time_seconds,
+    )

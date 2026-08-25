@@ -22,8 +22,10 @@ from runtime.orchestrator.host_supervisor import (
     CapPolicy,
     GateVerdict,
     PolicySnapshot,
+    _AttemptContext,
     canary_policy,
 )
+from runtime.platform.session_backend import TerminalReason
 
 
 def make_request(logical_id: str = "r1", **kw) -> AdmissionRequest:
@@ -258,8 +260,63 @@ def test_double_release_fails_closed():
 
 def test_release_underflow_fails_closed():
     ctl = AdmissionController(cap=1, monotonic=time.monotonic)
+    # A lease that never existed (no grant → no ownership record) must fail
+    # closed rather than underflow the registry.
     with pytest.raises(RuntimeError):
-        ctl._release(AdmissionLease(ctl))  # no active lease to release
+        ctl._release(AdmissionLease(ctl, _AttemptContext("r", 0, time.monotonic)))
+
+
+# ── atomic ownership transfer at grant ───────────────────────────────
+
+
+def test_grant_creates_ownership_record_in_registry():
+    """Ownership transfers the instant admission grants: the granted attempt
+    is in the controller's ownership registry before ``acquire`` returns, so
+    a shutdown drain can never miss it (TASK-5600 [HIGH])."""
+    ctl = AdmissionController(cap=1, monotonic=time.monotonic)
+    lease = ctl.acquire(make_request("a"))
+    assert lease is not None
+    snapshot = ctl.ownerships_snapshot()
+    assert len(snapshot) == 1
+    assert snapshot[0]._logical_id == "a"
+    # Granted before any shutdown: generation 0.
+    assert snapshot[0].granted_generation() == 0
+    lease.release()
+    assert ctl.ownerships_snapshot() == ()
+
+
+def test_shutdown_generation_advances_and_is_durable_per_grant():
+    """A shutdown fired at/after a grant is observable through the generation
+    counter: the granted record keeps its pre-shutdown generation while the
+    controller's current generation advances — the durable proof that the
+    attempt was owned before the shutdown generation became active."""
+    ctl = AdmissionController(cap=1, monotonic=time.monotonic)
+    lease = ctl.acquire(make_request("a"))
+    assert lease is not None
+    granted = lease.ctx.granted_generation()
+    ctl.shutdown()
+    assert ctl.shutdown_generation() == granted + 1
+    assert ctl.is_shutdown()
+    # The granted record is still owned (lease not released): the drain
+    # iterates it, so the frozen SHUTDOWN reason transfers into the attempt.
+    assert lease.ctx.terminal_reason() is None
+    ctx = ctl.ownerships_snapshot()[0]
+    ctx.freeze_terminal(TerminalReason.SHUTDOWN)
+    assert lease.ctx.terminal_reason() is TerminalReason.SHUTDOWN
+    lease.release()
+    assert ctl.ownerships_snapshot() == ()
+
+
+def test_lease_carries_ownership_record_until_release():
+    """The lease and the ownership registry stay in lock-step: the record
+    exists from grant to release and is removed exactly once on release."""
+    ctl = AdmissionController(cap=1, monotonic=time.monotonic)
+    lease = ctl.acquire(make_request("a"))
+    assert lease is not None
+    assert lease.ctx is ctl.ownerships_snapshot()[0]
+    lease.release()
+    assert ctl.ownerships_snapshot() == ()
+    assert ctl.active_count() == 0
 
 
 # ── policy cap model ─────────────────────────────────────────────────

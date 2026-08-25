@@ -187,3 +187,50 @@ class _ShapeCompliantBackend:
 def test_protocol_is_runtime_checkable_and_satisfiable():
     assert isinstance(_ShapeCompliantBackend(), SessionBackend)
     assert isinstance(CapabilityReport, type)
+
+
+# ── honest no-enforcement passthrough (THR-207 real-caller wiring) ─────
+
+
+def test_passthrough_backend_declares_no_capabilities():
+    """The passthrough used by the wired schedule producer is truthful: every
+    capability is unavailable, never a fabricated guarantee."""
+    from runtime.platform.passthrough_backend import PassthroughBackend
+
+    backend = PassthroughBackend()
+    report = backend.probe()
+    assert report.healthy is True
+    assert report.capabilities == {}
+    for cap in Capability:
+        assert report.level(cap) == CapabilityLevel.UNAVAILABLE
+
+
+def test_passthrough_backend_lifecycle_is_residue_free():
+    """prepare/launch/finish/abandon leave no containment residue and never
+    fabricate measured values (provenance unavailable, no survivors)."""
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.orchestrator.host_supervisor import (
+        AdmissionRequest, PolicySnapshot, canary_policy,
+    )
+    from runtime.platform.session_backend import LaunchSpec
+
+    backend = PassthroughBackend()
+    policy = canary_policy()
+    request = AdmissionRequest(
+        org="happyranch", invocation_kind="schedule",
+        logical_id="SCHEDULE-X", executor_profile="claude",
+    )
+    pending = backend.prepare(request, policy)
+    assert pending.request_id == "SCHEDULE-X"
+    running = backend.launch(pending, LaunchSpec(argv=("a",)))
+    assert running.root_pid == 0  # no subprocess exists here (diagnostic)
+    receipt = backend.finish(running, "success", 5.0)
+    assert receipt.backend == "passthrough"
+    assert receipt.cleanup_status == CleanupStatus.CLEAN
+    assert receipt.quiescent is True  # absence of containment state, not a claim
+    assert receipt.survivors == ()
+    assert receipt.memory_peak_bytes is None
+    assert receipt.memory_peak_provenance == MeasurementProvenance.UNAVAILABLE
+    backend.abandon(pending)  # no-op, no residue
+    recovered = backend.recover("tok")
+    assert recovered.recovered is False

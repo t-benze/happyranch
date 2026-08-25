@@ -431,6 +431,11 @@ async def test_wake_spawn_stops_on_materialization_error(org_state, tmp_path, mo
 
 
 @pytest.mark.asyncio
+def _make_host_supervisor():
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    return build_default_host_supervisor()
+
+
 async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
     """run_schedule must fail BEFORE spawning the executor when
     materialization of workspace skills raises.
@@ -520,6 +525,7 @@ async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path
         org_state=org_state,
         schedule_id="SCHEDULE-001",
         settings=settings,
+        host_supervisor=_make_host_supervisor(),
     )
 
     # Executor was NOT spawned (fail-closed pre-spawn)

@@ -6,10 +6,13 @@
 > `output/TASK-5568/host-resource-concurrency-architecture.md`
 > Current Source: `runtime/orchestrator/host_supervisor.py`,
 > `runtime/platform/session_backend.py`
-> Notes: Slice A (TASK-5586) ships the pure platform-neutral core — contracts,
-> admission, lifecycle — **un-wired**. Later serial slices wire executors,
-> Linux/macOS backends, observability, and daemon shutdown against this
-> contract. `runtime/platform/isolation.py` (canonical-skill-store integrity +
+> Notes: Slice A (TASK-5586) ships the platform-neutral core — contracts,
+> admission, lifecycle — as ONE atomic ownership protocol, wired through
+> **exactly one** narrow production producer (schedule fires) per the
+> founder-approved real-caller amendment (THR-207 seq 41–44) with an honest
+> no-enforcement passthrough backend. Later serial slices wire the remaining
+> producers, Linux/macOS backends, and observability against this contract.
+> `runtime/platform/isolation.py` (canonical-skill-store integrity +
 > same-owner launch) is deliberately untouched by this design.
 
 ## Decision in one page
@@ -70,20 +73,45 @@ authoritative. `unavailable` is never rendered as a fabricated zero.
   opaque-handle contracts; `SessionBackend` Protocol; backend error types;
   future Windows Job Object shape documented, not implemented.
 - `runtime/orchestrator/host_supervisor.py` — `AdmissionController`
-  (FIFO-with-aging), `ResidueAccountant` (capability-conditional census +
-  reconciliation), `HostSessionSupervisor` lifecycle, immutable
+  (FIFO-with-aging + atomic ownership registry), `ResidueAccountant`
+  (capability-conditional census + reconciliation), `HostSessionSupervisor`
+  lifecycle (one atomic ownership/generation protocol: ownership transfers at
+  admission grant; the durable first-wins terminal reason lives on the
+  ownership record; the launch gate and bind-time observation read the same
+  record; the daemon drain iterates the same registry), immutable
   `PolicySnapshot`, `CancellationToken` opaque-handle binding.
+- `runtime/platform/passthrough_backend.py` — the honest no-enforcement
+  backend for the real-caller wiring (all capabilities `unavailable`; no
+  containment; executor + throttle stay inside the launch body unchanged).
+- `runtime/daemon/schedule_runner.py` — schedule fires (the single wired
+  producer) run through the supervisor; `runtime/daemon/app.py` calls
+  `supervisor.shutdown()` in the lifespan drain; `runtime/daemon/state.py`
+  constructs the daemon-wide supervisor.
 - Focused unit tests with dependency-injected backend/measurement/publisher
-  fakes covering every lifecycle truth-table row.
+  fakes covering every lifecycle truth-table row and the deterministic
+  concurrency matrix (shutdown/cancellation at every transition), plus
+  real-producer acceptance tests in `tests/daemon/test_schedule_fire_integration.py`.
 - Protocol/CLAUDE.md text only where the load-bearing ordering invariants
   above are introduced.
 
-**Explicitly NOT in Slice A:** executor wiring (both Popen bodies in
-`runtime/orchestrator/executors.py` stay on their current path), Linux/macOS
-backend implementations, routes/metrics/audit exposure, config additions, and
-any change to `runtime/platform/isolation.py`. Preserved unchanged: provider
+**The atomic ownership protocol.** Ownership transfers the instant admission
+grants a lease: the `AdmissionController` creates the ownership record under
+its lock and keeps it in its registry until lease release. The durable
+first-wins terminal reason lives on that record from grant; the drain always
+iterates the controller registry (never a separate active set), so a shutdown
+that fires when or immediately after admission is granted freezes SHUTDOWN on
+the record and the attempt's next gate observes it — refusing launch before
+any handle, or finishing containment exactly once if the launch was already
+committed. There are no reason- or window-specific special cases.
+
+**Explicitly NOT in Slice A:** wiring for the remaining producers (both Popen
+bodies in `runtime/orchestrator/executors.py` and task/thread/dream/wake
+producers stay on their current path), Linux/macOS backend implementations,
+routes/metrics/audit exposure, config additions, and any change to
+`runtime/platform/isolation.py`. Preserved unchanged: provider
 ceiling/default, 1.5s launch spacing, 5/15/45 backoff, all
-task/thread/dream/wake/schedule producer settings.
+task/thread/dream/wake producer settings, and the schedule producer's
+concurrency (1 worker) and row lifecycle.
 
 ## Lifecycle truth table
 
@@ -148,7 +176,10 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
 ## Rollout sequencing
 
 - **A — common shadow core (THIS PR):** contracts, admission, lifecycle,
-  receipts; no enforcement or provider/producer changes; nothing wired.
+  receipts, plus the founder-approved real-caller wiring: schedule fires run
+  through the supervisor with the honest no-enforcement passthrough backend
+  and the daemon drain calls `shutdown()`; no enforcement, provider/producer,
+  or other-producer changes.
 - **B — lifecycle containment:** wire Linux scopes + macOS process-group/
   census cleanup behind the supervisor; the mandatory success-path
   descendant test gates the canary. Linux ceiling 11 stays non-binding
@@ -171,8 +202,16 @@ hysteresis/gates, cap tightening, retry release/reacquire, exactly-once lease
 release, `finish()` ordering for every truth-table row, primary-terminal-
 reason retention under cleanup failure, idempotent finish/cancel races,
 provenance preservation, policy immutability, capability-conditional residue
-and reconciliation. Linux/macOS integration suites and the Windows CI gate
-arrive with their respective backend slices.
+and reconciliation, plus the **deterministic concurrency matrix** — shutdown
+and cancellation at every transition (before admission, queued,
+grant→registration, registration→launch gate, gate→bind, after bind/body,
+concurrent normal completion, cleanup in flight, retry/429 re-entry) — proving
+one durable first winner, no body entry for pre-bind terminal winners, no
+lost attempt, no leaked active registration, and exactly-once abandon/finish,
+residue accounting, receipt, and lease release. The real producer (schedule
+fires) is exercised in `tests/daemon/test_schedule_fire_integration.py`.
+Linux/macOS integration suites and the Windows CI gate arrive with their
+respective backend slices.
 
 ## Held boundaries
 

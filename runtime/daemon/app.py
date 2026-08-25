@@ -327,6 +327,14 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # ── Host-session drain (THR-207 Slice A real-caller wiring) ──
+        # Stop admission, cancel queued, and finish every owned attempt with a
+        # durable SHUTDOWN winner BEFORE the producer workers are cancelled, so
+        # a schedule fire already past admission observes the frozen reason at
+        # its next gate and never launches uncontained; its run loop releases
+        # the lease exactly once.
+        if state.host_supervisor is not None:
+            state.host_supervisor.shutdown()
         # ── Dashboard projection cleanup ──────────────────────────────
         # Cancel FIRST (before any await) so a refresh stuck in its
         # to_thread/warm path doesn't make daemon shutdown wait for

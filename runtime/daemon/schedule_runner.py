@@ -14,6 +14,7 @@ that transitions the row.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -24,6 +25,11 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import ScheduleKind, ScheduleStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
+from runtime.orchestrator.host_supervisor import (
+    AdmissionRequest,
+    HostSessionSupervisor,
+    LaunchResult,
+)
 from runtime.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
@@ -38,6 +44,7 @@ from runtime.orchestrator.workspace_adapters import (
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
+from runtime.platform.session_backend import LaunchSpec
 from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.schedule_rules import (
@@ -144,6 +151,7 @@ async def run_schedule(
     schedule_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
     """Run one schedule fire session.
 
@@ -153,7 +161,13 @@ async def run_schedule(
     the terminal status. The ``schedules spawn`` callback marks the row
     ``completed`` (one-shot → fired, weekly → re-armed); if the session returns
     without calling it, the row is failed (``no_callback``) or timed out.
-    """
+
+    THR-207 real-caller wiring: the fire runs through the daemon-wide
+    ``HostSessionSupervisor`` (``host_supervisor`` is REQUIRED — schedule is
+    the single wired producer). The supervisor owns admission, the atomic
+    first-wins terminal protocol, bounded receipt publication, and exactly-once
+    lease release; the executor and its per-provider throttle stay inside the
+    launch body unchanged."""
     store = org_state.db.schedules
     record = store.get(schedule_id)
     if record is None or record.status != ScheduleStatus.FIRING:
@@ -287,16 +301,63 @@ async def run_schedule(
         )
 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: executor.run(
-        workspace=workspace,
-        prompt=prompt,
-        session_id=None,
-        timeout_seconds=settings.session_timeout_seconds,
-        pre_launch_validator=_pre_launch_validator,
-        org_slug=org_state.slug,
-        model=model_name,
-    ))
 
+    # ── THR-207 real-caller wiring: schedule fires run through the daemon-
+    # wide HostSessionSupervisor (admission + atomic terminal protocol + lease
+    # release). The executor + per-provider throttle stay inside the launch
+    # body unchanged; a terminal winner that refuses launch (daemon shutdown
+    # drained at/after grant, cancellation) yields a payload-less outcome and
+    # the row is left FIRING for daemon-restart recovery — identical to the
+    # pre-wiring behavior when a shutdown cancelled the worker mid-run. ──
+    if host_supervisor is None:
+        raise RuntimeError(
+            "run_schedule requires the daemon-wide HostSessionSupervisor "
+            "(schedule fires are the single THR-207 Slice A wired producer)"
+        )
+
+    def _launch_body(running) -> LaunchResult:
+        result = executor.run(
+            workspace=workspace,
+            prompt=prompt,
+            session_id=None,
+            timeout_seconds=settings.session_timeout_seconds,
+            pre_launch_validator=_pre_launch_validator,
+            org_slug=org_state.slug,
+            model=model_name,
+        )
+        return LaunchResult(
+            success=result.success,
+            duration_seconds=float(getattr(result, "duration_seconds", 0) or 0),
+            returncode=getattr(result, "returncode", None),
+            error=getattr(result, "error", None),
+            rate_limited=bool(getattr(result, "rate_limited", False)),
+            timed_out=_is_timeout(result),
+            payload=result,
+        )
+
+    outcome = await loop.run_in_executor(
+        None,
+        lambda: host_supervisor.run(
+            AdmissionRequest(
+                org=org_state.slug,
+                invocation_kind="schedule",
+                logical_id=schedule_id,
+                executor_profile=executor_name,
+                enqueued_at=time.monotonic(),
+            ),
+            launch_spec=LaunchSpec(argv=(record.agent_name,)),
+            launch_body=_launch_body,
+        ),
+    )
+    # ``outcome.payload`` is the launch body's LaunchResult; its own
+    # ``payload`` is the executor's ExecutorResult. A pre-launch terminal
+    # winner (SHUTDOWN/CANCELLED) leaves ``outcome.payload`` None: nothing
+    # ran, so no executor result exists and the row is left FIRING for
+    # daemon-restart recovery.
+    launch = outcome.payload
+    if launch is None:
+        return
+    result = launch.payload
     if getattr(result, "token_usage", None) is not None:
         org_state.db.insert_session_token_usage(
             task_id=None,

@@ -735,8 +735,7 @@ owns admission and containment ordering for every top-level agent invocation.
 The governing spec is ``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``
 and the platform-neutral backend contract is ``runtime/platform/session_backend.py``.
 
-**Load-bearing ordering invariants** (enforced by the supervisor core; later
-slices wire every ``executor.run`` producer to it):
+**Load-bearing ordering invariants** (enforced by the supervisor core):
 
 1. **No agent subprocess launches before admission.** ``backend.prepare`` /
    ``backend.launch`` and the executor launch body run only after an admission
@@ -752,12 +751,25 @@ slices wire every ``executor.run`` producer to it):
 4. **Policy snapshots are immutable per invocation** and are explicit canary
    inputs (Linux `<=11` non-binding shadow; macOS 4 binding; low-single-digit
    measured cleanup grace), never host-derived permanent defaults.
+5. **Ownership transfers atomically at admission grant.** The controller
+   creates the ownership record under its lock and keeps it in its registry
+   until lease release; the durable first-wins terminal reason lives on that
+   record from grant; the daemon drain iterates the same registry. A shutdown
+   that fires when or immediately after admission is granted freezes SHUTDOWN
+   on the record, and the attempt's next gate observes it — refusing launch
+   before any handle, or finishing containment exactly once if the launch was
+   already committed. No reason- or window-specific special case.
 
-Slice A ships the contracts + admission + lifecycle core **un-wired**: the
-executor launch bodies, Linux/macOS backends, and daemon shutdown drain are
-later serial slices. ``runtime/platform/isolation.py`` (canonical-skill-store
-integrity + same-owner launch) is layered beneath the supervisor and is
-unchanged by this design.
+Slice A wires **exactly one** narrow production producer per the
+founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires run
+through the supervisor with the honest no-enforcement ``PassthroughBackend``
+(``runtime/platform/passthrough_backend.py``; all capabilities unavailable),
+and the daemon drain calls ``supervisor.shutdown()`` in the app lifespan
+finally before producer workers are cancelled. The other producers, both Popen
+bodies in ``runtime/orchestrator/executors.py``, Linux/macOS backends, and
+observability wiring are later serial slices. ``runtime/platform/isolation.py``
+(canonical-skill-store integrity + same-owner launch) is layered beneath the
+supervisor and is unchanged by this design.
 
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 
