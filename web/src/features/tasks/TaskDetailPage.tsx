@@ -30,6 +30,7 @@ import type {
   JobRecord,
   TaskRecallNode,
   TaskRecord,
+  WorkStatusResponse,
 } from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
@@ -543,6 +544,22 @@ interface ChainWithBlock {
   /** Task ids that revisit THIS task (forward, single-hop — NOT a dependents
    *  traversal). Rendered as trailing "Revised by" nodes on the chain. */
   directRevisits: string[];
+  /** TASK-5522: derived work-status summary from the envelope. Null when the
+   *  daemon response lacks it (legacy daemon / stubbed fixture) — the page
+   *  then renders no execution-status card (empty behavior preserved). */
+  workStatus: WorkStatusResponse | null;
+}
+
+function parseWorkStatus(rr: Record<string, unknown>): WorkStatusResponse | null {
+  const ws = rr.work_status;
+  if (!ws || typeof ws !== 'object') return null;
+  const candidate = ws as WorkStatusResponse;
+  // Defensive shape gate: the card renders only when the envelope really
+  // carried a usable summary — never fabricate one from partial data.
+  if (typeof candidate.state !== 'string' || typeof candidate.applicable !== 'boolean') {
+    return null;
+  }
+  return candidate;
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -581,6 +598,7 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
         joinedFanout: latestFanoutJoin(r.audit_log),
         revisitChain,
         directRevisits,
+        workStatus: parseWorkStatus(rr),
       };
     },
     enabled: !!slug && !!taskId,
@@ -616,6 +634,85 @@ function RailRow({
       <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
       <dd className={`${valueClassName ?? 'min-w-0 min-w-max'} flex-1`}>{children}</dd>
     </div>
+  );
+}
+
+/**
+ * Execution status card — TASK-5522 right-rail summary of observed work
+ * activity, rendered from the server-derived `work_status` envelope field
+ * (same task-detail fetch — no extra endpoint).
+ *
+ * Honesty contract: the card visibly separates the heartbeat/liveness
+ * observation (its own labeled row with an explicit freshness suffix) from
+ * the actual agent-written update row, which is populated ONLY from a real
+ * `progress` audit receipt. When no receipt is in scope the card says so
+ * explicitly ('No substantive update recorded') — it never implies activity
+ * from a fresh heartbeat, and for non-applicable tasks it never implies a
+ * live agent at all.
+ */
+export function ExecutionStatusCard({ status }: { status: WorkStatusResponse }): JSX.Element {
+  const start = formatDateTime(status.session_start_ts);
+  const hbTs = formatDateTime(status.heartbeat?.timestamp ?? null);
+  const hbFreshness = status.heartbeat?.freshness;
+  const hbSuffix =
+    hbFreshness === 'fresh'
+      ? '(fresh)'
+      : hbFreshness === 'stale'
+        ? '(stale)'
+        : '(unavailable)';
+  const prog = status.latest_progress;
+  const progTs = formatDateTime(prog?.timestamp ?? null);
+
+  return (
+    <aside aria-label="Execution status" className="lg:w-64 lg:shrink-0">
+      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+        <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+          Execution status
+        </h3>
+        <dl className="space-y-3 text-sm">
+          <RailRow label="State">
+            <span className="text-text-primary font-medium">{status.label}</span>
+          </RailRow>
+          {start && (
+            <RailRow label="Start">
+              <span className="text-text-primary font-mono text-xs tabular-nums">
+                {start}
+              </span>
+            </RailRow>
+          )}
+          <RailRow label="Heartbeat">
+            <span className="text-text-primary font-mono text-xs tabular-nums">
+              {hbTs ?? 'none observed'}{' '}
+              <span className="text-text-muted">{hbSuffix}</span>
+            </span>
+          </RailRow>
+          {status.applicable ? (
+            <RailRow label="Update">
+              {prog ? (
+                <span className="text-text-secondary min-w-0">
+                  {progTs}
+                  {prog.message ? (
+                    <span className="text-text-primary"> — {prog.message}</span>
+                  ) : (
+                    <span className="text-text-muted"> (content unavailable)</span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-status-escalated font-medium">
+                  No substantive update recorded
+                </span>
+              )}
+            </RailRow>
+          ) : (
+            <RailRow label="Reason">
+              <span className="text-text-secondary font-mono text-xs">
+                {status.reason ?? '—'}
+              </span>
+            </RailRow>
+          )}
+        </dl>
+      </div>
+    </aside>
   );
 }
 
@@ -1019,11 +1116,18 @@ export function TaskDetailPage(): JSX.Element {
             </div>
 
             {task.data && (
-              <PropertyRail
-                task={task.data}
-                slug={slug}
-                jobs={jobsQuery.data?.jobs ?? []}
-              />
+              <>
+                {/* TASK-5522: server-derived work-status summary. Renders only
+                    when the envelope carried it (empty/legacy daemon → no card). */}
+                {chainQuery.data?.workStatus && (
+                  <ExecutionStatusCard status={chainQuery.data.workStatus} />
+                )}
+                <PropertyRail
+                  task={task.data}
+                  slug={slug}
+                  jobs={jobsQuery.data?.jobs ?? []}
+                />
+              </>
             )}
           </div>
       </ContentWrap>

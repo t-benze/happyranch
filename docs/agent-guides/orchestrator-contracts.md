@@ -49,6 +49,142 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
+## Derived Work-Status Summary (TASK-5522)
+
+`GET /tasks/{task_id}` carries a read-only `work_status` envelope key derived
+server-side (`runtime/daemon/work_status.py`) from the task record plus its
+existing audit rows — **no schema change, no synthetic audits, no background
+monitor**. It exposes only: the current-session start (latest assigned-agent
+`session_start` audit), the last heartbeat with an explicit freshness label,
+and the timestamp + concise agent-written message of the latest current-
+session `progress` receipt. Chain of thought, command stdout, workspace
+paths, session ids, and arbitrary audit payloads are never exposed.
+
+State machine (live-task shape = `in_progress` + `block_kind IS NULL`):
+
+| state | meaning |
+|---|---|
+| `newly_started` | fresh heartbeat; no current-session receipt; session start < 5m old |
+| `recent_progress` | fresh heartbeat; latest current-session receipt < 5m old |
+| `stale_no_receipt` | fresh heartbeat; no receipt; session start ≥ 5m old |
+| `stale_old_receipt` | fresh heartbeat; latest receipt ≥ 5m old |
+| `heartbeat_stale` | live shape but heartbeat ≥ 60s old (existing zombie-reaper freshness semantics) |
+| `heartbeat_unavailable` | live shape, no heartbeat observed |
+| `unavailable` | cannot derive (missing session_start, unassigned, malformed historic data) |
+| `not_applicable` | terminal / pending / escalated / in_progress parked-on-block (`reason` discriminates) |
+
+Policies: `STALE_PROGRESS_AFTER_SECONDS = 300` (5-minute display/derivation
+policy — it never reaps or acts); heartbeat freshness reuses the existing
+60-second semantics (`2 × HEARTBEAT_INTERVAL_SECONDS`). The current-session
+lower boundary is the latest assigned-agent `session_start`; a prior
+session's `progress` receipts must never satisfy the new session. Labels say
+what is observed — a fresh heartbeat is never presented as substantive
+progress, and absent/malformed data is surfaced as unavailable, never
+fabricated. Both `happyranch details` and the Tasks UI render this summary;
+`protocol/skills/start-task/SKILL.md` §5 makes the corresponding worker
+checkpoint policy concrete.
+
+### Post-deploy operational measurement (not a shipping gate)
+
+The per-task states above make **individual** tasks observable; they do not,
+by themselves, measure the population metric this change is meant to move.
+That metric is the **share of COMPLETED tasks whose wall-clock duration is
+strictly greater than 15 minutes**, measured by the read-only per-org SQL
+procedure below — never from `progress` audit rows. `progress` receipts /
+`work_status` are a diagnostic companion measure only (see "What this
+contract does and does not make observable" below).
+
+**Pre-deploy baseline (authoritative).** Immediately before this change
+shipped, **277 of 600 completed tasks (46.2%)** exceeded a 15-minute
+wall-clock duration. **46.2% — never 55%** — is the baseline this deployment
+is measured against. The post-deploy operational/release target is **<20%**
+of completed tasks exceeding 15 minutes, evaluated inside the explicitly
+defined post-deploy observation window below. That target is an
+**operational post-deploy goal only**: it is NOT a PR shipping, approval,
+merge, or CI gate, and no CI or merge check enforces it.
+
+**Observation procedure (read-only SQL, per org).** Each org is measured
+independently against its own database — the org boundary is the per-org
+SQLite file `<runtime>/orgs/<slug>/happyranch.db` (the daemon's
+`OrgPaths.db_path`, `runtime/orchestrator/_paths.py`). Orgs are never
+pooled: the evaluator must substitute each org's actual storage scope and
+timestamps. The window is **half-open** `[window_start, window_end)` and
+uses the task **completion time** (`tasks.completed_at`) for membership; the
+numerator applies the same bounds and additionally requires a wall-clock
+duration **strictly greater than 15 minutes (900 seconds)**. Wall-clock
+duration is the difference between the persisted completion and creation
+timestamps (`tasks.completed_at` − `tasks.created_at` — both columns are
+non-null on every `completed` row and store ISO-8601 UTC text, so
+`julianday(...)` arithmetic applies directly; this is the full lifecycle
+wall clock from task creation to completion, an upper bound on active work
+time). Run the query once per org DB file:
+
+```sql
+-- Per-org read-only observation: completed-task wall-clock > 15 min share.
+-- Open the org's DB read-only:  sqlite3 "file:<runtime>/orgs/<slug>/happyranch.db?mode=ro"
+-- Bind the evaluator's actual values (sqlite3 CLI: .parameter init, then
+-- .parameter set :window_start '<utc-iso>'; .parameter set :window_end '<utc-iso>'):
+--   :window_start  post-deploy observation window start, inclusive (UTC ISO)
+--   :window_end    post-deploy observation window end,   exclusive (UTC ISO)
+WITH windowed AS (
+  SELECT (julianday(t.completed_at) - julianday(t.created_at)) * 86400 AS dur_seconds
+  FROM tasks AS t
+  WHERE t.status = 'completed'
+    AND t.completed_at >= :window_start
+    AND t.completed_at <  :window_end
+)
+SELECT
+  COUNT(*)                                           AS denominator,
+  SUM(CASE WHEN dur_seconds > 900 THEN 1 ELSE 0 END) AS numerator,
+  CASE
+    WHEN COUNT(*) = 0 THEN NULL  -- zero denominator => N/A, never 0%
+    ELSE ROUND(
+      100.0 * SUM(CASE WHEN dur_seconds > 900 THEN 1 ELSE 0 END) / COUNT(*),
+      1
+    )
+  END                                                AS pct_over_15_min
+FROM windowed;
+```
+
+Procedure notes:
+
+- **Per-org, never pooled.** Re-run the query against each org's own DB file
+  and report each org's `denominator` / `numerator` / `pct_over_15_min`
+  separately. Do not aggregate orgs into one denominator.
+- **Strict inequality.** The numerator counts `dur_seconds > 900`; a task
+  whose duration equals exactly 15:00.000 does not count.
+- **Half-open window.** Membership is `completed_at >= :window_start` AND
+  `completed_at < :window_end`; a task completing exactly at `:window_end`
+  belongs to the next window.
+- **Zero denominator.** An org/window with no completed tasks yields
+  `denominator = 0` and the percentage is **N/A** (the `CASE` yields NULL) —
+  never 0%, which would falsely claim the target was met.
+- **Read-only.** The query contains no writes; open the DB in read-only mode
+  (`?mode=ro`) or run it against a snapshot/copy.
+
+**Post-deploy observation window.** The operator defines a fixed half-open
+window at deployment time — for example the 30 days following the deploy
+timestamp — and evaluates the same query with `:window_start` = deploy
+timestamp and `:window_end` = window end. The pre-deploy baseline 277/600
+was measured with the same definition over the pre-deploy completed-task
+population.
+
+**What this contract does and does not make observable.** `action=progress`
+remains optional and is the only persisted agent-written substantive receipt
+in the current contract. When it is absent, the server-derived `work_status`
+explicitly reports `newly_started` (session under 5 minutes) or
+`stale_no_receipt` ("no substantive update recorded") for a live session —
+heartbeat is liveness evidence only and is never substantive work. That
+absence classification makes silence observable for operational follow-up
+(a live-but-silent task is visibly distinguishable from one with recent
+substantive progress). However, a progress-only audit query cannot prove the
+implementation moved the >15-minute completion-duration metric: receipts are
+optional and the population metric is defined over completed-task wall-clock
+durations, not receipts. The primary metric is therefore measured from
+completed-task wall-clock durations by the per-org query above;
+`progress` / `work_status` may be used only as a diagnostic companion
+measure.
+
 ## Manager Decision Contract
 
 Team-manager completion payloads carry two fields:

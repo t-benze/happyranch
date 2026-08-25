@@ -291,7 +291,10 @@ Slice A's `received_nonlaunchable` receipt:
      failure reason, and `/commit` remains idempotent for the historical
      failure. A separate durable retry-attempt lifecycle supplies the atomic
      single-probe winner, terminal outcome, and append-only category-only
-     events. Before any probe it reads only the receipt's persisted wrapper
+     events. Concurrent retry callers share that single running attempt and
+     wait (bounded by the winner's own bounded probe work) for its real
+     terminal outcome; a concurrent caller never receives a fabricated
+     failure while the winner is still legitimately in flight. Before any probe it reads only the receipt's persisted wrapper
      path/SHA and every persisted child path/SHA, then independently rechecks
      each artifact with the intake/launch regular file, executable,
      no-symlink, exact-path, and SHA-256 checks. Missing, duplicate, unusable,
