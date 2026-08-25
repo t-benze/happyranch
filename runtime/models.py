@@ -810,3 +810,272 @@ class ScheduleRecord(BaseModel):
     transcript_path: str | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+
+# ── THR-181 Track A: durable authority candidate/evaluation/audit foundation ──
+#
+# Slice 1 is an isolated, additive persistence foundation. These models define
+# the typed vocabulary for the authority_* tables in database.py. They are NOT
+# wired into any runtime surface yet — no evaluator invocation, policy
+# enforcement, selection/activation, or Exit-B behavior exists in this slice.
+# Every prose-bearing field is stored as a *digest* (never the raw content),
+# and every state/disposition value is a closed StrEnum mirrored by a SQLite
+# CHECK constraint so the DB itself rejects unknown values.
+
+
+class AuthorityLifecycleState(StrEnum):
+    """Controlled candidate lifecycle. Mirrored by a SQLite CHECK constraint."""
+    CREATED = "created"          # claimed, not yet evaluated
+    EVALUATED = "evaluated"      # a single evaluation disposition recorded
+    CONSUMED = "consumed"        # disposition consumed exactly once (later slice)
+
+
+class AuthorityDisposition(StrEnum):
+    """The primary controlled outcome recorded by the (later) evaluator slice."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+
+
+class AuthorityDispositionCode(StrEnum):
+    """Fine-grained fail-closed reason codes. Superset of AuthorityDisposition."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+    LOW_CONFIDENCE = "low_confidence"
+    TIMEOUT = "timeout"
+    MALFORMED_OUTPUT = "malformed_output"
+    INJECTION_GUARD = "injection_guard"
+    AUDIT_FAILURE = "audit_failure"
+
+
+class AuthorityRetentionClass(StrEnum):
+    """How long a snapshot/response digest is retained. Mirrored by CHECK."""
+    DIGEST_ONLY = "digest_only"
+    SHADOW = "shadow"
+    INDEFINITE = "indefinite"
+
+
+class AuthorityRedactionClass(StrEnum):
+    """Whether content was redacted before it was digested. Mirrored by CHECK."""
+    NONE = "none"
+    REDACTED = "redacted"
+
+
+class AuthorityAuditEventType(StrEnum):
+    """Controlled append-only authority audit event vocabulary."""
+    CANDIDATE_CLAIMED = "candidate_claimed"
+    CANDIDATE_CLAIM_LOST = "candidate_claim_lost"
+    EVALUATION_RECORDED = "evaluation_recorded"
+    CANDIDATE_CONSUMED = "candidate_consumed"
+
+
+# Bounded digest/version validators. Shared by the closed Pydantic records
+# below AND the ``Database`` writer boundary (database.py) so the two surfaces
+# cannot drift. They reject task prose, raw model exchanges, and bearer/provider
+# credentials smuggled into a field that must only ever hold a hex digest or a
+# short version token — the writer refuses to persist (never silently redacts).
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+_CREDENTIAL_MARKERS = (
+    "bearer",
+    "authorization",
+    "api_key",
+    "apikey",
+    "password",
+    "credential",
+    "token=",
+    "sk-",
+    "private_key",
+    "client_secret",
+)
+
+
+def _reject_credential_like(value: str, field: str) -> str:
+    lowered = value.lower()
+    for marker in _CREDENTIAL_MARKERS:
+        if marker in lowered:
+            raise ValueError(
+                f"{field} appears to carry a credential-like token ({marker!r}); "
+                "refusing to persist it"
+            )
+    return value
+
+
+def validate_authority_digest(value: str, field: str) -> str:
+    """Validate a digest field: bounded hex only.
+
+    Rejects task prose, raw model exchanges (JSON), and bearer/provider
+    credentials — none of which are valid hex — rather than silently storing
+    or redacting them.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty string")
+    if not (32 <= len(value) <= 128) or not set(value) <= _HEX_DIGITS:
+        raise ValueError(
+            f"{field} must be a bounded hex digest (32-128 hex chars); "
+            "refusing to persist prose, credentials, or raw model-exchange content"
+        )
+    return value
+
+
+def validate_authority_version(value: str, field: str) -> str:
+    """Validate a version token: short, non-blank, credential-free."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-blank string")
+    if len(value) > 64:
+        raise ValueError(f"{field} must be at most 64 characters")
+    return _reject_credential_like(value, field)
+
+
+class AuthorityFenceCode(StrEnum):
+    """Closed vocabulary of mechanical fence outcome codes.
+
+    Only these codes may be recorded in an ``AuthorityFenceResult``. Unknown
+    codes are rejected at the writer boundary (and by the model's closed
+    validation) rather than persisted.
+    """
+    CANCELLED = "cancelled"
+    STALE = "stale"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    TIMEOUT = "timeout"
+    INJECTION = "injection"
+    MALFORMED = "malformed"
+
+
+class AuthorityFenceResult(BaseModel):
+    """One mechanical fence outcome: a boolean plus an optional closed code.
+
+    Structured, never prose — the fence name is the dict key, and this model
+    is the value. Extra keys and unknown codes are rejected; evaluator
+    prose/attestation text must never be stored here.
+    """
+    model_config = {"extra": "forbid"}
+
+    passed: StrictBool
+    code: AuthorityFenceCode | None = None
+
+
+class AuthorityAuditPayload(BaseModel):
+    """Bounded, closed audit-event payload.
+
+    Only digest / redaction / version / classification fields are permitted.
+    Never prose, credentials, raw model exchanges, or arbitrary evaluator
+    responses. Unknown keys are rejected.
+    """
+    model_config = {"extra": "forbid"}
+
+    disposition: AuthorityDisposition | None = None
+    disposition_code: AuthorityDispositionCode | None = None
+    retention_class: AuthorityRetentionClass | None = None
+    redaction_class: AuthorityRedactionClass | None = None
+    digest: StrictStr | None = None
+    version: StrictStr | None = None
+
+    @field_validator("digest")
+    @classmethod
+    def _digest_is_bounded_hex(cls, value, info):
+        if value is None:
+            return None
+        return validate_authority_digest(value, f"payload.{info.field_name}")
+
+    @field_validator("version")
+    @classmethod
+    def _version_is_bounded(cls, value, info):
+        if value is None:
+            return None
+        return validate_authority_version(value, f"payload.{info.field_name}")
+
+
+class AuthorityCandidate(BaseModel):
+    """Immutable identity of one pre-escalation authority candidate.
+
+    ``claim_key`` is the deterministic sha256 digest of the
+    root/session/causal-event/policy-prompt-model tuple — the CAS key that
+    guarantees at most one durable candidate per tuple. Every digest field is
+    validated as bounded hex; unknown keys are rejected.
+    """
+    model_config = {"extra": "forbid"}
+
+    id: str
+    claim_key: str
+    root_task_id: str
+    team: str
+    manager_agent: str
+    manager_session_id: str
+    causal_event_id: str
+    causal_event_digest: str
+    causal_result_id: str | None = None
+    policy_id: str
+    policy_version: str
+    policy_digest: str
+    prompt_id: str
+    prompt_version: str
+    prompt_digest: str
+    model_id: str
+    model_version: str
+    model_digest: str
+    snapshot_digest: str
+    snapshot_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    snapshot_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    disposition: AuthorityDisposition | None = None
+    lifecycle_state: AuthorityLifecycleState = AuthorityLifecycleState.CREATED
+    consumed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    @field_validator(
+        "claim_key",
+        "causal_event_digest",
+        "policy_digest",
+        "prompt_digest",
+        "model_digest",
+        "snapshot_digest",
+    )
+    @classmethod
+    def _digests_are_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+    @field_validator("policy_version", "prompt_version", "model_version")
+    @classmethod
+    def _versions_are_bounded(cls, value, info):
+        return validate_authority_version(value, info.field_name)
+
+
+class AuthorityEvaluation(BaseModel):
+    """The single, immutable evaluation outcome for a candidate.
+
+    Stores the *digest* of the evaluator response plus a controlled
+    disposition/code — never the raw response text or unredacted exchange.
+    """
+    model_config = {"extra": "forbid"}
+
+    id: int | None = None
+    candidate_id: str
+    disposition: AuthorityDisposition
+    disposition_code: AuthorityDispositionCode
+    response_digest: str
+    response_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    response_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("response_digest")
+    @classmethod
+    def _response_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class AuthorityAuditEvent(BaseModel):
+    """One append-only authority audit event. Immutable after write."""
+    model_config = {"extra": "forbid"}
+
+    id: int | None = None
+    candidate_id: str
+    event_type: AuthorityAuditEventType
+    payload: AuthorityAuditPayload | None = None
+    created_at: datetime = Field(default_factory=_now)

@@ -1666,7 +1666,20 @@ sys.exit(0)
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         from runtime.orchestrator import custom_adapter_registry as car
 
-        monkeypatch.setattr(car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", 1.5)
+        # The probe deadline starts in ``_read_bounded`` immediately after the
+        # child is spawned, so the child must exec its interpreter, consume
+        # stdin, and flush the diagnostic within this budget. The old hardcoded
+        # 1.5s budget could expire before the child's stderr landed under
+        # full-suite CPU contention (``scripts/local_ci.sh all`` with
+        # ``pytest -n 4`` — KB local-ci-stderr-timeout-tail-flake, confirmed
+        # TASK-5008/TASK-5223), making this assertion flaky for scheduling
+        # reasons unrelated to the timeout-diagnostic guarantee. Spawn→
+        # diagnostic latency is ~10ms idle and <=~180ms under heavy synthetic
+        # contention on this hardware, so 10s is a >50x-margin budget that
+        # stays a short probe vs the 30s production default. The guarantee is
+        # unchanged: stderr emitted before the deadline must still appear in
+        # the capped timeout diagnostic.
+        monkeypatch.setattr(car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", 10.0)
         script = self._make_stderr_then_hang_script(tmp_path)
 
         with pytest.raises(ValueError) as exc_info:
