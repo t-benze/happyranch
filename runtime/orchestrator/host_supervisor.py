@@ -850,7 +850,6 @@ class _AttemptContext:
         self._retry_worthy = False
         self._running: RunningHandle | None = None
         self._grace_seconds: float = 5.0
-        self._launch_committed = False
         self._finish_done = False
         self._finish_in_progress = False
         self._finalized = False
@@ -876,11 +875,11 @@ class _AttemptContext:
         This is the **single** gate between prepare and launch. A terminal
         reason frozen at or after grant (shutdown drain, cancellation replay)
         refuses; otherwise the attempt owns the launch and any later terminal
-        reason drives idempotent containment. One-shot per attempt."""
+        reason drives idempotent containment. One-shot per attempt (the
+        refusal is permanent: a winner that froze stays frozen)."""
         with self._lock:
             if self._terminal_reason is not None:
                 return False
-            self._launch_committed = True
             return True
 
     # ── terminal freeze ───────────────────────────────────────────
