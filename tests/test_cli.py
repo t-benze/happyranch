@@ -2931,7 +2931,16 @@ def test_cmd_details_heartbeat_never_renders_as_progress(capsys):
     # invented from the heartbeat.
     assert "Update:     No substantive update recorded" in out
     assert "Phase" not in out
-    assert "10:29:00" not in out.replace("Heartbeat:", "")  # hb ts never becomes update content
+    # Line-separation honesty fence (timezone-independent): the heartbeat's
+    # own timestamp/freshness may appear on the Heartbeat line, while the
+    # Update line must be the explicit no-substantive-update truth and must
+    # never reuse heartbeat content as progress.
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    hb_line = next(ln for ln in lines if ln.startswith("Heartbeat:"))
+    assert "(fresh)" in hb_line  # heartbeat line carries its own freshness
+    update_line = next(ln for ln in lines if ln.startswith("Update:"))
+    assert update_line == "Update:     No substantive update recorded", update_line
+    assert not any(c.isdigit() for c in update_line)  # no hb timestamp as progress
 
 
 def test_cmd_details_terminal_shows_not_applicable_without_liveness(capsys):
