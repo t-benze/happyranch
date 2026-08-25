@@ -45,6 +45,10 @@ class DaemonState:
     metrics_store: MetricsStore | None = None
     # Throttle for periodic snapshot writes — monotonic timestamp of last write.
     _last_metrics_snapshot_at: float = 0.0
+    # Daemon-wide HostSessionSupervisor (THR-207 real-caller wiring): schedule
+    # fires run through it; the app lifespan drain calls its ``shutdown()``.
+    # Constructed in ``from_runtime``; ``None`` for idle/test states.
+    host_supervisor: "HostSessionSupervisor | None" = None
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -73,6 +77,15 @@ class DaemonState:
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
+
+        # THR-207 Slice A real-caller wiring: construct the daemon-wide
+        # supervisor (honest no-enforcement passthrough backend + canary
+        # policy + bounded-receipt logging). Exactly ONE producer — schedule
+        # fires — is wired through it; task/thread/dream/wake stay unchanged.
+        from runtime.orchestrator.host_supervisor import (
+            build_default_host_supervisor,
+        )
+        state.host_supervisor = build_default_host_supervisor()
 
         # THR-107: one-shot lift of any legacy per-org executor_profiles
         # config blocks into the machine-global runtime store BEFORE the

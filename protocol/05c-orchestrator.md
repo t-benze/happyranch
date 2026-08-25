@@ -751,6 +751,44 @@ The orchestrator does not gain new task states for external systems. External wa
 
 Example: a PR CI / guarded merge helper is a bounded job that polls an external CI system and wakes the task through `blocked_on_job_ids`. The engineering-domain specifics live in the jobs skill and agent guides.
 
+### Global host admission and backpressure (THR-207 / TASK-5584)
+
+One daemon-wide admission controller (``runtime/orchestrator/host_supervisor.py``
+``AdmissionController``) covers every top-level agent invocation across orgs,
+producers, providers, and profiles. Governing spec:
+``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``.
+
+- **Admission is backpressure, not task failure.** Requests queue FIFO with
+  aging (original enqueue time preserved across 429 retry re-entry); a
+  request stalled by a pressure gate stays queued with a ``stall_reason`` and
+  its age.
+- **Queued cancellation removes the request without launch** — no lease, no
+  handle, no subprocess. A 429 retry fully finishes the attempt (containment
+  + receipt), releases the lease, sleeps without capacity, then re-enters
+  admission with the original age and a fresh containment handle.
+- **Effective cap is capability-derived, never OS-name-derived**: the minimum
+  of the configured cap and binding capability caps. With enforcement
+  guaranteed, the Linux `<=11` ceiling is a non-binding shadow input over the
+  11-slot producer envelope; without enforcement (macOS-style), the binding
+  cap (4) applies — missing enforcement tightens admission.
+- **Cancellation routes through the opaque containment handle**, idempotent
+  with the executor's own finish; the PID remains a diagnostic only.
+- **Ownership transfers atomically at admission grant**: the controller
+  creates the ownership record under its lock and keeps it in its registry
+  until lease release; the durable first-wins terminal reason lives on that
+  record from grant; the daemon drain iterates the same registry, so a
+  shutdown that fires when or immediately after admission is granted is
+  durably observed by the attempt's next gate (no launch, or exactly-once
+  containment before release).
+
+Slice A wires **exactly one** narrow production producer per the
+founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires
+(`runtime/daemon/schedule_runner.py`) run through the supervisor with the
+honest no-enforcement ``PassthroughBackend``, and the daemon drain calls
+``supervisor.shutdown()`` in the app lifespan finally. The remaining
+producers (task, thread, dream, wake) stay structurally unchanged; later
+serial slices attach them to the same contract.
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:
