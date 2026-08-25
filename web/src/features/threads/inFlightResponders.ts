@@ -1,18 +1,23 @@
 import type { ResponderStatusEntry, ThreadMessage } from '@/lib/api/types';
 
 /**
- * In-flight responder plus the purpose of its wake, derived from the
- * triggering row's kind (GH-688 Phase 1 Slice C).
+ * In-flight responder plus the purpose of its wake, carried from the
+ * authoritative `thread_invocations.purpose` on the wire (TASK-5553).
  *
- * Conversational REPLY wakes hang off MESSAGE rows; special-purpose wakes
- * (TASK_FOLLOWUP / BOOTSTRAP) hang off system rows and live intentionally
- * OUTSIDE the `reply_delivery` store projection. The transcript tail uses
- * this to suppress an inferred row ONLY when it is a conversational REPLY
- * already owned by a live pair — never by agent identity alone, so a
- * same-agent special-purpose wake coexists with its REPLY pair.
+ * Conversational REPLY wakes and special-purpose wakes (TASK_FOLLOWUP /
+ * BOOTSTRAP) are distinguished by the WIRE purpose, never by the triggering
+ * row's kind: a coalesced REPLY delivery range can anchor on a SYSTEM row
+ * (its follow-on mint keys the first unacknowledged sequence, which may be a
+ * system divider), so a kind-based classifier would mislabel that REPLY as a
+ * special wake and fail to suppress it next to the store-projected pair row.
+ * The transcript tail uses this to suppress an inferred row ONLY when it is a
+ * conversational REPLY already owned by a live pair — never by agent identity
+ * alone, so a same-agent special-purpose wake coexists with its REPLY pair.
  */
+export type ResponderPurpose = ResponderStatusEntry['purpose'];
+
 export interface InFlightResponder extends ResponderStatusEntry {
-  purpose: 'reply' | 'special';
+  purpose: ResponderPurpose;
 }
 
 /**
@@ -33,9 +38,10 @@ export interface InFlightResponder extends ResponderStatusEntry {
 export function selectInFlightResponders(messages: ThreadMessage[]): InFlightResponder[] {
   const byAgentAndPurpose = new Map<string, InFlightResponder>();
   for (const m of messages) {
-    const purpose = m.kind === 'message' ? 'reply' : 'special';
     for (const s of m.responder_status ?? []) {
       if (s.status !== 'working' && s.status !== 'queued') continue;
+      // Authoritative wire purpose — never inferred from the triggering row kind.
+      const purpose = s.purpose;
       const key = `${s.agent_name}\u0000${purpose}`;
       const existing = byAgentAndPurpose.get(key);
       if (existing?.status === 'working' && s.status === 'queued') continue;

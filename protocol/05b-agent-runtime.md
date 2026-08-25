@@ -95,6 +95,11 @@ agent, inclusive range, 8-char token prefix and outcome/reason/follow-on
 result — never full single-use tokens. The web UI projects the same
 ``reply_delivery`` pair state honestly (queued/coalesced count, running with
 immutable range, retry_required diagnostic) without fabricating subprocesses.
+Per-message ``responder_status`` entries additionally carry the authoritative
+invocation ``purpose`` (``reply`` | ``task_followup``; BOOTSTRAP stays
+excluded) so the web classifies/dedups in-flight responders by purpose —
+never by the triggering row's kind, which would mislabel a
+system-row-anchored coalesced REPLY range as a special wake.
 
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
