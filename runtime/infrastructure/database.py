@@ -7389,6 +7389,134 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def set_thread_subject_uncommitted(self, thread_id: str, *, subject: str) -> None:
+        """Update a thread's subject WITHOUT committing (THR-209 rename).
+
+        Deliberately left UNCOMMITTED: the caller owns the surrounding
+        transaction (``BEGIN IMMEDIATE`` … ``commit()``/``rollback()``) so the
+        rename and its ``thread_renamed`` audit row commit atomically. This
+        helper never commits independently inside an atomic unit (TASK-5644).
+        """
+        self._conn.execute(
+            "UPDATE threads SET subject = ? WHERE id = ?",
+            (subject, thread_id),
+        )
+
+    @_synchronized
+    def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear thread pin state WITHOUT committing (THR-209).
+
+        Same contract as ``set_thread_subject_uncommitted``: the caller owns
+        the surrounding transaction so the pin transition and its audit row
+        are atomic.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+
+    @_synchronized
+    def rename_thread_with_audit(
+        self, thread_id: str, *, subject: str, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder rename + ``thread_renamed`` audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative subject read, the
+        idempotence decision, the subject UPDATE, and the audit row insert
+        commit together — and roll back together on ANY failure — so a rename
+        can never survive without its audit row and concurrent renames always
+        record the truthful sequential old→new chain (last successful save
+        wins). The whole unit holds the connection lock, so no other thread
+        can join or commit the open transaction from the inside.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{old_subject, new_subject}`` payload shape.
+
+        Returns True when a durable transition occurred; False for an
+        identical (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT subject FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            old_subject = row["subject"]
+            if old_subject == subject:
+                self._conn.rollback()
+                return False
+            self.set_thread_subject_uncommitted(thread_id, subject=subject)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_renamed",
+                payload={"old_subject": old_subject, "new_subject": subject},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def set_thread_pinned_with_audit(
+        self, thread_id: str, *, pinned: bool, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder pin/unpin + audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative ``pinned_at`` read,
+        the idempotence decision, the pin state UPDATE, and the
+        ``thread_pinned``/``thread_unpinned`` audit row commit together — and
+        roll back together on ANY failure — so pin state can never survive
+        without its audit row. Concurrent same-state requests yield exactly
+        one audit row for the one durable transition (the loser is a true
+        no-op); opposite-state requests re-read the durable state inside their
+        transaction, so neither is misclassified from a stale pre-lock
+        snapshot. The whole unit holds the connection lock, so no other thread
+        can join the open transaction.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{pinned}`` payload shape.
+
+        Returns True when a durable transition occurred; False for a
+        same-state (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT pinned_at FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            currently_pinned = row["pinned_at"] is not None
+            if currently_pinned == pinned:
+                self._conn.rollback()
+                return False
+            self.set_thread_pinned_uncommitted(thread_id, pinned=pinned)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_pinned" if pinned else "thread_unpinned",
+                payload={"pinned": pinned},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
     def set_thread_transcript_path(
         self, thread_id: str, transcript_path: str,
     ) -> None:

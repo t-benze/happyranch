@@ -3,11 +3,19 @@
 Covers: durable subject rename, durable pin state (additive ``pinned_at``),
 idempotent additive migration on legacy DBs, pinned-first list ordering by
 most recent activity, and the unchanged ordinary order of unpinned threads.
+
+Atomicity (TASK-5644): the rename/pin WITH-audit methods are ONE rollback-safe
+transaction — authoritative read + conditional decision + uncommitted write +
+uncommitted audit row + single commit. The uncommitted helpers never commit
+independently; an audit-insert failure rolls back ALL state with no stray
+audit row.
 """
 from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
+
+import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.models import ThreadRecord, ThreadStatus
@@ -167,3 +175,160 @@ def test_list_threads_status_filter_respects_pinned_rank(tmp_path) -> None:
     assert [r.id for r in rows] == ["THR-B"]
     rows = db.list_threads(status="archived", limit=10)
     assert [r.id for r in rows] == ["THR-A"]
+
+
+# ---------------------------------------------------------------------------
+# Atomic rename/pin with audit (TASK-5644) — one rollback-safe transaction
+# ---------------------------------------------------------------------------
+
+
+def _committed_subject(db_path, thread_id: str) -> str | None:
+    """Read the COMMITTED subject through a separate connection (WAL-safe)."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT subject FROM threads WHERE id = ?", (thread_id,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _committed_pinned(db_path, thread_id: str) -> str | None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT pinned_at FROM threads WHERE id = ?", (thread_id,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def test_rename_with_audit_transition_noop_and_row_shape(tmp_path) -> None:
+    """The atomic rename writes subject + ``thread_renamed`` row in ONE
+    transaction; an identical save is a no-op (no write, no audit)."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    transitioned = db.rename_thread_with_audit("THR-001", subject="New title")
+    assert transitioned is True
+    assert db.get_thread("THR-001").subject == "New title"
+    rows = db.get_audit_logs("THR-001")
+    assert [r["action"] for r in rows] == ["thread_renamed"]
+    # Preserved audit shape: THR-* task_id scope, founder actor, old/new.
+    assert rows[0]["task_id"] == "THR-001"
+    assert rows[0]["agent"] == "founder"
+    assert rows[0]["payload"] == {
+        "old_subject": "subject THR-001", "new_subject": "New title",
+    }
+
+    # Idempotent no-op: no write, no duplicate audit row.
+    assert db.rename_thread_with_audit("THR-001", subject="New title") is False
+    assert db.get_thread("THR-001").subject == "New title"
+    assert len(db.get_audit_logs("THR-001")) == 1
+
+    # The next real transition chains truthfully from the durable value.
+    assert db.rename_thread_with_audit("THR-001", subject="Third") is True
+    rows = db.get_audit_logs("THR-001")
+    assert rows[-1]["payload"] == {
+        "old_subject": "New title", "new_subject": "Third",
+    }
+
+
+def test_set_thread_pinned_with_audit_transition_noop_and_row_shape(tmp_path) -> None:
+    """Pin/unpin write ``pinned_at`` + the matching audit row atomically;
+    same-state saves are true no-ops (unaudited)."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    assert db.set_thread_pinned_with_audit("THR-001", pinned=True) is True
+    assert db.get_thread("THR-001").pinned_at is not None
+    rows = db.get_audit_logs("THR-001")
+    assert [r["action"] for r in rows] == ["thread_pinned"]
+    assert rows[0]["task_id"] == "THR-001"
+    assert rows[0]["agent"] == "founder"
+    assert rows[0]["payload"] == {"pinned": True}
+
+    # Same-state no-op: no write, no audit.
+    assert db.set_thread_pinned_with_audit("THR-001", pinned=True) is False
+    assert len(db.get_audit_logs("THR-001")) == 1
+
+    assert db.set_thread_pinned_with_audit("THR-001", pinned=False) is True
+    assert db.get_thread("THR-001").pinned_at is None
+    assert [r["action"] for r in db.get_audit_logs("THR-001")] == [
+        "thread_pinned", "thread_unpinned",
+    ]
+    assert db.set_thread_pinned_with_audit("THR-001", pinned=False) is False
+    assert len(db.get_audit_logs("THR-001")) == 2
+
+
+def test_uncommitted_helpers_do_not_commit_independently(tmp_path) -> None:
+    """The uncommitted write helpers must NOT commit: nothing is visible to a
+    separate reader until the owning transaction commits, and a rollback
+    discards the writes entirely (TASK-5644 requirement)."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    db._conn.execute("BEGIN IMMEDIATE")
+    db.set_thread_subject_uncommitted("THR-001", subject="Draft")
+    db.set_thread_pinned_uncommitted("THR-001", pinned=True)
+    # Uncommitted: a separate reader sees the OLD committed state.
+    assert _committed_subject(db.db_path, "THR-001") == "subject THR-001"
+    assert _committed_pinned(db.db_path, "THR-001") is None
+    db._conn.rollback()
+    # Rollback discarded both writes.
+    assert db.get_thread("THR-001").subject == "subject THR-001"
+    assert db.get_thread("THR-001").pinned_at is None
+
+    # The owning transaction's commit makes both durable together.
+    db._conn.execute("BEGIN IMMEDIATE")
+    db.set_thread_subject_uncommitted("THR-001", subject="Final")
+    db.set_thread_pinned_uncommitted("THR-001", pinned=True)
+    db._conn.commit()
+    assert _committed_subject(db.db_path, "THR-001") == "Final"
+    assert _committed_pinned(db.db_path, "THR-001") is not None
+
+
+def test_rename_with_audit_rolls_back_on_audit_failure(tmp_path, monkeypatch) -> None:
+    """Audit-insert failure inside the atomic rename rolls back the subject
+    write AND the (partial) audit state: no durable mutation, no stray row,
+    and the connection remains usable for the next save."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("audit boom")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(db, "insert_audit_log_uncommitted", _boom)
+        with pytest.raises(RuntimeError, match="audit boom"):
+            db.rename_thread_with_audit("THR-001", subject="Never saved")
+        assert db.get_thread("THR-001").subject == "subject THR-001"
+        assert db.get_audit_logs("THR-001") == []
+
+    # The same connection/transaction machinery works for the next save.
+    assert db.rename_thread_with_audit("THR-001", subject="Saved now") is True
+    assert db.get_thread("THR-001").subject == "Saved now"
+
+
+def test_set_thread_pinned_with_audit_rolls_back_on_audit_failure(
+    tmp_path, monkeypatch,
+) -> None:
+    """Audit-insert failure inside the atomic pin rolls back the pinned_at
+    write: no durable pin, no stray audit row."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("audit boom")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(db, "insert_audit_log_uncommitted", _boom)
+        with pytest.raises(RuntimeError, match="audit boom"):
+            db.set_thread_pinned_with_audit("THR-001", pinned=True)
+        assert db.get_thread("THR-001").pinned_at is None
+        assert db.get_audit_logs("THR-001") == []
+
+    assert db.set_thread_pinned_with_audit("THR-001", pinned=True) is True
+    assert db.get_thread("THR-001").pinned_at is not None

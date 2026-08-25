@@ -5,13 +5,27 @@ duplicates, plain-text), last-successful-save semantics, pin/unpin, idempotent
 no-ops, unauthorized/non-founder rejection, audit rows, and the non-effect
 invariants (no thread message, no notification, no participant/unread/
 lifecycle/timestamp change, no pin state change on delete-less rename).
+
+Atomicity (TASK-5644): audit-fault tests prove an audit-insert failure rolls
+back the whole mutation (no durable rename/pin, no stray audit row, error
+response); overlapping-request tests prove concurrent rename/pin requests
+serialize through the real ``org.db_lock`` + transaction and produce truthful
+ordered audit history (last-successful-save-wins chains, exactly one audit row
+per durable pin transition, true no-ops unaudited).
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
+from runtime.daemon.routes.threads import (
+    RenameThreadBody,
+    SetThreadPinBody,
+    rename_thread_endpoint,
+    set_thread_pin_endpoint,
+)
 from runtime.models import ThreadMessageKind, ThreadRecord, ThreadStatus
 
 from tests.daemon.test_threads_routes import _seed_agent
@@ -341,3 +355,237 @@ def test_pin_requires_master_bearer(tmp_home, app, org_state):
     )
     assert resp.status_code in (401, 403), resp.status_code
     assert org_state.db.get_thread(tid).pinned_at is None
+
+
+# ---------------------------------------------------------------------------
+# Audit-fault atomicity (TASK-5644) — rollback-safe mutation + audit
+# ---------------------------------------------------------------------------
+
+
+def _audit_fault_raiser(*args, **kwargs):
+    raise RuntimeError("audit insertion failed")
+
+
+def test_rename_audit_failure_rolls_back_no_stray_audit(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """If the audit insert fails, the rename must roll back EVERYTHING: no
+    durable subject change, no stray audit row, and an error response."""
+    client = TestClient(app, raise_server_exceptions=False)
+    tid = _seed_open_thread(org_state, subject="Old title")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            org_state.db, "insert_audit_log_uncommitted", _audit_fault_raiser,
+        )
+        resp = client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/rename",
+            json={"subject": "New title"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 500, resp.text
+        # No durable mutation and no stray audit row.
+        assert org_state.db.get_thread(tid).subject == "Old title"
+        assert [
+            e for e in org_state.db.get_audit_logs(tid)
+            if e["action"] == "thread_renamed"
+        ] == []
+
+    # The transaction machinery recovered: the same connection serves the next
+    # save (with the audit seam restored) without a durable unaudited write.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/rename",
+        json={"subject": "Recovered"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert org_state.db.get_thread(tid).subject == "Recovered"
+    assert [
+        e["payload"] for e in org_state.db.get_audit_logs(tid)
+        if e["action"] == "thread_renamed"
+    ] == [{"old_subject": "Old title", "new_subject": "Recovered"}]
+
+
+def test_pin_audit_failure_rolls_back_no_stray_audit(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """If the audit insert fails, the pin must roll back EVERYTHING: no
+    durable pinned_at change, no stray audit row, and an error response."""
+    client = TestClient(app, raise_server_exceptions=False)
+    tid = _seed_open_thread(org_state)
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            org_state.db, "insert_audit_log_uncommitted", _audit_fault_raiser,
+        )
+        resp = client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/pin",
+            json={"pinned": True},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 500, resp.text
+        assert org_state.db.get_thread(tid).pinned_at is None
+        assert [
+            e for e in org_state.db.get_audit_logs(tid)
+            if e["action"] in ("thread_pinned", "thread_unpinned")
+        ] == []
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/pin",
+        json={"pinned": True},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert org_state.db.get_thread(tid).pinned_at is not None
+    assert [
+        e["action"] for e in org_state.db.get_audit_logs(tid)
+        if e["action"] in ("thread_pinned", "thread_unpinned")
+    ] == ["thread_pinned"]
+
+
+# ---------------------------------------------------------------------------
+# Overlapping-request interleavings (TASK-5644) — real lock + transaction
+# ---------------------------------------------------------------------------
+
+
+async def _overlap_through_db_lock(org, *coros):
+    """Run the real route coroutines with a deterministic serialization
+    through the SHIPPING ``org.db_lock``: the test holds the lock first so
+    every request blocks at the real lock, then releases so they execute in
+    FIFO waiter order. Inside the critical section the atomic DB methods hold
+    the connection lock for the whole read+decide+write+audit unit, so no
+    request can observe or write against another's in-flight state."""
+    await org.db_lock.acquire()
+    tasks = [asyncio.create_task(c) for c in coros]
+    await asyncio.sleep(0)  # let every coroutine reach the lock
+    org.db_lock.release()
+    return await asyncio.gather(*tasks)
+
+
+def test_rename_overlapping_requests_truthful_chain(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Two concurrent renames must serialize through the real lock: the first
+    writes A→B, the second re-reads inside ITS transaction and writes B→C.
+    Final durable state is C and the audit history is a contiguous truthful
+    chain (each row's old == previous row's new) — never two stale A→* rows.
+    """
+    tid = _seed_open_thread(org_state, subject="A")
+    results = asyncio.run(_overlap_through_db_lock(
+        org_state,
+        rename_thread_endpoint(
+            "alpha", tid, RenameThreadBody(subject="B"), org_state,
+        ),
+        rename_thread_endpoint(
+            "alpha", tid, RenameThreadBody(subject="C"), org_state,
+        ),
+    ))
+    assert results[0] == {"thread_id": tid, "subject": "B"}
+    assert results[1] == {"thread_id": tid, "subject": "C"}
+    assert org_state.db.get_thread(tid).subject == "C"
+    renamed = [
+        e for e in org_state.db.get_audit_logs(tid)
+        if e["action"] == "thread_renamed"
+    ]
+    assert len(renamed) == 2
+    assert [e["payload"]["old_subject"] for e in renamed] == ["A", "B"]
+    assert [e["payload"]["new_subject"] for e in renamed] == ["B", "C"]
+
+
+def test_pin_same_state_overlap_single_transition_audit(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Two concurrent pin=True requests on an unpinned thread: the first
+    performs the durable transition (one ``thread_pinned`` row); the second
+    re-reads inside its transaction and is a TRUE no-op (unaudited). Exactly
+    one audit row corresponds to the one durable transition."""
+    tid = _seed_open_thread(org_state)
+    results = asyncio.run(_overlap_through_db_lock(
+        org_state,
+        set_thread_pin_endpoint(
+            "alpha", tid, SetThreadPinBody(pinned=True), org_state,
+        ),
+        set_thread_pin_endpoint(
+            "alpha", tid, SetThreadPinBody(pinned=True), org_state,
+        ),
+    ))
+    assert results[0] == {"thread_id": tid, "pinned": True}
+    assert results[1] == {
+        "thread_id": tid, "pinned": True, "idempotent": True,
+    }
+    assert org_state.db.get_thread(tid).pinned_at is not None
+    assert _audit_actions(org_state, tid).count("thread_pinned") == 1
+
+
+def test_pin_opposite_state_overlap_truthful_history(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Concurrent opposite-state pins: pin=True runs first (transition +
+    ``thread_pinned``), then pin=False re-reads the DURABLE pinned state inside
+    its transaction and performs the REAL opposite transition (``thread_unpinned``).
+    Final state is unpinned and history [thread_pinned, thread_unpinned] matches
+    exactly the two durable transitions — no request is misclassified from a
+    stale pre-lock snapshot."""
+    tid = _seed_open_thread(org_state)
+    results = asyncio.run(_overlap_through_db_lock(
+        org_state,
+        set_thread_pin_endpoint(
+            "alpha", tid, SetThreadPinBody(pinned=True), org_state,
+        ),
+        set_thread_pin_endpoint(
+            "alpha", tid, SetThreadPinBody(pinned=False), org_state,
+        ),
+    ))
+    assert results[0] == {"thread_id": tid, "pinned": True}
+    assert results[1] == {"thread_id": tid, "pinned": False}
+    assert org_state.db.get_thread(tid).pinned_at is None
+    assert _audit_actions(org_state, tid) == [
+        "thread_pinned", "thread_unpinned",
+    ]
+
+
+def test_rename_overlapping_requests_http_full_path(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Same interleaving proven through the FULL HTTP+auth+ASGI path (not just
+    direct route calls): two concurrent POSTs serialize on the shipping lock,
+    last-successful-save-wins, and the audit chain is truthful."""
+    import httpx
+
+    tid = _seed_open_thread(org_state, subject="A")
+    url = f"http://test/api/v1/orgs/alpha/threads/{tid}/rename"
+
+    async def _driver():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test",
+        ) as client:
+            await org_state.db_lock.acquire()
+            t1 = asyncio.create_task(
+                client.post(url, json={"subject": "B"}, headers=auth_headers),
+            )
+            t2 = asyncio.create_task(
+                client.post(url, json={"subject": "C"}, headers=auth_headers),
+            )
+            await asyncio.sleep(0)
+            org_state.db_lock.release()
+            return await asyncio.gather(t1, t2)
+
+    r1, r2 = asyncio.run(_driver())
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    final = org_state.db.get_thread(tid).subject
+    renamed = [
+        e for e in org_state.db.get_audit_logs(tid)
+        if e["action"] == "thread_renamed"
+    ]
+    # Order-independent truthful chain: two real transitions, the first from
+    # the seeded "A", each row's old == previous row's new, and the final
+    # durable subject == the last row's new (last successful save wins).
+    assert len(renamed) == 2
+    olds = [e["payload"]["old_subject"] for e in renamed]
+    news = [e["payload"]["new_subject"] for e in renamed]
+    assert olds[0] == "A"
+    assert olds[1] == news[0]
+    assert news[1] == final
+    assert sorted(news) == ["B", "C"]

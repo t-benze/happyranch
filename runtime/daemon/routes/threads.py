@@ -2818,16 +2818,22 @@ async def rename_thread_endpoint(
             status_code=422,
             detail={"code": "subject_too_long", "max": MAX_THREAD_SUBJECT_CHARS},
         )
-    old_subject = t.subject
-    if old_subject == subject:
-        # No-op rename (already the saved title): nothing to write, nothing to
-        # audit. Last successful save wins — an identical save is a success.
-        return {"thread_id": thread_id, "subject": subject, "idempotent": True}
     async with org.db_lock:
-        org.db.set_thread_subject(thread_id, subject=subject)
-        AuditLogger(org.db).log_thread_renamed(
-            thread_id, old_subject=old_subject, new_subject=subject,
+        # Atomic (TASK-5644): authoritative subject read + idempotence
+        # decision + subject UPDATE + ``thread_renamed`` audit row happen in
+        # ONE rollback-safe transaction under this lock. The old value is read
+        # INSIDE the transaction, so concurrent renames record a truthful
+        # sequential old→new chain (last successful save wins) and an audit
+        # failure rolls back the rename — no durable unaudited mutation.
+        transitioned = org.db.rename_thread_with_audit(
+            thread_id, subject=subject,
         )
+        if not transitioned:
+            # No-op rename (already the saved title): nothing to write, nothing
+            # to audit. Last successful save wins — an identical save succeeds.
+            return {
+                "thread_id": thread_id, "subject": subject, "idempotent": True,
+            }
     return {"thread_id": thread_id, "subject": subject}
 
 
@@ -2838,14 +2844,22 @@ async def set_thread_pin_endpoint(
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    currently_pinned = t.pinned_at is not None
-    if currently_pinned == body.pinned:
-        return {"thread_id": thread_id, "pinned": body.pinned, "idempotent": True}
     async with org.db_lock:
-        org.db.set_thread_pinned(thread_id, pinned=body.pinned)
-        AuditLogger(org.db).log_thread_pin_state_changed(
+        # Atomic (TASK-5644): authoritative ``pinned_at`` read + idempotence
+        # decision + pin state UPDATE + ``thread_pinned``/``thread_unpinned``
+        # audit row happen in ONE rollback-safe transaction under this lock.
+        # Concurrent same/opposite requests re-read durable state inside their
+        # transaction (never a stale pre-lock snapshot), so no transition is
+        # misclassified and an audit failure rolls back the pin — no durable
+        # unaudited transition.
+        transitioned = org.db.set_thread_pinned_with_audit(
             thread_id, pinned=body.pinned,
         )
+        if not transitioned:
+            # Same-state no-op: nothing to write, nothing to audit.
+            return {
+                "thread_id": thread_id, "pinned": body.pinned, "idempotent": True,
+            }
     return {"thread_id": thread_id, "pinned": body.pinned}
 
 

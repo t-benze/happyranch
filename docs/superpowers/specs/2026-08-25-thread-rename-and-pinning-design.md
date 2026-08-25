@@ -99,6 +99,27 @@ semantics hold there too.
 - Both routes sit behind the existing `require_token()` dependency (master
   bearer = founder). Agents (invocation-token callers) are rejected — no
   permission-model generation changed.
+- **Atomicity (one rollback-safe transaction per mutation).** Each mutation
+  runs under the org `db_lock` as ONE transaction
+  (`rename_thread_with_audit` / `set_thread_pinned_with_audit` in
+  `runtime/infrastructure/database.py`): the authoritative old-value read,
+  the idempotence decision, the thread `subject`/`pinned_at` update, and the
+  corresponding audit row insert are one `BEGIN IMMEDIATE` … `commit` unit.
+  Neither the storage helper nor the audit writer commits independently
+  inside the unit (uncommitted write + `insert_audit_log_uncommitted`, then a
+  single `commit()`); on ANY failure — including audit-insert failure — the
+  transaction rolls back and the route returns an error with **no durable
+  rename/pin transition and no stray audit row**. The whole unit holds the
+  connection lock, so no other daemon thread can join the open transaction.
+- **Concurrency.** Concurrent renames serialize on the org `db_lock`; the
+  loser re-reads the durable subject inside its own transaction, so the
+  outcome is last-successful-save-wins with a truthful sequential old→new
+  audit chain (each row's `old_subject` == the previous row's `new_subject`;
+  no stale pre-lock snapshots). Concurrent same-state pins yield exactly one
+  audit row for the one durable transition (the loser is a true no-op);
+  opposite-state overlaps re-read durable state inside each transaction, so
+  neither request is misclassified and history matches exactly the durable
+  transitions. True no-ops remain unaudited.
 - **Non-effects (regression-tested):** neither route appends a thread
   message, publishes a thread/SSE event, sends a notification, touches
   participants/unread, or changes `started_at`/`archived_at`/activity
@@ -106,8 +127,9 @@ semantics hold there too.
 
 ## Audit
 
-New `AuditLogger` helpers following the existing thread-scope convention
-(`audit_log.task_id` = THR-* id):
+The atomic DB methods (`rename_thread_with_audit`,
+`set_thread_pinned_with_audit`) write the rows following the existing
+thread-scope convention (`audit_log.task_id` = THR-* id):
 
 - `thread_renamed` payload `{old_subject, new_subject}`.
 - `thread_pinned` / `thread_unpinned` payload `{pinned}`.
@@ -115,7 +137,7 @@ New `AuditLogger` helpers following the existing thread-scope convention
 These are audit rows only — never thread messages. The web audit narrative
 map (`web/src/features/audit/audit-narrative.ts`) and filter bucket map
 (`audit-filters.ts`) render them ("renamed", "pinned", "unpinned" scope
-sentences) to stay in parity with the single-writer audit logger.
+sentences) to stay in parity with the audit row shapes.
 
 ## Web UI
 
@@ -135,9 +157,14 @@ sentences) to stay in parity with the single-writer audit logger.
 
 ## Tests
 
-- `tests/test_thread_rename_pin_db.py` — storage/migration/ordering.
+- `tests/test_thread_rename_pin_db.py` — storage/migration/ordering + atomic
+  rename/pin-with-audit transactions (rollback on audit failure, uncommitted
+  helpers never commit independently).
 - `tests/daemon/test_thread_rename_pin_routes.py` — routes/validation/auth/
-  audit/non-effects.
+  audit/non-effects + deterministic audit-fault rollback tests and
+  overlapping-request interleavings (rename truthful chain, same-state pin
+  single audit, opposite-state pin truthful history) through the real
+  `db_lock` + transaction path.
 - `web/src/features/threads/ThreadsPage.thr209.test.tsx` — UI behaviors
   (rename flow, pin optimistic/rollback, Pinned section, filter, archived
   eligibility, overflow accessibility).
