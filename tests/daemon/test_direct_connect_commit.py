@@ -1258,6 +1258,15 @@ def test_retry_current_failed_candidate_still_claims_one_attempt_and_is_idempote
     assert len(attempts) == 1
     assert attempts[0][0] == "running"
 
+    # Hold the winning retry in flight past the former 1s (50 x 20ms)
+    # concurrent-caller poll budget so the concurrent caller MUST wait for
+    # the winner's real terminal outcome instead of receiving a fabricated
+    # failure (CI regression: Python 3.14 runner descheduling exceeded the
+    # old budget). The winner's conformance probe is itself bounded
+    # (CONFORMANCE_PROBE_TIMEOUT_SECONDS = 30s), so 1.5s is well within the
+    # repaired budget — same technique as
+    # test_concurrent_browser_commit_reconciles_durable_planned_winner.
+    time.sleep(1.5)
     release_probe.set()
     t1.join(timeout=10)
     t2.join(timeout=10)

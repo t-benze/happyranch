@@ -10,8 +10,16 @@ from typing import Literal
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore, DirectConnectReceiptArtifacts
 from runtime.daemon.routes.direct_connect import _artifact_facts
 
-_CONCURRENT_RETRY_POLL_ATTEMPTS = 50
 _CONCURRENT_RETRY_POLL_INTERVAL_SECONDS = 0.02
+# The concurrent caller waits for the winner's REAL terminal outcome instead
+# of receiving a fabricated failure. The winner's conformance probe is itself
+# bounded (custom_adapter_registry.CONFORMANCE_PROBE_TIMEOUT_SECONDS = 30s);
+# the poll budget covers the winner's maximum legitimate work (snapshot
+# validation + probe + profile binding + terminal write) plus margin, so a
+# concurrent caller never observes a false failure for a retry still
+# legitimately in flight — mirrors the projection-coordinator reconciliation
+# fix in #664.
+_CONCURRENT_RETRY_GRACE_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -54,7 +62,10 @@ def _validate_persisted_snapshot(artifacts: DirectConnectReceiptArtifacts) -> No
 def _await_running_retry(
     store: DirectConnectAuthorityStore, attempt_id: str,
 ) -> RetryValidationOutcome:
-    for _ in range(_CONCURRENT_RETRY_POLL_ATTEMPTS):
+    from runtime.orchestrator.custom_adapter_registry import CONFORMANCE_PROBE_TIMEOUT_SECONDS
+
+    deadline = time.monotonic() + CONFORMANCE_PROBE_TIMEOUT_SECONDS + _CONCURRENT_RETRY_GRACE_SECONDS
+    while time.monotonic() < deadline:
         attempt = store.get_retry_attempt(attempt_id)
         if attempt is not None and attempt.state == "succeeded":
             return RetryValidationOutcome(
