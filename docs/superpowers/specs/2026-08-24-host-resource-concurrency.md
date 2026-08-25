@@ -10,10 +10,17 @@
 > admission, lifecycle — as ONE atomic ownership protocol, wired through
 > **exactly one** narrow production producer (schedule fires) per the
 > founder-approved real-caller amendment (THR-207 seq 41–44) with an honest
-> no-enforcement passthrough backend. Later serial slices wire the remaining
-> producers, Linux/macOS backends, and observability against this contract.
-> `runtime/platform/isolation.py` (canonical-skill-store integrity +
-> same-owner launch) is deliberately untouched by this design.
+> no-enforcement passthrough backend. Slice B (TASK-5637) ships the real
+> backends behind the capability factory: portable identity-safe
+> descendant-tree sampling, the real Linux systemd/cgroup-v2 backend
+> (operational probe, per-session scope launch, explicit whole-scope stop on
+> every terminal path, cgroup-emptiness verification, authoritative
+> counters, guaranteed-cleanup residue as admission-blocking), and the
+> honestly capped macOS process-group/census backend (TERM/KILL bounded
+> cleanup, identity-safe survivor accounting, sampled peaks). The remaining
+> producers and the executor launch bodies are wired in later slices against
+> the same contract; `runtime/platform/isolation.py` (canonical-skill-store
+> integrity + same-owner launch) is deliberately untouched by this design.
 
 ## Decision in one page
 
@@ -113,6 +120,56 @@ ceiling/default, 1.5s launch spacing, 5/15/45 backoff, all
 task/thread/dream/wake producer settings, and the schedule producer's
 concurrency (1 worker) and row lifecycle.
 
+## Slice B scope (this PR) — backends and measurement
+
+- `runtime/platform/process_census.py` — portable identity-safe descendant-
+  tree census + sampler: OS-shipped readers only (Linux `/proc` stat/statm;
+  macOS libproc via `ctypes`), start-identity PID-reuse rejection, zombie-
+  aware liveness (an unreaped zombie never counts as a survivor), sampled
+  RSS+CPU+process peaks, inter-sample gaps, `unavailable` provenance never
+  rendered as a fabricated zero.
+- `runtime/platform/linux_systemd.py` — the real Linux systemd/cgroup-v2
+  backend: `probe` operationally creates a transient scope with tiny
+  non-triggering limits, verifies `ControlGroup`, the applied limit files
+  (`memory.max`/`pids.max`/`cpu.max`), live membership, and the authoritative
+  counters, then stops the scope, verifies cgroup emptiness, and removes the
+  probe slice chain; `launch` runs the target into a per-session transient
+  scope under the aggregate `happyranch.slice` and verifies membership;
+  `finish` **explicitly stops the whole scope on every terminal path, clean
+  success included**, waits within the measured grace, escalates to `KILL`,
+  and verifies **cgroup emptiness** (the unit can report `inactive` while a
+  TERM-resistant member still lives in its cgroup — quiescence is cgroup-
+  driven, never main-PID-observed); verified residue is reported as
+  `SurvivorRecord` (guaranteed-cleanup residue blocks admission). Counters
+  are read before teardown: `memory.peak` (kernel peak), `cpu.stat`
+  `usage_usec` (kernel cumulative), `pids.current` (exact live count;
+  peak over samples is `sampled` — no kernel pids-peak counter exists).
+  Session scopes apply **no resource limits** in Slice B (no approved limit
+  values); the probe proves the enforcement machinery itself.
+- `runtime/platform/macos_process_group.py` — the honestly capped macOS
+  backend: process-group launch (`start_new_session`), TERM/KILL bounded
+  cleanup, group-ownership proof before signaling (a reused group number
+  with no verified member is never signaled), identity-safe escaped-
+  descendant survivor census (a child that `setsid`s away is censused, never
+  falsely claimed clean), sampled-provenance receipt peaks.
+- `runtime/platform/backend_factory.py` — the single capability-probe
+  selection point: healthy Linux systemd/cgroup-v2 probe selects the Linux
+  backend; otherwise a healthy process-group/census probe selects the macOS
+  backend; anything else selects the honest no-capability fallback
+  (`PassthroughBackend`, all capabilities `unavailable`). Callers above the
+  factory branch on capabilities, never OS names. The daemon's wired
+  producer (schedule fires) performs its own subprocess launch inside the
+  executor body, so its truthful selection is the honest fallback until the
+  executor launch bodies are wired.
+- Tests — deterministic fake seams (probe degradation, launch failure,
+  finish ordering/status mapping, residue, abandon, recover, PID-reuse
+  safety) plus real integration suites gated on the operational probe with
+  an explicit skip reason: mandatory success-path descendant cleanup,
+  escalation, cgroup-emptiness verification, authoritative counters, no-
+  residue probes, macOS escaped-descendant best-effort survivor, and
+  supervisor+backend end-to-end (clean success, nonzero, shutdown drain,
+  cancellation).
+
 ## Lifecycle truth table
 
 | Event | Required behavior |
@@ -164,6 +221,21 @@ distinguishes `kernel` (cgroup/job counters), `sampled` (portable sampler),
 and `unavailable`. The supervisor collects samples and hands them to the
 backend at finish time; the backend merges them into the receipt.
 
+Slice B implements the sampler (`runtime/platform/process_census.py`) and
+both backends:
+
+- Linux counters are authoritative where the kernel exposes them:
+  `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel cumulative),
+  `pids.current` (exact live count at sample time). `memory.peak`'s absence
+  on older kernels degrades the receipt to the sampled peak with `sampled`
+  provenance — never a fabricated zero.
+- macOS peaks are always `sampled` (resident-sum RSS, cumulative per-process
+  CPU, census process count) and never labeled authoritative.
+- Survivor/residue checks are zombie-aware and identity-safe: an unreaped
+  zombie answers `kill(pid,0)` but is already dead and is never counted as a
+  survivor; a PID is only acted upon when its (pid, start identity) still
+  matches.
+
 ## Policy inputs
 
 `PolicySnapshot` is an immutable per-invocation snapshot of explicit canary
@@ -175,15 +247,18 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
 
 ## Rollout sequencing
 
-- **A — common shadow core (THIS PR):** contracts, admission, lifecycle,
+- **A — common shadow core (PR #715):** contracts, admission, lifecycle,
   receipts, plus the founder-approved real-caller wiring: schedule fires run
   through the supervisor with the honest no-enforcement passthrough backend
   and the daemon drain calls `shutdown()`; no enforcement, provider/producer,
   or other-producer changes.
-- **B — lifecycle containment:** wire Linux scopes + macOS process-group/
-  census cleanup behind the supervisor; the mandatory success-path
-  descendant test gates the canary. Linux ceiling 11 stays non-binding
-  shadow; macOS starts at binding cap 4.
+- **B — lifecycle containment (THIS PR):** the real Linux systemd/cgroup-v2
+  and macOS process-group/census backends behind the capability factory,
+  portable identity-safe sampling, and the mandatory success-path descendant
+  test gating the canary. Linux ceiling 11 stays non-binding shadow; macOS
+  starts at binding cap 4. The wired schedule producer keeps the honest
+  no-enforcement passthrough because its executor subprocess cannot be
+  contained until the executor launch bodies are wired.
 - **C — bounded enforcement:** canary Linux limits chosen from measured
   receipts; macOS remains honestly capped.
 - **D — evidence-based policy proposal:** only then propose session/resource
@@ -210,8 +285,17 @@ one durable first winner, no body entry for pre-bind terminal winners, no
 lost attempt, no leaked active registration, and exactly-once abandon/finish,
 residue accounting, receipt, and lease release. The real producer (schedule
 fires) is exercised in `tests/daemon/test_schedule_fire_integration.py`.
-Linux/macOS integration suites and the Windows CI gate arrive with their
-respective backend slices.
+Slice B adds: census/sampler tests (real process trees on `/proc`, identity-
+reuse rejection, zombie exclusion, gap/peak merging); Linux backend unit
+(fake systemd seams) + real integration (probe no-residue, launch-into-
+scope, mandatory success-path descendant cleanup, KILL escalation,
+counter provenance, abandon) gated on the operational probe; macOS backend
+unit (ownership refusal, TERM/KILL, survivor accounting) + real POSIX
+integration (group cleanup, escaped-`setsid` best-effort survivor); factory
+selection tests (probe-driven, honest fallback, capability-branching
+callers); and supervisor+backend end-to-end (clean success, nonzero,
+shutdown drain, cancellation). The Windows CI gate arrives with its
+backend slice.
 
 ## Held boundaries
 
