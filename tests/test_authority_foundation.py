@@ -28,7 +28,11 @@ from pathlib import Path
 
 import pytest
 
-from runtime.infrastructure.database import AuthorityAuditMigrationRefusal, Database
+from runtime.infrastructure.database import (
+    AuthorityAuditMigrationRefusal,
+    Database,
+    _authority_claim_key,
+)
 from runtime.models import (
     AuthorityDisposition,
     AuthorityLifecycleState,
@@ -71,6 +75,55 @@ def _claim_kwargs(root: str = "TASK-0001", **overrides) -> dict:
 
 def _claim(db: Database, **overrides) -> tuple[str, bool]:
     return db.claim_authority_candidate(**_claim_kwargs(**overrides))
+
+
+def _derived_candidate_id(kw: dict) -> tuple[str, str]:
+    """Recompute the deterministic (candidate_id, claim_key) for a kwargs dict.
+
+    Mirrors ``claim_authority_candidate``'s derivation (id = "AUTH-CAND-" +
+    sha256 of the root/session/causal-event/policy-prompt-model tuple) so the
+    adversarial regressions can fabricate raw rows that collide on exactly one
+    key.
+    """
+    claim_key = _authority_claim_key(
+        kw["root_task_id"],
+        kw["manager_session_id"],
+        kw["causal_event_id"],
+        kw["policy_digest"],
+        kw["prompt_digest"],
+        kw["model_digest"],
+    )
+    return f"AUTH-CAND-{claim_key}", claim_key
+
+
+def _insert_raw_candidate(db: Database, *, id_: str, claim_key: str, kw: dict) -> None:
+    """Raw-SQL insert of a candidate row with caller-chosen id/claim_key.
+
+    Fabricates the exact collision shapes the reviewer described: a foreign
+    row occupying the derived id under a different claim_key, or the
+    claim_key under a different id — bypassing the persistence API entirely.
+    """
+    db.execute(
+        "INSERT INTO authority_candidates (id, claim_key, root_task_id, team,"
+        " manager_agent, manager_session_id, causal_event_id, causal_event_digest,"
+        " causal_result_id, policy_id, policy_version, policy_digest, prompt_id,"
+        " prompt_version, prompt_digest, model_id, model_version, model_digest,"
+        " snapshot_digest, snapshot_retention_class, snapshot_redaction_class,"
+        " fence_results_json, disposition, lifecycle_state, consumed_at,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+        " NULL, NULL, 'created', NULL, ?, ?)",
+        (id_, claim_key, kw["root_task_id"], kw["team"], kw["manager_agent"],
+         kw["manager_session_id"], kw["causal_event_id"], kw["causal_event_digest"],
+         kw["causal_result_id"], kw["policy_id"], kw["policy_version"],
+         kw["policy_digest"], kw["prompt_id"], kw["prompt_version"],
+         kw["prompt_digest"], kw["model_id"], kw["model_version"],
+         kw["model_digest"], kw["snapshot_digest"],
+         kw.get("snapshot_retention_class", "digest_only"),
+         kw.get("snapshot_redaction_class", "redacted"),
+         "now", "now"),
+    )
+    db._conn.commit()
 
 
 # ── Schema creation / idempotency ────────────────────────────────────────
@@ -962,6 +1015,82 @@ def test_claim_uniqueness_race_still_returns_loser_with_single_durable_row(db):
     cid2, won2 = _claim(db)  # same deterministic tuple
     assert cid2 == cid1 and won2 is False
     assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 1
+
+
+# ── Reviewer r2 finding: CAS loss must prove the exact immutable tuple ───
+
+def test_claim_loser_returns_only_for_exact_immutable_tuple(db):
+    """Positive: a same-tuple loser is proven — the conflicting row is the
+    exact deterministic immutable tuple (both derived keys AND the six
+    claim-tuple source fields match), so the documented loser result is
+    legitimate and no second row is minted."""
+    kw = _claim_kwargs()
+    cid1, won1 = _claim(db)
+    assert won1 is True
+    cid2, won2 = _claim(db)  # same deterministic tuple
+    assert cid2 == cid1 and won2 is False
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 1
+    winner = db._conn.execute(
+        "SELECT id, claim_key, root_task_id, manager_session_id, causal_event_id,"
+        " policy_digest, prompt_digest, model_digest FROM authority_candidates"
+    ).fetchone()
+    assert winner["id"] == cid1
+    assert winner["root_task_id"] == kw["root_task_id"]
+    assert winner["manager_session_id"] == kw["manager_session_id"]
+    assert winner["causal_event_id"] == kw["causal_event_id"]
+    assert winner["policy_digest"] == kw["policy_digest"]
+    assert winner["prompt_digest"] == kw["prompt_digest"]
+    assert winner["model_digest"] == kw["model_digest"]
+
+
+def test_claim_derived_id_occupied_by_foreign_claim_key_raises(db):
+    """Adversarial shape A: a raw-SQL/imported row occupies the DERIVED
+    candidate id with a DIFFERENT claim_key. The controlled claim must raise
+    an integrity failure — never report that unrelated durable row as the
+    CAS winner."""
+    kw = _claim_kwargs()
+    candidate_id, _ = _derived_candidate_id(kw)
+    _insert_raw_candidate(db, id_=candidate_id, claim_key="foreign-claim-key", kw=kw)
+    with pytest.raises(sqlite3.IntegrityError, match="immutable claim tuple"):
+        _claim(db)
+    # The unrelated row is untouched; no loser id was handed out for it.
+    row = db._conn.execute(
+        "SELECT id, claim_key FROM authority_candidates WHERE id = ?", (candidate_id,)
+    ).fetchone()
+    assert row["id"] == candidate_id and row["claim_key"] == "foreign-claim-key"
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 1
+
+
+def test_claim_claim_key_occupied_under_foreign_id_raises(db):
+    """Adversarial shape B: a raw-SQL/imported row occupies the claim_key
+    under a DIFFERENT id. The controlled claim must raise an integrity
+    failure — never report the unrelated durable row as the CAS winner."""
+    kw = _claim_kwargs()
+    _, claim_key = _derived_candidate_id(kw)
+    _insert_raw_candidate(db, id_="AUTH-CAND-foreign-id", claim_key=claim_key, kw=kw)
+    with pytest.raises(sqlite3.IntegrityError, match="immutable claim tuple"):
+        _claim(db)
+    # The unrelated row is untouched; no loser id was handed out for it.
+    row = db._conn.execute(
+        "SELECT id, claim_key FROM authority_candidates WHERE claim_key = ?",
+        (claim_key,),
+    ).fetchone()
+    assert row["id"] == "AUTH-CAND-foreign-id" and row["claim_key"] == claim_key
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 1
+
+
+def test_claim_contradictory_dual_occupancy_raises(db):
+    """Adversarial contradictory shape: TWO foreign rows jointly occupy the
+    two keys — the derived id under a foreign claim_key AND the claim_key
+    under a foreign id. Neither is the exact tuple; the claim must raise,
+    never fabricate a loser for unrelated durable state."""
+    kw = _claim_kwargs()
+    candidate_id, claim_key = _derived_candidate_id(kw)
+    _insert_raw_candidate(db, id_=candidate_id, claim_key="foreign-key-a", kw=kw)
+    _insert_raw_candidate(db, id_="AUTH-CAND-foreign-id", claim_key=claim_key, kw=kw)
+    with pytest.raises(sqlite3.IntegrityError, match="immutable claim tuple"):
+        _claim(db)
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_candidates").fetchone()[0] == 2
 
 
 # ── Reviewer r1 finding 2: lifecycle freeze requires mirrored disposition ──

@@ -7961,9 +7961,13 @@ class Database:
         ``snapshot_redaction_class``) are validated against their closed
         vocabulary and raise ``ValueError`` before any durable write.
         Non-uniqueness constraint failures raise ``sqlite3.IntegrityError``;
-        only the deterministic id/``claim_key`` uniqueness race is mapped to
-        the ``(candidate_id, won=False)`` loser result — never a phantom loser
-        with no row.
+        the deterministic id/``claim_key`` uniqueness race maps to the
+        ``(candidate_id, won=False)`` loser result ONLY when the conflicting
+        row is proven to be the exact deterministic immutable claim tuple — a
+        raw-SQL/imported row occupying either key under a different identity
+        raises ``sqlite3.IntegrityError`` instead of misreporting an
+        unrelated durable row as the winner. Never a phantom loser with no
+        row.
         """
         # Pre-serialization validation — reject prose/credentials/model exchanges
         # smuggled into digest fields and non-closed fence results BEFORE any row
@@ -8052,7 +8056,43 @@ class Database:
                 "SQLITE_CONSTRAINT_PRIMARYKEY",
             ):
                 self._conn.rollback()
-                return candidate_id, False
+                # Prove the conflicting row IS the exact deterministic
+                # immutable tuple before returning the loser result. A
+                # raw-SQL or imported row can occupy the derived candidate id
+                # under a different claim_key, or the claim_key under a
+                # different id; neither is our tuple, and reporting either as
+                # the winner would misattribute an unrelated durable row.
+                # Query by BOTH relevant keys and validate the complete
+                # immutable tuple (both derived keys plus the six claim-tuple
+                # source fields; claim_key is their sha256, so equality is
+                # the tuple proof). The exact tuple row occupies both keys,
+                # so it is necessarily the only match when present. On any
+                # absence or contradiction, fail closed with an integrity
+                # failure instead of returning a loser.
+                winner = self._conn.execute(
+                    """SELECT id, claim_key, root_task_id, manager_session_id,
+                              causal_event_id, policy_digest, prompt_digest,
+                              model_digest
+                       FROM authority_candidates
+                       WHERE id = ? OR claim_key = ?""",
+                    (candidate_id, claim_key),
+                ).fetchone()
+                if (
+                    winner is not None
+                    and winner["id"] == candidate_id
+                    and winner["claim_key"] == claim_key
+                    and winner["root_task_id"] == root_task_id
+                    and winner["manager_session_id"] == manager_session_id
+                    and winner["causal_event_id"] == causal_event_id
+                    and winner["policy_digest"] == policy_digest
+                    and winner["prompt_digest"] == prompt_digest
+                    and winner["model_digest"] == model_digest
+                ):
+                    return candidate_id, False
+                raise sqlite3.IntegrityError(
+                    "authority CAS collision: conflicting row does not match "
+                    "the deterministic immutable claim tuple"
+                ) from exc
             raise
         self._conn.commit()
         return candidate_id, cur.rowcount == 1
