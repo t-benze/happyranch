@@ -243,3 +243,13 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
 - It does **not** open Phase 2 (mention priority, `addressed_to_json`
   writer/doctrine, fairness) — that remains gated on a separate founder
   decision (THR-198 seq 7/10/20).
+  **Update (THR-198 seq 108-110, 2026-08-25):** the founder approved the
+  Phase-2 mention-routing program. **Slice A (additive storage + pure
+  resolver) is landed** — `threads.mention_routing_enabled` (INTEGER NOT NULL
+  DEFAULT 1) and `thread_messages.mentions_json` (TEXT), both additive and
+  idempotent, with store-seam persistence of derived mentions and **no
+  change to wake routing yet** (broadcast until Slice B). The rest of Phase 2
+  (routing wiring, settings API/CLI/web, doctrine reversal, analytics) is
+  staged in Slices B/C/D. Mention **priority/fairness, autocomplete, and
+  active-respondent fallback remain out of scope**; `addressed_to_json`
+  remains unwritten/unread with its separate cleanup plan.

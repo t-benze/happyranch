@@ -50,6 +50,7 @@ from runtime.models import (
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
+from runtime.daemon.thread_mentions import parse_mentions, valid_mentions
 
 
 def _parse_dt(value: str) -> datetime:
@@ -1170,7 +1171,8 @@ class Database:
                 turns_used INTEGER NOT NULL DEFAULT 0,
                 summary TEXT,
                 transcript_path TEXT,
-                pinned_at TEXT
+                pinned_at TEXT,
+                mention_routing_enabled INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
@@ -1199,6 +1201,7 @@ class Database:
                 decline_reason TEXT,
                 system_payload_json TEXT,
                 sent_from_task_id TEXT,
+                mentions_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
             );
@@ -1733,6 +1736,25 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_messages ADD COLUMN sent_from_task_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # Phase-2 thread mention routing (THR-198, seq 108-110 approval):
+        # per-thread default-enabled switch + per-message structured mention
+        # signal. Both additive and statement-identical to the fresh CREATE
+        # definitions above — existing threads adopt the enabled default,
+        # historical messages stay NULL, no replay. Storage only in Slice A;
+        # routing behavior lands in Slice B.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN "
+                "mention_routing_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_messages ADD COLUMN mentions_json TEXT"
             )
         except sqlite3.OperationalError:
             pass
@@ -4906,8 +4928,8 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id, composed_from_dream_id,
-                pinned_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pinned_at, mention_routing_enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -4924,6 +4946,7 @@ class Database:
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
                 t.pinned_at.isoformat() if t.pinned_at else None,
+                1 if t.mention_routing_enabled else 0,
             ),
         )
         self._conn.commit()
@@ -4949,6 +4972,9 @@ class Database:
             pinned_at=(
                 datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
             ) if "pinned_at" in keys else None,
+            mention_routing_enabled=(
+                bool(row["mention_routing_enabled"])
+            ) if "mention_routing_enabled" in keys else True,
             last_activity_at=(
                 datetime.fromisoformat(row["last_activity_at"]) if row["last_activity_at"] else None
             ) if "last_activity_at" in keys else None,
@@ -5102,6 +5128,7 @@ class Database:
         system_payload: dict | None = None,
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> int:
         """Allocate seq + insert a message (and its attachments) WITHOUT
         opening or committing a transaction. Callers must own the transaction
@@ -5118,7 +5145,7 @@ class Database:
         self._conn.execute(
             "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
             "body_markdown, decline_reason, system_payload_json, "
-            "sent_from_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "sent_from_task_id, mentions_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 next_seq,
@@ -5128,6 +5155,7 @@ class Database:
                 decline_reason,
                 json.dumps(system_payload) if system_payload else None,
                 sent_from_task_id,
+                json.dumps(mentions) if mentions is not None else None,
                 _now().isoformat(),
             ),
         )
@@ -5241,6 +5269,7 @@ class Database:
                 decline_reason=r["decline_reason"],
                 system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
                 attachments=attachments_by_seq.get(r["seq"], []),
+                mentions=json.loads(r["mentions_json"]) if r["mentions_json"] else [],
                 created_at=datetime.fromisoformat(r["created_at"]),
             )
             for r in rows
@@ -5268,6 +5297,7 @@ class Database:
             decline_reason=row["decline_reason"],
             system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
             attachments=attachments_by_seq.get(seq, []),
+            mentions=json.loads(row["mentions_json"]) if row["mentions_json"] else [],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -6783,6 +6813,32 @@ class Database:
             coalesced=False, from_seq=from_seq, through_seq=new_required,
         )
 
+    def _derive_conversational_mentions(
+        self,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None,
+    ) -> list[str] | None:
+        """Server-side derivation of the durable mention signal for a
+        conversational write (THR-198 Slice A). Only kind=MESSAGE rows carry
+        the signal; system/decline rows stay NULL. The stored value is the
+        canonical valid set: live participants at write time, excluding the
+        speaker, deduped in first-occurrence order — derived from
+        ``body_markdown``, never client-declared.
+        """
+        if kind is not ThreadMessageKind.MESSAGE:
+            return None
+        participants = [
+            r["agent_name"] for r in self._conn.execute(
+                "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+        ]
+        return valid_mentions(
+            parse_mentions(body_markdown), participants, speaker,
+        )
+
     @_synchronized
     def record_conversational_arrival(
         self,
@@ -6813,6 +6869,9 @@ class Database:
                 body_markdown=body_markdown,
                 attachments=attachments,
                 sent_from_task_id=sent_from_task_id,
+                mentions=self._derive_conversational_mentions(
+                    thread_id, speaker, kind, body_markdown,
+                ),
             )
             for name in recipients:
                 arrivals.append(
@@ -6993,12 +7052,21 @@ class Database:
         settlement: ThreadReplySettlement | None = None
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            participants = [
+                p["agent_name"] for p in self._conn.execute(
+                    "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchall()
+            ]
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
                 kind=ThreadMessageKind.MESSAGE,
                 body_markdown=body_markdown,
                 attachments=attachments,
+                mentions=valid_mentions(
+                    parse_mentions(body_markdown), participants, speaker,
+                ),
             )
             if token_purpose is ThreadInvocationPurpose.REPLY:
                 settlement = self._settle_reply_uncommitted(
@@ -7021,11 +7089,7 @@ class Database:
                     "AND status = 'pending'",
                     (now, token),
                 )
-            for p in self._conn.execute(
-                "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
-                (thread_id,),
-            ).fetchall():
-                name = p["agent_name"]
+            for name in participants:
                 if name == speaker:
                     continue
                 arrivals.append(
