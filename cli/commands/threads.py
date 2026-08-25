@@ -383,11 +383,15 @@ def cmd_threads_mention_routing(args: argparse.Namespace) -> None:
 
 
 def _parse_mention_routing_flag(value: str) -> bool:
-    """Shared on/off/true/false/1/0 parse for the mention-routing flag."""
+    """Shared on/off/true/false/1/0 parse for the mention-routing flag.
+
+    Ratified domain (THR-198): exactly on|off|true|false|1|0 — "yes"/"no"
+    and any other value are rejected, mirroring the strict-bool API.
+    """
     v = value.strip().lower()
-    if v in ("on", "true", "1", "yes"):
+    if v in ("on", "true", "1"):
         return True
-    if v in ("off", "false", "0", "no"):
+    if v in ("off", "false", "0"):
         return False
     raise argparse.ArgumentTypeError(
         f"invalid boolean: {value!r} (use on|off|true|false|1|0)",

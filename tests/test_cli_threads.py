@@ -1127,10 +1127,12 @@ def test_threads_mention_routing_flag_parser_rejects_invalid():
     import argparse
 
     for good, expected in (("on", True), ("off", False), ("true", True),
-                           ("1", True), ("0", False), ("yes", True),
-                           ("no", False), ("FALSE", False)):
+                           ("false", False), ("1", True), ("0", False),
+                           ("TRUE", True), ("OFF", False)):
         assert _parse_mention_routing_flag(good) is expected
-    for bad in ("maybe", "", "2", "enabled"):
+    # Ratified domain is exactly on|off|true|false|1|0 — "yes"/"no" and any
+    # other value must be rejected (THR-198 parity with the strict-bool API).
+    for bad in ("yes", "no", "maybe", "", "2", "enabled"):
         with pytest.raises(argparse.ArgumentTypeError):
             _parse_mention_routing_flag(bad)
 

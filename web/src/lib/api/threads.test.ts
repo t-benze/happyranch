@@ -13,6 +13,7 @@ import {
   removeParticipantFromThread,
   renameThread,
   sendThreadFollowUp,
+  setThreadMentionRouting,
   setThreadPinned,
   threadInboxEventsPath,
   threadTailPath,
@@ -136,6 +137,7 @@ describe('threads api mirror', () => {
     ['extendThreadCap', () => extendThreadCap(SLUG, 'THR-001', { new_cap: 999 }), '/extend'],
     ['archiveThread', () => archiveThread(SLUG, 'THR-001', { summary: 'done' }), '/archive'],
     ['abortReplies', () => abortReplies(SLUG, 'THR-001'), '/abort-replies'],
+    ['setThreadMentionRouting', () => setThreadMentionRouting(SLUG, 'THR-001', { mention_routing_enabled: true }), '/mention-routing'],
   ])('%s hits the correct path', async (_name, call, suffix) => {
     seedToken();
     let hit = false;
@@ -197,6 +199,37 @@ describe('threads api mirror', () => {
     const r = await setThreadPinned(SLUG, 'THR-001', { pinned: true });
     expect(r.pinned).toBe(true);
     expect(received).toEqual({ pinned: true });
+  });
+
+  test('setThreadMentionRouting POSTs the boolean state to /mention-routing (THR-198)', async () => {
+    seedToken();
+    let received: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/mention-routing`, async ({ request: req }) => {
+        received = await req.json();
+        return HttpResponse.json({ thread_id: 'THR-001', mention_routing_enabled: false });
+      }),
+    );
+    const r = await setThreadMentionRouting(SLUG, 'THR-001', { mention_routing_enabled: false });
+    expect(r.mention_routing_enabled).toBe(false);
+    expect(received).toEqual({ mention_routing_enabled: false });
+  });
+
+  test('setThreadMentionRouting surfaces the idempotent no-op flag', async () => {
+    seedToken();
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/mention-routing`, () =>
+        HttpResponse.json({
+          thread_id: 'THR-001',
+          mention_routing_enabled: true,
+          idempotent: true,
+        }),
+      ),
+    );
+    const r = await setThreadMentionRouting(SLUG, 'THR-001', { mention_routing_enabled: true });
+    expect(r.thread_id).toBe('THR-001');
+    expect(r.mention_routing_enabled).toBe(true);
+    expect(r.idempotent).toBe(true);
   });
 
   test('SSE path helpers return stable strings', () => {
