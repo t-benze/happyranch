@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReplyDeliveryEntry } from '@/lib/api/types';
 import { ReplyDeliveryStrip, replyDeliveryCaption } from './ReplyDeliveryStrip';
 
@@ -32,8 +32,11 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
         nowMs={nowMs}
       />,
     );
+    const disclosure = screen.getByRole('group', { name: '1 queued delivery' });
+    expect(disclosure).not.toHaveAttribute('open');
+    fireEvent.click(within(disclosure).getByText('1 queued delivery'));
     const row = screen.getByText('dev_agent');
-    expect(row).toBeInTheDocument();
+    expect(row).toHaveClass('break-all');
     expect(screen.getByText('3 messages coalesced · messages 1–4')).toBeInTheDocument();
     expect(screen.queryByText(/replying/)).not.toBeInTheDocument();
   });
@@ -55,6 +58,7 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
     );
     expect(screen.getByText(/replying 1m/)).toBeInTheDocument();
     expect(screen.getByText(/messages 1–3/)).toBeInTheDocument();
+    expect(screen.getByText('ops_lead')).toHaveClass('break-all');
   });
 
   it('retry_required renders as a diagnostic with the last terminal reason', () => {
@@ -90,8 +94,38 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
         nowMs={nowMs}
       />,
     );
+    expect(screen.getByText('2 current deliveries')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('1 queued delivery'));
     expect(screen.getByText('alice')).toBeInTheDocument();
     expect(screen.getByText('bob')).toBeInTheDocument();
+  });
+
+  it('prioritizes concurrent running deliveries and keeps full identities distinguishable', () => {
+    render(
+      <ReplyDeliveryStrip
+        entries={[
+          entry({ agent_name: 'frontend_engineer_primary', state: 'running', started_at: '2026-05-13T17:45:00Z' }),
+          entry({ agent_name: 'frontend_engineer_secondary', state: 'running', started_at: '2026-05-13T17:45:30Z' }),
+          entry({ agent_name: 'qa_engineer', state: 'queued' }),
+        ]}
+        nowMs={nowMs}
+      />,
+    );
+    const active = screen.getByRole('list', { name: 'Active reply deliveries' });
+    expect(within(active).getByText('frontend_engineer_primary')).toBeVisible();
+    expect(within(active).getByText('frontend_engineer_secondary')).toBeVisible();
+    expect(screen.getByRole('group', { name: '1 queued delivery' })).not.toHaveAttribute('open');
+  });
+
+  it('uses truthful singular captions and exposes queued detail with native disclosure semantics', () => {
+    render(<ReplyDeliveryStrip entries={[entry({ coalesced_message_count: 1, from_seq: 9, through_seq: 9 })]} nowMs={nowMs} />);
+    const disclosure = screen.getByRole('group', { name: '1 queued delivery' });
+    const summary = within(disclosure).getByText('1 queued delivery');
+    summary.focus();
+    expect(summary).toHaveFocus();
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute('open');
+    expect(screen.getByText('1 message coalesced · message 9')).toBeInTheDocument();
   });
 });
 
