@@ -3227,6 +3227,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/pin": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent": {
       "POST": {
         "params": [
@@ -3250,6 +3272,28 @@
       }
     },
     "/api/v1/orgs/{slug}/threads/{thread_id}/remove-participant": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/rename": {
       "POST": {
         "params": [
           [

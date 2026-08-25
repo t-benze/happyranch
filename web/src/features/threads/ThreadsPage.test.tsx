@@ -35,6 +35,8 @@ function mkThread(
     composed_from_dream_id: string | null;
     last_speaker: string | null;
     started_at: string;
+    pinned: boolean;
+    last_activity_at: string | null;
   }>,
 ) {
   return {
@@ -51,6 +53,9 @@ function mkThread(
     transcript_path: null as string | null,
     composed_from_dream_id: null as string | null,
     last_speaker: 'agent_a' as string | null,
+    pinned: false,
+    pinned_at: null as string | null,
+    last_activity_at: null as string | null,
     ...overrides,
   };
 }

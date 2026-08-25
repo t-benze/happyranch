@@ -11,7 +11,9 @@ import {
   listThreadMessages,
   listThreads,
   removeParticipantFromThread,
+  renameThread,
   sendThreadFollowUp,
+  setThreadPinned,
   threadInboxEventsPath,
   threadTailPath,
 } from './threads';
@@ -167,6 +169,34 @@ describe('threads api mirror', () => {
     expect(r.agent_name).toBe('qa_engineer');
     expect(r.system_message_seq).toBe(3);
     expect(received).toEqual({ agent_name: 'qa_engineer' });
+  });
+
+  test('renameThread POSTs the trimmed subject to /rename (THR-209)', async () => {
+    seedToken();
+    let received: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/rename`, async ({ request: req }) => {
+        received = await req.json();
+        return HttpResponse.json({ thread_id: 'THR-001', subject: 'New title' });
+      }),
+    );
+    const r = await renameThread(SLUG, 'THR-001', { subject: '  New title  ' });
+    expect(r.subject).toBe('New title');
+    expect(received).toEqual({ subject: '  New title  ' });
+  });
+
+  test('setThreadPinned POSTs the boolean state to /pin (THR-209)', async () => {
+    seedToken();
+    let received: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/pin`, async ({ request: req }) => {
+        received = await req.json();
+        return HttpResponse.json({ thread_id: 'THR-001', pinned: true });
+      }),
+    );
+    const r = await setThreadPinned(SLUG, 'THR-001', { pinned: true });
+    expect(r.pinned).toBe(true);
+    expect(received).toEqual({ pinned: true });
   });
 
   test('SSE path helpers return stable strings', () => {

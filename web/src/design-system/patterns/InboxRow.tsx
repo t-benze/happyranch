@@ -60,6 +60,12 @@ interface InboxRowProps {
    * `onSelect` and fall through to default anchor behaviour.
    */
   onSelect?: () => void;
+  /**
+   * THR-209: optional sibling control (e.g. a pin toggle) rendered beside
+   * the row anchor. A sibling, never nested inside the `<a>` — interactive
+   * inside interactive is invalid HTML and breaks assistive tech.
+   */
+  pinControl?: ReactNode;
 }
 
 const FROM_DREAM_PILL =
@@ -77,6 +83,7 @@ export function InboxRow({
   layout = 'default',
   href,
   onSelect,
+  pinControl,
 }: InboxRowProps): JSX.Element {
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.defaultPrevented) return;
@@ -104,7 +111,7 @@ export function InboxRow({
     // (open=green accent, archived=grey); status badge routed through the shared
     // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
     const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
-    return (
+    const rowEl = (
       <a
         href={href}
         onClick={handleClick}
@@ -150,6 +157,14 @@ export function InboxRow({
         </div>
       </a>
     );
+    return pinControl ? (
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">{rowEl}</div>
+        {pinControl}
+      </div>
+    ) : (
+      rowEl
+    );
   }
 
   const statusLabel = status === 'open' ? 'active' : 'done';
@@ -158,7 +173,7 @@ export function InboxRow({
       ? 'bg-accent-soft text-accent-text'
       : 'bg-surface-sunken border border-border-default text-text-muted';
 
-  return (
+  const rowEl = (
     <a
       href={href}
       onClick={handleClick}
@@ -205,6 +220,15 @@ export function InboxRow({
         {meta && <span className="shrink-0">{meta}</span>}
       </div>
     </a>
+  );
+
+  return pinControl ? (
+    <div className="flex items-center gap-1">
+      <div className="min-w-0 flex-1">{rowEl}</div>
+      {pinControl}
+    </div>
+  ) : (
+    rowEl
   );
 }
 

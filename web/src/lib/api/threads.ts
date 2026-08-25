@@ -108,6 +108,20 @@ export const resumeThread = (
 ): Promise<{ thread_id: string; status: string; idempotent?: boolean }> =>
   request(`/orgs/${slug}/threads/${threadId}/resume`, { method: 'POST' });
 
+export const renameThread = (
+  slug: string,
+  threadId: string,
+  body: { subject: string },
+): Promise<{ thread_id: string; subject: string; idempotent?: boolean }> =>
+  request(`/orgs/${slug}/threads/${threadId}/rename`, { method: 'POST', body });
+
+export const setThreadPinned = (
+  slug: string,
+  threadId: string,
+  body: { pinned: boolean },
+): Promise<{ thread_id: string; pinned: boolean; idempotent?: boolean }> =>
+  request(`/orgs/${slug}/threads/${threadId}/pin`, { method: 'POST', body });
+
 export const abortReplies = (
   slug: string,
   threadId: string,

@@ -1750,6 +1750,47 @@ class AuditLogger:
             payload={"turns_used": turns_used},
         )
 
+    def log_thread_renamed(
+        self,
+        thread_id: str,
+        *,
+        old_subject: str,
+        new_subject: str,
+        actor: str = "founder",
+    ) -> None:
+        """Record a founder rename (THR-209).
+
+        Follows the existing thread-scope audit convention
+        (``audit_log.task_id`` = THR-* id). This is an audit row only — it
+        never appears as a thread message and changes no activity timestamps.
+        """
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=actor,
+            action="thread_renamed",
+            payload={"old_subject": old_subject, "new_subject": new_subject},
+        )
+
+    def log_thread_pin_state_changed(
+        self,
+        thread_id: str,
+        *,
+        pinned: bool,
+        actor: str = "founder",
+    ) -> None:
+        """Record a founder pin/unpin (THR-209).
+
+        Audit-only presentation-state write: emits no thread message,
+        notification, or activity-timestamp change. Action is
+        ``thread_pinned`` or ``thread_unpinned``.
+        """
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=actor,
+            action="thread_pinned" if pinned else "thread_unpinned",
+            payload={"pinned": pinned},
+        )
+
     def log_thread_resumed(
         self, thread_id: str, *, prior_archived_at: str | None,
     ) -> None:

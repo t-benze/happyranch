@@ -1,6 +1,6 @@
 {
   "description": "Route classification mirroring the INCLUDED_PATHS and EXCLUDED_PATHS sets from web/src/test/openapi-coverage.test.ts. This is the SINGLE SOURCE OF TRUTH for route surface classification. Both the web coverage test and the Swift SurfaceAllowList drift-guard test read from this file.",
-  "timestamp": "2026-08-04T11:27+08:00",
+  "timestamp": "2026-08-25T09:00+08:00",
   "included": [
     "GET /api/v1/health",
     "GET /api/v1/health/prereqs",
@@ -46,6 +46,8 @@
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/archive",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/abort-replies",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/resume",
+    "POST /api/v1/orgs/{slug}/threads/{thread_id}/pin",
+    "POST /api/v1/orgs/{slug}/threads/{thread_id}/rename",
     "GET /api/v1/orgs/{slug}/jobs/",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}",
     "POST /api/v1/orgs/{slug}/jobs/{job_id}/run",

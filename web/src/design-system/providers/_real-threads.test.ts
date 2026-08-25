@@ -7,6 +7,8 @@ import React from 'react';
 // classifyTailEvent — pure unit tests (no globals needed)
 // ---------------------------------------------------------------------------
 import { classifyTailEvent } from './_real-threads';
+// The mocked @/lib/api module — `threads` carries the THR-209 mutation fns.
+import { threads as threadsApi } from '@/lib/api';
 
 // Pins the routing the live "agent working on a reply" indicator depends on:
 // the runner publishes seq-bearing invocation_started/settled events on the
@@ -75,6 +77,10 @@ vi.mock('@/lib/api', () => ({
   threads: {
     threadInboxEventsPath: vi.fn(() => '/events'),
     threadTailPath: vi.fn(() => ({ path: '/tail', query: { since_seq: 0 } })),
+    // THR-209 pin/rename mutation hooks exercise these network functions.
+    setThreadPinned: vi.fn(),
+    getThread: vi.fn(),
+    renameThread: vi.fn(),
   },
 }));
 
@@ -256,5 +262,142 @@ describe('useThreadTailSSE — thread-detail invalidation for reply_delivery (GH
     });
 
     expect(isInvalidated(qc, ['thread', SLUG, THREAD_ID])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THR-209 — useSetThreadPinned optimistic cache update + rollback
+// ---------------------------------------------------------------------------
+
+describe('useSetThreadPinned — optimistic pin (THR-209)', () => {
+  interface PinState {
+    thread_id: string;
+    subject: string;
+    pinned: boolean;
+    pinned_at: string | null;
+    last_activity_at: string | null;
+  }
+
+  function seed(qc: QueryClient): PinState {
+    const thread: PinState = {
+      thread_id: THREAD_ID,
+      subject: 'S',
+      pinned: false,
+      pinned_at: null,
+      last_activity_at: null,
+    };
+    qc.setQueryData(['threads', SLUG, { status: 'open' }], { threads: [thread] });
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      ...thread,
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+    return thread;
+  }
+
+  it('flips the cached pinned state optimistically and keeps it on success', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockResolvedValue({
+      thread_id: THREAD_ID,
+      pinned: true,
+    });
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ pinned: true });
+    });
+
+    const list = qc.getQueryData<{ threads: { pinned: boolean }[] }>([
+      'threads', SLUG, { status: 'open' },
+    ]);
+    expect(list?.threads[0].pinned).toBe(true);
+    const detail = qc.getQueryData<{ pinned: boolean }>(['thread', SLUG, THREAD_ID]);
+    expect(detail?.pinned).toBe(true);
+  });
+
+  it('rolls the optimistic flip back on failure', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('boom'),
+    );
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync({ pinned: true })).rejects.toThrow('boom');
+    });
+
+    const list = qc.getQueryData<{ threads: { pinned: boolean }[] }>([
+      'threads', SLUG, { status: 'open' },
+    ]);
+    expect(list?.threads[0].pinned).toBe(false);
+    const detail = qc.getQueryData<{ pinned: boolean }>(['thread', SLUG, THREAD_ID]);
+    expect(detail?.pinned).toBe(false);
+  });
+
+  it('unpin rolls back to pinned on failure', async () => {
+    const qc = makeClient();
+    const thread = seed(qc);
+    thread.pinned = true;
+    thread.pinned_at = '2026-05-20T00:00:00Z';
+    qc.setQueryData(['threads', SLUG, { status: 'open' }], { threads: [thread] });
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      ...thread,
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('boom'),
+    );
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync({ pinned: false })).rejects.toThrow('boom');
+    });
+
+    const list = qc.getQueryData<{ threads: { pinned: boolean }[] }>([
+      'threads', SLUG, { status: 'open' },
+    ]);
+    expect(list?.threads[0].pinned).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THR-209 — useRenameThread patches the detail cache
+// ---------------------------------------------------------------------------
+
+describe('useRenameThread — detail cache patch (THR-209)', () => {
+  it('patches the thread detail subject and invalidates the list', async () => {
+    const qc = makeClient();
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      thread_id: THREAD_ID,
+      subject: 'Old',
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+    (threadsApi.renameThread as ReturnType<typeof vi.fn>).mockResolvedValue({
+      thread_id: THREAD_ID,
+      subject: 'New',
+    });
+
+    const { result } = renderHook(() => realThreadsApi.useRenameThread(THREAD_ID), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ subject: 'New' });
+    });
+
+    const detail = qc.getQueryData<{ subject: string }>(['thread', SLUG, THREAD_ID]);
+    expect(detail?.subject).toBe('New');
   });
 });
