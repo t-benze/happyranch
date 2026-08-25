@@ -256,6 +256,8 @@ Traps:
 
 Every `kind=message` thread row is a **conversational arrival** for every participant except the speaker. Since GH-688 Phase 1 (Slice A store + Slice B route/runner wiring), arrivals coalesce: a `(thread_id, agent_name)` pair holds at most one unstarted `REPLY` (queued) and at most one running `REPLY`; a burst advances the queued/running wake's `required_through_seq` instead of minting one invocation per message. The store owns the queued/running token transitions (`record_conversational_arrival`, `claim_conversational_reply`, `settle_conversational_reply`) — routes and the runner never open-code them. There is no `addressed_to`, `@all`, or `@founder` token; body `@`-mentions are visible text, not routing signals. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`; approved Phase-1 design recorded in THR-198 and TASK-5437 output.
 
+**Phase-2 storage (THR-198, Slice A) is landed; the routing doctrine is NOT yet reversed.** The additive columns `threads.mention_routing_enabled` (INTEGER NOT NULL DEFAULT 1 — default enabled for all threads incl. existing) and `thread_messages.mentions_json` (TEXT) exist, and the two conversational store seams persist the derived valid-participant mention set from `body_markdown` at write time (system/decline rows and pre-change history stay NULL). **Wake routing is intentionally unchanged until Slice B** — the broadcast behavior above remains the production contract; do not treat `mentions_json` as a routing signal yet, and do not revive `thread_messages.addressed_to_json` (its separate cleanup plan is intact).
+
 Traps:
 
 - Broadcast is unconditional; declines are silent.

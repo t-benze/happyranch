@@ -2,6 +2,16 @@
 
 **Date:** 2026-05-30
 **Status:** Draft, pending implementation.
+**Superseded in part (2026-08-25, THR-198 seq 108-110):** the Phase-2 thread
+mention-routing program is founder-approved. **Slice A (storage) is landed**
+— additive columns `threads.mention_routing_enabled` (INTEGER NOT NULL
+DEFAULT 1) and `thread_messages.mentions_json` (TEXT), a pure parse/resolver
+module (`runtime/daemon/thread_mentions.py`), and store-seam persistence of
+the derived valid-participant mention set for every conversational write.
+The **visual-only routing doctrine in this spec is deliberately NOT yet
+reversed**: production wake routing remains broadcast (participants minus
+speaker) until Slice B wires the resolver; `thread_messages.addressed_to_json`
+stays unwritten/unread with its separate cleanup plan intact.
 **Origin:** Founder-reported pattern on THR-011 (tourism-org, 2026-05-29): the founder addressed seq 10 to `["finance_agent"]` only; finance_agent's seq 11 prose-mentioned `@admin_head 你那边合同库归档...` but its structured `addressed_to_json` was empty; no invocation was ever minted for admin_head, so the hand-off was silently dropped. Founder diagnosis: structured `addressed_to` invites exactly this class of silent-drop bug, and every reasonable thread should broadcast to all participants.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive this changes.
@@ -39,6 +49,12 @@ Root cause (verified in this codebase, 2026-05-29):
 - Dropping the `thread_messages.addressed_to_json` column. Kept as nullable, unread by new code, scheduled for cleanup in a later release.
 - Dropping `thread_messages.kind='decline'` rows or the `decline_reason` column. Old rows readable for audit; new code never writes either.
 - Body @-mention parsing. We considered it; it relocates the same fragility under an unstructured surface. Skill discipline in the invocation prompt is the only routing signal.
+  **Phase-2 supersession (THR-198 seq 108-110, Slice A landed):** the founder
+  approved structured body-@-mention parsing as the Phase-2 routing signal;
+  Slice A ships the parse/resolver + `thread_messages.mentions_json` storage
+  (server-derived at the two store seams). Wake routing is intentionally still
+  broadcast until Slice B — see `docs/agent-guides/features-and-invariants.md`
+  (Thread Broadcast Routing).
 - "Expected responders" hint (a softer `addressed_to`). Rejected as likely to collapse back into the original concept.
 - Runtime ping-pong brake beyond the existing `turn_cap`. We accept that an over-eager agent pair can burn through a thread; audit logs make it visible.
 - `notify_thread_compose` (the founder-side Feishu push when an agent **opens** a new thread). Kept — the founder needs the heads-up to even know the thread exists. Only in-thread back-and-forth pings are removed.

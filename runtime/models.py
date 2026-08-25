@@ -489,6 +489,10 @@ class ThreadRecord(BaseModel):
     # is pinned by the founder. Pinning changes display only — never identity,
     # participants, routing, unread state, lifecycle, or activity timestamps.
     pinned_at: datetime | None = None
+    # Phase-2 mention routing (THR-198): per-thread switch, DEFAULT ENABLED.
+    # Additive column with NOT NULL DEFAULT 1 — existing threads adopt the
+    # enabled default with no data migration or replay.
+    mention_routing_enabled: bool = True
     # Most recent message created_at (derived; NULL for threads without
     # messages). Feeds the pinned-section activity ranking (THR-209).
     last_activity_at: datetime | None = None
@@ -557,6 +561,11 @@ class ThreadMessage(BaseModel):
     decline_reason: str | None = None
     system_payload: dict | None = None
     attachments: list[ThreadAttachment] = Field(default_factory=list)
+    # Phase-2 mention routing (THR-198): canonical valid-participant mentions
+    # derived server-side from body_markdown at write time (stored as
+    # mentions_json). Empty list when derived with no valid mentions; NULL
+    # rows (system/decline + pre-change history) read back as empty list.
+    mentions: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
 
 
