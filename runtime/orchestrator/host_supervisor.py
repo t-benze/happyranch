@@ -84,6 +84,12 @@ from runtime.platform.session_backend import (
 
 logger = logging.getLogger(__name__)
 
+# Receipt-boundedness: the supervisor retains at most this many samples per
+# attempt (dropping the oldest) so the bounded receipt's serialized sampling
+# gaps stay cardinality-bounded while the dropped prefix span is preserved
+# truthfully as the leading gap.
+_MAX_RETAINED_SAMPLES = 1024
+
 
 # ── Cancellation ─────────────────────────────────────────────────────
 
@@ -406,12 +412,14 @@ class AdmissionController:
         cap: int,
         gates: Sequence[PressureGate] = (),
         monotonic: Callable[[], float] = time.monotonic,
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
     ) -> None:
         if cap < 1:
             raise ValueError("cap must be >= 1")
         self._cap = cap
         self._gates = list(gates)
         self._monotonic = monotonic
+        self._max_retained_samples = max_retained_samples
         self._cv = threading.Condition(threading.Lock())
         self._queue: deque[_QueuedRequest] = deque()
         self._active = 0
@@ -545,6 +553,7 @@ class AdmissionController:
                             request.logical_id,
                             granted_generation=self._shutdown_generation,
                             monotonic=self._monotonic,
+                            max_retained_samples=self._max_retained_samples,
                         )
                         self._ownerships[lease_id] = ctx
                         lease = AdmissionLease(self, ctx)
@@ -849,6 +858,7 @@ class _AttemptContext:
         logical_id: str,
         granted_generation: int,
         monotonic: Callable[[], float],
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
     ) -> None:
         self._logical_id = logical_id
         self._granted_generation = granted_generation
@@ -867,6 +877,9 @@ class _AttemptContext:
         self._finalized = False
         self._receipt: Receipt | None = None
         self._samples: list[ResourceSample] = []
+        self._max_retained_samples = max_retained_samples
+        self._dropped_samples = 0
+        self._dropped_span = 0.0
         self._sample_errors = 0
         self._started_at: float = monotonic()
 
@@ -968,8 +981,33 @@ class _AttemptContext:
     # ── sampling sink ─────────────────────────────────────────────
 
     def add_sample(self, sample: ResourceSample) -> None:
+        """Retain one bounded sample; the oldest is dropped at capacity.
+
+        The dropped inter-sample span is accumulated so the receipt's
+        serialized gap series can preserve the truthful elapsed time of the
+        truncated prefix (samples beyond the bound are never presented as a
+        gap-free or fabricated cadence)."""
         with self._lock:
+            if len(self._samples) >= self._max_retained_samples:
+                if len(self._samples) >= 2:
+                    self._dropped_span += round(
+                        self._samples[1].sampled_at - self._samples[0].sampled_at,
+                        6,
+                    )
+                self._dropped_samples += 1
+                self._samples.pop(0)
             self._samples.append(sample)
+
+    def dropped_samples(self) -> int:
+        """Samples dropped by the retention bound (0 when none)."""
+        with self._lock:
+            return self._dropped_samples
+
+    def dropped_span(self) -> float:
+        """Truthful elapsed time from the first-ever sample to the first
+        retained sample (the sum of the dropped inter-sample gaps)."""
+        with self._lock:
+            return self._dropped_span
 
     def note_sample_error(self) -> None:
         with self._lock:
@@ -1019,6 +1057,7 @@ class _AttemptContext:
                 str(reason),
                 grace,
                 samples=self.samples_snapshot(),
+                sample_prefix_gap=self.dropped_span(),
             )
         except Exception as exc:
             receipt = None
@@ -1179,6 +1218,7 @@ class HostSessionSupervisor:
         residue: ResidueAccountant | None = None,
         sampler: Callable[[RunningHandle], ResourceSample] | None = None,
         sample_interval_seconds: float | None = None,
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
         max_retry_attempts: int = 0,
         backoff_seconds: Sequence[float] = (),
         monotonic: Callable[[], float] = time.monotonic,
@@ -1204,6 +1244,7 @@ class HostSessionSupervisor:
             ),
             gates=(self._residue,),
             monotonic=monotonic,
+            max_retained_samples=max_retained_samples,
         )
         self._residue.set_waker(self._admission.wake)
         if sampler is not None:

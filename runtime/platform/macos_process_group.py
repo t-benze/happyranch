@@ -261,19 +261,22 @@ class MacOSProcessGroupBackend:
         return _sample
 
     def _snapshot_members(
-        self, root_pid: int, root_identity: str
+        self, root_pid: int, root_identity: str, pgid: int | None = None
     ) -> dict[int, ProcessObservation]:
         """Identity-safe union of the descendant tree + group members.
 
         Returns pid -> observation. The tree walk claims only processes whose
         ancestor chain reaches the (identity-verified) root; group members
-        are added so reparented in-group processes are still accounted."""
+        are added so reparented in-group processes are still accounted.
+        ``pgid`` may be supplied from the launch/session record so group
+        membership is still enumerable after the root process exits."""
         tree = self._census.descendants(root_pid, root_identity or None, include_root=True)
         members: dict[int, ProcessObservation] = {o.pid: o for o in tree}
-        try:
-            pgid = os.getpgid(root_pid)
-        except OSError:
-            pgid = None
+        if pgid is None:
+            try:
+                pgid = os.getpgid(root_pid)
+            except OSError:
+                pgid = None
         if pgid is not None:
             for o in self._census.group_members(pgid):
                 members.setdefault(o.pid, o)
@@ -289,6 +292,7 @@ class MacOSProcessGroupBackend:
         terminal_reason: str,
         grace_seconds: float,
         samples: tuple[ResourceSample, ...] | None = None,
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         """TERM -> bounded grace -> KILL the process group; census survivors.
 
@@ -296,7 +300,16 @@ class MacOSProcessGroupBackend:
         signaled only when the census proves ownership (root identity match
         or a verified member in the captured pgid); escaped descendants that
         survive are reported as best-effort :class:`SurvivorRecord` and stay
-        censused/charged/visible (never an automatic admission block)."""
+        censused/charged/visible (never an automatic admission block).
+
+        The survivor census is finish's OWN **fresh** identity-safe
+        descendant census (never the last periodic snapshot): an escaped
+        descendant created after the last sample is only observable while
+        its ancestor chain still reaches the root, so the shipping finish
+        seam must take the census at terminal time. A census/measurement
+        exception propagates as explicit failure evidence (the supervisor
+        turns teardown failure into fail-closed admission blocking) — it is
+        never collapsed into an empty clean group."""
         samples = tuple(samples or ())
         token = running.token
         with self._lock:
@@ -306,9 +319,9 @@ class MacOSProcessGroupBackend:
         root_identity = running.start_identity or ""
         pgid = running.root_pid  # start_new_session makes the root the leader
         if session is not None:
-            root_pid, root_identity, pgid, _started, snapshot = session
-        else:
-            snapshot = self._snapshot_members(root_pid, root_identity)
+            root_pid, root_identity, pgid, _started, _snapshot = session
+        # Fresh final identity-safe descendant census — the shipping seam.
+        snapshot = self._snapshot_members(root_pid, root_identity, pgid=pgid)
 
         # ── group-ownership proof before signaling ──
         if not self._group_is_ours(root_pid, root_identity, pgid, snapshot):
@@ -326,6 +339,7 @@ class MacOSProcessGroupBackend:
                     session_started=(session[3] if session is not None else started),
                     samples=samples,
                     survivors=survivors,
+                    sample_prefix_gap=sample_prefix_gap,
                 )
             return self._receipt(
                 terminal_reason=terminal_reason,
@@ -337,6 +351,7 @@ class MacOSProcessGroupBackend:
                 session_started=(session[3] if session is not None else started),
                 samples=samples,
                 survivors=survivors,
+                sample_prefix_gap=sample_prefix_gap,
             )
 
         # ── graceful TERM of the group, bounded by the measured grace ──
@@ -355,6 +370,7 @@ class MacOSProcessGroupBackend:
                 session_started=(session[3] if session is not None else started),
                 samples=samples,
                 survivors=survivors,
+                sample_prefix_gap=sample_prefix_gap,
             )
         self._signal_group(pgid, signal.SIGTERM)
         deadline = started + grace_seconds
@@ -386,6 +402,7 @@ class MacOSProcessGroupBackend:
             session_started=(session[3] if session is not None else started),
             samples=samples,
             survivors=survivors,
+            sample_prefix_gap=sample_prefix_gap,
         )
 
     def _receipt(
@@ -398,8 +415,12 @@ class MacOSProcessGroupBackend:
         session_started: float,
         samples: tuple[ResourceSample, ...],
         survivors: tuple[SurvivorRecord, ...],
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         memory, cpu, process = merge_sample_peaks(samples)
+        gaps = sample_gaps(samples)
+        if sample_prefix_gap:
+            gaps = (round(sample_prefix_gap, 6),) + gaps
         return Receipt(
             backend=_BACKEND_NAME,
             terminal_reason=terminal_reason,
@@ -419,7 +440,7 @@ class MacOSProcessGroupBackend:
             process_peak_provenance=(
                 MeasurementProvenance.SAMPLED if process is not None else MeasurementProvenance.UNAVAILABLE
             ),
-            sample_gaps=sample_gaps(samples),
+            sample_gaps=gaps,
             enforcement_events=(),
             survivors=survivors,
         )
@@ -465,11 +486,13 @@ class MacOSProcessGroupBackend:
         return False
 
     def _group_members_alive(self, pgid: int) -> dict[int, str]:
-        """Live (non-zombie) members of *pgid* (identity-verified)."""
-        try:
-            members = self._census.group_members(pgid)
-        except Exception:  # noqa: BLE001 — treat unreadable as empty (fail-safe)
-            return {}
+        """Live (non-zombie) members of *pgid* (identity-verified).
+
+        A census/measurement exception is EXPLICIT failure evidence — it
+        propagates (the supervisor turns teardown failure into fail-closed
+        admission blocking). It must never collapse into an empty group that
+        could be misread as CLEAN/quiescent."""
+        members = self._census.group_members(pgid)
         alive = {}
         for o in members:
             if is_zombie(o.state):

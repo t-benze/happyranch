@@ -814,6 +814,16 @@ residue from the Linux backend blocks admission until reconciliation;
 best-effort macOS survivors stay censused/charged/visible and block only on
 census/measurement failure or the conservative survivor threshold.
 
+Containment/measurement is **fail-closed**: on the Linux backend an
+unreadable `cgroup.procs` or an errored `systemctl` unit-state interrogation
+is UNKNOWN evidence that never yields `CLEAN`/`quiescent` (guaranteed-cleanup
+lease release requires verified cgroup emptiness), and an absent counter is
+`unavailable` unless a real sample backs it; on the macOS backend a
+census/measurement exception at finish is explicit failure evidence that
+blocks admission — never an empty clean group. Retained samples and
+serialized sampling gaps are cardinality-bounded (truncated-prefix span
+preserved truthfully).
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:

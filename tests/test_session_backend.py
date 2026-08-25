@@ -170,7 +170,7 @@ class _ShapeCompliantBackend:
     def sample(self, running) -> ResourceSample:
         return ResourceSample(sampled_at=0.0)
 
-    def finish(self, running, terminal_reason, grace_seconds, samples=None) -> Receipt:
+    def finish(self, running, terminal_reason, grace_seconds, samples=None, sample_prefix_gap=0.0) -> Receipt:
         return Receipt(
             backend="shape", terminal_reason=terminal_reason,
             cleanup_status=CleanupStatus.CLEAN, cleanup_duration_seconds=0.0,

@@ -221,6 +221,10 @@ def test_finish_terms_then_kills_group():
     def signal_group(pgid, sig):
         if sig == signal.SIGKILL:
             alive["101"] = False
+            # The KILL takes effect in the (fake) process table.
+            census.observations[:] = [
+                o for o in census.observations if o.pid not in (100, 101)
+            ]
 
     backend._signal_group = signal_group  # type: ignore[method-assign]
     backend._census.start_identity = lambda pid: {100: "root-1", 101: "child-1"}[pid]
@@ -233,16 +237,62 @@ def test_finish_terms_then_kills_group():
 
 
 def test_finish_clean_success_no_residue():
-    census = _FakeCensus(
-        observations=[_FakeObservation(pid=100, ppid=1, pgid=100, identity="root-1")],
-        identities={100: "root-1"},
-    )
+    # The root exited cleanly before finish: the fresh final census is empty.
+    census = _FakeCensus(observations=[], identities={100: "root-1"})
     backend = _fake_backend(census, pgids={100: 100})
     with backend._lock:
         backend._sessions["tok-1"] = (100, "root-1", 100, 0.0, {})
     receipt = backend.finish(_running(100, "root-1"), "success", grace_seconds=0.2)
     assert receipt.cleanup_status is CleanupStatus.CLEAN
     assert receipt.quiescent is True
+
+
+def test_finish_fresh_census_detects_late_escaped_descendant():
+    """A descendant that escapes AFTER the last periodic sample (the stored
+    session snapshot is EMPTY) is caught by finish's OWN fresh final
+    identity-safe descendant census — no manual pre-sample refresh (the
+    shipping finish seam)."""
+    census = _FakeCensus(
+        observations=[
+            _FakeObservation(pid=100, ppid=1, pgid=100, identity="root-1"),
+            _FakeObservation(pid=102, ppid=100, pgid=999, identity="esc-1"),
+        ],
+        identities={100: "root-1", 102: "esc-1"},
+    )
+    backend = _fake_backend(census, pgids={100: 100, 102: 999})
+    with backend._lock:
+        # The last periodic sample was taken BEFORE the escaped child existed.
+        backend._sessions["tok-1"] = (100, "root-1", 100, 0.0, {})
+    receipt = backend.finish(_running(100, "root-1"), "success", grace_seconds=0.1)
+    assert any(sv.pid == 102 for sv in receipt.survivors), (
+        "escaped descendant must be censused by finish's own fresh census"
+    )
+    assert receipt.quiescent is False
+
+
+def test_finish_census_failure_raises_not_clean():
+    """A census/measurement exception at finish is EXPLICIT failure evidence:
+    it propagates out of finish (never collapsing into an empty CLEAN group);
+    the supervisor turns teardown failure into fail-closed admission
+    blocking."""
+    census = _FakeCensus(
+        observations=[
+            _FakeObservation(pid=100, ppid=1, pgid=100, identity="root-1"),
+        ],
+        identities={100: "root-1"},
+    )
+
+    def boom_group_members(pgid):
+        raise OSError("libproc enumeration failed")
+
+    census.group_members = boom_group_members
+    backend = _fake_backend(census, pgids={100: 100})
+    with backend._lock:
+        backend._sessions["tok-1"] = (
+            100, "root-1", 100, 0.0, {100: census.observations[0]},
+        )
+    with pytest.raises(OSError, match="libproc enumeration failed"):
+        backend.finish(_running(100, "root-1"), "success", grace_seconds=0.1)
 
 
 def test_finish_merges_sampled_provenance():
@@ -367,28 +417,29 @@ def test_finish_clean_success_with_surviving_descendant_real(real_backend):
 
 @real_integration
 def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
-    """Documented best-effort limitation: a descendant that calls ``setsid``
-    escapes the process group; the backend must NOT claim it cleaned — the
-    escaped survivor stays identity-verified in the receipt."""
+    """SHIPPING finish seam: a descendant that ``setsid``s away after launch
+    (no sampler ever ran — only the launch-time snapshot, taken before the
+    child existed) is censused by finish's OWN fresh final identity-safe
+    descendant census. No manual pre-sample refresh.
+
+    Documented best-effort limitation: the census must run while the root
+    still lives — a descendant that escapes AND is reparented before finish
+    (root already exited) is unobservable by any process-table walk."""
     pending = real_backend.prepare(_request(), _policy())
     running = real_backend.launch(
-        pending, LaunchSpec(argv=("sh", "-c", "setsid sleep 60 & sleep 0.3"))
+        pending, LaunchSpec(argv=("sh", "-c", "setsid sleep 60 & sleep 5"))
     )
     survivors = ()
     try:
-        # Refresh the backend's member snapshot WHILE the root still lives so
-        # the escaped child is identity-verified as our descendant.
-        sample = real_backend.sampler()(running)
-        assert sample.process_count is not None and sample.process_count >= 2
-        deadline = time.monotonic() + 5
-        while running.process.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert running.process.returncode == 0
+        # The escaped child is spawned within the first instant; finish runs
+        # while the root still lives so the fresh census can see the child.
+        time.sleep(0.3)
+        assert running.process.poll() is None  # root still alive
         receipt = real_backend.finish(running, "success", grace_seconds=1.0)
         survivors = receipt.survivors
         # The escaped child survives (new session) — best-effort truth:
         # censused survivor, never a fabricated clean claim.
-        assert receipt.survivors, "escaped descendant must be censused"
+        assert receipt.survivors, "escaped descendant must be censused by finish's own census"
         assert receipt.quiescent is False
         assert receipt.cleanup_status is not CleanupStatus.INCOMPLETE
     finally:

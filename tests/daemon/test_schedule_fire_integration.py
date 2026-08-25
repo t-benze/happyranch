@@ -766,7 +766,7 @@ class _ReleaseOnFinishBackend:
             root_pid=self.launched_pid, start_identity="boot-1", process=None,
         )
 
-    def finish(self, running, terminal_reason, grace_seconds, samples=None):
+    def finish(self, running, terminal_reason, grace_seconds, samples=None, sample_prefix_gap=0.0):
         self.calls["finish"] += 1
         self.finish_reasons.append(terminal_reason)
         if self.release is not None:

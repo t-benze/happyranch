@@ -410,6 +410,126 @@ def test_finish_merges_sampled_values_when_no_kernel_counters():
     assert receipt.sample_gaps == (1.0,)
 
 
+# ── finish: fail-closed quiescence (review TASK-5656 findings 1 & 4) ──
+
+
+def test_unit_active_fails_closed_on_interrogation_error():
+    """Only POSITIVE terminal evidence (inactive/failed/dead/not-found) is
+    quiescent; an interrogation error (bad rc, timeout, empty output) leaves
+    the unit state UNKNOWN and is treated as still-active (fail-closed)."""
+    backend = LinuxSystemdBackend()
+    cases = {
+        # (rc, out) -> expected _unit_active (True = not quiescent)
+        (0, "active"): True,
+        (0, "activating"): True,
+        (0, "deactivating"): True,
+        (0, "inactive"): False,
+        (0, "failed"): False,
+        (3, "inactive"): False,  # LSB: program is not running
+        (1, "Failed to connect to bus"): True,  # interrogation ERROR
+        (-1, "timeout after 5s: systemctl --user is-active"): True,
+        (0, ""): True,  # empty state -> unknown
+        (5, ""): True,  # unknown rc -> unknown
+    }
+    for (rc, out), expected in cases.items():
+        _install_fake_run(backend, lambda argv, rc=rc, out=out: (rc, out))
+        got = backend._unit_active("happyranch-session-x.scope")
+        assert got is expected, f"rc={rc} out={out!r}: expected active={expected}, got {got}"
+
+
+def test_finish_fails_closed_when_cgroup_membership_unreadable():
+    """cgroup.procs unreadable must never yield CLEAN/quiescent: the unit is
+    stopped and KILL-escalated best-effort, then the receipt is INCOMPLETE
+    with explicit unreadable-membership evidence (admission-blocking)."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(backend, {})  # cgroup.procs unreadable
+    backend._cgroup_dir_exists = lambda cg: True  # type: ignore[method-assign]
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    receipt = backend.finish(running, "success", grace_seconds=0.2)
+    assert receipt.cleanup_status is not CleanupStatus.CLEAN
+    assert receipt.cleanup_status is CleanupStatus.INCOMPLETE
+    assert receipt.quiescent is False
+    assert receipt.survivors == ()  # unenumerable residue is never fabricated
+    assert "cgroup_procs_unreadable" in receipt.enforcement_events
+
+
+def test_finish_fails_closed_when_unit_state_interrogation_fails():
+    """A systemctl is-active ERROR (unknown unit state) must never become
+    CLEAN even when the cgroup is empty/removed."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+
+    def script(argv):
+        if "is-active" in argv:
+            return (1, "Failed to connect to bus")
+        return (0, "")
+
+    _install_fake_run(backend, script)
+    _install_fake_read_file(backend, {})  # cgroup gone -> genuinely empty
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    receipt = backend.finish(running, "success", grace_seconds=0.2)
+    assert receipt.cleanup_status is not CleanupStatus.CLEAN
+    assert receipt.cleanup_status is CleanupStatus.INCOMPLETE
+    assert receipt.quiescent is False
+
+
+def test_teardown_and_verify_fails_closed_when_membership_unreadable():
+    """The probe's own emptiness verification must fail when cgroup.procs
+    cannot be read (unknown membership never proves cgroup emptiness)."""
+    backend = LinuxSystemdBackend()
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(backend, {})
+    backend._cgroup_dir_exists = lambda cg: True  # type: ignore[method-assign]
+    ok, reason = backend._teardown_and_verify("unit.scope", "/cg", 0.2)
+    assert ok is False
+    assert "unreadable" in reason
+
+
+# ── finish: absent counters are unavailable, never sampled ───────────
+
+
+def test_finish_absent_counters_are_unavailable_not_sampled():
+    """Wholly absent counters AND no samples: values are None with
+    UNAVAILABLE provenance — never labeled SAMPLED with no sample behind
+    them."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(backend, {})
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.memory_peak_bytes is None
+    assert receipt.memory_peak_provenance is MeasurementProvenance.UNAVAILABLE
+    assert receipt.cpu_total_seconds is None
+    assert receipt.cpu_total_provenance is MeasurementProvenance.UNAVAILABLE
+    assert receipt.process_peak is None
+    assert receipt.process_peak_provenance is MeasurementProvenance.UNAVAILABLE
+
+
+def test_finish_partial_absent_counters_unavailable():
+    """Partial absence: memory.peak present (KERNEL) while cpu.stat and
+    pids.current are absent with no samples — cpu/process are None +
+    UNAVAILABLE, memory stays KERNEL."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(backend, {"memory.peak": "3000000"})
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.memory_peak_bytes == 3000000
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_seconds is None
+    assert receipt.cpu_total_provenance is MeasurementProvenance.UNAVAILABLE
+    assert receipt.process_peak is None
+    assert receipt.process_peak_provenance is MeasurementProvenance.UNAVAILABLE
+
+
 # ── abandon / recover ────────────────────────────────────────────────
 
 

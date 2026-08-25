@@ -64,6 +64,7 @@ from runtime.platform.session_backend import (
     SurvivorRecord,
     TerminalReason,
 )
+from runtime.platform.process_census import sample_gaps
 
 
 # ── fakes ────────────────────────────────────────────────────────────
@@ -206,6 +207,7 @@ class FakeBackend:
         terminal_reason: str,
         grace_seconds: float,
         samples=None,
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         with self.lock:
             self.calls["finish"] += 1
@@ -233,6 +235,8 @@ class FakeBackend:
             sample_gaps = tuple(
                 round(b - a, 4) for a, b in zip(ordered, ordered[1:])
             )
+            if sample_prefix_gap:
+                sample_gaps = (round(sample_prefix_gap, 4),) + sample_gaps
         return Receipt(
             backend=self.name,
             terminal_reason=terminal_reason,
@@ -660,6 +664,61 @@ def _bare_supervisor() -> HostSessionSupervisor:
     return HostSessionSupervisor(
         backend=FakeBackend(), policy=make_policy(), publisher=lambda r: None
     )
+
+
+def test_attempt_context_bounds_retained_samples_truthfully():
+    """Sustained sampling beyond the retention bound: retained samples stay
+    bounded, the dropped prefix span is accumulated truthfully (the elapsed
+    time from the first-ever sample to the first retained sample), and the
+    serialized gap series stays bounded."""
+    ctx = _AttemptContext("r1", 0, time.monotonic, max_retained_samples=5)
+    base = 1000.0
+    for i in range(50):
+        ctx.add_sample(ResourceSample(sampled_at=base + i * 0.5))
+    retained = ctx.samples_snapshot()
+    assert len(retained) == 5
+    assert ctx.dropped_samples() == 45
+    # Truthful prefix span: 45 dropped inter-sample gaps of 0.5s each.
+    assert ctx.dropped_span() == pytest.approx(45 * 0.5)
+    assert retained[0].sampled_at == pytest.approx(base + 45 * 0.5)
+    assert len(sample_gaps(retained)) == 4  # bounded gaps
+
+
+def test_receipt_sample_gaps_bounded_and_truthful_under_sustained_sampling():
+    """End-to-end: a fast sampler far beyond the retention bound produces a
+    bounded receipt whose serialized gap series preserves the truthful
+    prefix span (the first gap) instead of fabricating a clean cadence."""
+    backend = FakeBackend(merge_samples=True)
+    t0 = [0.0]
+
+    class CountingSampler:
+        def __call__(self, running):
+            t0[0] += 0.01
+            return ResourceSample(
+                sampled_at=t0[0], memory_peak_bytes=100, process_count=1
+            )
+
+    supervisor, _ = make_supervisor(
+        backend=backend,
+        sampler=CountingSampler(),
+        sample_interval_seconds=0.001,
+        max_retained_samples=5,
+    )
+
+    def body(running):
+        time.sleep(0.3)
+        return ok_result()
+
+    outcome = supervisor.run(
+        make_request("a"), launch_spec=make_spec(), launch_body=body
+    )
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    receipt = outcome.receipt
+    assert receipt is not None
+    # Serialized gaps bounded: prefix span + at most (max_retained - 1).
+    assert len(receipt.sample_gaps) <= 5
+    # Truthful prefix: a substantial dropped span appears as the leading gap.
+    assert receipt.sample_gaps[0] >= 2.0
 
 
 def test_register_replays_already_fired_token():

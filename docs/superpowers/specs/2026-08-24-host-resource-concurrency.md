@@ -139,11 +139,18 @@ concurrency (1 worker) and row lifecycle.
   success included**, waits within the measured grace, escalates to `KILL`,
   and verifies **cgroup emptiness** (the unit can report `inactive` while a
   TERM-resistant member still lives in its cgroup — quiescence is cgroup-
-  driven, never main-PID-observed); verified residue is reported as
-  `SurvivorRecord` (guaranteed-cleanup residue blocks admission). Counters
-  are read before teardown: `memory.peak` (kernel peak), `cpu.stat`
-  `usage_usec` (kernel cumulative), `pids.current` (exact live count;
-  peak over samples is `sampled` — no kernel pids-peak counter exists).
+  driven, never main-PID-observed). Quiescence is **fail-closed**: an
+  unreadable `cgroup.procs` or an errored unit-state interrogation is
+  UNKNOWN evidence that never yields `CLEAN`/`quiescent` — the receipt stays
+  `INCOMPLETE` with explicit `cgroup_procs_unreadable` evidence so a
+  guaranteed cleanup can never release the lease without admission-blocking
+  residue semantics; verified residue is reported as `SurvivorRecord`
+  (guaranteed-cleanup residue blocks admission). Counters are read before
+  teardown: `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel
+  cumulative), `pids.current` (exact live count; peak over samples is
+  `sampled` — no kernel pids-peak counter exists). An absent counter falls
+  back to the sampled value with `sampled` provenance only when a sample
+  exists; otherwise it is `unavailable` — never a fabricated zero.
   Session scopes apply **no resource limits** in Slice B (no approved limit
   values); the probe proves the enforcement machinery itself.
 - `runtime/platform/macos_process_group.py` — the honestly capped macOS
@@ -151,7 +158,12 @@ concurrency (1 worker) and row lifecycle.
   cleanup, group-ownership proof before signaling (a reused group number
   with no verified member is never signaled), identity-safe escaped-
   descendant survivor census (a child that `setsid`s away is censused, never
-  falsely claimed clean), sampled-provenance receipt peaks.
+  falsely claimed clean), sampled-provenance receipt peaks. `finish` runs
+  its **own fresh final identity-safe descendant census** (never the last
+  periodic snapshot) so an escaped descendant created after the last sample
+  is detected by the shipping finish seam; a census/measurement exception
+  propagates as explicit failure evidence that blocks admission — it never
+  collapses into an empty clean group.
 - `runtime/platform/backend_factory.py` — the single capability-probe
   selection point: healthy Linux systemd/cgroup-v2 probe selects the Linux
   backend; otherwise a healthy process-group/census probe selects the macOS
@@ -201,7 +213,12 @@ Admission is backpressure, not task failure.
 ## Residue and reconciliation
 
 Guaranteed-cleanup residue is an anomaly: it marks containment unhealthy and
-blocks admission until explicit reconciliation. Best-effort verified
+blocks admission until explicit reconciliation. **Unknown residue evidence is
+fail-closed**: a cleanup that cannot verify its own quiescence (Linux:
+unreadable `cgroup.procs` / errored unit-state interrogation; macOS:
+census/measurement exception at finish) is never reported CLEAN/quiescent —
+it is INCOMPLETE with explicit evidence, and the supervisor blocks admission
+until a successful re-probe reconciles. Best-effort verified
 survivors remain in the descendant census, charged against host
 pressure/admission, and visible in receipts; they block only on
 census/measurement failure or a conservative survivor count/rate threshold.
@@ -221,6 +238,12 @@ distinguishes `kernel` (cgroup/job counters), `sampled` (portable sampler),
 and `unavailable`. The supervisor collects samples and hands them to the
 backend at finish time; the backend merges them into the receipt.
 
+The supervisor retains a **cardinality-bounded** sample history per attempt
+(dropping the oldest past the bound) so the bounded receipt's serialized
+sampling gaps stay bounded; the truncated prefix's elapsed span is preserved
+as the truthful leading gap — cadence is never presented as continuous or
+gap-free truth.
+
 Slice B implements the sampler (`runtime/platform/process_census.py`) and
 both backends:
 
@@ -228,7 +251,9 @@ both backends:
   `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel cumulative),
   `pids.current` (exact live count at sample time). `memory.peak`'s absence
   on older kernels degrades the receipt to the sampled peak with `sampled`
-  provenance — never a fabricated zero.
+  provenance **only when a sampled value exists**; a wholly or partially
+  absent counter with no sample behind it is `unavailable`, never a
+  fabricated zero or a labeled-sampled None.
 - macOS peaks are always `sampled` (resident-sum RSS, cumulative per-process
   CPU, census process count) and never labeled authoritative.
 - Survivor/residue checks are zombie-aware and identity-safe: an unreaped

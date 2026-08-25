@@ -795,16 +795,33 @@ factory** (``runtime/platform/backend_factory.py``):
   scope on every terminal path, clean success included**, escalates to
   ``KILL`` within the measured grace, and verifies **cgroup emptiness**
   (unit ``inactive`` alone is never quiescence — a TERM-resistant member can
-  linger in the cgroup after the main PID exits). Verified residue is
-  reported as guaranteed-cleanup residue (admission-blocking). Counters are
-  authoritative where the kernel exposes them (``memory.peak``,
-  ``cpu.stat`` ``usage_usec``, ``pids.current``).
+  linger in the cgroup after the main PID exits). Quiescence is
+  **fail-closed**: an unreadable ``cgroup.procs`` or an errored unit-state
+  interrogation is UNKNOWN evidence that never yields ``CLEAN``/``quiescent``
+  (the receipt stays ``INCOMPLETE`` with explicit ``cgroup_procs_unreadable``
+  evidence so admission blocks). Verified residue is reported as
+  guaranteed-cleanup residue (admission-blocking). Counters are authoritative
+  where the kernel exposes them (``memory.peak``, ``cpu.stat``
+  ``usage_usec``, ``pids.current``); an absent counter falls back to the
+  sampled peak with ``sampled`` provenance only when a sample exists,
+  otherwise it is ``unavailable`` — never a fabricated value.
 - ``runtime/platform/macos_process_group.py`` — honestly capped macOS
   backend: process-group launch, TERM/KILL bounded cleanup with
   group-ownership proof before signaling, identity-safe escaped-descendant
   survivor census (a ``setsid``-escaped child is censused, never falsely
-  claimed clean), sampled-provenance peaks. ``limits_*`` stay ``unavailable``
-  — no Linux-equivalent descendant-tree controller exists on macOS.
+  claimed clean), sampled-provenance peaks. ``finish`` runs its **own fresh
+  final identity-safe descendant census** (never the last periodic snapshot)
+  so an escaped descendant created after the last sample is detected by the
+  shipping finish seam; a census/measurement exception propagates as
+  explicit failure evidence that blocks admission — it never collapses into
+  an empty clean group. ``limits_*`` stay ``unavailable`` — no
+  Linux-equivalent descendant-tree controller exists on macOS.
+
+The supervisor retains a **cardinality-bounded** sample history per attempt
+(dropping the oldest past the bound) so the bounded receipt's serialized
+sampling gaps stay bounded; the truncated prefix's elapsed span is preserved
+as the truthful leading gap, so cadence is never presented as continuous
+or gap-free truth.
 
 Callers above the factory branch on **capabilities**, never OS names; the
 factory is the single OS-name site and even it selects by operational probe,

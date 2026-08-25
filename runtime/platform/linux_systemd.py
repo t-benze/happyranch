@@ -427,15 +427,26 @@ class LinuxSystemdBackend:
                 counters["cpu.stat"] = usage / 1_000_000.0
         return counters
 
-    def _cgroup_members(self, cg: str) -> dict[int, str]:
+    def _cgroup_dir_exists(self, cg: str) -> bool:
+        """True while the cgroup directory is still materialized on disk."""
+        return os.path.isdir(os.path.join(self._cgroup_root, cg.lstrip("/")))
+
+    def _cgroup_members(self, cg: str) -> dict[int, str] | None:
         """Current cgroup members: pid -> start identity (identity-safe).
+
+        Returns ``None`` when the cgroup still exists but its membership
+        cannot be READ (``cgroup.procs`` unreadable) — an unverifiable
+        membership is never treated as empty (fail-closed). A fully removed
+        cgroup (the scope was stopped) is genuinely empty.
 
         Unreaped zombies are excluded: a zombie is already dead and answers
         no signal — it must never be reported as surviving residue."""
+        if not self._cgroup_dir_exists(cg):
+            return {}
         raw = self._read_file(cg, "cgroup.procs")
-        members: dict[int, str] = {}
         if raw is None:
-            return members
+            return None
+        members: dict[int, str] = {}
         for tok in raw.split():
             try:
                 pid = int(tok)
@@ -534,6 +545,7 @@ class LinuxSystemdBackend:
         terminal_reason: str,
         grace_seconds: float,
         samples: tuple[ResourceSample, ...] | None = None,
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         """Explicit whole-scope stop on EVERY terminal path, then verify.
 
@@ -544,7 +556,12 @@ class LinuxSystemdBackend:
         merely observing the main PID exit is insufficient) -> escalate to
         ``KILL`` when members remain -> verify cgroup emptiness -> identity-
         verified survivors (guaranteed-cleanup residue, admission-blocking)
-        -> bounded receipt."""
+        -> bounded receipt.
+
+        Fail-closed: an unreadable ``cgroup.procs`` or an errored unit-state
+        interrogation is UNKNOWN evidence — it can never yield ``CLEAN`` or
+        ``quiescent`` (the receipt stays ``INCOMPLETE`` with explicit
+        ``cgroup_procs_unreadable`` evidence so admission blocks)."""
         samples = tuple(samples or ())
         unit = running.token
         with self._launched_lock:
@@ -563,12 +580,16 @@ class LinuxSystemdBackend:
         #    the scope can reach ``inactive`` while members still live in
         #    its cgroup after a TERM they ignored).
         members = self._cgroup_members(cg) if cg else {}
+        members_unknown = members is None
+        members_present = bool(members) or members_unknown
         deadline = started + grace_seconds
         escalated = False
-        while members and self._monotonic() < deadline:
+        while members_present and self._monotonic() < deadline:
             self._sleep(0.05)
             members = self._cgroup_members(cg) if cg else {}
-        if members:
+            members_unknown = members is None
+            members_present = bool(members) or members_unknown
+        if members_present:
             # 4. Escalate to KILL, bounded.
             escalated = True
             self._systemctl("kill", "--kill-who=all", "--signal=KILL", unit, timeout=5)
@@ -576,11 +597,13 @@ class LinuxSystemdBackend:
             kill_deadline = self._monotonic() + min(grace_seconds, 2.0)
             while self._monotonic() < kill_deadline:
                 members = self._cgroup_members(cg) if cg else {}
-                if not members:
+                if not members and members is not None:
                     break
                 self._sleep(0.05)
             else:
                 members = self._cgroup_members(cg) if cg else {}
+            members_unknown = members is None
+            members_present = bool(members) or members_unknown
         # 5. Identity-safe survivors (guaranteed-cleanup residue).
         survivors = tuple(
             SurvivorRecord(
@@ -590,10 +613,10 @@ class LinuxSystemdBackend:
                 discovered_at=started,
                 last_seen_at=started,
             )
-            for pid, ident in sorted(members.items())
+            for pid, ident in sorted((members or {}).items())
         )
         active = self._unit_active(unit)
-        quiescent = not members and not active
+        quiescent = not members_present and not active
         cleanup = (
             CleanupStatus.INCOMPLETE
             if not quiescent
@@ -607,6 +630,9 @@ class LinuxSystemdBackend:
         process_now = counters.get("pids.current")
         process_candidates = [v for v in (process_peak, process_now) if v is not None]
         process_peak_value = max(process_candidates) if process_candidates else None
+        gaps = sample_gaps(samples)
+        if sample_prefix_gap:
+            gaps = (round(sample_prefix_gap, 6),) + gaps
         return Receipt(
             backend=_BACKEND_NAME,
             terminal_reason=terminal_reason,
@@ -618,18 +644,36 @@ class LinuxSystemdBackend:
             memory_peak_provenance=(
                 MeasurementProvenance.KERNEL
                 if memory_peak_kernel is not None
-                else MeasurementProvenance.SAMPLED
+                else (
+                    MeasurementProvenance.SAMPLED
+                    if memory_peak is not None
+                    else MeasurementProvenance.UNAVAILABLE
+                )
             ),
             cpu_total_seconds=cpu_total_kernel if cpu_total_kernel is not None else cpu_total,
             cpu_total_provenance=(
                 MeasurementProvenance.KERNEL
                 if cpu_total_kernel is not None
-                else MeasurementProvenance.SAMPLED
+                else (
+                    MeasurementProvenance.SAMPLED
+                    if cpu_total is not None
+                    else MeasurementProvenance.UNAVAILABLE
+                )
             ),
             process_peak=process_peak_value,
-            process_peak_provenance=MeasurementProvenance.SAMPLED,
-            sample_gaps=sample_gaps(samples),
-            enforcement_events=(),
+            process_peak_provenance=(
+                MeasurementProvenance.KERNEL
+                if process_now is not None
+                else (
+                    MeasurementProvenance.SAMPLED
+                    if process_peak is not None
+                    else MeasurementProvenance.UNAVAILABLE
+                )
+            ),
+            sample_gaps=gaps,
+            enforcement_events=(
+                ("cgroup_procs_unreadable",) if members_unknown else ()
+            ),
             survivors=survivors,
         )
 
@@ -677,15 +721,18 @@ class LinuxSystemdBackend:
     # ── internals ─────────────────────────────────────────────────
 
     def _unit_active(self, unit: str) -> bool:
-        """True while the unit has not reached a terminal inactive state.
+        """True while quiescence is NOT positively proven (fail-closed).
 
-        ``deactivating`` / ``activating`` count as still-active: quiescence
-        is only claimed once the unit is truly inactive AND its cgroup is
-        empty."""
+        Only POSITIVE terminal evidence (``inactive``/``failed``/``dead``/
+        ``not-found`` state) yields False. An interrogation error (bad rc,
+        timeout, empty output) leaves the unit state UNKNOWN, which is
+        treated as still-active — an unknown unit state must never permit a
+        CLEAN/quiescent claim."""
         code, out = self._systemctl("is-active", unit, timeout=5)
-        return code == 0 and out.strip() in (
-            "active", "activating", "deactivating", "reloading",
-        )
+        state = out.strip()
+        if state in ("inactive", "failed", "dead", "not-found"):
+            return False
+        return True
 
     def _safe_stop(self, unit: str) -> None:
         code, out = self._systemctl("stop", unit, timeout=5)
@@ -702,6 +749,8 @@ class LinuxSystemdBackend:
             self._systemctl("kill", "--kill-who=all", "--signal=KILL", unit, timeout=5)
             self._systemctl("stop", unit, timeout=5)
         members = self._cgroup_members(cg) if cg else {}
+        if members is None:
+            return False, "cgroup.procs unreadable"
         ok = not self._unit_active(unit) and not members
         return ok, "cgroup-empty" if ok else f"residue={sorted(members)}"
 

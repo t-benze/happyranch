@@ -376,13 +376,18 @@ class SessionBackend(Protocol):
         terminal_reason: str,
         grace_seconds: float,
         samples: Sequence[ResourceSample] | None = None,
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         """Terminate the tree, verify quiescence, and produce the receipt.
 
         Runs on **every** terminal path, success included. ``samples`` is the
         supervisor-collected portable sampler data, used by backends whose
-        provenance is ``sampled``/``unavailable``. Raises on unrecoverable
-        teardown failure (the caller keeps the primary terminal reason)."""
+        provenance is ``sampled``/``unavailable``. ``sample_prefix_gap`` is
+        the truthful elapsed time of the sampling prefix truncated by the
+        supervisor's retention bound (0 when nothing was dropped); backends
+        prepend it to the serialized gap series so cadence is never presented
+        as continuous truth. Raises on unrecoverable teardown failure (the
+        caller keeps the primary terminal reason)."""
         ...
 
     def abandon(self, pending: PendingHandle) -> None:
