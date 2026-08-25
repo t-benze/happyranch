@@ -23,6 +23,7 @@ import type {
   ThreadInboxEvent,
   ThreadMessage,
   ThreadMessagesPage,
+  ThreadRecord,
   ThreadTailEvent,
 } from '@/lib/api/types';
 import type {
@@ -32,8 +33,10 @@ import type {
   MutationLike,
   QueryLike,
   RemoveParticipantArgs,
+  RenameThreadArgs,
   ResumeArgs,
   SendFollowUpArgs,
+  SetThreadPinArgs,
   ThreadsApi,
 } from './DataContext';
 
@@ -338,6 +341,83 @@ function useAbortReplies(threadId: string): MutationLike<
   });
 }
 
+function useRenameThread(threadId: string): MutationLike<
+  RenameThreadArgs,
+  Awaited<ReturnType<typeof threadsApi.renameThread>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RenameThreadArgs) =>
+      threadsApi.renameThread(slug, threadId, body),
+    onSuccess: (data) => {
+      // Patch the detail cache in place so the header shows the saved title
+      // immediately; the list refetches so rows + pinned ranking stay fresh.
+      qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+        ['thread', slug, threadId],
+        (prev) => (prev ? { ...prev, subject: data.subject } : prev),
+      );
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
+    },
+  });
+}
+
+function useSetThreadPinned(threadId: string): MutationLike<
+  SetThreadPinArgs,
+  Awaited<ReturnType<typeof threadsApi.setThreadPinned>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SetThreadPinArgs) =>
+      threadsApi.setThreadPinned(slug, threadId, body),
+    // Optimistic pin/unpin: flip the flag in every cached list + the detail
+    // row before the write lands; roll back to the snapshot on failure.
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: ['threads', slug] });
+      await qc.cancelQueries({ queryKey: ['thread', slug, threadId] });
+      const prevLists = qc.getQueriesData<{ threads: ThreadRecord[] }>({
+        queryKey: ['threads', slug],
+      });
+      const prevDetail = qc.getQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+        ['thread', slug, threadId],
+      );
+      for (const [key, data] of prevLists) {
+        if (!data) continue;
+        qc.setQueryData<{ threads: ThreadRecord[] }>(key, {
+          threads: data.threads.map((t) =>
+            t.thread_id === threadId ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t,
+          ),
+        });
+      }
+      if (prevDetail) {
+        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+          ['thread', slug, threadId],
+          { ...prevDetail, pinned: body.pinned, pinned_at: body.pinned ? prevDetail.pinned_at ?? new Date().toISOString() : null },
+        );
+      }
+      return { prevLists, prevDetail };
+    },
+    onError: (_err, _vars, ctx) => {
+      // Roll back every optimistic write.
+      if (!ctx) return;
+      for (const [key, data] of ctx.prevLists) {
+        qc.setQueryData<{ threads: ThreadRecord[] }>(key, data);
+      }
+      if (ctx.prevDetail) {
+        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+          ['thread', slug, threadId],
+          ctx.prevDetail,
+        );
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -356,4 +436,6 @@ export const realThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useAbortReplies,
+  useRenameThread,
+  useSetThreadPinned,
 };

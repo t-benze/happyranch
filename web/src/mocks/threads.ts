@@ -26,6 +26,9 @@ export const MOCK_THREADS: ThreadRecord[] = [
     transcript_path: null,
     composed_from_dream_id: null,
     last_speaker: 'engineering_head',
+    pinned: false,
+    pinned_at: null,
+    last_activity_at: null,
   },
   {
     thread_id: 'THR-002',
@@ -41,6 +44,9 @@ export const MOCK_THREADS: ThreadRecord[] = [
     transcript_path: null,
     composed_from_dream_id: null,
     last_speaker: 'support_lead',
+    pinned: false,
+    pinned_at: null,
+    last_activity_at: null,
   },
   {
     thread_id: 'THR-003',
@@ -56,6 +62,9 @@ export const MOCK_THREADS: ThreadRecord[] = [
     transcript_path: null,
     composed_from_dream_id: null,
     last_speaker: 'ops_lead',
+    pinned: false,
+    pinned_at: null,
+    last_activity_at: null,
   },
   {
     thread_id: 'THR-004',
@@ -71,5 +80,8 @@ export const MOCK_THREADS: ThreadRecord[] = [
     transcript_path: 'threads/THR-004.md',
     composed_from_dream_id: null,
     last_speaker: 'founder',
+    pinned: false,
+    pinned_at: null,
+    last_activity_at: null,
   },
 ];

@@ -389,6 +389,20 @@ export function describeAuditEntry(e: AuditEntry): AuditNarrative {
     case 'thread_resumed':
       withScope('resumed', 'a thread');
       break;
+    case 'thread_renamed': {
+      // THR-209: actor renamed a thread; detail carries old → new title.
+      const oldS = str(p, 'old_subject');
+      const newS = str(p, 'new_subject');
+      withScope('renamed', 'a thread');
+      if (oldS != null && newS != null) detail = `“${oldS}” → “${newS}”`;
+      break;
+    }
+    case 'thread_pinned':
+      withScope('pinned', 'a thread');
+      break;
+    case 'thread_unpinned':
+      withScope('unpinned', 'a thread');
+      break;
     case 'thread_invocation_failed': {
       if (scope) segs.push(tx(' — a thread invocation failed in '), rf(scope), tx('.'));
       else segs.push(tx(' — a thread invocation failed.'));

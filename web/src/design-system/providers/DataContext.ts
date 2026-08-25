@@ -115,6 +115,12 @@ export type ResumeResult = Awaited<ReturnType<typeof threadsApi.resumeThread>>;
 export type AbortRepliesArgs = void;
 export type AbortRepliesResult = Awaited<ReturnType<typeof threadsApi.abortReplies>>;
 
+export type RenameThreadArgs = { subject: string };
+export type RenameThreadResult = Awaited<ReturnType<typeof threadsApi.renameThread>>;
+
+export type SetThreadPinArgs = { pinned: boolean };
+export type SetThreadPinResult = Awaited<ReturnType<typeof threadsApi.setThreadPinned>>;
+
 export interface ThreadsApi {
   // Reads
   useThreadsList: (
@@ -144,6 +150,11 @@ export interface ThreadsApi {
   useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
   useResumeThread: (threadId: string) => MutationLike<ResumeArgs, ResumeResult>;
   useAbortReplies: (threadId: string) => MutationLike<AbortRepliesArgs, AbortRepliesResult>;
+  /** Founder-only inline rename (THR-209). Optimistic on the detail header,
+   *  list rows refetch via invalidation. */
+  useRenameThread: (threadId: string) => MutationLike<RenameThreadArgs, RenameThreadResult>;
+  /** Founder-only durable pin/unpin (THR-209). Optimistic with rollback. */
+  useSetThreadPinned: (threadId: string) => MutationLike<SetThreadPinArgs, SetThreadPinResult>;
 }
 
 // ---------------------------------------------------------------------------

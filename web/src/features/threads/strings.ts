@@ -51,6 +51,22 @@ export const THREADS_STRINGS = {
   statusArchived: 'archived',
   statusLive: 'live',
 
+  /* THR-209 rename + pin */
+  renameAction: 'Rename',
+  renameSave: 'Save',
+  renameCancel: 'Cancel',
+  renameTitleInputLabel: 'Thread title',
+  renameFailed: 'Rename failed. Please retry.',
+  pinnedSection: 'Pinned',
+  pinAction: 'Pin',
+  unpinAction: 'Unpin',
+  pinFailed: 'Pin change failed — restored to previous state.',
+  pinThread: (id: string) => `Pin thread ${id}`,
+  unpinThread: (id: string) => `Unpin thread ${id}`,
+  threadActionsMenu: 'Thread actions',
+  archiveAction: 'Archive',
+  resumeAction: 'Resume',
+
   /* System card labels */
   systemEventLabel: 'system',
 

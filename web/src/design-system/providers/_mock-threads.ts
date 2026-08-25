@@ -27,10 +27,14 @@ import type {
   QueryLike,
   RemoveParticipantArgs,
   RemoveParticipantResult,
+  RenameThreadArgs,
+  RenameThreadResult,
   ResumeArgs,
   ResumeResult,
   SendFollowUpArgs,
   SendFollowUpResult,
+  SetThreadPinArgs,
+  SetThreadPinResult,
   ThreadsApi,
 } from './DataContext';
 
@@ -255,6 +259,9 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         transcript_path: null,
         composed_from_dream_id: null,
         last_speaker: 'founder',
+        pinned: false,
+        pinned_at: null,
+        last_activity_at: startedAt,
       };
       store.threads = [rec, ...store.threads];
       store.participants[newId] = ['founder', ...body.recipients];
@@ -473,6 +480,46 @@ function useAbortReplies(threadId: string): MutationLike<void, { thread_id: stri
   });
 }
 
+function useRenameThread(threadId: string): MutationLike<RenameThreadArgs, RenameThreadResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: RenameThreadArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = { ...store.threads[idx], subject: body.subject };
+      }
+      return { thread_id: threadId, subject: body.subject };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
+function useSetThreadPinned(threadId: string): MutationLike<SetThreadPinArgs, SetThreadPinResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: SetThreadPinArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = {
+          ...store.threads[idx],
+          pinned: body.pinned,
+          pinned_at: body.pinned ? '2026-06-02T12:00:00Z' : null,
+        };
+      }
+      return { thread_id: threadId, pinned: body.pinned };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -491,6 +538,8 @@ export const mockThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useAbortReplies,
+  useRenameThread,
+  useSetThreadPinned,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */

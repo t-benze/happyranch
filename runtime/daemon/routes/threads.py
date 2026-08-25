@@ -6,7 +6,7 @@ import mimetypes
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Mapping
+from typing import Annotated, Literal, Mapping
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -1076,6 +1076,9 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "composed_from_task_id": t.composed_from_task_id,
         "composed_from_dream_id": t.composed_from_dream_id,
         "last_speaker": t.last_speaker,
+        "pinned": t.pinned_at is not None,
+        "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
+        "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
     }
 
 
@@ -2773,6 +2776,91 @@ async def resume_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "status": "open"}
+
+
+# ---------------------------------------------------------------------------
+# THR-209 — founder-only rename + pin/unpin (Phase 1)
+#
+# Both mutations are presentation/organization controls: they never create a
+# thread message, never send a notification, never touch participants or
+# unread state, and never change activity timestamps. They write only the
+# ``subject`` / ``pinned_at`` column plus an audit row (existing thread-scope
+# ``audit_log.task_id`` = THR-* convention). Identity (id), URL, participants,
+# routing, unread, and lifecycle are immutable under rename/pin.
+# ---------------------------------------------------------------------------
+
+
+MAX_THREAD_SUBJECT_CHARS = 120
+
+
+class RenameThreadBody(BaseModel):
+    subject: str
+
+
+class SetThreadPinBody(BaseModel):
+    # Strict bool: pin state is a boolean contract — "yes"/1/etc. must not
+    # silently coerce into a pin/unpin (THR-209).
+    pinned: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/{thread_id}/rename")
+async def rename_thread_endpoint(
+    slug: str, thread_id: str, body: RenameThreadBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    if len(subject) > MAX_THREAD_SUBJECT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "subject_too_long", "max": MAX_THREAD_SUBJECT_CHARS},
+        )
+    async with org.db_lock:
+        # Atomic (TASK-5644): authoritative subject read + idempotence
+        # decision + subject UPDATE + ``thread_renamed`` audit row happen in
+        # ONE rollback-safe transaction under this lock. The old value is read
+        # INSIDE the transaction, so concurrent renames record a truthful
+        # sequential old→new chain (last successful save wins) and an audit
+        # failure rolls back the rename — no durable unaudited mutation.
+        transitioned = org.db.rename_thread_with_audit(
+            thread_id, subject=subject,
+        )
+        if not transitioned:
+            # No-op rename (already the saved title): nothing to write, nothing
+            # to audit. Last successful save wins — an identical save succeeds.
+            return {
+                "thread_id": thread_id, "subject": subject, "idempotent": True,
+            }
+    return {"thread_id": thread_id, "subject": subject}
+
+
+@router.post("/threads/{thread_id}/pin")
+async def set_thread_pin_endpoint(
+    slug: str, thread_id: str, body: SetThreadPinBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    async with org.db_lock:
+        # Atomic (TASK-5644): authoritative ``pinned_at`` read + idempotence
+        # decision + pin state UPDATE + ``thread_pinned``/``thread_unpinned``
+        # audit row happen in ONE rollback-safe transaction under this lock.
+        # Concurrent same/opposite requests re-read durable state inside their
+        # transaction (never a stale pre-lock snapshot), so no transition is
+        # misclassified and an audit failure rolls back the pin — no durable
+        # unaudited transition.
+        transitioned = org.db.set_thread_pinned_with_audit(
+            thread_id, pinned=body.pinned,
+        )
+        if not transitioned:
+            # Same-state no-op: nothing to write, nothing to audit.
+            return {
+                "thread_id": thread_id, "pinned": body.pinned, "idempotent": True,
+            }
+    return {"thread_id": thread_id, "pinned": body.pinned}
 
 
 # ---------------------------------------------------------------------------

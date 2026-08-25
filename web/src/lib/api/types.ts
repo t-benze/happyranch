@@ -248,6 +248,13 @@ export interface ThreadRecord {
   transcript_path: string | null;
   composed_from_dream_id: string | null;
   last_speaker: string | null;
+  /** Founder-workspace pin state (THR-209). Wire is derived from the durable
+   *  ``pinned_at`` column: false when never pinned, true while pinned. */
+  pinned: boolean;
+  pinned_at: string | null;
+  /** Most recent message created_at (derived server-side). Feeds the
+   *  pinned-section activity ranking (THR-209). */
+  last_activity_at: string | null;
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {

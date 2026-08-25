@@ -83,3 +83,11 @@ export const useResumeThread: ReturnType<typeof useData>['threads']['useResumeTh
 export const useAbortReplies: ReturnType<typeof useData>['threads']['useAbortReplies'] = (
   threadId,
 ) => useData().threads.useAbortReplies(threadId);
+
+export const useRenameThread: ReturnType<typeof useData>['threads']['useRenameThread'] = (
+  threadId,
+) => useData().threads.useRenameThread(threadId);
+
+export const useSetThreadPinned: ReturnType<typeof useData>['threads']['useSetThreadPinned'] = (
+  threadId,
+) => useData().threads.useSetThreadPinned(threadId);

@@ -485,6 +485,13 @@ class ThreadRecord(BaseModel):
     composed_from_task_id: str | None = None
     composed_from_dream_id: str | None = None
     last_speaker: str | None = None
+    # Founder-workspace presentation state (THR-209): non-None when the thread
+    # is pinned by the founder. Pinning changes display only — never identity,
+    # participants, routing, unread state, lifecycle, or activity timestamps.
+    pinned_at: datetime | None = None
+    # Most recent message created_at (derived; NULL for threads without
+    # messages). Feeds the pinned-section activity ranking (THR-209).
+    last_activity_at: datetime | None = None
 
 
 class ThreadParticipant(BaseModel):

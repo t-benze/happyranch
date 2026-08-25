@@ -1169,7 +1169,8 @@ class Database:
                 turn_cap INTEGER NOT NULL DEFAULT 500,
                 turns_used INTEGER NOT NULL DEFAULT 0,
                 summary TEXT,
-                transcript_path TEXT
+                transcript_path TEXT,
+                pinned_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
@@ -1715,6 +1716,16 @@ class Database:
             "ON threads(composed_from_dream_id) "
             "WHERE composed_from_dream_id IS NOT NULL"
         )
+        # Founder-workspace pin state (THR-209): additive nullable timestamp;
+        # non-NULL = pinned. Existing rows (and fresh inserts) stay NULL until
+        # the founder pins. Presentation-only — never affects messages,
+        # participants, unread, or lifecycle.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN pinned_at TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Task-session post-to-existing-thread provenance (THR-027): the task id
         # whose live session appended a message via POST /threads/{id}/post-as-agent.
         # Additive nullable; existing rows + founder/compose/reply messages stay
@@ -4894,8 +4905,9 @@ class Database:
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary,
                 transcript_path,
-                composed_by, composed_from_task_id, composed_from_dream_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                composed_by, composed_from_task_id, composed_from_dream_id,
+                pinned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -4911,6 +4923,7 @@ class Database:
                 t.composed_by,
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
+                t.pinned_at.isoformat() if t.pinned_at else None,
             ),
         )
         self._conn.commit()
@@ -4933,6 +4946,12 @@ class Database:
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
             composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
             last_speaker=row["last_speaker"] if "last_speaker" in keys else None,
+            pinned_at=(
+                datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
+            ) if "pinned_at" in keys else None,
+            last_activity_at=(
+                datetime.fromisoformat(row["last_activity_at"]) if row["last_activity_at"] else None
+            ) if "last_activity_at" in keys else None,
         )
 
     @_synchronized
@@ -4948,18 +4967,37 @@ class Database:
         query = (
             "SELECT t.*, "
             "(SELECT tm.speaker FROM thread_messages tm "
-            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker "
+            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker, "
+            "(SELECT MAX(tm.created_at) FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id) AS last_activity_at "
             "FROM threads t "
+        )
+        # THR-209 pinning: pinned threads rank above unpinned, ordered by most
+        # recent thread activity (last message created_at, falling back to
+        # started_at). Unpinned threads keep their EXACT existing order — the
+        # activity sort is conditional on pinned_at being set, so it is a no-op
+        # (NULL for every row → tie) for unpinned rows.
+        pinned_rank = "CASE WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END"
+        pinned_activity = (
+            "CASE WHEN t.pinned_at IS NOT NULL THEN COALESCE("
+            "(SELECT MAX(tm.created_at) FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id), t.started_at) END DESC"
         )
         params: tuple
         if status:
             if status == "archived":
-                query += "WHERE t.status = ? ORDER BY COALESCE(t.archived_at, t.started_at) DESC LIMIT ?"
+                base_order = "COALESCE(t.archived_at, t.started_at) DESC"
             else:
-                query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+                base_order = "t.started_at DESC"
+            query += (
+                f"WHERE t.status = ? ORDER BY {pinned_rank}, {pinned_activity}, "
+                f"{base_order} LIMIT ?"
+            )
             params = (status, limit)
         else:
-            query += "ORDER BY t.started_at DESC LIMIT ?"
+            query += (
+                f"ORDER BY {pinned_rank}, {pinned_activity}, t.started_at DESC LIMIT ?"
+            )
             params = (limit,)
         cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]
@@ -7314,6 +7352,169 @@ class Database:
                 (status.value, thread_id),
             )
         self._conn.commit()
+
+    @_synchronized
+    def set_thread_subject(self, thread_id: str, *, subject: str) -> None:
+        """Update a thread's display title (THR-209 rename).
+
+        Identity (id), participants, routing, unread, and lifecycle are
+        untouched — only the durable ``subject`` changes. The caller is
+        responsible for the ``thread_renamed`` audit row.
+        """
+        self._conn.execute(
+            "UPDATE threads SET subject = ? WHERE id = ?",
+            (subject, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_pinned(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear founder-workspace pin state (THR-209).
+
+        Pin state is presentation-only: this write touches ``pinned_at`` and
+        nothing else — no message, notification, participant, unread, or
+        activity-timestamp effect. The caller is responsible for the
+        ``thread_pinned``/``thread_unpinned`` audit row.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_subject_uncommitted(self, thread_id: str, *, subject: str) -> None:
+        """Update a thread's subject WITHOUT committing (THR-209 rename).
+
+        Deliberately left UNCOMMITTED: the caller owns the surrounding
+        transaction (``BEGIN IMMEDIATE`` … ``commit()``/``rollback()``) so the
+        rename and its ``thread_renamed`` audit row commit atomically. This
+        helper never commits independently inside an atomic unit (TASK-5644).
+        """
+        self._conn.execute(
+            "UPDATE threads SET subject = ? WHERE id = ?",
+            (subject, thread_id),
+        )
+
+    @_synchronized
+    def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear thread pin state WITHOUT committing (THR-209).
+
+        Same contract as ``set_thread_subject_uncommitted``: the caller owns
+        the surrounding transaction so the pin transition and its audit row
+        are atomic.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+
+    @_synchronized
+    def rename_thread_with_audit(
+        self, thread_id: str, *, subject: str, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder rename + ``thread_renamed`` audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative subject read, the
+        idempotence decision, the subject UPDATE, and the audit row insert
+        commit together — and roll back together on ANY failure — so a rename
+        can never survive without its audit row and concurrent renames always
+        record the truthful sequential old→new chain (last successful save
+        wins). The whole unit holds the connection lock, so no other thread
+        can join or commit the open transaction from the inside.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{old_subject, new_subject}`` payload shape.
+
+        Returns True when a durable transition occurred; False for an
+        identical (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT subject FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            old_subject = row["subject"]
+            if old_subject == subject:
+                self._conn.rollback()
+                return False
+            self.set_thread_subject_uncommitted(thread_id, subject=subject)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_renamed",
+                payload={"old_subject": old_subject, "new_subject": subject},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def set_thread_pinned_with_audit(
+        self, thread_id: str, *, pinned: bool, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder pin/unpin + audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative ``pinned_at`` read,
+        the idempotence decision, the pin state UPDATE, and the
+        ``thread_pinned``/``thread_unpinned`` audit row commit together — and
+        roll back together on ANY failure — so pin state can never survive
+        without its audit row. Concurrent same-state requests yield exactly
+        one audit row for the one durable transition (the loser is a true
+        no-op); opposite-state requests re-read the durable state inside their
+        transaction, so neither is misclassified from a stale pre-lock
+        snapshot. The whole unit holds the connection lock, so no other thread
+        can join the open transaction.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{pinned}`` payload shape.
+
+        Returns True when a durable transition occurred; False for a
+        same-state (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT pinned_at FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            currently_pinned = row["pinned_at"] is not None
+            if currently_pinned == pinned:
+                self._conn.rollback()
+                return False
+            self.set_thread_pinned_uncommitted(thread_id, pinned=pinned)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_pinned" if pinned else "thread_unpinned",
+                payload={"pinned": pinned},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def set_thread_transcript_path(

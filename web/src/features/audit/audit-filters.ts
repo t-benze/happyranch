@@ -176,6 +176,11 @@ const ACTION_CLASS: Record<string, EventClass> = {
   thread_turn_cap_auto_extended: 'dispatch',
   thread_archived: 'dispatch',
   thread_resumed: 'dispatch',
+  // THR-209 — founder rename/pin presentation mutations (audit-only, never
+  // thread messages).
+  thread_renamed: 'dispatch',
+  thread_pinned: 'dispatch',
+  thread_unpinned: 'dispatch',
   // GH-688 Phase 1 Slice C — reply-delivery lifecycle (all lifecycle
   // side-effects; cancellations here are deliberate discards/aborts, never
   // unplanned failures).
