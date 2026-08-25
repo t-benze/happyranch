@@ -11,6 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.models import (
+    AuthorityAuditEvent,
+    AuthorityAuditEventType,
+    AuthorityAuditPayload,
+    AuthorityCandidate,
+    AuthorityEvaluation,
+    AuthorityFenceResult,
+    AuthorityRedactionClass,
+    AuthorityRetentionClass,
     BlockKind,
     DreamKbCandidate,
     DreamRecord,
@@ -37,6 +45,8 @@ from runtime.models import (
     ThreadStatus,
     TokenUsage,
     WorkHourStatus,
+    validate_authority_digest,
+    validate_authority_version,
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
@@ -50,8 +60,154 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class AuthorityAuditMigrationRefusal(Exception):
+    """Legacy ``authority_audit`` rows reference candidates that do not exist,
+    so the candidate-FK retrofit was refused atomically. The legacy schema and
+    data are left intact for inspection."""
+
+
+# Corrected DB-level lifecycle-guard trigger body. Requires the referenced
+# ``authority_evaluations`` row's disposition to exactly mirror the candidate's
+# frozen disposition (created -> evaluated: NEW.disposition; evaluated ->
+# consumed: OLD.disposition), so an append-only escalate evaluation can never
+# durably freeze a continue_same_root candidate. Used by BOTH the fresh
+# ``_create_authority_tables`` script and the legacy retrofit, so the two
+# surfaces can never drift.
+_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_lifecycle_guard
+                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+                ON authority_candidates
+                FOR EACH ROW
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                    WHERE NOT (
+                        -- created -> evaluated: requires a committed evaluation row
+                        -- whose disposition exactly equals the freshly set
+                        -- disposition (NULL -> value), so an append-only escalate
+                        -- evaluation can never freeze a continue_same_root candidate;
+                        -- consumed_at is still NULL.
+                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                         AND NEW.lifecycle_state = 'evaluated'
+                         AND NEW.disposition IS NOT NULL
+                         AND NEW.consumed_at IS NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = NEW.disposition))
+                        OR
+                        -- evaluated -> consumed: exactly-once; disposition frozen;
+                        -- a committed evaluation row with the SAME frozen
+                        -- disposition must exist; consumed_at is stamped exactly
+                        -- once (NULL -> value).
+                        (OLD.lifecycle_state = 'evaluated'
+                         AND NEW.lifecycle_state = 'consumed'
+                         AND NEW.disposition IS OLD.disposition
+                         AND OLD.consumed_at IS NULL
+                         AND NEW.consumed_at IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = OLD.disposition))
+                        OR
+                        -- no-op on the guarded columns (e.g. updated_at-only writes).
+                        (NEW.lifecycle_state = OLD.lifecycle_state
+                         AND NEW.disposition IS OLD.disposition
+                         AND NEW.consumed_at IS OLD.consumed_at)
+                    );
+                END;
+"""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _authority_claim_key(
+    root_task_id: str,
+    manager_session_id: str,
+    causal_event_id: str,
+    policy_digest: str,
+    prompt_digest: str,
+    model_digest: str,
+) -> str:
+    """Deterministic CAS key for the authority candidate claim tuple.
+
+    One durable candidate wins the
+    root/session/causal-event/policy-prompt-model tuple. The key is a sha256
+    digest of the tuple joined with unit-separator bytes so distinct inputs
+    cannot collide across field boundaries. It is the ``claim_key`` UNIQUE
+    column on ``authority_candidates`` — the database-level exactly-one
+    arbiter (not merely the in-process lock).
+    """
+    material = "\x1f".join(
+        (
+            root_task_id,
+            manager_session_id,
+            causal_event_id,
+            policy_digest,
+            prompt_digest,
+            model_digest,
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _parse_authority_fence_results(raw: str | None) -> dict[str, AuthorityFenceResult] | None:
+    """Parse a persisted fence-results JSON column back into typed results."""
+    if raw is None:
+        return None
+    data = json.loads(raw)
+    return {name: AuthorityFenceResult.model_validate(value) for name, value in data.items()}
+
+
+def _validate_authority_class(value: str, field: str, enum_cls) -> str:
+    """Validate a controlled retention/redaction classification value.
+
+    Raises ValueError for any value outside the closed vocabulary — the caller
+    must fail loudly BEFORE any durable write, so a bad classification can
+    never be swallowed by conflict handling into a phantom CAS loser.
+    """
+    allowed = {member.value for member in enum_cls}
+    if value not in allowed:
+        raise ValueError(
+            f"{field} must be one of: {', '.join(sorted(allowed))}; got {value!r}"
+        )
+    return value
+
+
+def _serialize_authority_fence_results(
+    fence_results: dict | None,
+) -> str | None:
+    """Strictly validate and serialize a fence-results mapping.
+
+    Each value must be a closed ``AuthorityFenceResult`` (extra keys and
+    unknown codes are rejected); fence names must be non-empty strings. Returns
+    the JSON column value, or None for an absent mapping. Raises ValueError
+    (via Pydantic) rather than silently storing or redacting anything.
+    """
+    if fence_results is None:
+        return None
+    if not isinstance(fence_results, dict):
+        raise ValueError("fence_results must be a dict mapping fence name -> AuthorityFenceResult")
+    normalized: dict[str, AuthorityFenceResult] = {}
+    for name, value in fence_results.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("fence result names must be non-empty strings")
+        normalized[name] = AuthorityFenceResult.model_validate(value)
+    return json.dumps(
+        {name: result.model_dump(mode="json") for name, result in normalized.items()}
+    )
+
+
+def _serialize_authority_audit_payload(payload: object | None) -> str | None:
+    """Strictly validate and serialize an authority audit payload.
+
+    The payload must be a closed ``AuthorityAuditPayload`` — unknown keys,
+    nested arbitrary JSON, prose, credentials, and raw model exchanges are
+    rejected. Returns the JSON column value, or None for an absent payload.
+    """
+    if payload is None:
+        return None
+    model = AuthorityAuditPayload.model_validate(payload)
+    return json.dumps(model.model_dump(mode="json", exclude_none=True))
 
 
 def _synchronized(method):
@@ -294,6 +450,9 @@ class Database:
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
+        self._create_authority_tables()
+        self._retrofit_authority_audit_fk_if_needed()
+        self._retrofit_authority_lifecycle_trigger_if_needed()
         self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
@@ -1637,6 +1796,292 @@ class Database:
                 "WHERE status='resolved_superseded'"
             )
             self._conn.commit()
+
+    def _create_authority_tables(self) -> None:
+        """THR-181 Track A Slice 1: additive durable authority foundation.
+
+        Creates three dedicated, clearly named ``authority_*`` tables plus
+        their indexes and DB-level protections. This is *purely additive* —
+        it never alters ``audit_log``, ``tasks``, or any existing column/row
+        meaning (``audit_log.task_id`` scope prefixes and
+        ``tasks.blocked_on_job_ids`` / revisit/lineage fields are untouched).
+
+        Idempotent: every statement is ``IF NOT EXISTS``, so re-opening the
+        same database (or a pre-migration v0 file) is a no-op on the second
+        run. Boot ordering: called from ``__init__`` after ``_create_tables``
+        so the FK target exists before the tables that reference it.
+
+        Append-only surfaces (``authority_evaluations`` and
+        ``authority_audit``) carry BEFORE UPDATE / BEFORE DELETE triggers that
+        RAISE(ABORT). ``authority_candidates`` blocks deletion and any change
+        to its identity columns, while allowing the narrow lifecycle
+        transition (created -> evaluated -> consumed) performed only through
+        the persistence API below.
+        """
+        self._conn.executescript(f"""
+            CREATE TABLE IF NOT EXISTS authority_candidates (
+                id                       TEXT PRIMARY KEY,
+                claim_key                TEXT NOT NULL UNIQUE,
+                root_task_id             TEXT NOT NULL,
+                team                     TEXT NOT NULL,
+                manager_agent            TEXT NOT NULL,
+                manager_session_id       TEXT NOT NULL,
+                causal_event_id          TEXT NOT NULL,
+                causal_event_digest      TEXT NOT NULL,
+                causal_result_id         TEXT,
+                policy_id                TEXT NOT NULL,
+                policy_version           TEXT NOT NULL,
+                policy_digest            TEXT NOT NULL,
+                prompt_id                TEXT NOT NULL,
+                prompt_version           TEXT NOT NULL,
+                prompt_digest            TEXT NOT NULL,
+                model_id                 TEXT NOT NULL,
+                model_version            TEXT NOT NULL,
+                model_digest             TEXT NOT NULL,
+                snapshot_digest          TEXT NOT NULL,
+                snapshot_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (snapshot_retention_class IN ('digest_only','shadow','indefinite')),
+                snapshot_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (snapshot_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                disposition              TEXT
+                    CHECK (disposition IS NULL OR disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                lifecycle_state          TEXT NOT NULL DEFAULT 'created'
+                    CHECK (lifecycle_state IN ('created','evaluated','consumed')),
+                consumed_at              TEXT,
+                created_at               TEXT NOT NULL,
+                updated_at               TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_candidates_root
+                ON authority_candidates(root_task_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_candidates_root_outcome
+                ON authority_candidates(root_task_id, disposition);
+
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_no_delete
+                BEFORE DELETE ON authority_candidates
+                BEGIN SELECT RAISE(ABORT, 'authority candidates cannot be deleted'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_identity_immutable
+                BEFORE UPDATE ON authority_candidates
+                WHEN OLD.claim_key != NEW.claim_key
+                  OR OLD.root_task_id != NEW.root_task_id
+                  OR OLD.team != NEW.team
+                  OR OLD.manager_agent != NEW.manager_agent
+                  OR OLD.manager_session_id != NEW.manager_session_id
+                  OR OLD.causal_event_id != NEW.causal_event_id
+                  OR OLD.causal_event_digest != NEW.causal_event_digest
+                  OR OLD.causal_result_id IS NOT NEW.causal_result_id
+                  OR OLD.policy_id != NEW.policy_id
+                  OR OLD.policy_version != NEW.policy_version
+                  OR OLD.policy_digest != NEW.policy_digest
+                  OR OLD.prompt_id != NEW.prompt_id
+                  OR OLD.prompt_version != NEW.prompt_version
+                  OR OLD.prompt_digest != NEW.prompt_digest
+                  OR OLD.model_id != NEW.model_id
+                  OR OLD.model_version != NEW.model_version
+                  OR OLD.model_digest != NEW.model_digest
+                  OR OLD.snapshot_digest != NEW.snapshot_digest
+                  OR OLD.snapshot_retention_class != NEW.snapshot_retention_class
+                  OR OLD.snapshot_redaction_class != NEW.snapshot_redaction_class
+                  OR OLD.fence_results_json IS NOT NEW.fence_results_json
+                  OR OLD.created_at != NEW.created_at
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority candidate identity is immutable');
+                END;
+
+            CREATE TABLE IF NOT EXISTS authority_evaluations (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id             TEXT NOT NULL UNIQUE REFERENCES authority_candidates(id),
+                disposition              TEXT NOT NULL
+                    CHECK (disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                disposition_code         TEXT NOT NULL
+                    CHECK (disposition_code IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error',
+                         'low_confidence','timeout','malformed_output','injection_guard','audit_failure')),
+                response_digest          TEXT NOT NULL,
+                response_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (response_retention_class IN ('digest_only','shadow','indefinite')),
+                response_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (response_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                created_at               TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_evaluations_candidate
+                ON authority_evaluations(candidate_id);
+
+            CREATE TRIGGER IF NOT EXISTS authority_evaluations_no_update
+                BEFORE UPDATE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_evaluations_no_delete
+                BEFORE DELETE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_audit (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                event_type   TEXT NOT NULL
+                    CHECK (event_type IN
+                        ('candidate_claimed','candidate_claim_lost',
+                         'evaluation_recorded','candidate_consumed')),
+                payload_json TEXT,
+                created_at   TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_audit_candidate
+                ON authority_audit(candidate_id);
+
+            CREATE TRIGGER IF NOT EXISTS authority_audit_no_update
+                BEFORE UPDATE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_audit_no_delete
+                BEFORE DELETE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+
+            -- DB-level lifecycle enforcement (not only Python): blocks fabrication
+            -- through a raw ``Database.execute`` UPDATE. Only the intended finite
+            -- transitions are permitted, disposition and consumed_at are immutable
+            -- once set, and the ``evaluated``/``consumed`` states require a
+            -- consistent ``authority_evaluations`` row for the candidate whose
+            -- disposition exactly mirrors the candidate's frozen disposition.
+            -- The trigger body references ``authority_evaluations`` (created above),
+            -- which SQLite resolves at trigger execution time. Databases created at
+            -- earlier reviewed heads that already carry the weaker trigger body are
+            -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
+            {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
+            """)
+        self._conn.commit()
+
+    def _retrofit_authority_audit_fk_if_needed(self) -> None:
+        """Idempotent forward retrofit of the ``authority_audit`` candidate FK.
+
+        The corrective head (07eaaed0) added
+        ``authority_audit.candidate_id REFERENCES authority_candidates(id)``,
+        but that reference lives only inside ``CREATE TABLE IF NOT EXISTS``. A
+        database created at the prior reviewed head (405697a0) therefore
+        retains an ``authority_audit`` table WITHOUT the FK after opening the
+        corrected build — ``CREATE TABLE IF NOT EXISTS`` is a no-op on the
+        already-existing table, so a raw ``Database.execute`` orphan INSERT
+        succeeds and commits. Fresh-database tests cannot see this.
+
+        This retrofit upgrades that legacy table in place, atomically and
+        idempotently:
+
+        * If ``authority_audit`` is absent, this is a no-op — the corrected
+          ``_create_authority_tables`` creates it with the FK on fresh files.
+        * If the table already carries the FK, this is a no-op (idempotent).
+        * If the table is the legacy no-FK shape, it is rebuilt as a
+          transactionally-safe replacement table: every valid row is copied
+          verbatim (id, candidate_id, event_type, payload_json, created_at —
+          identity and order preserved), the old table is dropped, the new
+          table is renamed into place, and the index + append-only triggers
+          are recreated. All DDL and the row copy run inside ONE explicit
+          transaction, so a mid-migration failure rolls back with no partial
+          replacement, no synthetic empty table, and no data loss; a later
+          reopen retries the whole migration.
+        * Legacy orphan audit rows (a ``candidate_id`` with no matching
+          ``authority_candidates`` row) are never deleted, rewritten, or
+          re-parented. The migration refuses atomically — raising
+          :class:`AuthorityAuditMigrationRefusal` before any mutation — and
+          leaves the old schema/data intact for inspection.
+
+        ``executescript`` is deliberately avoided: it issues an implicit
+        COMMIT and swallows mid-script rollback, which would defeat the
+        atomicity requirement. Every statement runs through ``execute`` so a
+        failure raises with the whole transaction rolled back.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='authority_audit'"
+        ).fetchone()
+        if exists is None:
+            return
+        fks = self._conn.execute(
+            "PRAGMA foreign_key_list(authority_audit)"
+        ).fetchall()
+        if fks:
+            return
+        orphan_count = self._conn.execute(
+            "SELECT COUNT(*) FROM authority_audit a "
+            "WHERE NOT EXISTS (SELECT 1 FROM authority_candidates c "
+            "WHERE c.id = a.candidate_id)"
+        ).fetchone()[0]
+        if orphan_count:
+            raise AuthorityAuditMigrationRefusal(
+                f"authority_audit contains {orphan_count} legacy orphan row(s) whose "
+                "candidate_id has no matching authority_candidates row; refusing to "
+                "retrofit the candidate FK. The legacy schema and data are left intact "
+                "for inspection."
+            )
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute(
+                """
+                CREATE TABLE authority_audit__new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                    event_type   TEXT NOT NULL
+                        CHECK (event_type IN
+                            ('candidate_claimed','candidate_claim_lost',
+                             'evaluation_recorded','candidate_consumed')),
+                    payload_json TEXT,
+                    created_at   TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                "INSERT INTO authority_audit__new "
+                "(id, candidate_id, event_type, payload_json, created_at) "
+                "SELECT id, candidate_id, event_type, payload_json, created_at "
+                "FROM authority_audit"
+            )
+            self._conn.execute("DROP TABLE authority_audit")
+            self._conn.execute(
+                "ALTER TABLE authority_audit__new RENAME TO authority_audit"
+            )
+            self._conn.execute(
+                "CREATE INDEX idx_authority_audit_candidate "
+                "ON authority_audit(candidate_id)"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_update "
+                "BEFORE UPDATE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_delete "
+                "BEFORE DELETE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _retrofit_authority_lifecycle_trigger_if_needed(self) -> None:
+        """Idempotent forward retrofit of the lifecycle-guard trigger body.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` inside ``_create_authority_tables`` is
+        a no-op on a database that already carries the trigger, so a database
+        created at an earlier reviewed head (which embedded the weaker body
+        that accepted ANY evaluation row) would keep the weak body forever.
+        This retrofit drops and recreates the trigger ONLY when the stored
+        body is the legacy one (detected by the missing disposition-mirroring
+        condition); on every later open it is a no-op, so a database never
+        carries per-boot DDL churn and the ``-wal``/``-shm`` history stays
+        stable. The recreated body is the exact
+        ``_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`` constant used by
+        ``_create_authority_tables``, so the two surfaces cannot drift.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'"
+            " AND name='authority_candidates_lifecycle_guard'"
+        ).fetchone()
+        if row is not None and "e.disposition = NEW.disposition" in row["sql"]:
+            return
+        self._conn.execute(
+            "DROP TRIGGER IF EXISTS authority_candidates_lifecycle_guard"
+        )
+        self._conn.execute(_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL)
+        self._conn.commit()
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
         """Add scope columns and make task_id nullable for conversation usage."""
@@ -7463,6 +7908,405 @@ class Database:
             (task_id,),
         )
         return [dict(row) for row in cur.fetchall()]
+
+    # --- THR-181 Track A Slice 1: authority candidate/evaluation/audit API ---
+    #
+    # Narrow, additive persistence for the pre-escalation authority-evaluation
+    # foundation. No evaluator is invoked here and no policy is enforced — these
+    # methods only persist/read controlled records. Prose-bearing content is
+    # stored as digests; raw bearer/provider credentials, task prose, and
+    # unredacted model exchanges are never accepted or persisted.
+
+    @_synchronized
+    def claim_authority_candidate(
+        self,
+        *,
+        root_task_id: str,
+        team: str,
+        manager_agent: str,
+        manager_session_id: str,
+        causal_event_id: str,
+        causal_event_digest: str,
+        causal_result_id: str | None,
+        policy_id: str,
+        policy_version: str,
+        policy_digest: str,
+        prompt_id: str,
+        prompt_version: str,
+        prompt_digest: str,
+        model_id: str,
+        model_version: str,
+        model_digest: str,
+        snapshot_digest: str,
+        snapshot_retention_class: str = "digest_only",
+        snapshot_redaction_class: str = "redacted",
+        fence_results: dict | None = None,
+    ) -> tuple[str, bool]:
+        """Deterministic, barrier-ready CAS claim/create contract.
+
+        Exactly one durable candidate wins the
+        root/session/causal-event/policy-prompt-model tuple. The candidate id
+        and ``claim_key`` are both derived deterministically from that tuple,
+        and ``claim_key`` carries a UNIQUE constraint, so a concurrent second
+        claim with the same tuple cannot mint a second candidate.
+
+        Returns ``(candidate_id, won)``. ``won`` is True only for the caller
+        whose INSERT actually created the row (the durable winner). A loser
+        receives the same deterministic ``candidate_id`` as the winner and
+        ``won=False`` — the documented loser result. Callers must never assert
+        incidental thread ordering; the UNIQUE constraint, not scheduling, is
+        the arbiter. No evaluator is invoked and no consumption occurs here.
+
+        Controlled inputs (``snapshot_retention_class``/
+        ``snapshot_redaction_class``) are validated against their closed
+        vocabulary and raise ``ValueError`` before any durable write.
+        Non-uniqueness constraint failures raise ``sqlite3.IntegrityError``;
+        the deterministic id/``claim_key`` uniqueness race maps to the
+        ``(candidate_id, won=False)`` loser result ONLY when the conflicting
+        row is proven to be the exact deterministic immutable claim tuple — a
+        raw-SQL/imported row occupying either key under a different identity
+        raises ``sqlite3.IntegrityError`` instead of misreporting an
+        unrelated durable row as the winner. Never a phantom loser with no
+        row.
+        """
+        # Pre-serialization validation — reject prose/credentials/model exchanges
+        # smuggled into digest fields and non-closed fence results BEFORE any row
+        # is written (no silent redaction, no durable residue).
+        validate_authority_digest(causal_event_digest, "causal_event_digest")
+        validate_authority_digest(policy_digest, "policy_digest")
+        validate_authority_digest(prompt_digest, "prompt_digest")
+        validate_authority_digest(model_digest, "model_digest")
+        validate_authority_digest(snapshot_digest, "snapshot_digest")
+        validate_authority_version(policy_version, "policy_version")
+        validate_authority_version(prompt_version, "prompt_version")
+        validate_authority_version(model_version, "model_version")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
+        # Controlled-input validation BEFORE any durable write: an invalid
+        # snapshot retention/redaction class must fail loudly here, never be
+        # turned by conflict handling into a phantom CAS loser.
+        _validate_authority_class(
+            snapshot_retention_class, "snapshot_retention_class", AuthorityRetentionClass
+        )
+        _validate_authority_class(
+            snapshot_redaction_class, "snapshot_redaction_class", AuthorityRedactionClass
+        )
+
+        claim_key = _authority_claim_key(
+            root_task_id,
+            manager_session_id,
+            causal_event_id,
+            policy_digest,
+            prompt_digest,
+            model_digest,
+        )
+        candidate_id = f"AUTH-CAND-{claim_key}"
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cur = self._conn.execute(
+                """INSERT INTO authority_candidates (
+                   id, claim_key, root_task_id, team, manager_agent,
+                   manager_session_id, causal_event_id, causal_event_digest,
+                   causal_result_id, policy_id, policy_version, policy_digest,
+                   prompt_id, prompt_version, prompt_digest,
+                   model_id, model_version, model_digest,
+                   snapshot_digest, snapshot_retention_class,
+                   snapshot_redaction_class, fence_results_json,
+                   disposition, lifecycle_state, consumed_at,
+                   created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, NULL, 'created', NULL, ?, ?)""",
+            (
+                candidate_id,
+                claim_key,
+                root_task_id,
+                team,
+                manager_agent,
+                manager_session_id,
+                causal_event_id,
+                causal_event_digest,
+                causal_result_id,
+                policy_id,
+                policy_version,
+                policy_digest,
+                prompt_id,
+                prompt_version,
+                prompt_digest,
+                model_id,
+                model_version,
+                model_digest,
+                snapshot_digest,
+                snapshot_retention_class,
+                snapshot_redaction_class,
+                fence_results_json,
+                now,
+                now,
+            ),
+        )
+        except sqlite3.IntegrityError as exc:
+            # Scope conflict-to-CAS-loss handling to the intended uniqueness
+            # race ONLY. id (PRIMARY KEY) and claim_key (UNIQUE) are both
+            # derived deterministically from the same claim tuple, so a
+            # UNIQUE/PRIMARYKEY violation means the exact tuple was already
+            # claimed — the documented loser result. Any other constraint
+            # failure (CHECK, NOT NULL, FK) is a real defect and must raise;
+            # it must never masquerade as won=False with a phantom loser id
+            # and no durable row.
+            if exc.sqlite_errorname in (
+                "SQLITE_CONSTRAINT_UNIQUE",
+                "SQLITE_CONSTRAINT_PRIMARYKEY",
+            ):
+                self._conn.rollback()
+                # Prove the conflicting row IS the exact deterministic
+                # immutable tuple before returning the loser result. A
+                # raw-SQL or imported row can occupy the derived candidate id
+                # under a different claim_key, or the claim_key under a
+                # different id; neither is our tuple, and reporting either as
+                # the winner would misattribute an unrelated durable row.
+                # Query by BOTH relevant keys and validate the complete
+                # immutable tuple (both derived keys plus the six claim-tuple
+                # source fields; claim_key is their sha256, so equality is
+                # the tuple proof). The exact tuple row occupies both keys,
+                # so it is necessarily the only match when present. On any
+                # absence or contradiction, fail closed with an integrity
+                # failure instead of returning a loser.
+                winner = self._conn.execute(
+                    """SELECT id, claim_key, root_task_id, manager_session_id,
+                              causal_event_id, policy_digest, prompt_digest,
+                              model_digest
+                       FROM authority_candidates
+                       WHERE id = ? OR claim_key = ?""",
+                    (candidate_id, claim_key),
+                ).fetchone()
+                if (
+                    winner is not None
+                    and winner["id"] == candidate_id
+                    and winner["claim_key"] == claim_key
+                    and winner["root_task_id"] == root_task_id
+                    and winner["manager_session_id"] == manager_session_id
+                    and winner["causal_event_id"] == causal_event_id
+                    and winner["policy_digest"] == policy_digest
+                    and winner["prompt_digest"] == prompt_digest
+                    and winner["model_digest"] == model_digest
+                ):
+                    return candidate_id, False
+                raise sqlite3.IntegrityError(
+                    "authority CAS collision: conflicting row does not match "
+                    "the deterministic immutable claim tuple"
+                ) from exc
+            raise
+        self._conn.commit()
+        return candidate_id, cur.rowcount == 1
+
+    @_synchronized
+    def record_authority_evaluation(
+        self,
+        *,
+        candidate_id: str,
+        disposition: str,
+        disposition_code: str,
+        response_digest: str,
+        response_retention_class: str = "digest_only",
+        response_redaction_class: str = "redacted",
+        fence_results: dict | None = None,
+    ) -> int:
+        """Atomically persist the single immutable evaluation for a candidate.
+
+        Writes the evaluation row and transitions the candidate
+        ``created -> evaluated`` (setting its mirrored disposition) in ONE
+        transaction. On any failure the whole transaction rolls back — no
+        evaluation row and no candidate transition survive.
+
+        The DB is the single-evaluation guard: ``authority_evaluations.
+        candidate_id`` carries a UNIQUE constraint, so a second evaluation
+        for the same candidate (or a missing candidate, via the FK) raises
+        ``sqlite3.IntegrityError`` and rolls back. Stores only the response
+        *digest* and controlled disposition/code — never raw response text.
+        """
+        validate_authority_digest(response_digest, "response_digest")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("BEGIN")
+        try:
+            cur = self._conn.execute(
+                """INSERT INTO authority_evaluations (
+                       candidate_id, disposition, disposition_code,
+                       response_digest, response_retention_class,
+                       response_redaction_class, fence_results_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate_id,
+                    disposition,
+                    disposition_code,
+                    response_digest,
+                    response_retention_class,
+                    response_redaction_class,
+                    fence_results_json,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                """UPDATE authority_candidates
+                   SET disposition = ?, lifecycle_state = 'evaluated', updated_at = ?
+                   WHERE id = ?""",
+                (disposition, now, candidate_id),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def record_authority_audit(
+        self,
+        *,
+        candidate_id: str,
+        event_type: str,
+        payload: dict | None = None,
+    ) -> int:
+        """Append one immutable audit event. The table's BEFORE UPDATE/DELETE
+        triggers make it append-only at the DB level, and candidate attribution
+        is DB-enforced via a foreign key to ``authority_candidates``."""
+        # API validation (in addition to the DB-level FK): closed event
+        # vocabulary, closed payload, and an existing candidate.
+        event_type_value = AuthorityAuditEventType(event_type).value
+        payload_json = _serialize_authority_audit_payload(payload)
+        exists = self._conn.execute(
+            "SELECT 1 FROM authority_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError(
+                f"authority audit requires an existing candidate: {candidate_id!r}"
+            )
+        cur = self._conn.execute(
+            """INSERT INTO authority_audit (candidate_id, event_type, payload_json, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                candidate_id,
+                event_type_value,
+                payload_json,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    @_synchronized
+    def consume_authority_candidate(self, candidate_id: str) -> bool:
+        """Exactly-once consumption CAS.
+
+        Transitions ``evaluated -> consumed`` (setting ``consumed_at``) only
+        if the candidate is currently evaluated. Returns True only for the
+        first call; any later call — or a call on a candidate that was never
+        evaluated (a partial record) — returns False, so no partial record
+        becomes a future continuation and no extra consumption occurs.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            """UPDATE authority_candidates
+               SET lifecycle_state = 'consumed', consumed_at = ?, updated_at = ?
+               WHERE id = ? AND lifecycle_state = 'evaluated'""",
+            (now, now, candidate_id),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def _authority_candidate_from_row(self, row) -> AuthorityCandidate:
+        return AuthorityCandidate(
+            id=row["id"],
+            claim_key=row["claim_key"],
+            root_task_id=row["root_task_id"],
+            team=row["team"],
+            manager_agent=row["manager_agent"],
+            manager_session_id=row["manager_session_id"],
+            causal_event_id=row["causal_event_id"],
+            causal_event_digest=row["causal_event_digest"],
+            causal_result_id=row["causal_result_id"],
+            policy_id=row["policy_id"],
+            policy_version=row["policy_version"],
+            policy_digest=row["policy_digest"],
+            prompt_id=row["prompt_id"],
+            prompt_version=row["prompt_version"],
+            prompt_digest=row["prompt_digest"],
+            model_id=row["model_id"],
+            model_version=row["model_version"],
+            model_digest=row["model_digest"],
+            snapshot_digest=row["snapshot_digest"],
+            snapshot_retention_class=row["snapshot_retention_class"],
+            snapshot_redaction_class=row["snapshot_redaction_class"],
+            fence_results=_parse_authority_fence_results(row["fence_results_json"]),
+            disposition=row["disposition"],
+            lifecycle_state=row["lifecycle_state"],
+            consumed_at=row["consumed_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @_synchronized
+    def get_authority_candidate(self, candidate_id: str) -> AuthorityCandidate | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._authority_candidate_from_row(row)
+
+    @_synchronized
+    def get_authority_candidate_by_claim(self, claim_key: str) -> AuthorityCandidate | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE claim_key = ?", (claim_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._authority_candidate_from_row(row)
+
+    @_synchronized
+    def list_authority_candidates_for_root(self, root_task_id: str) -> list[AuthorityCandidate]:
+        rows = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE root_task_id = ? ORDER BY id",
+            (root_task_id,),
+        ).fetchall()
+        return [self._authority_candidate_from_row(r) for r in rows]
+
+    @_synchronized
+    def get_authority_evaluation(self, candidate_id: str) -> AuthorityEvaluation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_evaluations WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return AuthorityEvaluation(
+            id=row["id"],
+            candidate_id=row["candidate_id"],
+            disposition=row["disposition"],
+            disposition_code=row["disposition_code"],
+            response_digest=row["response_digest"],
+            response_retention_class=row["response_retention_class"],
+            response_redaction_class=row["response_redaction_class"],
+            fence_results=_parse_authority_fence_results(row["fence_results_json"]),
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
+    def list_authority_audit(self, candidate_id: str) -> list[AuthorityAuditEvent]:
+        rows = self._conn.execute(
+            "SELECT * FROM authority_audit WHERE candidate_id = ? ORDER BY id",
+            (candidate_id,),
+        ).fetchall()
+        return [
+            AuthorityAuditEvent(
+                id=r["id"],
+                candidate_id=r["candidate_id"],
+                event_type=r["event_type"],
+                payload=(
+                    AuthorityAuditPayload.model_validate(json.loads(r["payload_json"]))
+                    if r["payload_json"]
+                    else None
+                ),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
 
     @_synchronized
     def close(self) -> None:
