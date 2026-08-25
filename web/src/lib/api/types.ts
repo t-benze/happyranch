@@ -253,6 +253,11 @@ export type ResponderStatus =
 
 export interface ResponderStatusEntry {
   agent_name: string;
+  /** Authoritative wake purpose from thread_invocations (TASK-5553).
+   *  Classification/dedup uses THIS, never the triggering row's kind — a
+   *  coalesced conversational REPLY range can anchor on a SYSTEM row, and a
+   *  same-agent TASK_FOLLOWUP can coexist on the same transcript. */
+  purpose: 'reply' | 'bootstrap' | 'task_followup';
   status: ResponderStatus;
   responded_at: string | null;
   started_at: string | null;

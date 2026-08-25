@@ -570,6 +570,47 @@ def test_grouped_invocations_include_started_at(tmp_path):
     assert grouped2[1][0]["started_at"] is not None
 
 
+def test_grouped_invocations_carry_authoritative_purpose(tmp_path):
+    """The grouped responder query carries ``thread_invocations.purpose`` so
+    wire classification/dedup never infers purpose from the triggering row
+    kind (TASK-5553). A coalesced REPLY wake may anchor on a SYSTEM row (its
+    follow-on mint keys the first unacknowledged sequence, which can be a
+    system divider); the entry must still read purpose='reply' there."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import (
+        ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind,
+    )
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    # A SYSTEM row (seq 2) — a REPLY wake can hang off it in the real system
+    # (the first-unacknowledged-sequence follow-on mint).
+    sys_seq = db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "resumed"},
+    )
+    # REPLY anchored on the SYSTEM row (the founder's exact edge).
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # A TASK_FOLLOWUP on the MESSAGE row — same agent, different purpose.
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    )
+
+    grouped = db.list_invocations_for_thread_grouped_by_seq("THR-001")
+    assert [e["purpose"] for e in grouped[sys_seq]] == ["reply"]
+    assert [e["purpose"] for e in grouped[1]] == ["task_followup"]
+
+
 # ── GitHub #688 Phase 1 Slice A: thread_reply_delivery_state ─────────────
 # Additive per-(thread_id, agent_name) conversational REPLY delivery state,
 # plus the store-owned cutover and recovery primitives. These are UNHOOKED in

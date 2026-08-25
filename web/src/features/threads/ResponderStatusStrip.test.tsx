@@ -1,6 +1,25 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
+import type { ResponderStatusEntry } from '@/lib/api/types';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
+
+/** One responder entry — purpose defaults to 'reply' (TASK-5553 wire field). */
+function rs(
+  agent_name: string,
+  status: ResponderStatusEntry['status'],
+  over: Partial<ResponderStatusEntry> = {},
+): ResponderStatusEntry {
+  return {
+    agent_name,
+    purpose: 'reply',
+    status,
+    responded_at: null,
+    started_at: null,
+    decline_reason: null,
+    category: null,
+    ...over,
+  };
+}
 
 describe('ResponderStatusStrip', () => {
   it('renders empty when no statuses', () => {
@@ -12,8 +31,8 @@ describe('ResponderStatusStrip', () => {
     render(
       <ResponderStatusStrip
         statuses={[
-          { agent_name: 'bravo', status: 'replied', responded_at: '2026-05-30T10:00:00Z', started_at: null, decline_reason: null, category: null },
-          { agent_name: 'charlie', status: 'declined', responded_at: '2026-05-30T10:01:00Z', started_at: null, decline_reason: null, category: null },
+          rs('bravo', 'replied', { responded_at: '2026-05-30T10:00:00Z' }),
+          rs('charlie', 'declined', { responded_at: '2026-05-30T10:01:00Z' }),
         ]}
       />,
     );
@@ -24,11 +43,7 @@ describe('ResponderStatusStrip', () => {
   });
 
   it('renders a failed status with the danger pill token', () => {
-    const { container } = render(
-      <ResponderStatusStrip
-        statuses={[{ agent_name: 'delta', status: 'failed', responded_at: null, started_at: null, decline_reason: null, category: null }]}
-      />,
-    );
+    const { container } = render(<ResponderStatusStrip statuses={[rs('delta', 'failed')]} />);
     expect(screen.getByText('failed')).toBeInTheDocument();
     const failedSpan = container.querySelector('.text-danger');
     expect(failedSpan).not.toBeNull();
@@ -40,10 +55,7 @@ describe('ResponderStatusStrip', () => {
     const { container } = render(
       <ResponderStatusStrip
         nowMs={now}
-        statuses={[
-          { agent_name: 'alpha', status: 'working', responded_at: null, started_at: started, decline_reason: null, category: null },
-          { agent_name: 'bravo', status: 'queued', responded_at: null, started_at: null, decline_reason: null, category: null },
-        ]}
+        statuses={[rs('alpha', 'working', { started_at: started }), rs('bravo', 'queued')]}
       />,
     );
     // No terminal entries → strip renders nothing.
@@ -57,15 +69,11 @@ describe('ResponderStatusStrip', () => {
     render(
       <ResponderStatusStrip
         statuses={[
-          { agent_name: 'alpha', status: 'working', responded_at: null, started_at: null, decline_reason: null, category: null },
-          {
-            agent_name: 'charlie',
-            status: 'declined',
+          rs('alpha', 'working'),
+          rs('charlie', 'declined', {
             responded_at: '2026-05-30T10:01:00Z',
-            started_at: null,
-            decline_reason: null,
             category: 'declined',
-          },
+          }),
         ]}
       />,
     );
@@ -77,38 +85,23 @@ describe('ResponderStatusStrip', () => {
     render(
       <ResponderStatusStrip
         statuses={[
-          {
-            agent_name: 'a-declined',
-            status: 'declined',
+          rs('a-declined', 'declined', {
             responded_at: '2026-05-30T10:00:00Z',
-            started_at: null,
             decline_reason: 'not my area',
             category: 'declined',
-          },
-          {
-            agent_name: 'b-nocallback',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          }),
+          rs('b-nocallback', 'failed', {
             decline_reason: 'no_callback: clean exit',
             category: 'no_callback',
-          },
-          {
-            agent_name: 'c-reprompt',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          }),
+          rs('c-reprompt', 'failed', {
             decline_reason: 'no_callback_after_reprompt: still nothing',
             category: 'no_callback_after_reprompt',
-          },
-          {
-            agent_name: 'd-infra',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          }),
+          rs('d-infra', 'failed', {
             decline_reason: 'runner_crash rc=143',
             category: 'infra_fail',
-          },
+          }),
         ]}
       />,
     );
@@ -122,14 +115,10 @@ describe('ResponderStatusStrip', () => {
     render(
       <ResponderStatusStrip
         statuses={[
-          {
-            agent_name: 'infra-bare',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          rs('infra-bare', 'failed', {
             decline_reason: '529 overloaded',
             category: 'infra_fail',
-          },
+          }),
         ]}
       />,
     );
@@ -139,26 +128,7 @@ describe('ResponderStatusStrip', () => {
   it('falls back to the generic label when category is null on a declined/failed row', () => {
     // Older/replied data carries no category — keep today's generic labels.
     render(
-      <ResponderStatusStrip
-        statuses={[
-          {
-            agent_name: 'legacy-declined',
-            status: 'declined',
-            responded_at: '2026-05-30T10:00:00Z',
-            started_at: null,
-            decline_reason: null,
-            category: null,
-          },
-          {
-            agent_name: 'legacy-failed',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
-            decline_reason: null,
-            category: null,
-          },
-        ]}
-      />,
+      <ResponderStatusStrip statuses={[rs('legacy-declined', 'declined', { responded_at: '2026-05-30T10:00:00Z' }), rs('legacy-failed', 'failed')]} />,
     );
     expect(screen.getByText('declined')).toBeInTheDocument();
     expect(screen.getByText('failed')).toBeInTheDocument();
@@ -171,14 +141,10 @@ describe('ResponderStatusStrip', () => {
     const { container } = render(
       <ResponderStatusStrip
         statuses={[
-          {
-            agent_name: 'aborted-agent',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          rs('aborted-agent', 'failed', {
             decline_reason: 'founder_aborted',
             category: 'infra_fail',
-          },
+          }),
         ]}
       />,
     );
@@ -195,14 +161,10 @@ describe('ResponderStatusStrip', () => {
     const { container } = render(
       <ResponderStatusStrip
         statuses={[
-          {
-            agent_name: 'crashed-agent',
-            status: 'failed',
-            responded_at: null,
-            started_at: null,
+          rs('crashed-agent', 'failed', {
             decline_reason: 'runner_crash rc=143',
             category: 'infra_fail',
-          },
+          }),
         ]}
       />,
     );
@@ -214,19 +176,28 @@ describe('ResponderStatusStrip', () => {
   it('renders a replied entry with the accent pill token — no regression', () => {
     const { container } = render(
       <ResponderStatusStrip
-        statuses={[
-          {
-            agent_name: 'echo',
-            status: 'replied',
-            responded_at: '2026-05-30T10:00:00Z',
-            started_at: null,
-            decline_reason: null,
-            category: null,
-          },
-        ]}
+        statuses={[rs('echo', 'replied', { responded_at: '2026-05-30T10:00:00Z' })]}
       />,
     );
     expect(screen.getByText('replied')).toBeInTheDocument();
     expect(container.querySelector('.text-accent-text')).not.toBeNull();
+  });
+
+  it('renders the terminal replied marker for a SYSTEM-row-anchored REPLY (TASK-5553)', () => {
+    // A REPLY whose coalesced range anchored on a system row settles → the
+    // system row's responder entry reads 'replied' with purpose='reply'; the
+    // strip must surface the marker (it is rendered under the SystemDivider).
+    render(
+      <ResponderStatusStrip
+        statuses={[
+          rs('investment_advisor', 'replied', {
+            purpose: 'reply',
+            responded_at: '2026-05-30T10:00:00Z',
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('investment_advisor')).toBeInTheDocument();
+    expect(screen.getByText('replied')).toBeInTheDocument();
   });
 });

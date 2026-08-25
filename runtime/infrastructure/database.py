@@ -6040,16 +6040,22 @@ class Database:
     def list_invocations_for_thread_grouped_by_seq(
         self, thread_id: str
     ) -> dict[int, list[dict[str, object]]]:
-        """Return {triggering_seq: [{agent_name, status, consumed_at}, ...]}
+        """Return {triggering_seq: [{agent_name, purpose, status, consumed_at}, ...]}
         for every REPLY and TASK_FOLLOWUP invocation in this thread.
 
         Used by GET /threads/{id} to build the per-message responder_status
         strip. Status values are the raw DB values (pending/consumed/declined/
         failed); the route's response builder renames consumed → replied.
 
-        REPLY invocations hang off MESSAGE rows; TASK_FOLLOWUP invocations hang
-        off the SYSTEM row (task_completed / task_failed / task_escalated) that
-        wakes a thread-dispatched agent (run_step._append_followup_system_and_reinvoke).
+        Each entry carries the authoritative ``purpose`` (''reply'' |
+        ''task_followup'') so classification/dedup on the wire NEVER has to
+        infer purpose from the triggering row's kind. A conversational REPLY
+        invocation can hang off a SYSTEM row — the coalesced delivery range
+        starts at the first unacknowledged sequence, which may be a system row
+        (e.g. a resumed/terminal divider) rather than the founder message that
+        caused the arrival. TASK_FOLLOWUP invocations hang off the SYSTEM row
+        (task_completed / task_failed / task_escalated) that wakes a
+        thread-dispatched agent (run_step._append_followup_system_and_reinvoke).
         Including TASK_FOLLOWUP lets the in-flight strip surface the woken agent
         on its system row. BOOTSTRAP is deliberately excluded — it has no
         triggering message row to attach a responder strip to.
@@ -6060,8 +6066,8 @@ class Database:
         this single timestamp regardless of which path consumed the invocation.
         """
         rows = self._conn.execute(
-            "SELECT triggering_seq, agent_name, status, consumed_at, started_at, "
-            "decline_reason "
+            "SELECT triggering_seq, agent_name, purpose, status, consumed_at, "
+            "started_at, decline_reason "
             "FROM thread_invocations "
             "WHERE thread_id = ? AND purpose IN ('reply', 'task_followup') "
             "ORDER BY triggering_seq, agent_name",
@@ -6071,6 +6077,7 @@ class Database:
         for r in rows:
             entry = {
                 "agent_name": r["agent_name"],
+                "purpose": r["purpose"],
                 "status": r["status"],
                 "consumed_at": r["consumed_at"],
                 "started_at": r["started_at"],

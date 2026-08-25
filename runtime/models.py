@@ -562,6 +562,7 @@ class ThreadMessage(BaseModel):
 
 class ResponderStatusEntry(BaseModel):
     agent_name: str
+    purpose: ThreadInvocationPurpose
     status: Literal["queued", "working", "replied", "declined", "failed"]
     responded_at: str | None
     started_at: str | None = None

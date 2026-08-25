@@ -1132,7 +1132,10 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
 
     Splits the DB `pending` state into `queued` (no subprocess yet) vs
     `working` (subprocess started — `started_at` set). Terminal states go
-    through `_wire_status` (consumed→replied, timeout→failed).
+    through `_wire_status` (consumed→replied, timeout→failed). The invocation's
+    authoritative ``purpose`` is passed through unchanged so the web selector
+    classifies/dedups by purpose (never by triggering-row kind — a REPLY range
+    can anchor on a system row).
     """
     db_status = e["status"]
     if db_status == "pending":
@@ -1141,6 +1144,7 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
         wire = _wire_status(db_status)
     return ResponderStatusEntry(
         agent_name=e["agent_name"],
+        purpose=e["purpose"],
         status=wire,
         responded_at=e["consumed_at"],
         started_at=e.get("started_at"),
@@ -1249,11 +1253,12 @@ async def get_thread_endpoint(
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
-    # Pass responders unconditionally: the grouped query returns reply
-    # invocations (which hang off MESSAGE rows) and task_followup invocations
-    # (which hang off the SYSTEM row that wakes a dispatched agent). The two are
-    # disjoint by triggering-row kind, so a blanket lookup surfaces the followup
-    # in-flight strip on its system row without contaminating message rows.
+    # Pass responders unconditionally: the grouped query returns reply and
+    # task_followup invocations keyed by their OWN triggering_seq (every
+    # invocation carries its authoritative purpose on the wire — TASK-5553 —
+    # so a REPLY wake anchored on a SYSTEM row is still classified as a
+    # REPLY). The blanket lookup surfaces the followup in-flight strip on its
+    # system row without contaminating message rows.
     d["messages"] = [
         _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
         for m in msgs
@@ -1284,9 +1289,9 @@ async def list_thread_messages_endpoint(
         msgs = msgs[:effective_limit]
     next_since_seq = msgs[-1].seq if msgs else since_seq
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
-    # Unconditional responders lookup — see get_thread_endpoint: reply and
-    # task_followup invocations are disjoint by triggering-row kind, so the
-    # blanket lookup surfaces the followup in-flight strip on its system row.
+    # Unconditional responders lookup — see get_thread_endpoint: entries are
+    # keyed by their own triggering_seq and carry the authoritative purpose on
+    # the wire (TASK-5553), so a REPLY anchored on a system row stays a REPLY.
     return {
         "messages": [
             _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
