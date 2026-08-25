@@ -3,7 +3,8 @@
 Slice A (THR-207 rulings 1/2/3/4/5/6 as amended; governing spec
 ``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``, with the
 founder-approved real-caller amendment THR-207 seq 41-44) ships the
-platform-neutral core plus **exactly one** wired production producer:
+platform-neutral core plus **exactly one** wired production producer; Slice B
+ships the real backends behind the capability factory:
 
 * capability/report/sample/receipt/opaque-handle contracts — see
   ``runtime/platform/session_backend.py``;
@@ -16,9 +17,20 @@ platform-neutral core plus **exactly one** wired production producer:
   daemon drain iterates the same registry — so a shutdown that fires when or
   immediately after admission is granted can never miss an admitted attempt;
 * schedule fires (``runtime/daemon/schedule_runner.py``) run through the
-  supervisor via the honest no-enforcement ``PassthroughBackend``; the
-  daemon drain calls ``shutdown()`` in the app lifespan finally. Task, thread,
-  dream, and wake producers stay structurally unchanged.
+  supervisor; the backend is selected by the capability factory
+  (``runtime/platform/backend_factory.py``) — the wired producer's launch
+  body performs its own subprocess launch, so the truthful selection is the
+  honest no-enforcement passthrough until the executor launch bodies are
+  wired (a later slice). The daemon drain calls ``shutdown()`` in the app
+  lifespan finally. Task, thread, dream, and wake producers stay structurally
+  unchanged.
+
+Slice B backends (``runtime/platform/linux_systemd.py``,
+``runtime/platform/macos_process_group.py``) implement the same contract with
+real operations — operational capability probes, per-session containment,
+whole-tree stop on every terminal path, authoritative/sampled measurement —
+and are exercised by real integration suites; callers branch on capabilities,
+never on OS names.
 
 Load-bearing ordering invariants (enforced here, honored by wiring):
 
@@ -1503,20 +1515,25 @@ def build_default_host_supervisor(
     policy: PolicySnapshot | None = None,
     publisher: Callable[[Receipt], None] | None = None,
 ) -> HostSessionSupervisor:
-    """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice A).
+    """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice B).
 
     Exactly ONE production producer — schedule fires — runs through the
     returned supervisor; task/thread/dream/wake producers stay structurally
-    unchanged. The backend is the honest no-enforcement ``PassthroughBackend``
-    (no Linux/macOS containment ships in this slice; missing enforcement
-    tightens admission via the binding macOS canary cap of 4, which never
-    binds the single schedule worker). The publisher logs bounded receipts —
-    no metrics/audit/health payload expansion.
+    unchanged. The backend is selected through the capability factory
+    (:func:`runtime.platform.backend_factory.session_backend_for_wired_producer`):
+    the wired producer's launch body performs its own subprocess launch
+    inside the executor, which no real containment backend can wrap until
+    the executor launch bodies are wired (a later slice), so the truthful
+    selection is the honest no-enforcement passthrough (all capabilities
+    unavailable; missing enforcement tightens admission via the binding
+    macOS canary cap of 4, which never binds the single schedule worker).
+    The publisher logs bounded receipts — no metrics/audit/health payload
+    expansion.
     """
-    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.platform.backend_factory import session_backend_for_wired_producer
 
     return HostSessionSupervisor(
-        backend=backend or PassthroughBackend(),
+        backend=backend or session_backend_for_wired_producer(),
         policy=policy or canary_policy(),
         publisher=publisher or _log_bounded_receipt,
     )
