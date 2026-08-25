@@ -1239,6 +1239,24 @@ def test_retry_current_failed_candidate_still_claims_one_attempt_and_is_idempote
 
     monkeypatch.setattr(custom_adapter_registry, "run_conformance_probe", fake_probe)
 
+    # Count the concurrent loser's polls of the running attempt so the test
+    # can wait deterministically — no wall-clock sleep — until the loser has
+    # demonstrably polled beyond the former 50 x 20ms (1s) poll budget while
+    # the winner is still held in flight. Only the loser's _await_running_retry
+    # loop calls get_retry_attempt in this flow, so every counted poll is the
+    # concurrent caller still waiting on the winner's real terminal outcome.
+    poll_count = [0]
+    poll_condition = threading.Condition()
+    original_get_attempt = DirectConnectAuthorityStore.get_retry_attempt
+
+    def counting_get_attempt(self, attempt_id):
+        with poll_condition:
+            poll_count[0] += 1
+            poll_condition.notify_all()
+        return original_get_attempt(self, attempt_id)
+
+    monkeypatch.setattr(DirectConnectAuthorityStore, "get_retry_attempt", counting_get_attempt)
+
     responses = []
 
     def run_retry():
@@ -1258,15 +1276,27 @@ def test_retry_current_failed_candidate_still_claims_one_attempt_and_is_idempote
     assert len(attempts) == 1
     assert attempts[0][0] == "running"
 
-    # Hold the winning retry in flight past the former 1s (50 x 20ms)
-    # concurrent-caller poll budget so the concurrent caller MUST wait for
-    # the winner's real terminal outcome instead of receiving a fabricated
-    # failure (CI regression: Python 3.14 runner descheduling exceeded the
-    # old budget). The winner's conformance probe is itself bounded
-    # (CONFORMANCE_PROBE_TIMEOUT_SECONDS = 30s), so 1.5s is well within the
-    # repaired budget — same technique as
-    # test_concurrent_browser_commit_reconciles_durable_planned_winner.
-    time.sleep(1.5)
+    # Deterministic replacement for the former unconditional time.sleep(1.5):
+    # wait until the concurrent loser has polled MORE than the former
+    # 50 x 20ms / one-second budget (51+ polls) while the winner is still in
+    # flight, proving the loser remains pending beyond the old fabricated-
+    # failure cutoff (CI regression: Python 3.14 runner descheduling exceeded
+    # the old budget). Under the pre-fix code the loser fabricated
+    # failed/concurrent_retry_incomplete after exactly 50 polls, so this wait
+    # can never be satisfied and the test fails RED.
+    with poll_condition:
+        exceeded_budget = poll_condition.wait_for(
+            lambda: poll_count[0] > 50, timeout=10,
+        )
+    assert exceeded_budget, (
+        "concurrent loser returned before polling beyond the former 50-poll "
+        f"budget (poll_count={poll_count[0]})"
+    )
+    # The winner is still legitimately in flight and neither caller has
+    # returned a response: the loser is pending, not failing.
+    assert not release_probe.is_set()
+    assert t1.is_alive() and t2.is_alive()
+
     release_probe.set()
     t1.join(timeout=10)
     t2.join(timeout=10)
@@ -1276,3 +1306,23 @@ def test_retry_current_failed_candidate_still_claims_one_attempt_and_is_idempote
     assert all(r.status_code == 200 for r in responses)
     assert all(r.json()["profile_state"] == "committed" for r in responses)
     assert probe_count[0] == 1
+
+    # Exactly one attempt ran and reached the winner's real terminal outcome;
+    # no conflicting durable residue (no second attempt, no failed event).
+    attempts = state.direct_connect_authority_store._conn.execute(
+        "SELECT state, reason FROM direct_connect_retry_attempts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchall()
+    assert len(attempts) == 1
+    assert attempts[0][0] == "succeeded"
+    assert attempts[0][1] is None
+    events = state.direct_connect_authority_store._conn.execute(
+        """SELECT event_type FROM direct_connect_events
+           WHERE operation_id = ? AND event_type LIKE 'retry_validation%'
+           ORDER BY created_at, rowid""",
+        (operation_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == [
+        "retry_validation_started",
+        "retry_validation_succeeded",
+    ]
