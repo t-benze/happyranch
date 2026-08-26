@@ -382,6 +382,16 @@ def test_run_ids_are_unique() -> None:
     assert new_run_id(now=1_700_000_000) != new_run_id(now=1_700_000_001)
 
 
+def test_normalize_expected_digest_accepts_prefixed_manifest_value() -> None:
+    """Regression: the manifest pins ``sha256:<hex>``; download verification
+    compares raw hex — a prefixed value must never be a false mismatch."""
+    from labs.tenant_isolation.harness.backend import normalize_expected_digest
+
+    hex_digest = "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5"
+    assert normalize_expected_digest(f"sha256:{hex_digest}") == hex_digest
+    assert normalize_expected_digest(hex_digest) == hex_digest
+
+
 def test_bounds_are_plumbed_to_backend_calls(tmp_path: Path) -> None:
     fake = FakeBackend()
     orch, _ = _orchestrator(

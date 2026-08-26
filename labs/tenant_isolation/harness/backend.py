@@ -94,6 +94,16 @@ class Backend:
         raise TimeoutError(f"timed out waiting for {desc} (>{timeout:.0f}s)")
 
 
+def normalize_expected_digest(expected: str) -> str:
+    """Strip a ``sha256:`` prefix from a pinned digest (manifest convention).
+
+    ``manifest.json`` pins digests as ``sha256:<hex>``; download verification
+    compares against the raw hex of the downloaded bytes. Both forms are
+    accepted so a prefixed manifest value is never a false mismatch.
+    """
+    return expected[7:] if expected.startswith("sha256:") else expected
+
+
 class DockerBackend(Backend):
     """Real lab backend: docker CLI + pinned tailscale binary + TCP probes."""
 
@@ -172,10 +182,11 @@ class DockerBackend(Backend):
         if not result.ok():
             raise RuntimeError(f"download failed: {url}")
         digest = hashlib.sha256(tmp.read_bytes()).hexdigest()
-        if digest != sha256:
+        expected_hex = normalize_expected_digest(sha256)
+        if digest != expected_hex:
             tmp.unlink(missing_ok=True)
             raise RuntimeError(
-                f"sha256 mismatch for {url}: expected {sha256}, got {digest} "
+                f"sha256 mismatch for {url}: expected {expected_hex}, got {digest} "
                 "(fail-closed; pinned artifact bytes differ — see manifest.json)"
             )
         tmp.rename(dest)
