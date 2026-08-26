@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.orchestrator.executor_binary_registry import (
+    RegistryIsolationError,
     RemoveBinaryResult,
     get_binary,
     is_binary_valid,
@@ -115,6 +116,14 @@ def list_binaries() -> BinaryRegistryList:
     "/executor-binaries/register",
     response_model=RegisterBinaryResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        403: {
+            "description": "Refused: the daemon's default registry is the "
+            "production registry and the daemon was launched by a test "
+            "harness (THR-204 issue 3). Set HAPPYRANCH_DAEMON_HOME to an "
+            "isolated temporary daemon home."
+        }
+    },
 )
 def register_binary(body: RegisterBinaryRequest) -> RegisterBinaryResponse:
     """Register or update the absolute binary path for an executor kind.
@@ -126,6 +135,12 @@ def register_binary(body: RegisterBinaryRequest) -> RegisterBinaryResponse:
 
     On success, the path is written to the machine-local registry and takes
     effect immediately for the next spawn.
+
+    Fails closed with 403 (THR-204 issue 3): when this daemon was itself
+    launched by a test harness (inherited pytest marker) and its default
+    registry IS the production registry, the write is refused BEFORE any
+    mkdir/.tmp/write surface — a test/repro can never mutate production
+    registry state through the daemon route.
     """
     try:
         validated_path = validate_binary(body.path)
@@ -135,7 +150,13 @@ def register_binary(body: RegisterBinaryRequest) -> RegisterBinaryResponse:
             detail=str(exc),
         )
 
-    set_binary(body.kind, validated_path)
+    try:
+        set_binary(body.kind, validated_path)
+    except RegistryIsolationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
     return RegisterBinaryResponse(
         kind=body.kind,
         path=validated_path,
@@ -201,6 +222,11 @@ class RemoveBinaryResponse(BaseModel):
     response_model=RemoveBinaryResponse,
     responses={
         200: {"description": "Binary path successfully removed."},
+        403: {
+            "description": "Refused: the daemon's default registry is the "
+            "production registry and the daemon was launched by a test "
+            "harness (THR-204 issue 3)."
+        },
         404: {"description": "Executor kind not found in the binary registry."},
         409: {"description": "Stored path does not match expected_path (concurrent update)."},
         422: {"description": "Validation error — expected_name mismatch, built-in kind, or other rule violation."},
@@ -243,7 +269,15 @@ def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
     # Guard 3 + 4: atomically check stored path matches expected_path AND remove.
     # The result is derived entirely from the lock-guarded critical section —
     # no re-read afterward to classify a race.
-    result: RemoveBinaryResult = remove_binary_conditional(kind, body.expected_path)
+    try:
+        result: RemoveBinaryResult = remove_binary_conditional(kind, body.expected_path)
+    except RegistryIsolationError as exc:
+        # THR-204 issue 3: a test-launched daemon must fail closed BEFORE any
+        # write surface (registry bytes unchanged).
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
     if result.removed:
         return RemoveBinaryResponse(kind=kind, removed=True)
 

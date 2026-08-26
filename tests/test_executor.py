@@ -1859,7 +1859,10 @@ def test_normal_executor_popen_strips_adversarial_venv_from_env(
     monkeypatch.setenv("UV_SYSTEM_PYTHON", "1")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "testorg")
-    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", "/tmp/hr-home")
+    # THR-204 issue 3: use a per-test temp daemon home, never a fixed shared
+    # /tmp path, so parallel runs cannot collide on the registry write surface.
+    hr_home = tmp_path / "hr-home"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(hr_home))
 
     # Register a fake codex binary so the executor resolves.
     from runtime.orchestrator.executor_binary_registry import set_binary
@@ -1891,8 +1894,8 @@ def test_normal_executor_popen_strips_adversarial_venv_from_env(
     assert env_dict.get("HAPPYRANCH_ORG_SLUG") == "testorg", (
         f"HAPPYRANCH_ORG_SLUG must be testorg; got: {env_dict.get('HAPPYRANCH_ORG_SLUG')!r}"
     )
-    assert env_dict.get("HAPPYRANCH_DAEMON_HOME") == "/tmp/hr-home", (
-        f"HAPPYRANCH_DAEMON_HOME must be /tmp/hr-home; got: {env_dict.get('HAPPYRANCH_DAEMON_HOME')!r}"
+    assert env_dict.get("HAPPYRANCH_DAEMON_HOME") == str(hr_home), (
+        f"HAPPYRANCH_DAEMON_HOME must be {hr_home}; got: {env_dict.get('HAPPYRANCH_DAEMON_HOME')!r}"
     )
 
 

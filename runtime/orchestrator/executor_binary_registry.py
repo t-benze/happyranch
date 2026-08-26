@@ -14,6 +14,22 @@ remove_binary, remove_binary_conditional) and any direct writer shares
 ONE lock (_registry_lock).  Public APIs acquire the lock once and delegate
 to unlocked internal helpers — callers inside the module that already hold
 the lock use the unlocked forms directly to avoid non-reentrant deadlock.
+
+TEST ISOLATION (THR-204 issue 3): every write path fails closed with
+``RegistryIsolationError`` when a pytest process targets the DEFAULT
+production registry (~/.happyranch/executors.json) by any spelling —
+including a ``HAPPYRANCH_DAEMON_HOME`` symlink/alias that resolves there —
+without isolating ``HAPPYRANCH_DAEMON_HOME`` to a temporary daemon home.
+The guard compares CANONICAL (symlink-resolved) targets so an alias can
+never bypass the check.  The daemon-mediated route (``happyranch
+ executor-binaries register`` / ``remove`` CLI, and the daemon's register
+/delete routes) is covered at every surface where the caller's test context
+is visible: the CLI refuses pre-flight under a test context (TASK-5579), and
+a daemon launched BY a test harness inherits the same marker and fails
+closed with a clean 403 before any write surface (registry bytes unchanged).
+The production daemon never runs under pytest, so operator registration via
+CLI/web/onboarding is unaffected.  See
+``tests/test_executor_binary_registry_daemon_isolation.py``.
 """
 
 from __future__ import annotations
@@ -21,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +66,87 @@ def _registry_path() -> Path:
 # ---------------------------------------------------------------------------
 
 _registry_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Test-process isolation guard (THR-204 issue 3)
+# ---------------------------------------------------------------------------
+
+
+class RegistryIsolationError(RuntimeError):
+    """Raised when a test process attempts to write the production
+    machine-local executor-binary registry without isolating the daemon home.
+
+    THR-204 issue 3: tests/integration repros that registered fake binaries
+    under PRODUCTION executor names (``claude``, ``codex``) without setting
+    ``HAPPYRANCH_DAEMON_HOME`` to a temporary daemon home twice overwrote the
+    live production registry (``~/.happyranch/executors.json``) and took down
+    agent invocations.  This guard fails closed so a missed isolation can
+    never mutate production state.
+    """
+
+
+def is_test_process() -> bool:
+    """Return True when this process (or its launch context) is a test process.
+
+    Detection uses the ``PYTEST_CURRENT_TEST`` env var pytest exports during
+    test execution plus the presence of the ``pytest`` module in this
+    interpreter.  A daemon or CLI subprocess spawned BY a test inherits the
+    env var, so the same detection works at every write surface (in-process
+    registry calls, the ``happyranch executor-binaries`` CLI, and daemons
+    launched by test harnesses).  The production daemon never runs under
+    pytest, so normal operator registration is unaffected by the write guard.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return "pytest" in sys.modules
+
+
+def default_registry_path() -> Path:
+    """The default machine-local production registry (~/.happyranch/executors.json)."""
+    return Path.home() / ".happyranch" / "executors.json"
+
+
+def write_target_is_default_production_registry() -> bool:
+    """True when the effective registry write target canonicalizes to the
+    DEFAULT production registry (~/.happyranch/executors.json).
+
+    The candidate and protected targets are compared after non-strict
+    ``Path.resolve()``, so symlinked/aliased spellings (direct, chained, or
+    dangling) are canonicalized without requiring the registry file or its
+    parent to exist — a lexical-only comparison allowed a
+    ``HAPPYRANCH_DAEMON_HOME`` symlink alias to bypass the guard.
+    """
+    return _registry_path().resolve() == default_registry_path().resolve()
+
+
+def _assert_write_target_safe() -> None:
+    """Fail-closed write guard for the DEFAULT machine-local registry.
+
+    Under a test process, refuse to write the default production registry at
+    ``~/.happyranch/executors.json`` when ``HAPPYRANCH_DAEMON_HOME`` is not
+    explicitly set (or explicitly points at the default, by any spelling —
+    including a symlink/alias that canonicalizes there).  A test or
+    integration repro that registers a fake binary under a production
+    executor name without isolating the daemon home would otherwise overwrite
+    the live registry — this has twice broken live agent invocations
+    (THR-204 issue 3).
+
+    Isolation is simply setting ``HAPPYRANCH_DAEMON_HOME`` to a temporary
+    directory; every test that intentionally writes the registry already does
+    this.  The daemon (the only legitimate writer of the default registry)
+    never runs under pytest, so normal operator registration and fail-closed
+    launch behavior are preserved.
+    """
+    if not is_test_process():
+        return
+    if write_target_is_default_production_registry():
+        raise RegistryIsolationError(
+            "refusing to write the production executor-binary registry at "
+            f"{_registry_path()} from a test process. Set HAPPYRANCH_DAEMON_HOME to an "
+            "isolated temporary daemon home (e.g. a pytest tmp_path) before "
+            "registering executor binaries in tests."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +196,7 @@ def _save_registry_unlocked(entries: dict[str, str]) -> None:
 
     Paths are not validated here — validation is the caller's responsibility.
     """
+    _assert_write_target_safe()
     path = _registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -116,6 +215,7 @@ def _remove_binary_unlocked(kind: str) -> None:
 
     No-op when the kind is not registered.
     """
+    _assert_write_target_safe()
     path = _registry_path()
     current = _load_registry_unlocked()
     key = kind.lower()
@@ -210,6 +310,7 @@ def remove_binary_conditional(kind: str, expected_path: str) -> RemoveBinaryResu
     - ``stored_value``: the value stored at check time (None if absent).
     """
     with _registry_lock:
+        _assert_write_target_safe()
         path = _registry_path()
         current = _load_registry_unlocked()
         key = kind.lower()
