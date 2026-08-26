@@ -47,6 +47,28 @@
 > **Reconciled against the finalised design: `product_lead`, TASK-460, 2026-06-17
 > (THR-010, founder msg 140).**
 
+> **🟢 PHASE-2 SUPERSESSION — THR-198 MENTION ROUTING (shipped 2026-08).** After
+> this PRD was finalised, **THR-198 Phase 2 (mention routing) shipped and supersedes
+> every "broadcast-only / @mention routing deferred-or-cut" clause in this document**
+> (§4.2 Threads purpose + deferred list + iAC2; §4.11 Settings "Founder handle"
+> broadcast-copy rationale + iAC4; §5 no-list "@mention routing affordance
+> (broadcast-only, A2)" + its conforms-note; §6 D3 + the deferred-set sentence; §8
+> "@mention broadcast-only" honesty criterion; §A.2 delta row; §C.2 resolved-deltas
+> verification). **Current state** (ratified THR-198 matrix; merged Slice B
+> server-side routing + per-thread web control C1): per-thread mention routing is
+> **default-enabled**; a message with one/more **valid current-participant mentions**
+> wakes **exactly that set** (speaker excluded); **zero valid mentions**
+> (none/invalid/nonparticipant-only/self-only) **broadcasts**; a **disabled** thread
+> broadcasts; **TASK_FOLLOWUP/BOOTSTRAP are isolated and never mention-routed**; the
+> toggle is **founder-only** (thread-detail ⋯ menu "Mention routing…",
+> `POST /threads/{id}/mention-routing`, `happyranch threads mention-routing`);
+> routing is **not** priority/fairness, and there is **no autocomplete or
+> active-respondent fallback**. The clauses below are retained verbatim as the
+> 2026-06-17 audit trail; each carries an inline **🟢 SUPERSEDED (THR-198 Phase 2)**
+> marker. Contract: `docs/agent-guides/features-and-invariants.md` (Threads) and
+> `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md` (supersession
+> header).
+
 ---
 
 ## 0. How to read this finalised PRD
@@ -293,7 +315,8 @@ to **§A**.
 ### 4.2 Threads (list + detail) — RENDER-ONLY
 
 - **Purpose.** Founder-visible, multi-agent **broadcast** conversations. The sole
-  collaboration surface.
+  collaboration surface. *(🟢 SUPERSEDED (THR-198 Phase 2): mention-routed per the
+  ratified matrix — front-matter notice.)*
 - **v1 scope** (unchanged): **List** — segmented filter (`All / Waiting on you /
   Active / Done`) + counts; row leads with **last speaker**; overlapping avatar
   stack; status pills + green `live` pill. **Detail** — 2-col
@@ -303,7 +326,9 @@ to **§A**.
   **Turn budget (X/500)** visible before the cap. **Dream-origin marker** (A4)
   where applicable.
 - **Deferred.** Real @mention routing (→ §6, D3); in-transcript agent-own-execution
-  `ran:` cards (new store → §6, D7).
+  `ran:` cards (new store → §6, D7). *(🟢 SUPERSEDED (THR-198 Phase 2): @mention
+  routing SHIPPED — Slice B server-side + per-thread web control C1; D3 no longer
+  deferred. `ran:` cards (D7) remain deferred.)*
 
 **INTERACTION SPEC.**
 - **Interaction logic.**
@@ -340,6 +365,10 @@ to **§A**.
     daemon does not perform — the composer must NOT promise "@mention an agent to
     route". **§A.2 RESOLVED** — the finalised composer reads *"Message the thread —
     all participants see it (broadcast)"* (no routing promise). **[verifiable]**
+    *(🟢 SUPERSEDED (THR-198 Phase 2): the daemon NOW performs @mention routing
+    (default-enabled per-thread, ratified matrix); the composer helper copy above is
+    unchanged in the shipped product. The honesty rule persists — no affordance may
+    promise routing the daemon does not perform.)*
   - iAC3: System/dispatch events are visually distinct from prose. **[verifiable]**
   - iAC4: A failed send preserves the draft + offers retry. **[verifiable]**
 
@@ -804,6 +833,9 @@ to **§A**.
   in the finalised design now reads *"The handle agents reference when they broadcast
   to you."* — broadcast framing, **no** "route questions to you" routing promise. The
   required A2 rewording is already in the finalised design; keep this broadcast copy.
+  *(🟢 SUPERSEDED (THR-198 Phase 2): the handle copy ships unchanged; the "no routing
+  promise" framing is superseded — the daemon now routes mentions per the ratified
+  matrix.)*
 - **Interaction acceptance.**
   - iAC1: `/settings` is a real bookmarkable route; sub-nav switches panels.
     **[verifiable]**
@@ -811,7 +843,9 @@ to **§A**.
     matching real daemon behavior. **[verifiable]**
   - iAC3: Agent-name inputs autocomplete from the real roster. **[verifiable]**
   - iAC4 (P1): No field implies @mention routing the daemon doesn't perform
-    (§A.2). **[verifiable]**
+    (§A.2). **[verifiable]** *(🟢 SUPERSEDED (THR-198 Phase 2): the daemon now
+    performs mention routing; the honesty rule persists — no field may promise
+    routing the daemon does not perform.)*
 
 ---
 
@@ -916,12 +950,17 @@ v3"** (→ "viewed N× (CLI)", K1) · Tasks **board/kanban** · Tasks **8-slot b
 parser** · **real-dollar figures** on any v1 surface (`$0.00 / not metered`, Q1) ·
 **@mention routing** affordance (broadcast-only, A2) · agent **autonomy toggle**
 rendered as functional (A1) · in-transcript **agent-own `ran:` cards** in Threads
-(D7) · Direction B "Mission Control" · reintroducing **Talks**.
+(D7) · Direction B "Mission Control" · reintroducing **Talks**. *(🟢 SUPERSEDED
+(THR-198 Phase 2): the **@mention routing** cut is SHIPPED — per-thread mention
+routing landed (Slice B + web control C1); the remaining cuts stand.)*
 
 > **The finalised design now CONFORMS to all three of these cuts** (autonomy toggle,
 > @mention routing copy, KB "used by N agents · v3") — the §A deltas flagged in the
 > 2026-06-16 reconciliation are **RESOLVED in the finalised design**. The cuts remain
-> cuts (the design conforming does not reopen them). See §A.
+> cuts (the design conforming does not reopen them). See §A. *(🟢 SUPERSEDED
+> (THR-198 Phase 2): the "@mention routing copy" cut is SHIPPED — per-thread mention
+> routing (with the C1 web control) landed after this PRD; the autonomy-toggle and
+> KB-label cuts remain.)*
 
 ---
 
@@ -940,6 +979,10 @@ unread styling). **The one schema change promoted INTO v1: A4
 `composed_from_dream_id`** (additive, nullable, no backfill). **No new store for v1
 beyond A4** (deferred set: D1 dollar meter, D2 autonomy toggle, D3 @mention routing,
 D4 artifact↔PR, D5 KB rich-usage, D10 B.2 edit-route, D11 B.3 read-state).
+*(🟢 SUPERSEDED (THR-198 Phase 2): **D3 @mention routing SHIPPED** (Slice B + web
+control C1) — remove it from the deferred set; the "no new store for v1 beyond A4"
+rule is unaffected (THR-198 added only additive columns to existing thread tables,
+not design-overhaul stores). All other D-items remain deferred.)*
 
 ---
 
@@ -968,6 +1011,8 @@ D4 artifact↔PR, D5 KB rich-usage, D10 B.2 edit-route, D11 B.3 read-state).
 - **Honesty (dominant):** zero UI elements (data **or interaction**) assert facts
   the daemon can't substantiate; dollars `$0.00 / not metered`; @mention
   broadcast-only; KB "viewed N× (CLI)"; no autonomy toggle. (P1 review gate.)
+  *(🟢 SUPERSEDED (THR-198 Phase 2): "@mention broadcast-only" → per-thread mention
+  routing per the ratified matrix; the honesty lens itself is unchanged.)*
 - **Cost legibility:** "what did this week cost (tokens), on what?" on one surface
   (Spend), window-persistent.
 - **Time-to-decision:** a founder-gated approval reachable + actionable in ≤2 clicks
@@ -1004,6 +1049,11 @@ RESOLVED** (the finalised design conforms to the locked decision in each case);
 | **A.1** | **A1** — autonomy toggle DEFERRED, do **not** render | ✅ **RESOLVED.** `a-agents.html` renders **no** autonomy/permission toggle — agent detail is system-prompt + executor segment + Save/Reset only (zero `switch` markers; source + playwright). *(Was: a "Can act autonomously" switch default-ON in the 06-16 bundle.)* | **Dropped from active deltas.** Build the locked decision (no toggle); the design already conforms. Real autonomy stays deferred (D2). |
 | **A.2** | **A2** — broadcast-only; no @mention routing affordance | ✅ **RESOLVED.** Composer placeholder now **"Message the thread — all participants see it (broadcast)"**; Settings "Founder handle" now **"The handle agents reference when they broadcast to you."** Neither promises routing. *(Was: "…@mention an agent…" + "route questions to you".)* | **Dropped from active deltas.** Keep the broadcast copy. Real routing stays deferred (D3). |
 | **A.3** | **K1** — KB usage label = "viewed N× (CLI)"; drop "used by N agents" + version | ✅ **RESOLVED.** `a-knowledge.html` now shows **"viewed 18× (CLI) · updated 2d ago"** / **"viewed 31× (CLI) · updated 5d ago"** — no "used by N agents", no version. Honest candidate labels ("from dream · proposed by … · pending review") retained. *(Was: "used by 4 agents · updated 2d ago · v3".)* | **Dropped from active deltas.** The locked honest label is already in the design. |
+
+> **🟢 SUPERSEDED (THR-198 Phase 2):** the A.2 disposition's "Real routing stays deferred
+> (D3)" is SHIPPED — per-thread mention routing landed (Slice B + per-thread web
+> control C1) with the ratified matrix; the composer/handle copy lines ship unchanged
+> in the current product.
 
 > **No active §A deltas remain.** Nothing in the finalised design requires a founder
 > decision on a locked-ruling contradiction. (Two non-blocking refinement/minor items
@@ -1105,7 +1155,9 @@ Re-verified against the **finalised** prototype (2026-06-17):
   Model`; "not metered" present; **7** separate `.bar.cache` bars (cache ≠ churn). ✅
 - **Resolved deltas (re-verified):** **no** autonomy switch on Agents (§A.1); composer
   "Message the thread … (broadcast)" + Settings handle "…broadcast to you" (§A.2); KB
-  "viewed N× (CLI)" (§A.3). ✅
+  "viewed N× (CLI)" (§A.3). ✅ *(🟢 SUPERSEDED (THR-198 Phase 2): the composer/handle
+  copy verification describes the 2026-06-17 design bundle; current product behavior
+  is mention-routed per the ratified matrix — front-matter notice.)*
 - Page loads clean (0 console errors on the screens checked).
 
 ### C.3 Artifacts captured / current this task (TASK-460)
