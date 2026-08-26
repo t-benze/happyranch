@@ -710,6 +710,17 @@ repos:
 
 **THR-095:** `happyranch init-agent` no longer creates or touches `agent.yaml`.
 
+**GH-709 Slice C (readiness marker):** `happyranch init-agent` reports `done`
+only after the **selected executor profile's exact readiness marker** exists
+as a valid regular file produced by the bootstrap. The bootstrap now also
+materializes the workspace skills tree, so the claude marker
+`.claude/skills/start-task/SKILL.md` exists immediately after init (not only
+at first session spawn); `codex`/`opencode`/`pi` use `AGENTS.md`; custom
+profiles use their registered `readiness_marker_fragment`. An unregistered
+profile, a missing/wrong-profile marker, or a non-regular marker (directory,
+dangling link) emits a per-agent `error` — never `done` — the stream stops at
+the first error (no `all_done`), and the CLI exits nonzero.
+
 ## Switching an Existing Agent's Executor
 
 **THR-095:** The executor lives in the **org/agents/<name>.md frontmatter**

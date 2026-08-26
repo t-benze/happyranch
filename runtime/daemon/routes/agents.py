@@ -147,6 +147,61 @@ def _executor_switch_materialize(
     return errors
 
 
+def _bootstrap_readiness_marker(
+    org: OrgState,
+    workspace: Path,
+    agent_name: str,
+    agent_def: AgentDef | None,
+    provider: str,
+) -> None:
+    """GH-709 Slice C: produce + verify the selected executor profile's marker.
+
+    The bootstrap producers are the workspace adapters (``CLAUDE.md`` /
+    ``AGENTS.md``) and the canonical skill materializer (which produces the
+    claude profile marker ``.claude/skills/start-task/SKILL.md`` — otherwise
+    only materialized at session spawn). Materializing at init time makes the
+    regenerated workspace launch-ready immediately; ``context="bootstrap"``
+    still materializes the full system-contract union (all ordinary contexts).
+
+    Marker resolution follows the orchestrator's existing contract
+    (``Orchestrator._readiness_marker``): ``get_profile(provider).
+    readiness_marker_fragment``. An unregistered profile is a blocked agent
+    (relocation runbook §7.1 step 1) — the marker cannot be verified, so init
+    must not report ``done``.
+
+    Raises an actionable error when the profile is unregistered or the exact
+    marker is missing / not a regular file — the route converts it into a
+    per-agent ``error`` event (no ``done``, no ``all_done``).
+    """
+    from runtime.orchestrator.executor_registry import get_registry
+
+    skills_root = org.settings.project_root / "runtime" / "skills"
+    materialize_workspace_skills(
+        workspace, org.settings,
+        slug=org.slug,
+        context="bootstrap",
+        provider=provider,
+        agent_name=agent_name,
+        team=agent_def.team if agent_def else "engineering",
+        skills_root=skills_root,
+        org_root=org.root,
+        db=org.db,
+    )
+
+    profile = get_registry().get_profile(provider)
+    if profile is None:
+        raise RuntimeError(
+            f"executor profile {provider!r} is not registered on this machine; "
+            "register it before initializing (readiness marker cannot be verified)"
+        )
+    marker = workspace / profile.readiness_marker_fragment
+    if not marker.is_file():
+        raise RuntimeError(
+            f"readiness marker for executor profile {provider!r} is missing or not "
+            f"a regular file: {profile.readiness_marker_fragment!r}"
+        )
+
+
 class InitBody(BaseModel):
     agent: str | None = None
 
@@ -418,6 +473,14 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
     only — ``prompt_loader.list_agents(paths)`` — never workspace
     directories, team-registry members without an AgentDef, or
     ``_pending``/``_terminated`` enrollments (GH-709 Slice B).
+
+    GH-709 Slice C: an agent is reported ``done`` only after the selected
+    executor profile's **exact readiness marker** exists as a valid regular
+    file produced by this bootstrap (workspace adapter + skill
+    materialization). An unregistered profile, a missing/wrong-profile
+    marker, a non-regular marker, or a bootstrap/materialization failure
+    emits a per-agent ``error`` event, never ``done``; the stream stops at
+    the first error (no ``all_done``) so the CLI exits nonzero.
     """
     paths = OrgPaths(root=org.root)
 
@@ -462,6 +525,13 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                 )
                 await asyncio.to_thread(
                     ctx.create_agent_dirs, workspace, agent_name,
+                )
+                # GH-709 Slice C: report done only after the selected executor
+                # profile's exact readiness marker exists as a valid regular
+                # file produced by this bootstrap.
+                await asyncio.to_thread(
+                    _bootstrap_readiness_marker, org, workspace, agent_name,
+                    agent_def, provider,
                 )
             except Exception as exc:
                 yield {"data": _json.dumps({

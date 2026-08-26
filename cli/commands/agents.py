@@ -65,6 +65,16 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
         sys.exit(1)
     except KeyboardInterrupt:
         print("Init cancelled (daemon will continue).")
+        return
+    # GH-709 Slice C: the daemon emits all_done only after every target
+    # reported done. A stream that ends without it means a per-agent error
+    # stopped the run (or the connection dropped) — never report success.
+    print(
+        "Error: init did not complete — one or more agents failed "
+        "(no all_done received).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 
