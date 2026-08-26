@@ -4,11 +4,18 @@
 > same-slug, offline maintenance-window** move of one or more existing
 > current-v2 orgs into **absent** destination slugs on another runtime
 > (GH-709 Slice A hardening). It is **not** the deferred automated
-> archive/import/activation product (Slice B/C), it implements no automation,
-> and it makes **no claim** that the shipped runtime enforces any
-> inactive/admission state, rebind, or schedule-rearm gate. The shipped runtime
-> carries only **Slice A** (read-only preflight + founder-only zombie
-> reconciliation).
+> relocation/import product — the automated archive/import/activation
+> machinery, online transfer automation, and the Slice D synchronous uv
+> launch preflight are **unshipped**; this runbook implements no automation
+> and makes **no claim** that the shipped runtime enforces any
+> inactive/admission state, rebind, or schedule-rearm gate. The shipped
+> runtime carries **Slice A** (read-only preflight + founder-only zombie
+> reconciliation), merged **Slice B** (active-roster-only bulk ``init-agent``
+> targeting), and this PR's **Slice C** (executor-profile-specific
+> readiness-marker enforcement: ``init-agent`` reports ``done`` only after
+> the selected executor profile's exact readiness marker exists as a valid
+> regular file produced by successful bootstrap — see the binding honesty
+> boundary below and §7.1 steps 2–3).
 >
 > **GH-709 Slice A fixes in this revision:** a `COPYFILE_DISABLE=1` macOS
 > archive recipe (contract-tested; real AppleDouble suppression must be
