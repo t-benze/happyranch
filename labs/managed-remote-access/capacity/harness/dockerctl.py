@@ -131,7 +131,7 @@ class Docker:
         )
 
     def cell_health(self, cell: int) -> bool:
-        return self.cell_exec(cell, ["nodes", "list"], check=False).returncode == 0
+        return self.cell_exec(cell, ["nodes", "list"], check=False, timeout=20).returncode == 0
 
     def users_create(self, cell: int, user: str) -> None:
         self.cell_exec(cell, ["users", "create", user], check=False)
@@ -236,9 +236,15 @@ class Docker:
         out = self.cell_exec(cell, ["apikeys", "create", "--expiration", "1h", "--output", "json"])
         try:
             data = json.loads(out.stdout)
-            key = data.get("apiKey")
         except json.JSONDecodeError:
-            key = None
+            data = None
+        # headscale 0.25 serializes the CreateApiKeyResponse.api_key string as a
+        # bare JSON string ("prefix.hash"); the ApiKey proto carries no secret.
+        key = None
+        if isinstance(data, str):
+            key = data
+        elif isinstance(data, dict):
+            key = data.get("apiKey") or data.get("api_key")
         if not key:
             raise RuntimeError(f"could not parse api key from: {out.stdout[-200:]}")
         return key
