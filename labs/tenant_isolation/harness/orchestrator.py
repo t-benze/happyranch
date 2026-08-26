@@ -524,10 +524,35 @@ class Orchestrator:
             ["docker", "inspect", "--format", "{{.State.Status}}", name],
             timeout=self.bounds.per_probe,
         )
-        return (
-            f"cell {cell.cell_id} status: {state.stdout.strip() or state.stderr.strip()}\n"
-            f"cell {cell.cell_id} logs (tail):\n{logs.stdout[-4000:]}\n{logs.stderr[-2000:]}"
+        mounts = self.backend.run(
+            ["docker", "inspect", "--format", "{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}", name],
+            timeout=self.bounds.per_probe,
         )
+        parts = [
+            f"cell {cell.cell_id} status: {state.stdout.strip() or state.stderr.strip()}",
+            f"cell {cell.cell_id} mounts:\n{mounts.stdout.strip()}",
+            f"cell {cell.cell_id} logs (tail):\n{logs.stdout[-4000:]}\n{logs.stderr[-2000:]}",
+        ]
+        # The config + policy headscale actually read (bounded/redacted): a
+        # launch failure caused by a bad/missing config or an empty/malformed
+        # policy must be diagnosable from the evidence alone.
+        from .redact import bounded_redacted_stderr
+
+        config_path = cell.state_dir / "config.yaml"
+        if config_path.exists():
+            parts.append(
+                f"cell {cell.cell_id} config.yaml (bounded/redacted):\n"
+                + bounded_redacted_stderr(config_path.read_text(encoding="utf-8"), limit=4000)
+            )
+        policy_path = cell.policy_path
+        if policy_path.exists():
+            parts.append(
+                f"cell {cell.cell_id} policy.json (bounded/redacted):\n"
+                + bounded_redacted_stderr(policy_path.read_text(encoding="utf-8"), limit=4000)
+            )
+        else:
+            parts.append(f"cell {cell.cell_id} policy.json: MISSING ({policy_path})")
+        return "\n".join(parts)
 
     def _cell_healthy(self, cell) -> bool:
         # True liveness: the control-plane Noise listener accepts TCP on the
