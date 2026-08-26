@@ -85,3 +85,74 @@ def test_doctrine_absent_for_close_out_purpose():
 def test_doctrine_absent_for_task_followup_purpose():
     prompt = _build(purpose="task_followup")
     assert DOCTRINE_HEADER not in prompt
+
+
+def _reply_doctrine(prompt: str) -> str:
+    """The doctrine block is prepended before the participation block (spec
+    §5: top-of-prompt placement). Slice it out and collapse line breaks so
+    phrase assertions are robust to the prose's line wrapping."""
+    block = prompt[: prompt.index("You are participating in thread")]
+    return " ".join(block.split())
+
+
+def test_doctrine_instructs_inspecting_full_history_beyond_delivery_range():
+    """TASK-5735: the REPLY doctrine must tell the invoked agent to read the
+    full supplied conversation — not just the newest delivery-range messages —
+    before deciding."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "full conversation" in doctrine
+    assert "delivery range" in doctrine
+    assert "not just the newest messages" in doctrine
+
+
+def test_doctrine_instructs_silent_decline_when_same_agent_already_answered():
+    """TASK-5735: the REPLY doctrine must instruct the invoked agent to
+    silently decline when THAT SAME agent already substantively answered the
+    delivered request in a later message of its own."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "already substantively answered" in doctrine
+    assert "later message of your own" in doctrine
+    assert "decline silently" in doctrine
+
+
+def test_doctrine_preserves_distinct_unanswered_request_exception():
+    """TASK-5735: the already-answered rule must preserve the exception where
+    the newest delivery-range message contains a distinct unanswered request
+    (e.g. a genuine follow-up question)."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "distinct request you have not yet answered" in doctrine
+    assert "genuine follow-up question" in doctrine
+    assert "suppress legitimate follow-up questions" in doctrine
+
+
+def test_doctrine_never_infers_coverage_from_sequence_or_order():
+    """TASK-5735: semantic coverage must not be inferred merely from later
+    sequence/order — a later acknowledgment/restatement is not an answer."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert (
+        "Coverage is a question of substance, never of sequence or position"
+        in doctrine
+    )
+    assert "does not count as an answer" in doctrine
+
+
+def test_doctrine_preserves_unique_role_direct_question_rule():
+    """TASK-5735: the existing unique-role/direct-question reply condition is
+    preserved alongside the new same-agent-already-answered rule."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "uniquely answer based on your role" in doctrine
+
+
+def test_doctrine_preserves_substantive_content_rule():
+    """TASK-5735: the existing substantive-content reply condition is
+    preserved."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "substantive content to add" in doctrine
+    assert '"I agree"' in doctrine
+
+
+def test_doctrine_preserves_other_participant_coverage_rule():
+    """TASK-5735: the existing other-participant-coverage reply condition is
+    preserved."""
+    doctrine = _reply_doctrine(_build(purpose="reply"))
+    assert "No other participant has already covered the same ground" in doctrine

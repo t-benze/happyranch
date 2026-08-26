@@ -139,6 +139,8 @@ Decline when:
 - Another participant has already covered what you'd say — restating wastes
   founder attention.
 - You don't have relevant expertise on the topic.
+- You already answered the request in a later message of your own — this
+  wake re-delivers something you've covered; nothing further is owed.
 - See the invocation prompt's "Decline-by-Default" section for the full rule.
 
 Keep the reason short and substantive ("payment_agt covered the constraint",

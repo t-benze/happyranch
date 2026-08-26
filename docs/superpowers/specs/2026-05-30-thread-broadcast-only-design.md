@@ -125,6 +125,23 @@ of the following hold:
   not "noted".
 - No other participant has already covered the same ground in a recent
   reply.
+- You have not already substantively answered that question, request,
+  or hand-off in a later message of your own.
+
+Before replying, read the full conversation supplied in this invocation —
+every message in the history, not just the newest messages in this wake's
+delivery range — and check whether this wake re-delivers a request you
+already answered. (In a resumed session, the earlier transcript is already
+in your context; read it too.) If your own later message already
+substantively answered the request, decline silently — nothing further is
+owed. Coverage is a question of substance, never of sequence or position
+alone: a later message from you that merely acknowledges, restates, or
+agrees does not count as an answer.
+
+Exception: if the newest message in this wake's delivery range contains a
+distinct request you have not yet answered — for example a genuine
+follow-up question — reply as you normally would. Do not use the
+"already answered" rule to suppress legitimate follow-up questions.
 
 The founder is a participant; she reads the full thread in the web UI.
 You do not need to "keep her informed" by replying.
@@ -132,6 +149,22 @@ You do not need to "keep her informed" by replying.
 If you are unsure: decline. The thread can always be re-engaged by another
 message.
 ```
+
+**Amendment (TASK-5735):** the doctrine above closes a confirmed shipping
+gap in the original text — it did not tell an invoked agent to check whether
+that SAME agent already substantively answered the delivered request in a
+later message of its own (the invocation re-delivers a request the agent
+covered). The corrected doctrine (a) requires reading the full supplied
+conversation beyond the delivery range before deciding, (b) mandates a
+silent decline when the invoked agent's own later message already answered
+the request, (c) judges coverage on substance — never on sequence or
+position alone — so a later acknowledgment/restatement is not an answer,
+and (d) preserves the exception where the newest delivery-range message
+contains a distinct unanswered request (e.g. a genuine follow-up question).
+The original unique-role/direct-question, substantive-content, and
+other-participant-coverage conditions are unchanged. The injected text lives
+in `_decline_by_default_doctrine()` in `runtime/daemon/thread_runner.py`,
+shared by both the full and resumed/delta REPLY prompt builders.
 
 Injected by a new section in the thread-invocation prompt builder (`src/daemon/thread_runner.py`, around the "You are participating in thread …" block at line 109). Gated to `purpose=REPLY` only — not BOOTSTRAP (new participant should engage on first turn), not TASK_FOLLOWUP (agent has an explicit obligation to report).
 
