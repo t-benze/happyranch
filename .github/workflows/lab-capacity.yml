@@ -5,9 +5,14 @@ name: Lab capacity (managed remote access, unit D)
 # clients on an isolated ubuntu-latest runner (docker preinstalled) and
 # uploads machine-readable raw results as a CI artifact.
 #
-# DISPATCH ONLY — this job never runs automatically and is not part of
-# PR CI. It consumes GitHub Actions minutes only when explicitly invoked:
-#   gh workflow run "Lab capacity (managed remote access, unit D)" --ref <branch>
+# Triggers:
+#   1. workflow_dispatch — manual reruns once the file is on the default
+#      branch (GitHub only registers dispatchable workflows from main):
+#        gh workflow run "Lab capacity (managed remote access, unit D)" --ref <branch>
+#   2. pull_request — automatic "CI-style local invocation" ONLY when a PR
+#      changes the lab harness itself (path-gated), so lab PRs self-test
+#      the reusable harness on the disposable runner. Raw results
+#      commits (results/**) do NOT re-trigger the run.
 #
 # The runner is disposable and isolated: it cannot target non-lab
 # endpoints (all URLs are internal to the run's docker network; DERP and
@@ -24,6 +29,11 @@ on:
         description: 'Optional explicit synthetic run id (auto-generated when empty)'
         required: false
         default: ''
+  pull_request:
+    paths:
+      - 'labs/managed-remote-access/capacity/**'
+      - '!labs/managed-remote-access/capacity/results/**'
+      - '.github/workflows/lab-capacity.yml'
 
 jobs:
   capacity:
@@ -46,8 +56,7 @@ jobs:
       - name: Run capacity lab
         run: >-
           bash labs/managed-remote-access/capacity/run_capacity_lab.sh
-          --scenarios "${{ inputs.scenarios }}"
-          ${{ inputs.run_id != '' && format('--run-id {0}', inputs.run_id) || '' }}
+          --scenarios "${{ inputs.scenarios || 'all' }}"
 
       - name: Upload raw results
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3

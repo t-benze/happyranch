@@ -44,7 +44,13 @@ recorded host facts in `results/<run>/env.json` define the exact runtime.
 
 ## Run it
 
-### Via GitHub Actions (workflow_dispatch only — never automatic)
+### Via GitHub Actions
+
+The lab runs automatically as a path-gated **pull-request check** whenever a
+PR changes the lab harness itself (CI-style local invocation on the
+repository's disposable runner); commits that only add raw results do not
+re-trigger it. Manual reruns use `workflow_dispatch` (registered once the
+file is on the default branch):
 
 ```bash
 gh workflow run "Lab capacity (managed remote access, unit D)" --ref <branch>
