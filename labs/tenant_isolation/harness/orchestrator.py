@@ -76,6 +76,18 @@ class ProbeEnv:
     node_ips: dict[str, str | None] = field(default_factory=dict)
     headscale_records: dict[str, dict | None] = field(default_factory=dict)
 
+    def tailscale_bin(self, name: str) -> str:
+        """Resolve a pinned tailscale binary (real mode) or the bare command
+        (mock). Every tailscale CLI invocation MUST go through this so the lab
+        never depends on a system-installed tailscale that the isolated runner
+        does not have."""
+        orch = self.orchestrator
+        if orch is not None and hasattr(orch, "_tailscale_dir"):
+            ts_dir = getattr(orch, "_tailscale_dir", None)
+            if ts_dir is not None:
+                return str(Path(ts_dir) / name)
+        return name
+
 
 class Orchestrator:
     def __init__(
@@ -734,7 +746,7 @@ class Orchestrator:
 
     def _node_tailnet_ip(self, node) -> str | None:
         result = self.backend.run(
-            ["tailscale", "--socket", str(node.socket_path), "status", "--json"],
+            [self._tailscale_bin("tailscale"), "--socket", str(node.socket_path), "status", "--json"],
             timeout=self.bounds.per_probe,
         )
         try:
@@ -768,7 +780,7 @@ class Orchestrator:
             )
             self._daemon_pids.append(pid)
             serve = self.backend.run(
-                ["tailscale", "--socket", str(home.socket_path), "serve",
+                [self._tailscale_bin("tailscale"), "--socket", str(home.socket_path), "serve",
                  "--bg", f"--http={home.connector_port}",
                  f"http://127.0.0.1:{local_port}"],
                 timeout=self.bounds.per_probe,

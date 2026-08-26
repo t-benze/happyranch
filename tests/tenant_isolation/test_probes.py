@@ -321,6 +321,37 @@ def test_positive_control_is_same_cell_node_to_node(tmp_path: Path) -> None:
     assert observed.route_evidence == "direct"
 
 
+def test_all_tailscale_invocations_use_pinned_binary(tmp_path: Path) -> None:
+    """Regression (real lab run 33005299746): most tailscale CLI invocations
+    used the BARE 'tailscale' command, which the GitHub Actions runner does
+    not have installed — the readiness gate and every later probe then failed
+    (empty output / rc 127). Every tailscale invocation must go through the
+    pinned binary path from the sha256-verified tarball."""
+    from types import SimpleNamespace
+
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _run_recipe
+
+    cases = {
+        "direct_reach_denied": {"category": "direct_path_denied", "id": "T1"},
+        "peer_absent": {"category": "peer_absent", "id": "T2"},
+        "reuse_preauth_key": {"category": "cross_cell_key_reuse", "id": "T3"},
+        "positive_same_cell_http": {"category": "positive_control_allowed_http", "id": "T4"},
+        "forged_tag_advertise": {"category": "forged_tags", "id": "T5"},
+    }
+    fake = FakeBackend()
+    env = _probe_env(tmp_path, fake)
+    env.orchestrator = SimpleNamespace(_tailscale_dir="/pinned/ts")
+    for recipe, case in cases.items():
+        fake.calls.clear()
+        _run_recipe(recipe, case, env)
+        joined = "\n".join(" ".join(c) for c in fake.calls)
+        assert "/pinned/ts/tailscale" in joined, recipe
+        for cmd in fake.calls:
+            if cmd and cmd[0] == "tailscale":
+                raise AssertionError(f"{recipe}: bare tailscale command used: {cmd}")
+
+
 def test_relay_cases_never_claim_proof(contract: Contract) -> None:
     """run_case for relay categories produces passed=False with disposition
     not-executed and the exact prerequisite — never a fabricated pass."""

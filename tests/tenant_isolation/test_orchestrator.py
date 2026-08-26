@@ -881,6 +881,42 @@ def test_readiness_failure_writes_enroll_diagnostics(tmp_path: Path) -> None:
     assert "Successfully logged in" in body
 
 
+def test_node_tailnet_ip_uses_pinned_binary(tmp_path: Path) -> None:
+    """Regression (real lab run 33005299746): the readiness gate's own
+    tailnet-IP check used the bare 'tailscale' command, which the GitHub
+    Actions runner does not have — the gate could never pass even though
+    headscale showed every node online. It must use the pinned binary."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    spec = build_lab_spec("run-pinned-1", tmp_path, 38000, 990)
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, spec=spec, run_id="run-pinned-1")
+    orch._tailscale_dir = Path("/pinned/ts")
+    a1 = spec.node("a1")
+    key = " ".join(["/pinned/ts/tailscale", "--socket", str(a1.socket_path), "status", "--json"])
+    fake.script[key] = CmdResult(0, stdout='{"Self": {"TailscaleIPs": ["100.64.0.1"]}}')
+    assert orch._node_tailnet_ip(a1) == "100.64.0.1"
+    joined = "\n".join(" ".join(c) for c in fake.calls)
+    assert "/pinned/ts/tailscale" in joined
+    assert not any(c and c[0] == "tailscale" for c in fake.calls), "bare tailscale used"
+
+
+def test_connector_serve_uses_pinned_binary(tmp_path: Path) -> None:
+    """The synthetic connector's `tailscale serve` must use the pinned binary
+    (never a system-installed tailscale)."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    spec = build_lab_spec("run-pinned-2", tmp_path, 38000, 990)
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, spec=spec, run_id="run-pinned-2")
+    orch._tailscale_dir = Path("/pinned/ts")
+    orch._daemon_pids = []
+    orch._bring_up_synthetic_connectors()
+    joined = "\n".join(" ".join(c) for c in fake.calls)
+    assert "/pinned/ts/tailscale" in joined and "serve" in joined
+    assert not any(c and c[0] == "tailscale" for c in fake.calls), "bare tailscale used"
+
+
 def test_cell_launch_uses_absolute_bind_mount_sources(tmp_path: Path) -> None:
     """Regression (real lab run 33000138240): docker rejects RELATIVE bind-mount
     sources with exit 125 ('includes invalid characters for a local volume

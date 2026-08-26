@@ -290,7 +290,7 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         key = "PLACEHOLDER_ONE_USE_ENROLLMENT_A"
         result = backend.run(
             [
-                "tailscale", "--socket", str(a1.socket_path), "up",
+                env.tailscale_bin("tailscale"), "--socket", str(a1.socket_path), "up",
                 "--login-server", cell_b.server_url,
                 "--auth-key", key,
                 "--hostname", a1.hostname,
@@ -306,7 +306,7 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         consumed = env.minted_keys.get(b_home.node_id) or "PLACEHOLDER_CONSUMED_KEY_B"
         result = backend.run(
             [
-                "tailscale", "--socket", str(a1.socket_path), "up",
+                env.tailscale_bin("tailscale"), "--socket", str(a1.socket_path), "up",
                 "--login-server", cell_b.server_url,
                 "--auth-key", consumed,
                 "--hostname", a1.hostname,
@@ -320,7 +320,7 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         # A's own map must contain no B peer material (hostnames or tailnet
         # IPs). Genuine: reads A1's actual tailscale map from A1's socket.
         status = backend.run(
-            ["tailscale", "--socket", str(a1.socket_path), "status", "--json"],
+            [env.tailscale_bin("tailscale"), "--socket", str(a1.socket_path), "status", "--json"],
             timeout=env.bounds.per_probe,
         )
         from .models import parse_tailscale_status
@@ -609,7 +609,7 @@ def _forge_attempted(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcom
     a1 = spec.node("a1")
     arg, deny, audit = _FORGE_RECIPES[recipe]
     backend.run(
-        ["tailscale", "--socket", str(a1.socket_path), "set", arg],
+        [env.tailscale_bin("tailscale"), "--socket", str(a1.socket_path), "set", arg],
         timeout=env.bounds.per_probe,
     )
     effective = _forge_effective(recipe, env)
@@ -638,7 +638,7 @@ def _peer_view(env: "ProbeEnv", node_id: str, target_hostname: str) -> dict | No
     backend = env.backend
     node = env.spec.node(node_id)
     status = backend.run(
-        ["tailscale", "--socket", str(node.socket_path), "status", "--json"],
+        [env.tailscale_bin("tailscale"), "--socket", str(node.socket_path), "status", "--json"],
         timeout=env.bounds.per_probe,
     )
     parsed = _json_or_empty(status.stdout)
@@ -697,7 +697,7 @@ def _node_ip(env: "ProbeEnv", node) -> str | None:
         return cache[node.node_id]
     backend = env.backend
     result = backend.run(
-        ["tailscale", "--socket", str(node.socket_path), "status", "--json"],
+        [env.tailscale_bin("tailscale"), "--socket", str(node.socket_path), "status", "--json"],
         timeout=env.bounds.per_probe,
     )
     parsed = _json_or_empty(result.stdout)
