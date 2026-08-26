@@ -91,3 +91,8 @@ export const useRenameThread: ReturnType<typeof useData>['threads']['useRenameTh
 export const useSetThreadPinned: ReturnType<typeof useData>['threads']['useSetThreadPinned'] = (
   threadId,
 ) => useData().threads.useSetThreadPinned(threadId);
+
+export const useSetThreadMentionRouting: ReturnType<
+  typeof useData
+>['threads']['useSetThreadMentionRouting'] = (threadId) =>
+  useData().threads.useSetThreadMentionRouting(threadId);
