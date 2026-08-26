@@ -5,17 +5,19 @@
 > current-v2 orgs into **absent** destination slugs on another runtime
 > (GH-709 Slice A hardening). It is **not** the deferred automated
 > relocation/import product — the automated archive/import/activation
-> machinery, online transfer automation, and the Slice D synchronous uv
-> launch preflight are **unshipped**; this runbook implements no automation
-> and makes **no claim** that the shipped runtime enforces any
-> inactive/admission state, rebind, or schedule-rearm gate. The shipped
-> runtime carries **Slice A** (read-only preflight + founder-only zombie
-> reconciliation), merged **Slice B** (active-roster-only bulk ``init-agent``
-> targeting), and this PR's **Slice C** (executor-profile-specific
+> machinery and online transfer automation are **unshipped**; this runbook
+> implements no automation and makes **no claim** that the shipped runtime
+> enforces any inactive/admission state, rebind, or schedule-rearm gate. The
+> shipped runtime carries **Slice A** (read-only preflight + founder-only
+> zombie reconciliation), merged **Slice B** (active-roster-only bulk
+> ``init-agent`` targeting), this PR's **Slice C** (executor-profile-specific
 > readiness-marker enforcement: ``init-agent`` reports ``done`` only after
 > the selected executor profile's exact readiness marker exists as a valid
 > regular file produced by successful bootstrap — see the binding honesty
-> boundary below and §7.1 steps 2–3).
+> boundary below and §7.1 steps 2–3), and this PR's **Slice D** (a
+> synchronous uv launch preflight in ``scripts/daemon.sh start`` with
+> actionable PATH/version diagnostics — see §7.2). The daemon-child
+> CLI-parity seam remains unshipped (§7.2).
 >
 > **GH-709 Slice A fixes in this revision:** a `COPYFILE_DISABLE=1` macOS
 > archive recipe (contract-tested; real AppleDouble suppression must be
@@ -31,14 +33,17 @@
 >
 > **Honesty boundary (binding).** Slices B/C *runtime* guarantees are **not
 > shipped** by the runbook itself (an automated importer, online transfer
-> fences, batch automation, an exhaustive readiness command); Slice D is
-> entirely unshipped. What IS shipped in the runtime: Slice B ships
+> fences, batch automation, an exhaustive readiness command); the Slice D
+> daemon-child CLI-parity seam is likewise **not shipped** (§7.2). What IS
+> shipped in the runtime: Slice B ships
 > active-roster-only bulk ``init-agent`` targeting; Slice C ships
 > executor-profile-specific readiness-marker verification — ``init-agent``
 > reports ``done`` only after the selected executor profile's exact readiness
 > marker exists as a valid regular file produced by the bootstrap (see §7.1
-> steps 2–3). The multi-org inventory, per-org operation ledger, remaining
-> readiness checks, and diagnostics below are **operator-enforced**: the
+> steps 2–3); Slice D ships the synchronous uv launch preflight in
+> ``scripts/daemon.sh start`` (§7.2). The multi-org inventory, per-org
+> operation ledger, remaining readiness checks, and daemon-child diagnostics
+> below are **operator-enforced**: the
 > founder runs them manually and records the results; nothing else in the
 > shipped runtime verifies them. Every command below is an existing, verified
 > surface; none is invented.
@@ -1104,32 +1109,40 @@ must actually run it and keep the ledger.
 
 The destination must be startable from the **exact shell that will run the
 start** — a remote noninteractive SSH shell may not source the user profile
-and can silently lose `uv`/`happyranch` from `PATH`. The shipped
-`scripts/daemon.sh start` backgrounds bare `uv` and reports only a five-second
-timeout (GH-709 finding 5); the synchronous in-script `uv` PATH/version
-preflight is Slice D work that is **not shipped**. Until it lands, run these
-operator diagnostics **before** `scripts/daemon.sh start` from that exact
-environment:
+and can silently lose `uv`/`happyranch` from `PATH`. **Slice D ships a
+synchronous uv launch preflight in `scripts/daemon.sh start`** (GH-709
+finding 5): before any launch side effect (no `mkdir`, no pid/port/log files,
+no background process) the script resolves and verifies the source
+deployment's matching CLI/runtime environment and fails immediately with an
+actionable diagnostic instead of the old silent five-second start timeout.
+The preflight:
 
-```bash
-set -euo pipefail
-# launch diagnostics — must pass in the noninteractive launch shell
-if ! command -v uv >/dev/null 2>&1; then
-  echo "STOP: uv is not on PATH in the launch shell." >&2
-  echo "  daemon.sh backgrounds bare 'uv'; a stripped PATH causes a silent 5s" >&2
-  echo "  start timeout (GH-709 finding 5). Re-invoke with the supported" >&2
-  echo "  environment (e.g. a login shell, or PATH=<explicit uv dir>:$PATH)." >&2
-  exit 1
-fi
-uv --version
-# version-matched runtime line (must match the source deployment's checkout)
-(cd "$HR_CHECKOUT" && uv run python --version)   # requires-python >=3.12,<3.15
-```
+- resolves `uv` via `command -v uv` in the launch shell — missing ⇒ fail
+  naming the **observed `PATH`** and the remedy (`command -v uv` must succeed
+  in the launching shell, e.g. a login shell, or `PATH=<uv-dir>:$PATH`; if uv
+  is not installed, install it at its documented path
+  https://docs.astral.sh/uv/getting-started/installation/);
+- requires the resolved path to be an **executable regular file** — a path
+  that cannot be executed (non-executable file, directory, dangling symlink)
+  ⇒ fail naming the **resolved uv** and `PATH`;
+- runs `uv --version` — a uv that cannot report a version ⇒ fail naming the
+  **observed output**;
+- runs `(cd <checkout> && uv run python --version)` — the checkout's Python
+  must satisfy `requires-python` (`>=3.12,<3.15` per `pyproject.toml`); a
+  failed or outside-range version ⇒ fail naming the **observed Python
+  version** and `PATH`, with the remedy `(cd <checkout> && uv python install
+  3.14 && uv sync)` (or the matching version) before re-running
+  `scripts/daemon.sh start`.
 
-There is **no automatic download, no arbitrary PATH fallback, and no
-alternate CLI selection**: if `uv` is missing in the launch shell, resolve the
-environment (or install uv at its documented path) and re-verify — never point
-the daemon at a different toolchain or a copied binary.
+The preflight and the launch both run in the **checkout** that contains
+`scripts/daemon.sh` (the source deployment), never the caller's cwd. There is
+**no automatic download, no arbitrary PATH fallback, and no alternate CLI
+selection** — the script never installs uv, never points the daemon at a
+different toolchain or a copied binary, and its failure diagnostics only
+reference commands that actually exist (`command -v uv`, `uv --version`,
+`uv run python --version`, `uv sync`, `uv python install`,
+`scripts/daemon.sh start`). `cmd_stop` / `cmd_status` / `cmd_maintenance`
+are unchanged.
 
 **Daemon-child CLI parity (after start, before any agent work) — accurately
 bounded.** Agent callbacks and skills invoke bare `happyranch` inside
@@ -1141,8 +1154,8 @@ source/dev daemon does **not** auto-prepend its checkout's `.venv/bin`, so for
 a source deployment a stable `~/.local/bin/happyranch` install/symlink is a
 valid operator recovery (this is what restored the completed relocation).
 
-**What Slice A can and cannot prove here (honest limitation).** The shipped
-runtime has **no existing non-mutating daemon-child diagnostic seam**: there is
+**What Slice D ships and does not ship here (honest limitation).** The shipped
+runtime still has **no existing non-mutating daemon-child diagnostic seam**: there is
 no command or route that executes a probe inside the daemon's child
 environment and reports the resolved `happyranch` path, CLI version, or
 checkout bound to `$HR_CHECKOUT`. Specifically, verified at the current head:
@@ -1160,20 +1173,18 @@ checkout bound to `$HR_CHECKOUT`. Specifically, verified at the current head:
 - `_callee_env` / `_normalize_path` are used only to **spawn** executor,
   adapter, and job subprocesses; no diagnostic subcommand uses them.
 
-Because no such seam exists, this runbook does **not** invent an
-operator-shell probe and does **not** add runtime code (Slice A is a
-three-file documentation/harness change). The founder default "require the
-source deployment's matching CLI/runtime environment" is therefore only
-partially satisfiable here: the launch-shell `uv` diagnostics above bind the
-**start** to the launch environment and `$HR_CHECKOUT`'s pinned runtime, and
-`happyranch doctor` + `happyranch runtime` give operator-shell and daemon-side
-health. **Daemon-child CLI/PATH/version parity bound to `$HR_CHECKOUT` is an
-UNMET criterion of this runbook** — it needs a real daemon-child diagnostic
-seam, which is Slice D work; record this limitation in the operation ledger
-and do not claim parity. In practice: after start, run `happyranch runtime`
-and `happyranch doctor` in the operator shell, record both outputs plus this
-limitation in the ledger, and keep schedules paused (§7) until Slice D's
-seam ships.
+Slice D does **not** invent an operator-shell probe and does **not** add a
+daemon-child seam; its scope is the synchronous uv launch preflight above,
+which binds the **start** to the source deployment's matching
+CLI/runtime environment (the checkout and its pinned runtime). `happyranch
+doctor` + `happyranch runtime` still give operator-shell and daemon-side
+health. **Daemon-child CLI/PATH/version parity bound to `$HR_CHECKOUT` is
+still an UNMET criterion of this runbook** — it needs a real daemon-child
+diagnostic seam, which is **not** Slice D and remains unshipped; record this
+limitation in the operation ledger and do not claim parity. In practice:
+after start, run `happyranch runtime` and `happyranch doctor` in the operator
+shell, record both outputs plus this limitation in the ledger, and keep
+schedules paused (§7) until a daemon-child seam ships.
 
 ## 8. Failure handling and escalation
 
@@ -1233,7 +1244,9 @@ runbook's success criteria do not include it.
 - Preflight/reconcile routes: `runtime/daemon/routes/portability.py`
   (`GET /portability-preflight`, `POST /reconcile-portability`).
 - Daemon lifecycle: `scripts/daemon.sh` (`start` / `stop [--force]` / `status`;
-  note the bare-`uv` background at `start`, §7.2).
+  `start` runs a synchronous uv launch preflight — missing/non-executable uv,
+  unreportable uv version, or checkout runtime outside `requires-python` ⇒
+  immediate actionable failure before backgrounding, §7.2).
 - Runtime layout + reserved slugs: `runtime/runtime.py`
   (`RuntimeDir.iter_org_roots`, `_RESERVED_ORG_SLUGS`, `_SLUG_RE`) — the
   loader-backed inventory recipe in §1.1.
