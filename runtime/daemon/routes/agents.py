@@ -1067,7 +1067,8 @@ _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 # (absence/presence/type/content) and NEVER traverses the workspace,
 # ``repos/``, or the canonical skill links materialized by the union.
 #
-# Three preflight gates make lossless compensation possible:
+# Four Step-0 checks make lossless compensation possible (all run before
+# ``_executor_switch_materialize`` — the first mutation):
 #  * ``_bootstrap_legacy_migration_unsupported`` — a structured legacy
 #    ``learnings/`` (with ``memory/`` absent) would trigger the unbounded
 #    ``learnings/ -> memory/`` migration during bootstrap, which a bounded
@@ -1081,6 +1082,15 @@ _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 #    absent file (rollback must never delete a file it could not capture);
 #    the switch fails closed BEFORE materialization and never represents
 #    the file as absent.
+#  * ``_BootstrapRollbackJournal.capture`` — the AUTHORITATIVE rollback
+#    capture runs in Step 0, before the first mutation, and the route fails
+#    closed (400 ``executor_bootstrap_failed``) if the capture observes ANY
+#    uncapturable declared file. This closes the second-read window where a
+#    preflight read succeeds but a later capture read fails after
+#    materialization has already mutated: materialization/bootstrap/
+#    frontmatter/audit can never run unless every pre-existing
+#    declared-write target has already been captured as rollback
+#    bytes/state.
 #
 # The drift-tripwire test (tests/daemon/test_routes_agents.py) instruments
 # the real adapter bootstrap call against these constants so future adapter
@@ -1176,18 +1186,29 @@ class _BootstrapRollbackJournal:
     compensation error strings (empty when clean). Files that did not exist
     before bootstrap are removed; files that existed are restored to their
     original bytes; newly-created owned directories are removed when empty.
-    Canonical skill links (materialized by the union before capture) and all
-    other workspace content are never touched. No broad workspace/repos
-    traversal occurs on either the capture or the restore path.
+    Canonical skill links and all other workspace content are never touched.
+    No broad workspace/repos traversal occurs on either the capture or the
+    restore path.
+
+    Capture is the AUTHORITATIVE rollback read and runs in Step-0 preflight,
+    BEFORE ``_executor_switch_materialize`` (the first mutation) and before
+    any adapter writer, frontmatter, or audit write — so
+    materialization/bootstrap/frontmatter/audit can never mutate unless every
+    pre-existing declared-write target that may need restoration has already
+    been captured as rollback bytes/state. The route fails closed (400
+    ``executor_bootstrap_failed``) if ``capture`` observes ANY uncapturable
+    declared file.
 
     A present regular file whose bytes cannot be read is a THIRD state,
     distinct from both absence and captured content. It is recorded in
     ``_uncapturable`` — NEVER as ``None``/absent, because ``restore``
     interprets ``None`` as "absent before bootstrap" and would delete the
     file. ``_bootstrap_uncapturable_owned_files`` rejects this state during
-    Step-0 preflight (before any mutation), so capture never encounters it in
-    practice; the distinct state is the fail-closed backstop: any restore
-    around an uncapturable file reports an error instead of deleting it.
+    Step-0 preflight (before any mutation), so capture normally does not
+    encounter it; the distinct state remains the fail-closed backstop: any
+    restore around an uncapturable file reports an error instead of deleting
+    it, and ``uncapturable()`` lets the route abort before the first
+    mutation should capture ever observe one.
     """
 
     __slots__ = ("_files", "_uncapturable", "_dirs")
@@ -1196,6 +1217,16 @@ class _BootstrapRollbackJournal:
         self._files: dict[str, bytes | None] = {}
         self._uncapturable: set[str] = set()
         self._dirs: set[str] = set()
+
+    def uncapturable(self) -> list[str]:
+        """Sorted declared files observed present-but-unreadable at capture.
+
+        The route fails closed on this set during Step-0 preflight, before
+        the first mutation — closing the second-read window where a preflight
+        read succeeds but the authoritative capture read fails after
+        materialization has already mutated.
+        """
+        return sorted(self._uncapturable)
 
     @classmethod
     def capture(cls, workspace: Path) -> "_BootstrapRollbackJournal":
@@ -1345,8 +1376,15 @@ async def set_agent_executor(
     #    materially distinct from an absent file — the journal must never
     #    represent it as absent (rollback would delete it); fail closed
     #    BEFORE materialization and every mutation.
-    # All gates run before _executor_switch_materialize and before any
-    # adapter writer — no materialize/bootstrap/frontmatter/audit mutation.
+    # 4. AUTHORITATIVE rollback capture: every pre-existing declared-write
+    #    target must be captured as rollback bytes/state HERE, before the
+    #    first mutation, so materialization/bootstrap/frontmatter/audit can
+    #    never mutate unless capture was lossless. If the capture read fails
+    #    for any declared file (a second-read window after gate 3's read
+    #    succeeded), the switch fails closed before the first mutation.
+    # All gates and the capture run before _executor_switch_materialize and
+    # before any adapter writer — no materialize/bootstrap/frontmatter/audit
+    # mutation.
     if has_workspace:
         if _bootstrap_legacy_migration_unsupported(workspace):
             raise HTTPException(
@@ -1412,6 +1450,37 @@ async def set_agent_executor(
                 },
             )
 
+        # ── Authoritative rollback capture (before the first mutation) ──
+        # capture() is the single authoritative read of the declared write
+        # surface. It runs BEFORE _executor_switch_materialize so the switch
+        # can never mutate unless every pre-existing declared-write target
+        # has already been captured as rollback bytes/state. A declared file
+        # that gate 3 could read but capture cannot (TOCTOU second read)
+        # fails closed here, before any materialize/bootstrap/frontmatter/
+        # audit mutation.
+        rollback_journal = _BootstrapRollbackJournal.capture(workspace)
+        uncaptured = rollback_journal.uncapturable()
+        if uncaptured:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned file is present but cannot be "
+                        "captured (read_bytes failed): "
+                        + ", ".join(uncaptured)
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because a bootstrap-owned file is "
+                        "present but its contents could not be read, so the "
+                        "switch cannot be compensated losslessly. The "
+                        "previous executor has been preserved. Resolve the "
+                        "file readability issue before retrying."
+                    ),
+                },
+            )
+
     # ── Step 1: Materialize the six-context canonical union FIRST ──
     # This MUST complete successfully before any frontmatter is persisted.
     # On failure, the previous executor is preserved and a named HTTP
@@ -1443,12 +1512,12 @@ async def set_agent_executor(
     # the switch become durable.
     if has_workspace:
         # ── Bounded declared-write rollback journal (THR-190) ──
-        # Capture ONLY the bootstrap-owned write surface; never traverse or
-        # read repos/ or other broad workspace content. The legacy
-        # learnings/ -> memory/ migration is rejected up front (Step 0), so
-        # no full-workspace snapshot is ever taken on this path.
-        rollback_journal = _BootstrapRollbackJournal.capture(workspace)
-
+        # The journal was captured losslessly in Step 0 (before the first
+        # mutation). restore() compensates exactly the declared
+        # bootstrap-owned write surface; never traverse or read repos/ or
+        # other broad workspace content. The legacy learnings/ -> memory/
+        # migration is rejected up front (Step 0), so no full-workspace
+        # snapshot is ever taken on this path.
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         try:
             ctx.ensure_workspace_ready(

@@ -3036,6 +3036,158 @@ def test_set_executor_preflight_rejects_uncapturable_owned_file(
     )
 
 
+def test_set_executor_capture_second_read_fails_closed_before_materialize(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5714 HIGH second-read window): the AUTHORITATIVE
+    rollback capture must fail closed BEFORE the first mutation
+    (_executor_switch_materialize), even when the Step-0 preflight read
+    succeeded.
+
+    Regression scenario: a present regular declared file (CLAUDE.md) whose
+    bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
+    CAN read, but which the authoritative _BootstrapRollbackJournal.capture
+    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    ordering ran capture AFTER materialization, recorded the file as
+    uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
+    overwrite a present file whose original bytes were never captured
+    (uncompensatable data-loss path).
+
+    The deterministic per-file call counter forces read #1 (preflight) to
+    succeed and read #2 (authoritative capture) to raise OSError, then
+    proves the switch fails closed during Step-0 preflight, BEFORE
+    _executor_switch_materialize and before every
+    filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes must be captured BEFORE the
+    # first mutation. Preflight (read #1) succeeds; the authoritative
+    # capture (read #2) fails — the exact TASK-5714 second-read window.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    target_abspath = _os.path.abspath(str(target))
+    read_counts: dict[str, int] = {}
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == target_abspath:
+            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
+            if read_counts["CLAUDE.md"] == 2:
+                # Authoritative capture read fails; preflight read succeeded.
+                raise OSError("forced capture-read failure on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── The authoritative capture observed the file at Step 0 (read #2) ──
+    assert read_counts["CLAUDE.md"] >= 2, (
+        f"expected preflight (read 1) + authoritative capture (read 2) "
+        f"to both run, got {read_counts['CLAUDE.md']} reads"
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
+    assert r.status_code == 400, (
+        f"Expected 400 on capture second-read failure, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite capture second-read failure: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite capture second-read failure: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on capture second-read rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on capture second-read rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite capture second-read rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
 def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     tmp_home, monkeypatch,
 ) -> None:

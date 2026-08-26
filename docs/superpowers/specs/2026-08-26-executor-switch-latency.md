@@ -79,8 +79,14 @@ The journal captures **absence/presence/type/content** of exactly this set —
 with a distinct **present-but-uncapturable** state for a regular file whose
 `read_bytes()` raises `OSError`. Such a file is NEVER represented as absent
 (which would let rollback delete it); the preflight (§4 gate 3) rejects it
-before any mutation, and the journal's fail-closed backstop reports a
-compensation error rather than deleting it. Canonical skill links
+before any mutation, and — as the authoritative read — the journal's
+`capture()` runs in the same Step-0 preflight **before**
+`_executor_switch_materialize`, with the route failing closed (400
+`executor_bootstrap_failed`) if `capture()` observes any uncapturable
+declared file (closing the second-read window where a preflight read
+succeeds but a later capture read fails after materialization has already
+mutated). The journal's fail-closed backstop still reports a compensation
+error rather than deleting an uncapturable file. Canonical skill links
 materialized by the union (`.claude/skills/*`, `.agents/skills/*`) and all
 other workspace content are **never** touched by capture, bootstrap
 compensation, or restore.
@@ -109,9 +115,10 @@ rollback.
 
 ## 4. Fail-closed preflights (before the first mutation)
 
-Three gates run in `set_agent_executor` **before** `_executor_switch_materialize`
-(which is itself a mutation surface over the owned `.claude` directory) and
-before any adapter writer, frontmatter, or audit write:
+Three gates plus the **authoritative rollback capture** run in
+`set_agent_executor` **before** `_executor_switch_materialize` (which is
+itself a mutation surface over the owned `.claude` directory) and before
+any adapter writer, frontmatter, or audit write:
 
 1. **Structured legacy learnings migration gate** — when
    `workspace/learnings/` exists and `workspace/memory/` is absent, bootstrap
@@ -133,20 +140,29 @@ before any adapter writer, frontmatter, or audit write:
    could never restore it (and must never delete it). The switch fails
    closed before any mutation with a named reason identifying the file
    (`read_bytes` failure), never representing it as absent.
+4. **Authoritative rollback capture** — `_BootstrapRollbackJournal.capture()`
+   runs here, in Step-0 preflight, so every pre-existing declared-write
+   target is captured as rollback bytes/state **before the first mutation**.
+   The route fails closed (400 `executor_bootstrap_failed`, same named
+   reason) if the capture observes any uncapturable declared file — even
+   one that gate 3 could read but whose authoritative capture read then
+   fails (the TASK-5714 second-read window). Materialization, bootstrap,
+   frontmatter, and audit can never run unless capture was lossless.
 
-All three gates run right after read-only request/agent/workspace resolution.
-Regular-file switching is unaffected.
+All four checks run right after read-only request/agent/workspace
+resolution, before any mutation. Regular-file switching is unaffected.
 
 ---
 
 ## 5. Atomic ordering and error contract
 
-The durable order is preserved exactly:
+The durable order is preserved exactly (journal capture is a read-only
+Step-0 preflight step; the supported-input mutation order is unchanged):
 
 ```
-preflight (fail-closed gates) -> union materialization -> integrity
-validation -> journal capture -> bootstrap -> rollback (on failure) ->
-frontmatter persistence -> audit
+preflight (fail-closed gates + authoritative journal capture) -> union
+materialization -> integrity validation -> bootstrap -> rollback (on
+failure) -> frontmatter persistence -> audit
 ```
 
 - Union/materialization failure → `400 executor_materialization_failed`,
@@ -198,5 +214,12 @@ Extending the adapter writer and the declared set are one atomic change.
   `test_bootstrap_journal_uncapturable_present_file_is_not_absent` locks the
   journal's distinct present-but-uncapturable state (never absent; restore
   reports an error instead of deleting the file).
+- `test_set_executor_capture_second_read_fails_closed_before_materialize`
+  locks the TASK-5714 second-read window: a deterministic per-file call
+  counter makes the Step-0 preflight read of a present `CLAUDE.md` succeed
+  and the authoritative `_BootstrapRollbackJournal.capture` read fail. The
+  real PUT route returns 400 `executor_bootstrap_failed` naming the file
+  with the original bytes surviving, and proves union materialization,
+  provider bootstrap, frontmatter, and audit all stayed untouched.
 - No client contract change: PUT response shape, `before`/`after` fields,
   `stale_files`/`cleaned`/`removed`, and named error codes are unchanged.
