@@ -807,6 +807,80 @@ def test_cleanup_success_leaves_cleanup_ok_true(tmp_path: Path) -> None:
     assert orch._cleanup_failures == []
 
 
+def test_stop_daemon_reaps_and_confirms_termination(tmp_path: Path) -> None:
+    """Regression (real lab run 33004040379): stop_daemon never reaped its
+    children, so a dead-but-unreaped (zombie) child kept its process group
+    observable — os.killpg(pid, 0) kept succeeding and every stop reported
+    failure (cleanup_ok=False with daemon residue). stop_daemon must await
+    actual termination AND reap, so a stopped daemon is confirmed gone and
+    never counted as live residue."""
+    from labs.tenant_isolation.harness.backend import DockerBackend
+
+    backend = DockerBackend()
+    pid = backend.start_daemon(["sleep", "100"], tmp_path / "daemon.log", timeout=10.0)
+    assert backend.daemon_alive(pid) is True
+    ok = backend.stop_daemon(pid)
+    assert ok is True, "a TERM-able daemon must stop cleanly"
+    assert backend.daemon_alive(pid) is False, "stopped daemon must not be residue"
+    import os
+    import signal
+
+    with pytest.raises(ProcessLookupError):
+        os.killpg(pid, 0)  # process group fully gone (no zombie holding it)
+
+
+def test_stop_daemon_confirms_already_dead_daemon(tmp_path: Path) -> None:
+    """A daemon that died on its own is confirmed gone (no false failure)."""
+    from labs.tenant_isolation.harness.backend import DockerBackend
+
+    backend = DockerBackend()
+    pid = backend.start_daemon(["true"], tmp_path / "daemon2.log", timeout=10.0)
+    import time
+
+    time.sleep(0.5)  # let it exit
+    assert backend.stop_daemon(pid) is True
+    assert backend.daemon_alive(pid) is False
+
+
+def test_readiness_failure_writes_enroll_diagnostics(tmp_path: Path) -> None:
+    """When a node fails the pre-probe readiness gate, enroll-diagnostics.txt
+    must snapshot the cell's authoritative node records, the node's tailscaled
+    log tail, the up result, and cell health — bounded/redacted — so a real
+    run's failure stays diagnosable after cleanup removes the run state."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    spec = build_lab_spec("run-enrolldiag-1", tmp_path, 38000, 990)
+    # every node-list call returns an empty list => nodes never appear online;
+    # every `tailscale up` succeeds (so the failure is the readiness gate).
+    script = {"docker exec": CmdResult(0, stdout="[]\n")}
+    for node in spec.nodes:
+        key = " ".join(["tailscale", "--socket", str(node.socket_path), "up"])
+        script[key] = CmdResult(0, stdout="Successfully logged in.\n")
+    fake = FakeBackend(script=script)
+    bounds = Bounds(per_probe=1.0, total=16.0, port_min=38000, port_max=38999)
+    orch, _ = _orchestrator(
+        tmp_path, backend=fake, spec=spec, run_id="run-enrolldiag-1", bounds=bounds
+    )
+    orch._daemon_pids = []  # direct _enroll_nodes call (bypasses run())
+    # pre-create sockets (FakeBackend start_daemon creates no process) and a
+    # tailscaled log + up result so the diagnostics have content to snapshot
+    a1 = spec.node("a1")
+    for node in spec.nodes:
+        node.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        node.socket_path.touch()
+    log_path = spec.cell(a1.cell_id).state_dir / f"tailscaled-{a1.node_id}.log"
+    log_path.write_text("tailscaled: registered node\n", encoding="utf-8")
+    orch._tailscaled_logs[a1.node_id] = log_path
+    with pytest.raises(RuntimeError, match="enroll-diagnostics"):
+        orch._enroll_nodes()
+    diag = orch.out_dir / "enroll-diagnostics.txt"
+    assert diag.exists(), "readiness failure must write enroll-diagnostics.txt"
+    body = diag.read_text(encoding="utf-8")
+    assert "headscale nodes list" in body
+    assert "tailscaled" in body
+    assert "Successfully logged in" in body
+
+
 def test_cell_launch_uses_absolute_bind_mount_sources(tmp_path: Path) -> None:
     """Regression (real lab run 33000138240): docker rejects RELATIVE bind-mount
     sources with exit 125 ('includes invalid characters for a local volume

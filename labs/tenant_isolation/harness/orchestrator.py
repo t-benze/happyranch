@@ -274,6 +274,8 @@ class Orchestrator:
         cleanup, guards. Cleanup runs on success AND failure paths."""
         self._started_at = _now()
         self._daemon_pids: list[int] = []
+        self._tailscaled_logs: dict = {}
+        self._enroll_results: dict = {}
         try:
             self.preflight()
             if self.runtime_kind == "real":
@@ -613,6 +615,7 @@ class Orchestrator:
     def _enroll_nodes(self) -> None:
         keys = self._mint_preauth_keys()
         self._minted_keys = keys
+        self._enroll_results: dict[str, object] = {}
         for cell in self.spec.cells:
             for node in self.spec.nodes_in(cell.cell_id):
                 tsd = self._tailscale_bin("tailscaled")
@@ -625,6 +628,7 @@ class Orchestrator:
                     timeout=self.bounds.per_probe,
                 )
                 self._daemon_pids.append(pid)
+                self._tailscaled_logs[node.node_id] = log_path
                 self.backend.wait_for(
                     lambda: (node.socket_path).exists(),
                     timeout=self.bounds.total / 8,
@@ -643,6 +647,7 @@ class Orchestrator:
                     ],
                     timeout=self.bounds.per_probe * 2,
                 )
+                self._enroll_results[node.node_id] = result
                 if not result.ok():
                     raise RuntimeError(f"node {node.node_id} failed to enroll")
         # READINESS GATE: every expected node must be online/readiness-checked
@@ -656,11 +661,53 @@ class Orchestrator:
                     desc=f"node {node.node_id} online in cell {node.cell_id}",
                 )
             except TimeoutError as exc:
+                self._write_enroll_diagnostics(node)
                 raise RuntimeError(
                     f"node {node.node_id} did not come online in cell "
                     f"{node.cell_id} before the probe matrix; aborting (no probes "
-                    f"executed against a missing/offline node)"
+                    f"executed against a missing/offline node); diagnostics written "
+                    f"to {self.out_dir / 'enroll-diagnostics.txt'}"
                 ) from exc
+
+    def _write_enroll_diagnostics(self, node) -> None:
+        """Snapshot WHY a node failed the pre-probe readiness gate: the cell's
+        authoritative node records (raw CLI output), the node's tailscaled log
+        tail, the ``tailscale up`` result, and the cell health state. Bounded
+        and redacted — never raw secrets."""
+        from .redact import bounded_redacted_stderr
+
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = [
+            f"enrollment readiness gate failed for node {node.node_id}",
+            f"cell: {node.cell_id}  hostname: {node.hostname}",
+            f"socket: {node.socket_path}",
+        ]
+        cell = self.spec.cell(node.cell_id)
+        records = self.backend.run(
+            ["docker", "exec", f"{self.spec.run_id}-cell-{node.cell_id}",
+             "headscale", "--config", "/etc/headscale/config.yaml",
+             "nodes", "list", "--output", "json"],
+            timeout=self.bounds.per_probe,
+        )
+        lines.append(f"headscale nodes list rc={records.returncode} (bounded/redacted):")
+        lines.append(bounded_redacted_stderr(records.stdout, limit=4000))
+        lines.append(bounded_redacted_stderr(records.stderr, limit=2000))
+        log_path = self._tailscaled_logs.get(node.node_id)
+        if log_path is not None and Path(log_path).exists():
+            tail = Path(log_path).read_text(encoding="utf-8", errors="replace")[-4000:]
+            lines.append(f"tailscaled {node.node_id} log tail (bounded/redacted):")
+            lines.append(bounded_redacted_stderr(tail, limit=4000))
+        else:
+            lines.append(f"tailscaled {node.node_id} log: MISSING ({log_path})")
+        up = self._enroll_results.get(node.node_id)
+        if up is not None:
+            lines.append("tailscale up (bounded/redacted):")
+            lines.append(bounded_redacted_stderr(getattr(up, "stdout", "") or "", limit=2000))
+            lines.append(bounded_redacted_stderr(getattr(up, "stderr", "") or "", limit=2000))
+        lines.append(f"cell {node.cell_id} healthy: {self._cell_healthy(cell)}")
+        (self.out_dir / "enroll-diagnostics.txt").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
 
     def _node_ready(self, node) -> bool:
         """A node is ready when the cell's authoritative record shows it AND
@@ -902,6 +949,8 @@ class Orchestrator:
     _started_at: str = ""
     _runtime_versions: dict = {}  # type: ignore[assignment]
     _minted_keys: dict = {}  # type: ignore[assignment]
+    _tailscaled_logs: dict = {}  # type: ignore[assignment]
+    _enroll_results: dict = {}  # type: ignore[assignment]
 
 
 def _non_executed_result(case: dict, entry: dict, disposition: str) -> ProbeResult:

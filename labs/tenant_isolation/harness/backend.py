@@ -36,6 +36,8 @@ class Backend:
         self.calls: list[list[str]] = []
         self.timeouts: list[float] = []
         self._daemon_pids: list[int] = []
+        self._daemons: dict[int, subprocess.Popen] = {}
+        self._last_stop_daemon_ok: dict[int, bool] = {}
 
     def _record(self, cmd: list[str], timeout: float) -> None:
         self.calls.append(list(cmd))
@@ -357,38 +359,86 @@ class DockerBackend(Backend):
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        self._daemons[proc.pid] = proc
         self._daemon_pids.append(proc.pid)
         return proc.pid
 
     def stop_daemon(self, pid: int) -> bool:
         """Terminate the daemon's process group, AWAIT termination, escalate to
-        SIGKILL if needed. Returns True when the process is confirmed gone."""
+        SIGKILL if needed. Returns True when the process is confirmed gone.
+
+        The spawned child is REAPED (``Popen.wait``) so a zombie cannot keep
+        its process group observable: without reaping, ``os.killpg(pid, 0)``
+        keeps succeeding on a dead-but-unreaped child and every stop looks
+        like a failure (and residue looks like a live process).
+        """
         import os
         import signal
 
         self._record(["stop_daemon", str(pid)], 30.0)
         if pid <= 0:
             return False
+        proc = self._daemons.get(pid)
         for signum in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(pid, signum)
             except ProcessLookupError:
-                # already gone — termination confirmed
-                self._daemon_pids = [p for p in self._daemon_pids if p != pid]
+                # already gone — reap to confirm
+                self._reap_daemon(pid, proc)
+                self._last_stop_daemon_ok[pid] = True
                 return True
             except PermissionError:
+                self._last_stop_daemon_ok[pid] = False
                 return False
-            # await actual termination (bounded)
+            # await actual termination (bounded); reaping keeps the group
+            # observable — a zombie stays in its group until reaped.
             deadline = time.monotonic() + (10.0 if signum == signal.SIGTERM else 5.0)
             while time.monotonic() < deadline:
-                try:
-                    os.killpg(pid, 0)
-                except ProcessLookupError:
-                    self._daemon_pids = [p for p in self._daemon_pids if p != pid]
-                    return True
+                if proc is not None:
+                    try:
+                        proc.wait(timeout=0.2)
+                        self._reap_daemon(pid, proc)
+                        self._last_stop_daemon_ok[pid] = True
+                        return True
+                    except subprocess.TimeoutExpired:
+                        pass
+                else:
+                    try:
+                        os.killpg(pid, 0)
+                    except ProcessLookupError:
+                        self._reap_daemon(pid, None)
+                        self._last_stop_daemon_ok[pid] = True
+                        return True
                 time.sleep(0.2)
         # group still alive after SIGTERM + SIGKILL: escalation failed
+        self._last_stop_daemon_ok[pid] = False
         return False
+
+    def _reap_daemon(self, pid: int, proc: subprocess.Popen | None) -> None:
+        if proc is not None:
+            try:
+                proc.wait(timeout=0.5)
+            except Exception:
+                pass
+        self._daemons.pop(pid, None)
+        self._daemon_pids = [p for p in self._daemon_pids if p != pid]
+
+    def daemon_alive(self, pid: int) -> bool:
+        """True when the daemon process is still alive (residue detection).
+
+        Uses ``Popen.poll`` when the process is tracked so a reaped child can
+        never be reported as live residue.
+        """
+        import os
+
+        proc = self._daemons.get(pid)
+        if proc is not None:
+            return proc.poll() is None
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 class FakeBackend(Backend):
