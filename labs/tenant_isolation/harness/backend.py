@@ -175,7 +175,8 @@ class DockerBackend(Backend):
         if digest != sha256:
             tmp.unlink(missing_ok=True)
             raise RuntimeError(
-                f"sha256 mismatch for {url}: expected {sha256[:16]}..., got {digest[:16]}..."
+                f"sha256 mismatch for {url}: expected {sha256}, got {digest} "
+                "(fail-closed; pinned artifact bytes differ — see manifest.json)"
             )
         tmp.rename(dest)
 
