@@ -2624,23 +2624,28 @@ def test_set_executor_materialization_failure_fail_closed(
 
 
 def test_set_executor_bootstrap_failure_after_successful_union(
-    tmp_home, app, org_state, auth_headers,
+    tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """Real-union adversarial regression: the six-context union must succeed
-    before any persistent mutation, and post-union bootstrap failure must
-    not change pre-existing workspace state, frontmatter, audit, or launch.
+    """THR-190 bounded-rollback regression: the six-context union must succeed
+    before any persistent mutation, and a post-union bootstrap failure must
+    restore ONLY the declared bootstrap-owned write set — never touching
+    canonical skill links, non-owned workspace content, frontmatter, or
+    audit state.
 
-    Exercises the REAL union (not mocked), seeds pre-existing CLAUDE.md,
-    AGENTS.md, .claude/ .agents/ canonical links, and other bootstrap state,
-    forces ensure_workspace_ready to write then raise, and asserts:
-    - HTTP 400 with named error executor_bootstrap_failed
-    - agent.yaml unchanged (still old executor)
-    - agent .md frontmatter unchanged
-    - Pre-existing file byte contents unchanged (CLAUDE.md, AGENTS.md)
-    - Pre-existing .claude/ and .agents/ symlinks preserved
-    - No new executor bootstrap artifacts survive
-    - No audit row produced"""
-    import os as _os
+    Uses a REAL adapter writer seam (CodexWorkspaceAdapter.write_agents_md)
+    rather than a broad ContextBuilder mock: the real bootstrap writes its
+    owned files (including the legacy recent_tasks.md -> task_history.md
+    rename and memory/_index.md structural creation), the seam writes
+    AGENTS.md then raises, and the bounded rollback journal must:
+    - restore pre-existing declared-file byte contents (AGENTS.md, CLAUDE.md,
+      .claude/settings.json)
+    - reverse the recent_tasks.md -> task_history.md rename losslessly
+    - remove the newly-created memory/_index.md index and memory/ directory
+    - retain canonical .agents/skills/ links materialized by the union
+    - leave agent frontmatter and audit state unchanged
+    - return HTTP 400 executor_bootstrap_failed"""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2648,76 +2653,47 @@ def test_set_executor_bootstrap_failure_after_successful_union(
     # repos for union to resolve make-worktree contract
     (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
-    # ── Seed pre-existing bootstrap state ──
-    # Regular files with known content
+    # ── Seed pre-existing declared bootstrap-owned state ──
     (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
     (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
-    # .claude/ directory with non-skills content (union only manages skills/)
-    (workspace / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     (workspace / ".claude" / "settings.json").write_text('{"old": true}')
-    # .claude/ symlink outside skills/ (union won't touch)
     link_a = workspace / ".claude" / "old-link-a"
     link_a.symlink_to(workspace / ".claude" / "old-link-a-target")
-    # .agents/ directory with non-skills content
-    (workspace / ".agents" / "config.json").parent.mkdir(parents=True, exist_ok=True)
-    (workspace / ".agents" / "config.json").write_text('{"old": true}')
-    # .agents/ symlink outside skills/ (union won't touch)
+    (workspace / ".agents").mkdir(parents=True, exist_ok=True)
     link_b = workspace / ".agents" / "old-link-b"
     link_b.symlink_to(workspace / ".agents" / "old-link-b-target")
-    # Other bootstrap files
-    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+    # Legacy history file: real bootstrap renames it to task_history.md.
+    (workspace / "recent_tasks.md").write_text("# Legacy task history\n")
+    # memory/ is intentionally ABSENT so the real bootstrap creates it
+    # (removal of newly-created declared state is exercised); no
+    # task_history.md yet (the rename source exists).
 
-    # ── Snapshot pre-request state ──
-    from pathlib import Path as _Path
-    agent_yaml_before = (workspace / "agent.yaml").read_text()
-    agent_md_path = org_state.root / "agents" / "dev_agent.md"
-    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+    agent_md_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
 
-    def _snapshot_files() -> dict[str, bytes]:
-        snap: dict[str, bytes] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                rel = str(fp.relative_to(workspace))
-                if fp.is_file() and not fp.is_symlink():
-                    snap[rel] = fp.read_bytes()
-        return snap
+    # ── Force bootstrap failure at a real adapter writer seam ──
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
 
-    def _snapshot_symlinks() -> dict[str, str]:
-        snap: dict[str, str] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                if fp.is_symlink():
-                    rel = str(fp.relative_to(workspace))
-                    snap[rel] = str(fp.readlink())
-        return snap
-
-    byte_snapshot_before = _snapshot_files()
-    link_snapshot_before = _snapshot_symlinks()
-
-    # ── Execute failing switch ──
-    # Union must NOT be mocked — REAL union runs.
-    # Bootstrap is mocked to write then raise.
-    with patch(
-        "runtime.daemon.routes.agents.ContextBuilder"
-    ) as MockCB:
-        def _failing_bootstrap(ws, agent_name, system_prompt, *, provider):
-            (ws / "AGENTS.md").write_text("# Partial bootstrap — new executor")
-            (ws / ".agents").mkdir(parents=True, exist_ok=True)
-            (ws / ".agents" / "settings.json").write_text('{"new": true}')
-            raise RuntimeError("Bootstrap failed — simulated failure")
-
-        MockCB.return_value.ensure_workspace_ready.side_effect = (
-            _failing_bootstrap
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
         )
-        r = TestClient(app).put(
-            "/api/v1/orgs/alpha/agents/dev_agent/executor",
-            json={"executor": "codex"},
-            headers=auth_headers,
-        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
 
     # ── FAIL-CLOSED assertions ──
     assert r.status_code == 400, (
@@ -2731,43 +2707,1175 @@ def test_set_executor_bootstrap_failure_after_successful_union(
         f"Expected bootstrap error message, got {body['detail']['error']}"
     )
 
-    # ── agent.yaml unchanged ──
-    agent_yaml_after = (workspace / "agent.yaml").read_text()
-    assert agent_yaml_after == agent_yaml_before, (
-        f"agent.yaml mutated: before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+    # ── Owned files restored / unchanged ──
+    assert (workspace / "AGENTS.md").read_bytes() == b"# AGENTS.md: old executor\n", (
+        "Pre-existing AGENTS.md was not restored to original bytes"
+    )
+    assert (workspace / "CLAUDE.md").read_bytes() == b"# CLAUDE.md: old executor\n"
+    assert (workspace / ".claude" / "settings.json").read_text() == '{"old": true}'
+
+    # ── recent_tasks.md -> task_history.md rename reversed losslessly ──
+    assert (workspace / "recent_tasks.md").read_text() == "# Legacy task history\n", (
+        "recent_tasks.md legacy rename source was not restored"
+    )
+    assert not (workspace / "task_history.md").exists(), (
+        "task_history.md (created by the rename) survived rollback"
     )
 
-    # ── Agent frontmatter unchanged ──
-    if frontmatter_before is not None:
-        frontmatter_after = agent_md_path.read_text()
-        assert frontmatter_after == frontmatter_before, (
-            "Agent frontmatter was mutated on bootstrap failure"
+    # ── New owned artifacts removed (new memory/ index tracked reversibly) ──
+    assert not (workspace / "memory").exists(), (
+        "Newly-created memory/ index survived bootstrap failure"
+    )
+
+    # ── Non-owned workspace content and links preserved ──
+    assert link_a.is_symlink(), "Pre-existing .claude link was removed"
+    assert link_b.is_symlink(), "Pre-existing .agents link was removed"
+
+    # ── Canonical skill links materialized by the union survive ──
+    all_contracts: set[str] = set()
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        all_contracts |= _system_contract_ids_for_context(ctx, workspace)
+    assert len(all_contracts) >= 1, "no system contracts materialized"
+    for sid in all_contracts:
+        marker = workspace / ".agents" / "skills" / sid / "SKILL.md"
+        assert marker.is_file(), (
+            f"Canonical skill link {marker} was removed by rollback"
         )
 
-    # ── Byte contents of pre-existing files unchanged ──
-    byte_snapshot_after = _snapshot_files()
-    for rel, before_bytes in byte_snapshot_before.items():
-        assert rel in byte_snapshot_after, (
-            f"Pre-existing file {rel} was DELETED by bootstrap failure"
-        )
-        assert byte_snapshot_after[rel] == before_bytes, (
-            f"Pre-existing file {rel} byte contents CHANGED"
+    # ── Frontmatter + audit unchanged ──
+    assert agent_md_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on bootstrap failure"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite bootstrap failure: before={audit_before}, "
+        f"after={audit_after}"
+    )
+
+
+def test_set_executor_drift_tripwire_all_provider_shapes(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 drift tripwire: every filesystem write/rename made by the
+    REAL provider adapter bootstrap during an executor switch must land in
+    the declared bootstrap-owned write set (_BOOTSTRAP_OWNED_FILES/DIRS).
+
+    Runs the real route with the real union + real adapter bootstrap for
+    every registered provider shape (claude, codex, opencode, pi) and
+    instruments the filesystem mutation primitives ONLY around the real
+    adapter bootstrap call. Any write/rename outside the declared set fails
+    the test — future adapter evolution cannot silently outrun the journal.
+    No adapter production code is changed."""
+    import os as _os
+    import shutil
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    declared_files = set(agents_mod._BOOTSTRAP_OWNED_FILES)
+    declared_dirs = set(agents_mod._BOOTSTRAP_OWNED_DIRS)
+
+    # Capture the ORIGINAL method once, before any monkeypatch — the patch
+    # below is installed for the whole test, so per-iteration re-capture
+    # would grab the wrapper itself and recurse.
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    for provider in ("claude", "codex", "opencode", "pi"):
+        _seed_active_agent(org_state, "dev_agent", executor="claude")
+        workspace = org_state.root / "workspaces" / "dev_agent"
+        shutil.rmtree(workspace, ignore_errors=True)
+        workspace.mkdir(parents=True)
+        (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        # Warm workspace: every declared bootstrap-owned file pre-exists so
+        # only the provider's own declared writes occur.
+        (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md warm\n")
+        (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md warm\n")
+        (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+        (workspace / ".claude" / "settings.json").write_text('{"warm": true}')
+        (workspace / "opencode.json").write_text('{"warm": true}')
+        (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+        (workspace / "memory").mkdir(parents=True, exist_ok=True)
+        (workspace / "memory" / "_index.md").write_text("# Memory Index\n")
+
+        ws_root = str(workspace)
+        allowed = {ws_root}
+        allowed |= {str(workspace / rel) for rel in declared_files}
+        for d in declared_dirs:
+            allowed.add(str(workspace / d))
+
+        violations: list[str] = []
+
+        def _check(p, op):
+            s = str(p)
+            if (s == ws_root or s.startswith(ws_root + _os.sep)) and s not in allowed:
+                violations.append(f"{op} {s}")
+
+        real_write_text = _Path.write_text
+        real_write_bytes = _Path.write_bytes
+        real_rename = _Path.rename
+        real_mkdir = _Path.mkdir
+        real_unlink = _Path.unlink
+        real_rmdir = _Path.rmdir
+        real_replace = _Path.replace
+        real_os_replace = _os.replace
+        real_os_symlink = _os.symlink
+
+        def _spy_write_text(self, *a, **k):
+            _check(self, "write_text")
+            return real_write_text(self, *a, **k)
+
+        def _spy_write_bytes(self, *a, **k):
+            _check(self, "write_bytes")
+            return real_write_bytes(self, *a, **k)
+
+        def _spy_rename(self, *a, **k):
+            _check(self, "rename")
+            return real_rename(self, *a, **k)
+
+        def _spy_mkdir(self, *a, **k):
+            _check(self, "mkdir")
+            return real_mkdir(self, *a, **k)
+
+        def _spy_unlink(self, *a, **k):
+            _check(self, "unlink")
+            return real_unlink(self, *a, **k)
+
+        def _spy_rmdir(self, *a, **k):
+            _check(self, "rmdir")
+            return real_rmdir(self, *a, **k)
+
+        def _spy_replace(self, *a, **k):
+            _check(self, "replace")
+            return real_replace(self, *a, **k)
+
+        def _spy_os_replace(src, dst):
+            _check(_Path(dst), "os.replace")
+            return real_os_replace(src, dst)
+
+        def _spy_os_symlink(src, dst):
+            _check(_Path(dst), "os.symlink")
+            return real_os_symlink(src, dst)
+
+        def _guarded_ensure(self, workspace, agent_name, system_prompt, provider="claude"):
+            with patch.object(_Path, "write_text", _spy_write_text), \
+                 patch.object(_Path, "write_bytes", _spy_write_bytes), \
+                 patch.object(_Path, "rename", _spy_rename), \
+                 patch.object(_Path, "mkdir", _spy_mkdir), \
+                 patch.object(_Path, "unlink", _spy_unlink), \
+                 patch.object(_Path, "rmdir", _spy_rmdir), \
+                 patch.object(_Path, "replace", _spy_replace), \
+                 patch("os.replace", _spy_os_replace), \
+                 patch("os.symlink", _spy_os_symlink):
+                return real_ensure(
+                    self, workspace, agent_name, system_prompt, provider=provider,
+                )
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready", _guarded_ensure,
         )
 
-    # ── Symlinks preserved ──
-    link_snapshot_after = _snapshot_symlinks()
-    for rel, before_target in link_snapshot_before.items():
-        assert rel in link_snapshot_after, (
-            f"Pre-existing symlink {rel} was REMOVED by bootstrap failure"
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": provider},
+            headers=auth_headers,
         )
-        assert link_snapshot_after[rel] == before_target, (
-            f"Pre-existing symlink {rel} target CHANGED"
+        assert r.status_code == 200, (
+            f"provider={provider} switch failed: {r.text}"
+        )
+        assert violations == [], (
+            f"provider={provider} adapter wrote OUTSIDE the declared "
+            f"bootstrap-owned set: {violations}"
         )
 
-    # ── New bootstrap artifacts cleaned up ──
-    new_file = workspace / ".agents" / "settings.json"
-    assert not new_file.exists(), (
-        "New bootstrap file .agents/settings.json survived after failure"
+
+def test_set_executor_no_broad_traversal_success(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 latency: a successful executor switch must NEVER broadly
+    traverse the workspace or workspace/repos — the THR-190 root cause was a
+    full os.walk snapshot of a multi-GB workspace. Guards os.walk / rglob /
+    scandir-style broad enumeration at the route boundary (recursive
+    enumeration anywhere under the workspace, or scandir of the workspace
+    root itself) and seeds sentinel trees whose content any recursive walk
+    would read."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Sentinel trees: deep untracked subtree + large file under repos/ ──
+    deep_sentinel = workspace / "untracked" / "deep" / "nested" / "sentinel.bin"
+    deep_sentinel.parent.mkdir(parents=True)
+    deep_blob = _os.urandom(1024 * 1024)  # 1 MB
+    deep_sentinel.write_bytes(deep_blob)
+
+    repo_sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    repo_blob = _os.urandom(2 * 1024 * 1024)  # 2 MB
+    repo_sentinel.write_bytes(repo_blob)
+
+    sentinel_paths = {
+        _os.path.abspath(_os.fspath(deep_sentinel)),
+        _os.path.abspath(_os.fspath(repo_sentinel)),
+    }
+
+    # ── Traversal guard: flag recursive enumeration under the workspace ──
+    ws_root_abs = _os.path.abspath(str(workspace))
+    violations: list[str] = []
+    real_walk = _os.walk
+    real_rglob = _Path.rglob
+    real_scandir = _os.scandir
+    real_read_bytes = _Path.read_bytes
+    sentinel_reads: list[str] = []
+
+    def _spy_walk(top, *args, **kwargs):
+        top_abs = _os.path.abspath(str(top))
+        if top_abs == ws_root_abs or top_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"os.walk {top_abs}")
+        return real_walk(top, *args, **kwargs)
+
+    def _spy_rglob(self, pattern, *args, **kwargs):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs == ws_root_abs or self_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"rglob {self_abs}")
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    def _spy_scandir(path="."):
+        path_abs = _os.path.abspath(str(path))
+        if path_abs == ws_root_abs:
+            violations.append(f"scandir {path_abs}")
+        return real_scandir(path)
+
+    def _spy_read_bytes(self):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs in sentinel_paths:
+            sentinel_reads.append(self_abs)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_os, "walk", _spy_walk)
+    monkeypatch.setattr(_Path, "rglob", _spy_rglob)
+    monkeypatch.setattr(_os, "scandir", _spy_scandir)
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert violations == [], (
+        f"Broad workspace enumeration during successful switch: {violations}"
+    )
+    assert sentinel_reads == [], (
+        f"Sentinel file(s) read during successful switch: {sentinel_reads}"
+    )
+    assert deep_sentinel.read_bytes() == deep_blob, "deep sentinel changed"
+    assert repo_sentinel.read_bytes() == repo_blob, "repo sentinel changed"
+
+
+def test_set_executor_no_broad_traversal_on_rollback(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 latency: bootstrap-failure rollback (journal capture + restore)
+    must also avoid broad workspace/repos traversal. Same sentinel +
+    traversal guard as the success case, with a real adapter writer that
+    writes then raises; asserts the rollback restores declared state without
+    enumerating the workspace or reading the sentinels."""
+    import os as _os
+    from pathlib import Path as _Path
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
+
+    deep_sentinel = workspace / "untracked" / "deep" / "nested" / "sentinel.bin"
+    deep_sentinel.parent.mkdir(parents=True)
+    deep_blob = _os.urandom(512 * 1024)
+    deep_sentinel.write_bytes(deep_blob)
+
+    repo_sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    repo_blob = _os.urandom(1024 * 1024)
+    repo_sentinel.write_bytes(repo_blob)
+
+    sentinel_paths = {
+        _os.path.abspath(_os.fspath(deep_sentinel)),
+        _os.path.abspath(_os.fspath(repo_sentinel)),
+    }
+
+    ws_root_abs = _os.path.abspath(str(workspace))
+    violations: list[str] = []
+    real_walk = _os.walk
+    real_rglob = _Path.rglob
+    real_scandir = _os.scandir
+    real_read_bytes = _Path.read_bytes
+    sentinel_reads: list[str] = []
+
+    def _spy_walk(top, *args, **kwargs):
+        top_abs = _os.path.abspath(str(top))
+        if top_abs == ws_root_abs or top_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"os.walk {top_abs}")
+        return real_walk(top, *args, **kwargs)
+
+    def _spy_rglob(self, pattern, *args, **kwargs):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs == ws_root_abs or self_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"rglob {self_abs}")
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    def _spy_scandir(path="."):
+        path_abs = _os.path.abspath(str(path))
+        if path_abs == ws_root_abs:
+            violations.append(f"scandir {path_abs}")
+        return real_scandir(path)
+
+    def _spy_read_bytes(self):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs in sentinel_paths:
+            sentinel_reads.append(self_abs)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_os, "walk", _spy_walk)
+    monkeypatch.setattr(_Path, "rglob", _spy_rglob)
+    monkeypatch.setattr(_os, "scandir", _spy_scandir)
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(CodexWorkspaceAdapter, "write_agents_md", _write_then_raise)
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert violations == [], (
+        f"Broad workspace enumeration during capture/rollback: {violations}"
+    )
+    assert sentinel_reads == [], (
+        f"Sentinel file(s) read during capture/rollback: {sentinel_reads}"
+    )
+    assert (workspace / "AGENTS.md").read_bytes() == b"# AGENTS.md: old executor\n"
+    assert deep_sentinel.read_bytes() == deep_blob, "deep sentinel changed"
+    assert repo_sentinel.read_bytes() == repo_blob, "repo sentinel changed"
+
+
+def test_set_executor_legacy_learnings_migration_rejected_before_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190: a workspace holding structured legacy learnings/ state
+    (memory/ absent) would require the unbounded learnings/ -> memory/
+    migration during bootstrap, which the bounded declared-write journal
+    cannot reverse losslessly. The switch must fail closed BEFORE
+    _executor_switch_materialize and BEFORE any adapter writer, with NO
+    materialization/bootstrap/frontmatter/audit mutation."""
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Structured legacy learnings/ state (requires migration) ──
+    legacy_dir = workspace / "learnings"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "MEM-001-operational-note.md").write_text(
+        "---\nid: MEM-001\nslug: operational-note\n---\nlegacy body\n"
+    )
+    assert not (workspace / "memory").exists()
+
+    # ── Recording spies: materialization + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(self, workspace, agent_name, system_prompt, provider=provider)
+
+    monkeypatch.setattr(agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy)
+
+    agent_md_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (
+        f"Expected 400 on legacy learnings rejection, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "learnings" in body["detail"]["error"], (
+        f"Expected legacy-learnings reason, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite legacy-learnings preflight: {materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite legacy-learnings preflight: {bootstrap_calls}"
+    )
+    assert (legacy_dir / "MEM-001-operational-note.md").read_text().startswith("---"), (
+        "legacy learnings/ entry was mutated"
+    )
+    assert not (workspace / "memory").exists(), (
+        "memory/ was created by the rejected switch"
+    )
+    assert (workspace / "task_history.md").read_text() == "# Task History: dev_agent\n"
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on legacy-learnings rejection"
+    )
+    assert agent_md_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on legacy-learnings rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite legacy-learnings rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_bootstrap_preflight_rejects_symlinked_owned_path(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fail-closed: a pre-existing symlink at a bootstrap-owned path
+    (AGENTS.md) cannot be losslessly compensated, so the switch must reject
+    BEFORE bootstrap runs and without following/mutating the symlink target.
+
+    Seeds AGENTS.md as a symlink to a sentinel target, then puts a recording
+    spy on the real CodexWorkspaceAdapter.write_agents_md seam and proves:
+    (1) the writer is NEVER called (bootstrap never runs),
+    (2) the symlink survives with its original target,
+    (3) the sentinel target bytes are unchanged,
+    (4) old executor/frontmatter/audit state is unchanged,
+    (5) the route returns 400 executor_bootstrap_failed."""
+    import os as _os
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── Seed a pre-existing owned symlink: AGENTS.md -> sentinel target ──
+    sentinel_target = workspace / "sentinel-target.md"
+    sentinel_target.write_bytes(b"# sentinel target: must never be mutated\n")
+    agents_md = workspace / "AGENTS.md"
+    agents_md.symlink_to(sentinel_target.name)  # relative link target
+
+    # A normal pre-existing owned file (CLAUDE.md) proves the preflight only
+    # rejects the conflicting path and never disturbs regular-file switching.
+    (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spy at the real adapter writer seam ──
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── The adapter writer was never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert agents_md.is_symlink(), "AGENTS.md symlink was removed/replaced"
+    assert _os.readlink(agents_md) == sentinel_target.name, (
+        f"AGENTS.md target changed: {_os.readlink(agents_md)!r} != "
+        f"{sentinel_target.name!r}"
+    )
+
+    # ── The sentinel target was never followed or mutated ──
+    assert sentinel_target.read_bytes() == b"# sentinel target: must never be mutated\n", (
+        "sentinel target bytes were mutated"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite symlink preflight: before={audit_before}, "
+        f"after={audit_after}"
+    )
+
+
+def test_set_executor_preflight_rejects_uncapturable_owned_file(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704 HIGH): a present regular
+    bootstrap-owned file whose read_bytes() raises OSError is materially
+    distinct from an absent file. The old journal recorded both as None and
+    restore() interpreted None as 'absent before bootstrap' — a bootstrap
+    failure could delete an unreadable present file.
+
+    This test forces read_bytes OSError on a present CLAUDE.md at the real
+    PUT /agents/{agent_name}/executor route and proves the switch fails
+    closed DURING PREFLIGHT, BEFORE _executor_switch_materialize and before
+    every filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes cannot be captured.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == _os.path.abspath(str(target)):
+            raise OSError("forced unreadable present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection ──
+    assert r.status_code == 400, (
+        f"Expected 400 on uncapturable-file preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite uncapturable-file preflight: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite uncapturable-file preflight: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on uncapturable-file rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on uncapturable-file rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite uncapturable-file rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_capture_second_read_fails_closed_before_materialize(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5714 HIGH second-read window): the AUTHORITATIVE
+    rollback capture must fail closed BEFORE the first mutation
+    (_executor_switch_materialize), even when the Step-0 preflight read
+    succeeded.
+
+    Regression scenario: a present regular declared file (CLAUDE.md) whose
+    bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
+    CAN read, but which the authoritative _BootstrapRollbackJournal.capture
+    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    ordering ran capture AFTER materialization, recorded the file as
+    uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
+    overwrite a present file whose original bytes were never captured
+    (uncompensatable data-loss path).
+
+    The deterministic per-file call counter forces read #1 (preflight) to
+    succeed and read #2 (authoritative capture) to raise OSError, then
+    proves the switch fails closed during Step-0 preflight, BEFORE
+    _executor_switch_materialize and before every
+    filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes must be captured BEFORE the
+    # first mutation. Preflight (read #1) succeeds; the authoritative
+    # capture (read #2) fails — the exact TASK-5714 second-read window.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    target_abspath = _os.path.abspath(str(target))
+    read_counts: dict[str, int] = {}
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == target_abspath:
+            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
+            if read_counts["CLAUDE.md"] == 2:
+                # Authoritative capture read fails; preflight read succeeded.
+                raise OSError("forced capture-read failure on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── The authoritative capture observed the file at Step 0 (read #2) ──
+    assert read_counts["CLAUDE.md"] >= 2, (
+        f"expected preflight (read 1) + authoritative capture (read 2) "
+        f"to both run, got {read_counts['CLAUDE.md']} reads"
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
+    assert r.status_code == 400, (
+        f"Expected 400 on capture second-read failure, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite capture second-read failure: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite capture second-read failure: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on capture second-read rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on capture second-read rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite capture second-read rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
+    tmp_home, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
+    keep a present regular file whose read_bytes() raises OSError in a
+    DISTINCT state from an absent file. restore() must never unlink such a
+    file (the old code collapsed both into None and deleted it); it reports
+    a compensation error instead, and the file survives unchanged."""
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    workspace = tmp_home / "ws"
+    workspace.mkdir(parents=True)
+    present = workspace / "CLAUDE.md"
+    original = b"# original bytes must survive\n"
+    present.write_bytes(original)
+    (workspace / "memory").mkdir(parents=True)
+
+    real_read_bytes = _Path.read_bytes
+
+    def _read_bytes(self, *a, **k):
+        if str(self) == str(present):
+            raise OSError("forced OSError on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
+
+    # The present-but-uncapturable file is NEVER recorded as absent: it is
+    # absent from the content map entirely and tracked in the distinct set.
+    assert "CLAUDE.md" not in journal._files, (
+        "uncapturable file must not be recorded in the content map"
+    )
+    assert "CLAUDE.md" in journal._uncapturable, (
+        "uncapturable file must be recorded in the distinct uncapturable set"
+    )
+
+    errors = journal.restore(workspace)
+    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    # The file survives: not deleted, not overwritten, not treated as absent.
+    assert real_read_bytes(present) == original, (
+        "journal restore deleted/modified an uncapturable present file"
+    )
+
+
+def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 CRITICAL: a pre-existing ``workspace/.claude`` symlink to an
+    EXTERNAL directory must be rejected BEFORE the six-context union
+    materialization runs, because ``repair_workspace_skills(..., '.claude/skills')``
+    follows the link and would create/replace/withdraw entries in the external
+    target. Proves, at the real route + adapter/materializer seams:
+
+    (1) 400 executor_bootstrap_failed,
+    (2) materialization is NEVER invoked (the reconciler never runs),
+    (3) the bootstrap writer is NEVER invoked,
+    (4) the ``.claude`` symlink survives with its original target,
+    (5) the external sentinel directory's ``skills/`` subtree is byte/state
+        identical (no creation/replacement/withdrawal),
+    (6) old executor/frontmatter/audit state is unchanged (no launch)."""
+    import os as _os
+    import hashlib
+    from pathlib import Path as _Path
+    from runtime.orchestrator import workspace_adapters as wa
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── External sentinel directory OUTSIDE the workspace ──
+    sentinel_dir = org_state.root / "external-sentinel-claude"
+    sentinel_skills = sentinel_dir / "skills"
+    sentinel_skills.mkdir(parents=True)
+    keep_file = sentinel_skills / "keep.txt"
+    keep_file.write_bytes(b"# sentinel keep: never mutated\n")
+    keep_link = sentinel_skills / "keep-link"
+    _os.symlink("keep.txt", keep_link)
+
+    # workspace/.claude -> external sentinel directory (the reviewed vector)
+    claude_link = workspace / ".claude"
+    claude_link.symlink_to(sentinel_dir, target_is_directory=True)
+
+    def _snapshot_sentinel(root: _Path) -> dict:
+        """Recursive (file-bytes, symlink-target, dir) snapshot of the sentinel."""
+        snap: dict = {}
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = ("link", _os.readlink(p))
+            elif p.is_file():
+                snap[rel] = ("file", hashlib.sha256(p.read_bytes()).hexdigest())
+            elif p.is_dir():
+                snap[rel] = ("dir",)
+        return snap
+
+    sentinel_before = _snapshot_sentinel(sentinel_dir)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on .claude symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── Materialization NEVER ran (the reconciler never followed .claude) ──
+    assert materialize_calls == [], (
+        f"materialization ran despite .claude symlink preflight: {materialize_calls}"
+    )
+
+    # ── Bootstrap writer never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite .claude symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert claude_link.is_symlink(), ".claude symlink was removed/replaced"
+    assert _os.readlink(claude_link) == str(sentinel_dir), (
+        f".claude target changed: {_os.readlink(claude_link)!r} != "
+        f"{str(sentinel_dir)!r}"
+    )
+
+    # ── External sentinel directory state is byte/state identical ──
+    assert _snapshot_sentinel(sentinel_dir) == sentinel_before, (
+        "external sentinel .claude/skills subtree was mutated"
+    )
+    assert keep_file.read_bytes() == b"# sentinel keep: never mutated\n", (
+        "sentinel keep.txt bytes were mutated"
+    )
+    assert keep_link.is_symlink(), "sentinel keep-link symlink was removed"
+    assert _os.readlink(keep_link) == "keep.txt", "sentinel keep-link target changed"
+    assert sorted(p.name for p in sentinel_skills.iterdir()) == [
+        "keep-link", "keep.txt"
+    ], "sentinel skills/ entry set changed (creation/withdrawal detected)"
+
+    # ── Old executor / frontmatter / audit unchanged (no launch) ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on .claude symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on .claude symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite .claude symlink preflight: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_bootstrap_journal_ignores_repos_sentinel(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190: the bounded rollback journal must never read (or retain) a
+    large regular file under repos/. The prior os.walk snapshot read every
+    file in the workspace; the new journal captures only bootstrap-owned paths.
+
+    Seeds a multi-MB sentinel under repos/, spies on Path.read_bytes for that
+    exact path, forces a bootstrap failure, and asserts the sentinel is never
+    read and remains byte-identical after rollback."""
+    import os as _os
+    from pathlib import Path as _Path
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    big_blob = _os.urandom(2 * 1024 * 1024)  # 2 MB
+    sentinel.write_bytes(big_blob)
+    sentinel_abs = _os.path.abspath(_os.fspath(sentinel))
+
+    # Spy on read_bytes for the sentinel path only.
+    real_read_bytes = _Path.read_bytes
+    read_calls: list = []
+
+    def _spy_read_bytes(self):
+        if _os.path.abspath(_os.fspath(self)) == sentinel_abs:
+            read_calls.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+
+    assert read_calls == [], (
+        f"rollback journal read the repos/ sentinel {len(read_calls)} time(s)"
+    )
+    assert real_read_bytes(sentinel) == big_blob, "sentinel bytes changed"
+
+
+def test_set_executor_materializes_and_validates_before_bootstrap(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 ordering: six-context materialization and integrity validation
+    must both complete before any bootstrap write runs. A bootstrap failure
+    must never skip or reorder the materialize/validate phase."""
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    order: list[str] = []
+
+    def _materialize(*args, **kwargs):
+        order.append("materialize")
+        return []
+
+    def _validate(*args, **kwargs):
+        order.append("validate")
+        return None
+
+    def _bootstrap(*args, **kwargs):
+        order.append("bootstrap")
+        raise RuntimeError("stop after bootstrap")
+
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize)
+    # validate_workspace_skills_integrity is imported at agents.py module top,
+    # so patch the agents module binding.
+    monkeypatch.setattr(agents_mod, "validate_workspace_skills_integrity", _validate)
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _bootstrap,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert order == ["materialize", "validate", "bootstrap"], (
+        f"phase order wrong: {order}"
     )
 
 
