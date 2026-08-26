@@ -412,7 +412,11 @@ def test_zero_count_gate_fence_blocks_start_per_nonzero_category(tmp_path):
         "set -euo pipefail\nscripts/daemon.sh start"
     )
     assert start not in (gate,)
-    assert text.index("mandatory zero-count gate") < text.index("scripts/daemon.sh start")
+    # The §7 start fence must follow the zero-count gate fence in document
+    # order (compare fence positions, not first textual occurrence — §7.2 and
+    # the header legitimately mention `scripts/daemon.sh start` earlier).
+    fences = _bash_fences()
+    assert fences.index(gate) < fences.index(start)
     script = gate + "\n" + start + "\n"
 
     bindir = tmp_path / "bin"
@@ -517,6 +521,15 @@ def test_runbook_pins_the_gh709_slice_a_contracts():
     # 7. launch diagnostics
     assert "happyranch doctor" in text
     assert "command -v uv" in text
+    # 10. Slice D: the synchronous uv launch preflight is now SHIPPED in the
+    # script; the old "not shipped, run operator diagnostics" wording is gone
+    assert "preflight is Slice D work that is **not shipped**" not in text
+    assert "Slice D ships a" in text and "synchronous uv launch preflight" in text
+    assert "scripts/daemon.sh start" in text
+    # no automatic download / no alternate CLI selection
+    assert "no automatic download" in text
+    assert "no arbitrary PATH fallback" in text
+    assert "no alternate CLI" in text
     # honesty boundary: B/C/D runtime guarantees not shipped; operator-enforced
     assert "operator-enforced" in text
     assert "not shipped" in text
