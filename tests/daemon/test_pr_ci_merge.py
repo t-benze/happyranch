@@ -1032,3 +1032,277 @@ class TestGuardedMergeLegacyEvidenceRejection:
         )
         assert verdict.verdict == "github_error"
         assert "perform_merge_called" not in call_log
+
+
+class TestGuardedMergeMergeEvidenceContract:
+    """Guarded-merge integration for the canonical merge-evidence contract.
+
+    The contract is canonical in protocol/00-completion-contract.md
+    ("Merge-evidence contract", THR-204): structured `verdict` is primary and
+    must be a canonical token; prose `Verdict:` lines may carry the canonical
+    token followed by a human annotation (e.g. `Verdict: PASS — rationale`);
+    both forms must agree exactly.  The role gates (review == APPROVE,
+    QA == PASS) reject known non-passing tokens (REQUEST_CHANGES / BLOCK /
+    REVISE / FAIL); every rejecting case proves `perform_merge` is NOT called,
+    and accepting cases traverse the real role gates, immutable-head, CI,
+    state, and mergeability ordering.
+    """
+
+    def _run(
+        self, monkeypatch: pytest.MonkeyPatch,
+        recall_out: str,
+        *,
+        role: str = "qa",
+        review_verdict: str = "APPROVE",
+    ) -> GuardedMergeVerdict:
+        """Drive guarded_merge with a recall-backed verdict fetcher."""
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        if role == "qa":
+            verdict = _merge(
+                fetch_review_verdict=lambda: review_verdict,
+                fetch_qa_verdict=lambda: _recall_fetch_verdict(
+                    "happyranch", "TASK-CONTRACT", "qa"
+                ),
+                perform_merge=track_merge,
+            )
+        else:
+            verdict = _merge(
+                fetch_review_verdict=lambda: _recall_fetch_verdict(
+                    "happyranch", "TASK-CONTRACT", "review"
+                ),
+                fetch_qa_verdict=lambda: "PASS",
+                perform_merge=track_merge,
+            )
+        return verdict, call_log
+
+    # ── accepting: matching structured + annotated prose ───────────────────
+
+    def test_qa_structured_pass_plus_annotated_prose_merges(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TASK-5619-shaped evidence (verdict PASS + `Verdict: PASS — ...`) → merged."""
+        recall_out = _mock_recall_output(
+            "Verdict: PASS \u2014 Independent QA of PR #710 at the exact pinned "
+            "immutable head. All checks green.\n",
+            verdict="PASS",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "merged"
+        assert "perform_merge_called" in call_log
+
+    def test_review_structured_approve_plus_annotated_prose_merges(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review verdict APPROVE + `Verdict: APPROVE — rationale` → merged."""
+        recall_out = _mock_recall_output(
+            "Verdict: APPROVE \u2014 all guards re-verified at the pinned head.\n",
+            verdict="APPROVE",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out, role="review")
+        assert verdict.verdict == "merged"
+        assert "perform_merge_called" in call_log
+
+    def test_qa_annotated_legacy_only_merges(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy-only `Verdict: PASS — rationale` (no structured key) → merged."""
+        recall_out = _mock_recall_output(
+            "Verdict: PASS \u2014 QA complete, all gates green.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "merged"
+        assert "perform_merge_called" in call_log
+
+    def test_review_annotated_legacy_only_request_changes_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy-only `Verdict: REQUEST_CHANGES` → merge_guard_review (NOT github_error).
+
+        REQUEST_CHANGES is a canonical token the parser accepts; the role gate
+        is what rejects it.  perform_merge is NOT called.
+        """
+        recall_out = _mock_recall_output(
+            "Verdict: REQUEST_CHANGES\n\nReview found gaps to fix.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out, role="review")
+        assert verdict.verdict == "merge_guard_review"
+        assert "perform_merge_called" not in call_log
+
+    def test_review_structured_request_changes_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured REQUEST_CHANGES + `Verdict: REQUEST_CHANGES` agree → merge_guard_review."""
+        recall_out = _mock_recall_output(
+            "Verdict: REQUEST_CHANGES\n\nReview found gaps.",
+            verdict="REQUEST_CHANGES",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out, role="review")
+        assert verdict.verdict == "merge_guard_review"
+        assert "perform_merge_called" not in call_log
+
+    def test_qa_structured_revise_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured REVISE + `Verdict: REVISE` agree → merge_guard_qa."""
+        recall_out = _mock_recall_output(
+            "Verdict: REVISE\n\nNeeds more evidence.",
+            verdict="REVISE",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "merge_guard_qa"
+        assert "perform_merge_called" not in call_log
+
+    def test_qa_structured_block_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured BLOCK + `Verdict: BLOCK` agree → merge_guard_qa."""
+        recall_out = _mock_recall_output(
+            "Verdict: BLOCK\n\nEvidence gate failed.",
+            verdict="BLOCK",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "merge_guard_qa"
+        assert "perform_merge_called" not in call_log
+
+    def test_qa_legacy_fail_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy-only `Verdict: FAIL` → merge_guard_qa."""
+        recall_out = _mock_recall_output("Verdict: FAIL\n\nQA precondition not met.")
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "merge_guard_qa"
+        assert "perform_merge_called" not in call_log
+
+    # ── rejecting: contradictory / malformed / ambiguous evidence ──────────
+
+    def test_contradictory_structured_prose_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured PASS + `Verdict: REVISE — ...` → github_error, no merge."""
+        recall_out = _mock_recall_output(
+            "Verdict: REVISE \u2014 needs more work.\n",
+            verdict="PASS",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_structured_unknown_token_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured `APPROVED` (unknown token) → github_error, no fallback to prose."""
+        recall_out = _mock_recall_output(
+            "Verdict: APPROVE\n\nReview passed.",
+            verdict="APPROVED",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out, role="review")
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_structured_case_variant_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structured `pass` (case variant) → github_error."""
+        recall_out = _mock_recall_output(
+            "Verdict: PASS\n\nQA green.",
+            verdict="pass",
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_malformed_annotated_token_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`Verdict: APPROVED — ...` malformed → github_error, no merge."""
+        recall_out = _mock_recall_output(
+            "Verdict: APPROVED \u2014 non-standard label.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_duplicate_annotated_candidates_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Duplicate same-token annotated candidates → github_error, no merge."""
+        recall_out = _mock_recall_output(
+            "Verdict: PASS \u2014 first note.\nVerdict: PASS \u2014 second note.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_conflicting_annotated_candidates_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Annotated PASS + annotated REVISE → github_error, no merge."""
+        recall_out = _mock_recall_output(
+            "Verdict: PASS \u2014 one.\nVerdict: REVISE \u2014 two.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_newline_split_annotated_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Newline-split `Verdict:\nPASS — ...` → github_error, no merge."""
+        recall_out = _mock_recall_output(
+            "Verdict:\nPASS \u2014 split across lines.\n"
+        )
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_missing_structured_key_no_prose_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No structured verdict and no Verdict: line → github_error, no merge."""
+        recall_out = _mock_recall_output("All checks completed.\n")
+        verdict, call_log = self._run(monkeypatch, recall_out)
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_empty_structured_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty-string structured verdict → github_error, no fallback to prose."""
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-EMPTYC",
+            "status": "completed",
+            "verdict": "   ",
+            "output_summary": "Verdict: PASS\n\nQA green.",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict(
+                "happyranch", "TASK-EMPTYC", "qa"
+            ),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log

@@ -163,6 +163,12 @@ python -m runtime.daemon.pr_ci_merge \
 ```
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
+The review/QA evidence extraction follows the **Merge-evidence contract** in
+`protocol/00-completion-contract.md`: the canonical vocabulary
+`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`, structured `verdict`
+primary (canonical token only), annotated prose
+(`Verdict: PASS — rationale`) supported, and fail-closed rejection of
+missing/contradictory/malformed/ambiguous evidence.
 The poll job runs with `review_required=false` through the existing jobs path; agents never
 get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
 merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and
