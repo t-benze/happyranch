@@ -5121,6 +5121,105 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
+    def invalidate_thread_session_evicted(
+        self,
+        thread_id: str,
+        agent_name: str,
+        *,
+        stale_session_id: str,
+        error: str,
+        executor: str = "claude",
+    ) -> None:
+        """One transaction: eviction audit + durable session-id invalidation.
+
+        THR-200: fires at the provider-declared session-not-found boundary,
+        BEFORE the full-prompt fallback launch. The audit row and the
+        ``agent_session_id = NULL`` update commit atomically, so a failed
+        fallback can never leave the stale id durable for the next wake.
+        ``last_resumed_seq`` is intentionally preserved — a failed fallback
+        must not advance delivery state; the next wake re-attempts the same
+        required range (the id being NULL forces a full-prompt launch).
+        """
+        payload = {
+            "executor": executor,
+            "stale_session_id": stale_session_id,
+            "error": (error or "")[:500],
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    agent_name,
+                    "agent_session_evicted_fallback",
+                    json.dumps(payload),
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "UPDATE thread_participants SET agent_session_id = NULL "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (thread_id, agent_name),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def reset_thread_session(
+        self, thread_id: str, agent_name: str
+    ) -> None:
+        """Clear one participant's resume state: id NULL, watermark 0.
+
+        Used by lifecycle invalidation (archive, executor switch, agent
+        termination) where any later thread resume must start fresh with a
+        full-prompt launch.
+        """
+        self._conn.execute(
+            "UPDATE thread_participants SET agent_session_id = NULL, "
+            "last_resumed_seq = 0 WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def reset_thread_sessions_for_agent(self, agent_name: str) -> int:
+        """Clear resume state (id NULL, watermark 0) for every thread
+        participant row owned by ``agent_name``. Returns the row count.
+
+        Executor-switch and agent-termination lifecycle: a participant whose
+        executor changes must not resume a provider session minted under a
+        different executor profile; a terminated agent must not resume at all.
+        """
+        cursor = self._conn.execute(
+            "UPDATE thread_participants SET agent_session_id = NULL, "
+            "last_resumed_seq = 0 WHERE agent_name = ?",
+            (agent_name,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
+    def reset_thread_sessions_for_thread(self, thread_id: str) -> int:
+        """Clear resume state (id NULL, watermark 0) for every participant of
+        one thread. Returns the row count.
+
+        Archive lifecycle: the thread is closed; if it is ever re-opened,
+        every participant resumes from a fresh full-prompt launch.
+        """
+        cursor = self._conn.execute(
+            "UPDATE thread_participants SET agent_session_id = NULL, "
+            "last_resumed_seq = 0 WHERE thread_id = ?",
+            (thread_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     def _append_thread_message_uncommitted(
         self,
         *,

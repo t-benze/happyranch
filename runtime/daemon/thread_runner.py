@@ -872,6 +872,15 @@ async def run_invocation(
 
             if (is_claude and resume_sid and not result.success
                     and _is_session_not_found(result)):
+                # THR-200: the eviction audit AND the durable session-id
+                # invalidation commit in ONE transaction (see
+                # AuditLogger.log_agent_session_evicted_fallback /
+                # Database.invalidate_thread_session_evicted) BEFORE the
+                # full-prompt fallback launch. If the fallback also fails,
+                # the id remains NULL and the delivery watermark is
+                # untouched — the next wake re-attempts the same range from
+                # a full prompt instead of a doomed resume against a stale
+                # provider session.
                 audit.log_agent_session_evicted_fallback(
                     inv.thread_id, agent_name=inv.agent_name, executor="claude",
                     stale_session_id=resume_sid,

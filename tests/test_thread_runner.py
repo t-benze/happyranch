@@ -556,6 +556,200 @@ async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
     assert "agent_session_evicted_fallback" in actions
 
 
+@pytest.mark.asyncio
+async def test_eviction_fallback_failure_invalidates_id_keeps_watermark(tmp_path, monkeypatch):
+    """THR-200: when the eviction fallback ALSO fails, the stale provider id
+    must remain NULL and the delivery watermark must NOT advance — the
+    eviction audit and the invalidation are one transaction, applied BEFORE
+    the fallback launch. The next wake re-attempts the same range from a full
+    prompt instead of a doomed resume."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
+    db.update_thread_session(
+        "THR-001", "alice",
+        agent_session_id="claude-stale", last_resumed_seq=1,
+    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=2)
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    evicted = FakeExecutorResult(success=False, error="No conversation found for session claude-stale")
+    evicted.returncode = 1
+    evicted.stderr_tail = "No conversation found"
+    evicted.agent_session_id = None
+    fallback_failed = FakeExecutorResult(success=False, error="Command exited with code 1: boom")
+    fallback_failed.returncode = 1
+    fallback_failed.agent_session_id = None
+
+    import runtime.daemon.thread_runner as runner_mod
+    fake = _ResumeRecordingExec([evicted, fallback_failed])
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    # Exactly one eviction audit (transactional with the invalidation).
+    audits = [r for r in db.get_audit_logs("THR-001")
+              if r["action"] == "agent_session_evicted_fallback"]
+    assert len(audits) == 1
+    assert audits[0]["payload"]["stale_session_id"] == "claude-stale"
+    # Id NULL (stale id durably invalidated), watermark preserved (1).
+    sid, watermark = db.get_thread_session("THR-001", "alice")
+    assert sid is None
+    assert watermark == 1
+    # Invocation settled FAILED exactly once (no nudge re-invoke after fallback).
+    assert len(fake.calls) == 2
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_resume_watermark_above_running_from_uses_full_prompt(tmp_path, monkeypatch):
+    """Range correctness `>`: when the stored watermark sits ABOVE the claim's
+    running_from_seq, the runner must not trust the delta — it rebuilds the
+    full prompt so no required sequence is ever omitted."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=3)
+    db.update_thread_session(
+        "THR-001", "alice",
+        agent_session_id="claude-prior", last_resumed_seq=3,
+    )  # watermark 3 > running_from 1 → full prompt required
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=prompts),
+    )
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    first = prompts[0]
+    assert "m1" in first and "m2" in first and "m3" in first  # full transcript
+    assert "## Delivery range" in first
+    assert "1 through 3" in first
+
+
+@pytest.mark.asyncio
+async def test_equality_state_recovers_after_settled_full_prompt_turn(tmp_path, monkeypatch):
+    """THR-200 binding correction: the equality state (watermark ==
+    running_from_seq) is NOT a permanent wedge. After ONE safely transported,
+    successfully terminal-settled full-prompt turn, both watermarks converge
+    and resume eligibility returns — no standalone watermark comparison
+    change is implemented (THR-198 recovery = transport, not a code fix)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    # ── Phase 1: equality state — watermark 1 == running_from 1 ──────────
+    inv1 = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=3)
+    db.update_thread_session(
+        "THR-001", "alice",
+        agent_session_id="claude-prior", last_resumed_seq=1,
+    )
+
+    import runtime.daemon.thread_runner as runner_mod
+    calls: list[dict] = []
+
+    class _Phase1Exec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            # The agent posts its reply mid-run (terminal settle).
+            db.consume_invocation(inv1.invocation_token)
+            db.settle_conversational_reply(
+                token=inv1.invocation_token, outcome="reply",
+            )
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "claude-fresh"
+            return r
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _Phase1Exec(),
+    )
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv1.invocation_token,
+        settings=Settings(),
+    )
+
+    # Equality turn ran a FULL prompt (no resume), settled, and advanced the
+    # stored watermark to the same frontier as the acknowledgement.
+    assert calls[0].get("resume_session_id") is None
+    assert "m1" in calls[0]["prompt"] and "m3" in calls[0]["prompt"]
+    sid, watermark = db.get_thread_session("THR-001", "alice")
+    assert sid == "claude-fresh"
+    assert watermark == 3
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st.acknowledged_through_seq == 3
+
+    # ── Phase 2: a NEW message arrives; resume must be eligible again ────
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m4")
+    inv2 = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=4, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(thread_id, agent_name) DO UPDATE SET "
+        "acknowledged_through_seq = excluded.acknowledged_through_seq, "
+        "required_through_seq = excluded.required_through_seq, "
+        "queued_invocation_token = excluded.queued_invocation_token, "
+        "running_invocation_token = NULL, running_from_seq = NULL, "
+        "running_through_seq = NULL, last_terminal_reason = NULL, "
+        "last_terminal_at = NULL, updated_at = excluded.updated_at",
+        ("THR-001", "alice", 3, 4, inv2.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    prompts2: list[str] = []
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=prompts2),
+    )
+    await run_invocation(
+        org_state=org, invocation_token=inv2.invocation_token,
+        settings=Settings(),
+    )
+
+    # Resume eligible again: delta ships ONLY the new message; no required
+    # sequence is omitted (m1..m3 are already durably delivered/acknowledged).
+    assert "m4" in prompts2[0]
+    assert "m1" not in prompts2[0] and "m2" not in prompts2[0] and "m3" not in prompts2[0]
+    assert "## Delivery range" in prompts2[0]
+    assert "4 through 4" in prompts2[0]
+
+
 def test_build_delta_prompt_excludes_old_history_includes_new():
     from datetime import datetime, timezone
     from runtime.daemon.thread_runner import build_thread_delta_prompt

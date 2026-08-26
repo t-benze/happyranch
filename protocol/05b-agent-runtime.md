@@ -53,6 +53,63 @@ The session-not-found eviction fallback in ``run_invocation`` also forwards
 the model on its clean-slate retry — both the initial resume attempt and the
 fallback full-prompt launch receive the same ``model`` value.
 
+**Prompt transport and the pre-spawn argv guard (THR-200).** The invocation
+prompt is one opaque string; the kernel caps a single argv element (Linux
+``MAX_ARG_STRLEN`` = 128 KiB − 1, measured 131,071 bytes on this org's
+hosts; macOS/Windows limits differ). Prompt bodies therefore belong on **stdin**
+for every stdin-capable built-in:
+
+- **Claude** (pinned 2.1.241): ``claude -p --permission-mode <m> --allowedTools
+  <t> --output-format json [--resume <id>]`` with the prompt delivered via
+  ``input_text`` (stdin). Verified by canary: exact Unicode/newline semantics
+  preserved, ``>=512 KiB`` UTF-8 prompts launch, JSON envelope + session id
+  parsed.
+- **Pi** (pinned 0.84.2): ``pi -p --mode json`` with the prompt on stdin.
+  Verified by canary: piped stdin becomes the SOLE user prompt (``role:
+  user`` / ``type: text``, exact bytes) with no argv message.
+- **Codex**: unchanged — ``codex exec ... --json -`` already reads stdin.
+- **OpenCode and generic-CLI profiles remain argv-based and behaviorally
+  unchanged** until their stdin contracts are separately proven (OpenCode's
+  official docs only promise positional ``[message..]``; generic-CLI prompt
+  transport is profile-defined via ``{prompt}`` template substitution).
+
+Before any Popen, ``_run_command`` runs a **portable pre-spawn argv guard**:
+when the prompt travels via argv (``input_text`` is None), every argv element
+is checked against the platform-safe per-argument byte limit and an oversized
+element fails deterministically with the normalized category
+``prompt_transport_too_large`` BEFORE the kernel can raise ``E2BIG``
+mid-launch. The prompt is NEVER truncated. Encoded byte size is
+**transport-only** — it is not a cost or reset policy; future cost policy
+must use turn count or cumulative session tokens (transcript bytes do not
+track provider-session cost). The guard preserves known-good smaller argv
+executions (the limit is never below the platform's kernel floor).
+
+**Thread provider-session lifecycle (THR-200).** ``thread_participants``
+carries the resumable provider session id + delta watermark
+(``agent_session_id``, ``last_resumed_seq``). Lifecycle rules:
+
+- **Resume is Claude-only and an optimization, never a correctness
+dependency**; the SQLite transcript is canonical. A GH-688 claimed REPLY may
+resume with a delta ONLY when the stored watermark is strictly below the
+claim's ``running_from_seq`` — the ``<``, ``=``, and ``>`` cases are all
+covered so no required sequence is ever omitted; ``=``/``>`` use the full
+prompt. The equality state (watermark == ``running_from_seq``) is NOT
+permanent: after ONE successfully transported, terminally settled full-prompt
+turn both watermarks converge to the same frontier and resume eligibility
+returns. Do not implement a standalone watermark-comparison change.
+- **Eviction (provider-declared session-not-found)**: the eviction audit and
+the durable ``agent_session_id = NULL`` invalidation commit in ONE
+transaction BEFORE the full-prompt fallback launch. If the fallback also
+fails, the id remains NULL and the delivery watermark does NOT advance — the
+next wake re-attempts the same range from a full prompt. (THR-187/THR-195
+missing-session wedges are this mechanism; THR-198's healthy-session
+equality wedge needs only transport — no row change.)
+- **Lifecycle invalidation**: thread archive, a SUCCESSFUL executor switch,
+and agent termination clear resume state (id NULL, watermark 0) so any later
+wake starts fresh; a failed switch leaves prior state intact. Participant
+removal already hard-deletes the row (session state goes with it — no
+redundant clear).
+
 **Thread reply delivery lifecycle (GH-688 Phase 1).** Conversational
 ``REPLY`` wakes are coalesced and durably tracked per ``(thread_id,
 agent_name)`` in the additive ``thread_reply_delivery_state`` table. The store

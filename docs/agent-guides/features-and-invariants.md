@@ -281,7 +281,22 @@ Traps:
 - Claude-only optimization, never a correctness dependency.
 - `last_resumed_seq` advances only after a successful subprocess.
 - Per-`(thread, agent)` `asyncio.Lock` protects read-run-update.
-- Eviction fallback re-runs once and audits `agent_session_evicted_fallback`.
+- **Eviction invalidation is transactional (THR-200).** On a provider-declared
+  session-not-found, the `agent_session_evicted_fallback` audit and the durable
+  `agent_session_id = NULL` invalidation commit in ONE transaction BEFORE the
+  full-prompt fallback; a failed fallback leaves the id NULL and the delivery
+  watermark unadvanced.
+- **Lifecycle invalidation (THR-200).** Archive, successful executor switch, and
+  agent termination clear resume state (id NULL, watermark 0); a failed switch
+  leaves prior state intact; participant removal deletes the row and its session
+  state together (no redundant clear).
+- **Equality self-heals (THR-200).** `last_resumed_seq == running_from_seq` runs
+  the full prompt (never omits a required sequence) and recovers after one
+  successfully settled full-prompt turn — no watermark-comparison change.
+- **Transport (THR-200).** Claude/Pi/Codex deliver the prompt on stdin
+  (pinned-version canaries); opencode/generic-CLI stay argv-based with a
+  pre-spawn `prompt_transport_too_large` guard. Encoded byte size is
+  transport-only, never a cost/reset policy.
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
 - **GH-688 Phase 1 claim gate.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq`; otherwise the runner falls back to the full prompt. `last_resumed_seq` is observed session presentation and is never the delivery cursor — it can never omit a message the delivery state requires.
 

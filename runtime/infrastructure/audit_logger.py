@@ -1664,16 +1664,46 @@ class AuditLogger:
     ) -> None:
         """Fires when a resume reported session-not-found and we rebuilt a fresh
         full-context session. Watch frequency: high rates mean the agent CLI's
-        local session TTL is shorter than our typical inter-turn gap."""
+        local session TTL is shorter than our typical inter-turn gap.
+
+        THR-200: this is now the single transactional seam — the audit row and
+        the durable ``agent_session_id = NULL`` invalidation commit together
+        BEFORE the fallback launch, so a failed fallback can never leave the
+        stale provider session id in place for the next wake.
+        """
+        self._db.invalidate_thread_session_evicted(
+            thread_id,
+            agent_name,
+            stale_session_id=stale_session_id,
+            error=error,
+            executor=executor,
+        )
+
+    def log_thread_sessions_invalidated(
+        self,
+        *,
+        scope_id: str,
+        agent: str,
+        reason: str,
+        rows: int,
+        name: str | None = None,
+    ) -> None:
+        """Record a lifecycle session-state invalidation (THR-200).
+
+        Fires on thread archive, successful executor switch, and agent
+        termination — the durable resume id + watermark are cleared so any
+        later wake starts from a fresh full-prompt launch. ``scope_id``
+        follows the generic audit scope convention: a THR- id for archive,
+        the manager task id for switch/termination.
+        """
+        payload: dict = {"reason": reason, "rows": rows}
+        if name is not None:
+            payload["name"] = name
         self._db.insert_audit_log(
-            task_id=thread_id,
-            agent=agent_name,
-            action="agent_session_evicted_fallback",
-            payload={
-                "executor": executor,
-                "stale_session_id": stale_session_id,
-                "error": error[:500],
-            },
+            task_id=scope_id,
+            agent=agent,
+            action="thread_session_invalidated",
+            payload=payload,
         )
 
     def log_thread_task_followup_enqueued(

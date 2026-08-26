@@ -3753,6 +3753,42 @@ def test_archive_discards_reply_delivery_state(tmp_home, app, org_state, auth_he
     assert pending == []
 
 
+def test_archive_invalidates_participant_session_state(tmp_home, app, org_state, auth_headers):
+    """THR-200: archiving a thread invalidates every participant's resumable
+    provider-session state (id NULL, watermark 0) with a lifecycle audit — a
+    later re-opened thread starts every participant from a fresh full prompt."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=3,
+    )
+    org_state.db.update_thread_session(
+        tid, "qa_engineer", agent_session_id="sess-pi", last_resumed_seq=2,
+    )
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done"}, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == (None, 0)
+    assert org_state.db.get_thread_session(tid, "qa_engineer") == (None, 0)
+    audits = [a for a in org_state.db.get_audit_logs(tid)
+              if a["action"] == "thread_session_invalidated"]
+    assert len(audits) == 1
+    assert audits[0]["payload"]["reason"] == "archive"
+    assert audits[0]["payload"]["rows"] == 2
+
+
 # ---------------------------------------------------------------------------
 # GH-688 Phase 1 Slice C — reply-delivery lifecycle audits through the routes
 # ---------------------------------------------------------------------------

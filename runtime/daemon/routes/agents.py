@@ -765,6 +765,19 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 updated.system_prompt,
                 provider=updated.executor,
             )
+        # THR-200: a SUCCESSFUL executor switch invalidates every thread
+        # participant session row for this agent — a later switch back to a
+        # resume-capable executor must start from a fresh full-prompt launch,
+        # never reuse a provider session minted under a different executor.
+        # This runs only after the switch fully succeeded (frontmatter written
+        # and workspace reconciled): a failed switch leaves prior state intact.
+        if body.executor is not None and body.executor != existing.executor:
+            rows = org.db.reset_thread_sessions_for_agent(body.name)
+            if rows:
+                audit.log_thread_sessions_invalidated(
+                    scope_id=scope_id, agent=manager_name,
+                    reason="executor_switch", rows=rows, name=body.name,
+                )
         # THR-095: agent.yaml executor/model sync REMOVED.
         # The .md frontmatter is the single source of truth.
         audit.log_agent_managed(
@@ -912,6 +925,17 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             # and filesystem archive so the agent stays active and consistent.
             try:
                 org.db.terminate_agent_cleanups(body.name)
+                # THR-200: a terminated agent must never resume a thread
+                # provider session. Invalidate every participant row in the
+                # same atomicity domain as the other terminate cleanup — a
+                # failure rolls back the whole archive, leaving the agent
+                # fully active with prior session state intact.
+                rows = org.db.reset_thread_sessions_for_agent(body.name)
+                if rows:
+                    audit.log_thread_sessions_invalidated(
+                        scope_id=scope_id, agent=manager_name,
+                        reason="termination", rows=rows, name=body.name,
+                    )
             except Exception:
                 _logger = logging.getLogger(__name__)
                 _logger.exception(

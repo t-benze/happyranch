@@ -2696,6 +2696,16 @@ async def archive_thread_endpoint(
         org.db.set_thread_status(
             thread_id, status=ThreadStatus.ARCHIVED, summary=summary,
         )
+        # THR-200: archive invalidates every participant's resumable provider
+        # session state (id NULL, watermark 0). The thread is closed; if it is
+        # ever re-opened, every participant resumes from a fresh full-prompt
+        # launch instead of a stale provider session.
+        reset_rows = org.db.reset_thread_sessions_for_thread(thread_id)
+        if reset_rows:
+            AuditLogger(org.db).log_thread_sessions_invalidated(
+                scope_id=thread_id, agent="founder",
+                reason="archive", rows=reset_rows,
+            )
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
         sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
