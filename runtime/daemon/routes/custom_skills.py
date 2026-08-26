@@ -83,21 +83,40 @@ def _persist_validated_version(
     FIRST and the content artifact is written only after that insert succeeds:
     a byte-identical body (UNIQUE (skill_id, content_hash)) fails the insert
     and is rejected as 409 duplicate_content with zero residue and no artifact
-    write — a concurrent duplicate can never delete a committed artifact. On
-    any later failure the artifact (written by this request) is compensated
-    and the caller rolls back the transaction, so a rejected write leaves no
-    durable version/event/current-pointer/artifact residue. The append-only
-    uniqueness invariant is preserved, never relaxed.
+    write — a concurrent duplicate can never delete a committed artifact.
+    Duplicate-content translation is scoped strictly to that version INSERT:
+    an integrity failure from ANY later stage (current-pointer update or
+    either event append) is NOT a duplicate — it propagates to the generic
+    handler below, which compensates only the artifact (and empty directories)
+    this request wrote and lets the caller roll back, so a failed write never
+    returns a false 409 with a stranded file. On any later failure the
+    artifact (written by this request) is compensated and the caller rolls
+    back the transaction, leaving no durable version/event/current-pointer/
+    artifact residue. The append-only uniqueness invariant is preserved,
+    never relaxed.
     """
     key = _artifact_key(slug, skill_md)
     artifact_written = False
     try:
-        version, content_hash, state = service.create_version(
-            conn, skill_id=skill_id, skill_md=skill_md, actor_kind=actor_kind,
-            actor=actor, artifact_key=key, validation=validation,
-            task_id=task_id, session_id=session_id, brief_digest=brief_digest,
-            parent_id=parent_id,
-        )
+        try:
+            version, content_hash, state = service.create_version(
+                conn, skill_id=skill_id, skill_md=skill_md, actor_kind=actor_kind,
+                actor=actor, artifact_key=key, validation=validation,
+                task_id=task_id, session_id=session_id, brief_digest=brief_digest,
+                parent_id=parent_id,
+            )
+        except sqlite3.IntegrityError as exc:
+            # Only the version INSERT can violate the append-only uniqueness
+            # invariant, and at that point no artifact has been written by
+            # this request, so there is nothing to compensate and no
+            # concurrent-duplicate deletion race.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "duplicate_content",
+                    "detail": "A version with this exact content already exists for this skill",
+                },
+            ) from exc
         _write_artifact(org, key, skill_md)
         artifact_written = True
         conn.execute(
@@ -107,14 +126,6 @@ def _persist_validated_version(
         service.append_event(conn, skill_id, event, actor, version, task_id=task_id, session_id=session_id)
         service.append_event(conn, skill_id, "validated", actor, version, task_id=task_id, session_id=session_id)
         return version, content_hash, state
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "duplicate_content",
-                "detail": "A version with this exact content already exists for this skill",
-            },
-        ) from exc
     except Exception:
         if artifact_written:
             _remove_artifact(org, key)

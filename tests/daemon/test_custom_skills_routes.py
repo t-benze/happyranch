@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 
 import pytest
 
@@ -23,8 +24,8 @@ def _body(slug: str = "test-skill", skill_md: str = _FM_BODY) -> dict:
     return {"slug": slug, "name": "Test skill", "description": "test", "skill_md": skill_md}
 
 
-def _custom_counts(org) -> dict[str, int]:
-    conn = getattr(org.db, "_conn", org.db)
+def _custom_counts(org, conn=None) -> dict[str, int]:
+    conn = conn or getattr(org.db, "_conn", org.db)
     tables = [row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'custom_skill_%'"
     )]
@@ -38,16 +39,39 @@ def _artifact_keys(org) -> set[str]:
     return {info.name for info in store.list_artifacts()}
 
 
-def _residue_snapshot(org, skill_id: str) -> dict:
-    """Snapshot every zero-residue dimension for one skill."""
-    conn = getattr(org.db, "_conn", org.db)
-    current = conn.execute(
-        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
-    ).fetchone()
+def _empty_artifact_dirs(org) -> list[str]:
+    """Directories under the custom-skills artifact tree left completely
+    empty — compensation must remove the artifact file AND any now-empty
+    parent directories (digest dir, slug dir)."""
+    from runtime.orchestrator._paths import OrgPaths
+    root = OrgPaths(org.root).artifacts_dir / "custom-skills"
+    if not root.exists():
+        return []
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*") if path.is_dir() and not any(path.iterdir())
+    )
+
+
+def _residue_snapshot(org, skill_id: str, conn=None) -> dict:
+    """Snapshot every zero-residue dimension for one skill: table counts
+    (version/event/eligibility/materialization rows), current pointer,
+    parent/current lineage, artifacts, and newly-created empty directories."""
+    conn = conn or getattr(org.db, "_conn", org.db)
+    row = conn.execute("SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()
+    current = row["current_version_id"] if row else None
+    parent = None
+    if current is not None:
+        parent_row = conn.execute(
+            "SELECT parent_version_id FROM custom_skill_versions WHERE id=?", (current,)
+        ).fetchone()
+        parent = parent_row["parent_version_id"] if parent_row else None
     return {
-        "counts": _custom_counts(org),
-        "current_version_id": current["current_version_id"] if current else None,
+        "counts": _custom_counts(org, conn),
+        "current_version_id": current,
+        "current_parent_version_id": parent,
         "artifacts": _artifact_keys(org),
+        "empty_dirs": _empty_artifact_dirs(org),
     }
 
 
@@ -638,6 +662,165 @@ def test_agent_update_rejects_invalid_body_without_residue(client_with_runtime):
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "validation_failed"
     assert _residue_snapshot(org, skill_id) == before
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Post-validation persistence fault injection (TASK-5781)
+#
+# _persist_validated_version is the shared persistence helper for ALL three
+# authoring surfaces (human create, agent create/update, human POST /versions).
+# Each stage below is injected at the shared stage the routes actually reach;
+# the assertions drive the PUBLIC HTTP routes (never the helper directly) and
+# verify the correct failure mapping: only the version INSERT's UNIQUE
+# (skill_id, content_hash) violation is duplicate_content (409); every later
+# failure (artifact write, current-pointer update, either event append) must
+# map to a NON-duplicate error (500), compensate the artifact this request
+# wrote, and leave zero durable residue in every dimension.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fault_client(client):
+    """A second TestClient over the same app that surfaces 500 responses
+    instead of re-raising the server exception."""
+    from fastapi.testclient import TestClient
+    fault = TestClient(client.app, raise_server_exceptions=False)
+    fault.headers.update(client.headers)
+    return fault
+
+
+def _install_persistence_fault(monkeypatch, org, stage: str) -> None:
+    """Route-level fault injection for one post-validation persistence stage.
+
+    Injection points are the shared helpers all authoring routes reach:
+    service.create_version (version INSERT), _write_artifact (artifact write),
+    the BEGIN IMMEDIATE connection's current-pointer UPDATE, and
+    service.append_event (first / validated event append).
+    """
+    from runtime.daemon.routes import custom_skills as routes
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.skills.custom import service
+
+    if stage == "version-insert":
+        def _insert_fails(*args, **kwargs):
+            raise sqlite3.IntegrityError(
+                "UNIQUE constraint failed: custom_skill_versions.skill_id, "
+                "custom_skill_versions.content_hash"
+            )
+        monkeypatch.setattr(service, "create_version", _insert_fails)
+    elif stage == "artifact-write":
+        real_put = ArtifactStore.put
+        def _put_then_crash(self, name, content):
+            real_put(self, name, content)
+            raise OSError("injected crash after artifact write")
+        monkeypatch.setattr(ArtifactStore, "put", _put_then_crash)
+    elif stage == "current-pointer":
+        real_conn = org.db._conn
+        class _PointerFailureProxy:
+            """Delegating connection proxy that fails ONLY the current-pointer
+            UPDATE (sqlite3.Connection is an immutable C type, so the instance
+            execute cannot be monkeypatched directly)."""
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+            def execute(self, sql, *args, **kwargs):
+                if "SET current_version_id" in str(sql):
+                    raise sqlite3.IntegrityError("injected current-pointer update failure")
+                return real_conn.execute(sql, *args, **kwargs)
+        monkeypatch.setattr(org.db, "_conn", _PointerFailureProxy())
+    elif stage in ("first-event", "validated-event"):
+        real_append = service.append_event
+        state = {"n": 0}
+        # The first append carries event="created" on create surfaces and
+        # event="version_saved" on update / POST /versions surfaces; the
+        # second append is always event="validated".
+        target = 1 if stage == "first-event" else 2
+        def _append_fails(*args, **kwargs):
+            state["n"] += 1
+            if state["n"] == target:
+                raise sqlite3.IntegrityError("injected event append failure")
+            return real_append(*args, **kwargs)
+        monkeypatch.setattr(service, "append_event", _append_fails)
+    else:
+        raise AssertionError(f"unknown stage: {stage}")
+
+
+@pytest.mark.parametrize("stage", [
+    "version-insert", "artifact-write", "current-pointer",
+    "first-event", "validated-event",
+])
+@pytest.mark.parametrize("surface", [
+    "human-create", "agent-create", "agent-update", "human-version",
+])
+def test_authoring_persistence_fault_leaves_zero_residue_and_no_false_409(
+    client_with_runtime, monkeypatch, surface, stage,
+):
+    """Every post-validation persistence stage, driven through every public
+    authoring route: the version INSERT's IntegrityError is the ONLY stage
+    mapped to 409 duplicate_content; all later failures return a non-duplicate
+    error (500) and compensate the artifact + empty dirs this request created,
+    with zero durable residue in version rows, events, current_version_id,
+    parent/current lineage, artifacts, empty directories, materialization,
+    and any temporary parent."""
+    client, org = client_with_runtime
+    real_conn = getattr(org.db, "_conn", org.db)
+    body_two = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
+
+    if surface == "human-create":
+        skill_id = None
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        before = _residue_snapshot(org, None, conn=real_conn)
+        response = fault.post(BASE, json=_body(f"fault-{stage}"))
+    elif surface == "agent-create":
+        skill_id = None
+        org.db.insert_task(TaskRecord(id="TASK-FI", brief="create a custom skill"))
+        org.sessions.set_active("TASK-FI", "dev_agent", "sess-fi", org_slug="alpha")
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        fault.headers.pop("Authorization", None)
+        before = _residue_snapshot(org, None, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-fi"},
+            json=_body(f"fault-{stage}"),
+        )
+    elif surface == "agent-update":
+        org.db.insert_task(TaskRecord(id="TASK-OWN2", brief="create a custom skill"))
+        org.sessions.set_active("TASK-OWN2", "dev_agent", "sess-own2", org_slug="alpha")
+        client.headers.pop("Authorization", None)
+        created = client.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-own2"},
+            json=_body("owned-fault"),
+        )
+        assert created.status_code == 201, created.text
+        skill_id = created.json()["skill"]["id"]
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        fault.headers.pop("Authorization", None)
+        before = _residue_snapshot(org, skill_id, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-own2"},
+            json=_body("owned-fault", body_two),
+        )
+    elif surface == "human-version":
+        created = _create(client, slug=f"fault-{stage}")
+        skill_id = created["skill_id"]
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        before = _residue_snapshot(org, skill_id, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/{skill_id}/versions", json={"skill_md": body_two}
+        )
+    else:
+        raise AssertionError(surface)
+
+    if stage == "version-insert":
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "duplicate_content"
+    else:
+        # A post-INSERT integrity failure or artifact-write crash must NOT be
+        # reported as duplicate_content, and must leave zero durable residue.
+        assert response.status_code == 500, response.text
+        assert "duplicate_content" not in response.text
+    assert _residue_snapshot(org, skill_id, conn=real_conn) == before
+
 
 
 def test_legacy_heading_first_valid_version_stays_resolvable_and_materializable(
