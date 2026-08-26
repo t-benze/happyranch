@@ -375,8 +375,14 @@ def test_recall_fetch_verdict_structured_and_legacy_agree() -> None:
     assert verdict == "PASS"
 
 
-def test_recall_fetch_verdict_null_verdict_field_rejected() -> None:
-    """When verdict key is present but value is null, fail closed — do NOT fall back to legacy."""
+def test_recall_fetch_verdict_null_verdict_uses_legacy_prose() -> None:
+    """Serializer-null verdict (durable producer shape) uses the strict prose candidate.
+
+    ``get_recall_payload`` always emits the top-level ``verdict`` key —
+    ``null`` for legacy/no-structured rows.  Serialized null represents
+    absence of structured evidence, so the strictly parsed legacy prose
+    candidate ``Verdict: PASS`` is used (no github_error).
+    """
     import json
 
     recall_json = json.dumps({
@@ -390,12 +396,12 @@ def test_recall_fetch_verdict_null_verdict_field_rejected() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="not a non-empty string"):
-            _recall_fetch_verdict("happyranch", "TASK-NULLV", "review")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-NULLV", "review")
+    assert verdict == "PASS"
 
 
 def test_recall_fetch_verdict_null_verdict_no_legacy_rejected() -> None:
-    """Null verdict key present with no Verdict: line → fail closed (no prose fallback)."""
+    """Serializer-null verdict with no Verdict: line → fail closed (no prose fallback)."""
     import json
 
     recall_json = json.dumps({
@@ -409,7 +415,7 @@ def test_recall_fetch_verdict_null_verdict_no_legacy_rejected() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="not a non-empty string"):
+        with pytest.raises(RuntimeError, match="Could not extract review verdict"):
             _recall_fetch_verdict("happyranch", "TASK-NULLNL", "review")
 
 
@@ -622,6 +628,516 @@ def test_recall_fetch_verdict_correct_command() -> None:
         _recall_fetch_verdict("myorg", "TASK-042", "review")
     call_args = mock_run.call_args[0][0]
     assert call_args == ["happyranch", "recall", "--org", "myorg", "TASK-042"]
+
+
+# ── canonical-vocabulary / annotated-prose extraction contract (THR-204) ────
+# The contract is canonical in protocol/00-completion-contract.md
+# ("Merge-evidence contract"): a NON-NULL structured `verdict` must be a
+# canonical non-empty token; prose `Verdict:` lines may carry the canonical
+# token followed by a human annotation (e.g. `Verdict: PASS — rationale`);
+# both forms must agree exactly when the structured value is non-null.
+# Serialized `null` (the durable recall producer's representation of
+# legacy/no-structured rows — get_recall_payload always emits the key)
+# represents absence of structured evidence and may use the strictly parsed
+# prose candidate.  The canonical vocabulary is
+# APPROVE | REQUEST_CHANGES | BLOCK (review) and PASS | REVISE | FAIL (QA)
+# — the full shared producer vocabulary — and the downstream role gates
+# (review == APPROVE, QA == PASS) are the second layer of rejection.
+
+
+def test_recall_fetch_verdict_annotated_prose_accepted() -> None:
+    """Legacy-only `Verdict: PASS — rationale` (em-dash annotation) → PASS.
+
+    Mirrors the durable TASK-5619 QA summary form `Verdict: PASS — Independent
+    QA of PR #...` that the previous strict single-line grammar rejected as
+    malformed.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-ANN1",
+        "status": "completed",
+        "output_summary": (
+            "Verdict: PASS \u2014 Independent QA of PR #710 at the exact "
+            "pinned immutable head. All checks green.\n"
+        ),
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-ANN1", "qa")
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_request_changes_legacy_accepted() -> None:
+    """Legacy-only `Verdict: REQUEST_CHANGES` parses to REQUEST_CHANGES.
+
+    REQUEST_CHANGES is a canonical reviewer producer token; the parser must
+    NOT treat it as malformed.  The downstream review gate (== APPROVE) is
+    what rejects it before merge.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-RC1",
+        "status": "completed",
+        "output_summary": "Verdict: REQUEST_CHANGES\n\nReview found gaps.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-RC1", "review")
+    assert verdict == "REQUEST_CHANGES"
+
+
+def test_recall_fetch_verdict_block_legacy_accepted() -> None:
+    """Legacy-only `Verdict: BLOCK` parses to BLOCK (canonical producer token)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-BLK1",
+        "status": "completed",
+        "output_summary": "Verdict: BLOCK\n\nEvidence gate failed.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-BLK1", "qa")
+    assert verdict == "BLOCK"
+
+
+def test_recall_fetch_verdict_structured_plus_annotated_prose_agree() -> None:
+    """Structured PASS + `Verdict: PASS — rationale` agree → PASS."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-AGREE2",
+        "status": "completed",
+        "verdict": "PASS",
+        "output_summary": "Verdict: PASS \u2014 Independent QA of PR #710. Done.\n",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-AGREE2", "qa")
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_structured_approve_plus_annotated_prose_agree() -> None:
+    """Structured APPROVE + `Verdict: APPROVE — reviewed` agree → APPROVE."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-RAPP2",
+        "status": "completed",
+        "verdict": "APPROVE",
+        "output_summary": "Verdict: APPROVE \u2014 all guards re-verified.\n",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-RAPP2", "review")
+    assert verdict == "APPROVE"
+
+
+def test_recall_fetch_verdict_structured_disagrees_annotated_prose() -> None:
+    """Structured PASS + `Verdict: REVISE — ...` → fail closed (disagreement)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-DISAG2",
+        "status": "completed",
+        "verdict": "PASS",
+        "output_summary": "Verdict: REVISE \u2014 needs more work.\n",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="disagrees with anchored legacy"):
+            _recall_fetch_verdict("happyranch", "TASK-DISAG2", "qa")
+
+
+def test_recall_fetch_verdict_structured_unknown_token_rejected() -> None:
+    """Structured verdict that is not a canonical token (e.g. APPROVED) → fail closed.
+
+    No fallback to prose; the row claims structured data that is unusable.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-UNK1",
+        "status": "completed",
+        "verdict": "APPROVED",
+        "output_summary": "Verdict: APPROVE\n\nReview passed.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="not a canonical verdict token"):
+            _recall_fetch_verdict("happyranch", "TASK-UNK1", "review")
+
+
+def test_recall_fetch_verdict_structured_annotated_value_rejected() -> None:
+    """Structured verdict carrying an in-field annotation → fail closed.
+
+    Producers must persist ONLY the canonical token in `verdict`; annotations
+    belong in prose.  Historical rows like `"REVISE — STRUCTURAL ESCALATION — ..."`
+    are unusable structured evidence.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-ANNF1",
+        "status": "completed",
+        "verdict": "REVISE \u2014 STRUCTURAL ESCALATION \u2014 boundary reached",
+        "output_summary": "Verdict: REVISE\n\nFix-forward boundary.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="not a canonical verdict token"):
+            _recall_fetch_verdict("happyranch", "TASK-ANNF1", "qa")
+
+
+def test_recall_fetch_verdict_structured_case_variant_rejected() -> None:
+    """Structured verdict `pass` (case variant) → fail closed."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-CASE2",
+        "status": "completed",
+        "verdict": "pass",
+        "output_summary": "Verdict: PASS\n\nQA green.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="not a canonical verdict token"):
+            _recall_fetch_verdict("happyranch", "TASK-CASE2", "qa")
+
+
+def test_recall_fetch_verdict_annotated_malformed_token_rejected() -> None:
+    """Annotated line with a non-canonical token (`Verdict: APPROVED — ...`) → malformed."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-MALF2",
+        "status": "completed",
+        "output_summary": "Verdict: APPROVED \u2014 non-standard label.\n",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-MALF2", "qa")
+
+
+def test_recall_fetch_verdict_em_dash_no_space_rejected() -> None:
+    """`Verdict: PASS—rationale` (no whitespace before annotation) → malformed.
+
+    The annotation must be whitespace-separated from the canonical token;
+    the token itself must be exactly a canonical vocabulary member.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-NOSP1",
+        "status": "completed",
+        "output_summary": "Verdict: PASS\u2014rationale\n\nNo space.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-NOSP1", "qa")
+
+
+def test_recall_fetch_verdict_duplicate_annotated_candidates_rejected() -> None:
+    """Two annotated `Verdict: PASS — ...` lines (same token) → fail closed."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-DUP2",
+        "status": "completed",
+        "output_summary": (
+            "Verdict: PASS \u2014 first note.\nVerdict: PASS \u2014 second note.\n"
+        ),
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-DUP2", "qa")
+
+
+def test_recall_fetch_verdict_annotated_conflicting_candidates_rejected() -> None:
+    """Annotated PASS + annotated REVISE lines → fail closed (multiple candidates)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-CONF2",
+        "status": "completed",
+        "output_summary": (
+            "Verdict: PASS \u2014 one.\nVerdict: REVISE \u2014 two.\n"
+        ),
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-CONF2", "qa")
+
+
+def test_recall_fetch_verdict_real_annotated_qa_fixture() -> None:
+    """Real TASK-5619-shaped recall (structured PASS + annotated prose) → PASS.
+
+    This is the durable evidence shape that THR-204's contract repair must
+    accept: the previous strict grammar rejected the `Verdict: PASS \u2014 ...`
+    annotation as malformed and blocked the guarded merge of PR #710.
+    """
+    import json
+
+    real_recall_json = json.dumps({
+        "task_id": "TASK-5619",
+        "parent_task_id": "TASK-5614",
+        "assigned_agent": "qa_engineer",
+        "status": "completed",
+        "verdict": "PASS",
+        "output_summary": (
+            "Verdict: PASS \u2014 Independent QA of PR #710 "
+            "(fix(executor-binary-registry): fail closed on test writes to "
+            "production registry, THR-204 issue 3) at the exact pinned "
+            "immutable head 7988f322. Reviewer gate cleared (TASK-5615 APPROVE). "
+            "Full report: output/TASK-5619/qa-report.md."
+        ),
+        "output_dir": "output/TASK-5619",
+        "children": [],
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=real_recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-5619", "qa")
+    assert verdict == "PASS"
+
+
+# ── shipping-seam: durable serializer-null legacy representation (TASK-5690) ──
+# ``get_recall_payload`` (runtime/infrastructure/database.py) ALWAYS emits the
+# top-level ``verdict`` key — ``null`` for legacy/no-structured rows (no
+# task_results row, or latest row without a verdict).  Serialized null
+# represents ABSENCE of historical structured evidence: the strictly parsed
+# legacy prose candidate MAY be used.  A non-null structured value remains
+# primary and never falls back to prose.  These tests first OBTAIN the real
+# get_recall_payload shape from a real Database, then faithfully drive the
+# same shape as raw JSON.
+
+
+def _real_legacy_recall_json(tmp_path, task_id: str, note: str) -> str:
+    """Build the exact recall JSON the durable producer emits for a legacy row.
+
+    Inserts a task with NO task_results row (the legacy shape — no structured
+    verdict ever persisted) and returns ``json.dumps(get_recall_payload(...))``.
+    """
+    import json
+
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
+
+    db = Database(tmp_path / "recall.db")
+    db.insert_task(TaskRecord(id=task_id, brief="legacy task"))
+    db.update_task(task_id, note=note)
+    payload = db.get_recall_payload(task_id)
+    assert payload is not None
+    assert "verdict" in payload, "producer must always emit the verdict key"
+    assert payload["verdict"] is None, "legacy row must serialize verdict as null"
+    return json.dumps(payload, indent=2)
+
+
+def test_recall_fetch_verdict_real_recall_payload_null_verdict_annotated_legacy_pass(
+    tmp_path,
+) -> None:
+    """Real get_recall_payload shape: verdict:null + `Verdict: PASS — rationale` → PASS.
+
+    This is the TASK-5686 [HIGH] seam: the durable producer always emits the
+    verdict key (null for legacy rows), so the strict legacy prose candidate
+    must be reachable through the serialized-null representation.
+    """
+    recall_json = _real_legacy_recall_json(
+        tmp_path, "TASK-LEG1",
+        "Verdict: PASS \u2014 Independent QA of PR #710 at the exact pinned "
+        "immutable head. All checks green.\n",
+    )
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-LEG1", "qa")
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_real_recall_payload_null_verdict_legacy_request_changes(
+    tmp_path,
+) -> None:
+    """Real shape: verdict:null + `Verdict: REQUEST_CHANGES` → REQUEST_CHANGES."""
+    recall_json = _real_legacy_recall_json(
+        tmp_path, "TASK-LEG2",
+        "Verdict: REQUEST_CHANGES\n\nReview found gaps to fix.\n",
+    )
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-LEG2", "review")
+    assert verdict == "REQUEST_CHANGES"
+
+
+def test_recall_fetch_verdict_real_recall_payload_null_verdict_missing_prose_fails_closed(
+    tmp_path,
+) -> None:
+    """Real shape: verdict:null + no Verdict: line → fail closed (no extractable evidence)."""
+    recall_json = _real_legacy_recall_json(
+        tmp_path, "TASK-LEG3", "All checks completed but no verdict recorded.\n",
+    )
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Could not extract qa verdict"):
+            _recall_fetch_verdict("happyranch", "TASK-LEG3", "qa")
+
+
+def test_recall_fetch_verdict_real_recall_payload_null_verdict_malformed_prose_fails_closed(
+    tmp_path,
+) -> None:
+    """Real shape: verdict:null + malformed `Verdict: APPROVED — ...` → fail closed."""
+    recall_json = _real_legacy_recall_json(
+        tmp_path, "TASK-LEG4", "Verdict: APPROVED \u2014 non-standard label.\n",
+    )
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-LEG4", "qa")
+
+
+def test_recall_fetch_verdict_serialized_null_annotated_legacy_pass() -> None:
+    """Faithfully driven shape: {"verdict": null} + `Verdict: PASS — rationale` → PASS."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL1",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "Verdict: PASS \u2014 QA complete, all gates green.\n",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-SNULL1", "qa")
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_serialized_null_legacy_request_changes() -> None:
+    """{"verdict": null} + `Verdict: REQUEST_CHANGES` → REQUEST_CHANGES (parser accepts; gate rejects)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL2",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "Verdict: REQUEST_CHANGES\n\nReview found gaps.",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        verdict = _recall_fetch_verdict("happyranch", "TASK-SNULL2", "review")
+    assert verdict == "REQUEST_CHANGES"
+
+
+def test_recall_fetch_verdict_serialized_null_missing_prose_fails_closed() -> None:
+    """{"verdict": null} + no Verdict: line → fail closed (no extractable evidence)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL3",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "No verdict recorded.\n",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Could not extract qa verdict"):
+            _recall_fetch_verdict("happyranch", "TASK-SNULL3", "qa")
+
+
+def test_recall_fetch_verdict_serialized_null_malformed_prose_fails_closed() -> None:
+    """{"verdict": null} + malformed `Verdict: PASS.` → fail closed (malformed candidate)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL4",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "Verdict: PASS.\n\nAttached punctuation.\n",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-SNULL4", "qa")
+
+
+def test_recall_fetch_verdict_serialized_null_duplicate_prose_fails_closed() -> None:
+    """{"verdict": null} + duplicate `Verdict: PASS` lines → fail closed."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL5",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "Verdict: PASS\nVerdict: PASS\n\nDone.\n",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-SNULL5", "qa")
+
+
+def test_recall_fetch_verdict_serialized_null_conflicting_prose_fails_closed() -> None:
+    """{"verdict": null} + conflicting PASS/FAIL lines → fail closed."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SNULL6",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "Verdict: PASS\nVerdict: FAIL\n\nConflict.\n",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-SNULL6", "qa")
+
+
+def test_recall_fetch_verdict_non_null_empty_string_no_fallback() -> None:
+    """Non-null empty-string structured verdict + Verdict: PASS → fail closed, NO prose fallback."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-EMPTY1",
+        "status": "completed",
+        "verdict": "",
+        "output_summary": "Verdict: PASS\n\nQA green.",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
+            _recall_fetch_verdict("happyranch", "TASK-EMPTY1", "qa")
+
+
+def test_recall_fetch_verdict_non_null_non_string_no_fallback() -> None:
+    """Non-null non-string structured verdict (int) + Verdict: PASS → fail closed, NO prose fallback."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-NSTR1",
+        "status": "completed",
+        "verdict": 123,
+        "output_summary": "Verdict: PASS\n\nQA green.",
+    }, indent=2)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
+            _recall_fetch_verdict("happyranch", "TASK-NSTR1", "qa")
 
 
 # ── CLI entrypoint tests: arg parsing ────────────────────────────────────────

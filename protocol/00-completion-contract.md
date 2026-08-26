@@ -68,6 +68,24 @@ For review/QA-type workers, optionally include a structured verdict:
 
 `verdict` is a free-string field. Each team's workflow KB entry documents the allowed values (e.g., engineering uses `APPROVE | REQUEST_CHANGES | BLOCK` for reviews; `PASS | REVISE | BLOCK` for QA). Omit when not applicable. Inline delegation chains (see `decision.then` below) use this field to gate auto-advance.
 
+### Merge-evidence contract (guarded merge; THR-204)
+
+The guarded-merge engine (`runtime/daemon/pr_ci_merge.py`, `_recall_fetch_verdict`) extracts merge evidence from a persisted completion report — the structured top-level `verdict` field and the prose `Verdict:` lines in `summary`/`output_summary`. This contract is canonical for that extraction; it supersedes the earlier KB rule `guarded-merge-verdict-extraction` (which required a strict single-line, annotation-free grammar).
+
+**Canonical vocabulary.** Every extracted token — structured or prose — must be one of the canonical tokens `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`. This is the full shared review/QA producer vocabulary (never narrowed to the passing tokens): review persists `APPROVE | REQUEST_CHANGES | BLOCK`; QA persists `PASS | REVISE | BLOCK`, plus the legacy persisted `FAIL`. Tokens outside the vocabulary (e.g. `APPROVED`, `pass`, `COMMENT`, `ready_for_review`) are unknown/malformed and fail closed.
+
+**Structured evidence is primary (non-null only).** A NON-NULL top-level `verdict` value must be a canonical non-empty token. Empty/whitespace-only strings, non-string non-null values, case-variant, unknown, or in-field-annotated values (e.g. `"REVISE — STRUCTURAL ESCALATION — …"`) are unusable structured evidence: extraction fails closed and never falls back to prose. Producers must persist ONLY the canonical token in `verdict`; human context belongs in the prose summary.
+
+**Serializer-null legacy representation.** The durable recall producer (`runtime/infrastructure/database.py::get_recall_payload`) ALWAYS emits the top-level `verdict` key — `null` for legacy/no-structured rows (no persisted `task_results` verdict). Serialized `null` therefore represents ABSENCE of historical structured evidence, and the strictly parsed legacy prose candidate below MAY be used (exactly-one rule, full fail-closed grammar). An input that omits the key entirely is treated identically (direct-input compatibility).
+
+**Prose grammar.** A prose `Verdict:` line is anchored at line start and carries exactly one canonical token, optionally followed by horizontal whitespace and a human annotation — e.g. `Verdict: PASS` or `Verdict: PASS — rationale`. Whitespace-separated annotations (em dash, parentheses, `/`, `for …`) are valid; tokens with attached punctuation (`PASS.`, `PASS—…`) are malformed. Newline-split `Verdict:\nPASS`, case variants, and non-canonical tokens are malformed. Exactly ONE candidate line is accepted; zero → missing evidence (fail closed); two or more (including duplicate same-token candidates) → ambiguous (fail closed).
+
+**Agreement.** When both forms exist, their normalized canonical tokens must agree exactly; contradiction fails closed (no fallback, no equality bypass).
+
+**Fail-closed summary.** Missing evidence (serialized-null or absent key with no valid prose candidate), role-invalid outcomes at the downstream gate, contradictory structured/prose evidence, malformed/unknown tokens, ambiguous or multiple `Verdict:` candidates, newline-split candidates, non-null unusable structured values, and any other genuinely invalid form block the merge. Serialized `null` unlocks ONLY the strict prose grammar — malformed, duplicate, contradictory, or newline-split prose candidates still fail closed. The role gates are unchanged: review must equal `APPROVE` and QA must equal `PASS` — known non-passing canonical tokens (`REQUEST_CHANGES`, `BLOCK`, `REVISE`, `FAIL`) parse correctly (from a non-null structured value or a valid prose line) and are then rejected by the role gate (`merge_guard_review` / `merge_guard_qa`). Malformed evidence instead fails the extractor and surfaces as `github_error`. There is no permissive unanchored scraping.
+
+**Known grammar boundary (reconciled with durable evidence).** Live records show producers write bare tokens, `Verdict: TOKEN — rationale`, and whitespace-separated parenthesized/slash annotations; all are covered above. A small set of historical rows attach punctuation to the token (`Verdict: PASS.` / `Verdict: REQUEST_CHANGES.`) or embed annotations inside the structured field; those rows are genuinely invalid under this contract and fail closed — no grammar accommodation is made for them.
+
 ## Blocker path
 
 Use `"status": "blocked"` when you cannot finish and need the orchestrator to route around you. Set `"confidence": 0` and put the blocker reason in `summary` — the orchestrator reads it verbatim when deciding the next step.

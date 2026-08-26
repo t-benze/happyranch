@@ -21,6 +21,7 @@ engine), §4.3 (verdict vocabulary table), §7 (traps).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -104,6 +105,31 @@ _KNOWN_WAITER_FAILURE_VERDICTS: set[str] = {
     "pr_draft",
     "github_error",
 }
+
+
+# ── merge-evidence extraction vocabulary (protocol/00-completion-contract.md) ──
+
+# Canonical verdict tokens shared by every review/QA producer surface.  This
+# is the FULL shared vocabulary — never narrowed to the passing tokens: the
+# review role persists APPROVE | REQUEST_CHANGES | BLOCK; the QA role
+# persists PASS | REVISE | BLOCK | FAIL (FAIL retained as a legacy persisted
+# QA outcome).  The role gates in guarded_merge (review == APPROVE,
+# QA == PASS) are the second layer of rejection for known non-passing tokens.
+_CANONICAL_VERDICT_TOKENS: frozenset[str] = frozenset({
+    "APPROVE", "REQUEST_CHANGES", "BLOCK",  # review role
+    "PASS", "REVISE", "FAIL",              # QA role
+})
+
+# Anchored prose candidate: `Verdict:` + optional horizontal whitespace +
+# exactly one canonical token + optional whitespace-separated human
+# annotation (e.g. `Verdict: PASS — rationale`).  Horizontal whitespace only,
+# so a newline can never be consumed; iteration is per physical line.
+_VERDICT_LINE_RE = re.compile(r"^Verdict:[ \t]*(?P<token>[^ \t]+)(?P<annotation>[ \t].*)?$")
+
+# A physical line starting with `Verdict:` that is NOT a valid candidate
+# (missing token, non-canonical token, or token with attached punctuation
+# such as `PASS.` / `PASS—...`) is a malformed candidate.
+_MALFORMED_LINE_RE = re.compile(r"^Verdict:")
 
 
 # ── engine ───────────────────────────────────────────────────────────────────
@@ -411,50 +437,65 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     completion-report output.  Returns the verdict string, or raises
     RuntimeError on failure.
 
-    Extraction contract (KB ``guarded-merge-verdict-extraction``):
+    Extraction contract (canonical: ``protocol/00-completion-contract.md``
+    "Merge-evidence contract"; supersedes KB ``guarded-merge-verdict-extraction``):
 
-    1. **Structured-verdict evidence first.**  Parse the entire stdout as a
-       single JSON blob.  If the top-level ``verdict`` field is present:
-       * It MUST be a non-empty string — any other type fails closed.
-       * If ``output_summary`` also carries a legacy ``Verdict:`` line
-         and the two disagree, fail closed (no silent fallback around
-         conflicting evidence).
-       * Otherwise return the structured verdict string.
+    1. **Canonical vocabulary.**  Every extracted token — structured or
+       prose — must be one of the canonical tokens
+       ``APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`` (the full
+       shared review/QA producer vocabulary; never narrowed to the passing
+       tokens).  The role gates in :func:`guarded_merge` (review ==
+       ``APPROVE``, QA == ``PASS``) reject known non-passing tokens
+       (``REQUEST_CHANGES`` / ``BLOCK`` / ``REVISE`` / ``FAIL``) before merge.
 
-    2. **Strict single-line legacy prose fallback (case-sensitive).**
-       If there is no top-level ``verdict`` field, extract exactly ONE
-       physical line matching ``^Verdict:[ \t]*(PASS|FAIL|REVISE|APPROVE)[ \t]*$``
-       from ``output_summary``.  Horizontal whitespace (spaces, tabs) only
-       — ``\\s`` is NOT used because it can consume a newline.
+    2. **Structured-verdict evidence first (non-null only).**  Parse the
+       entire stdout as a single JSON blob.  If the top-level ``verdict``
+       field is a NON-NULL value:
+       * It MUST be a canonical non-empty token — any other type
+         (non-string), empty/whitespace-only, or non-canonical value (e.g.
+         ``APPROVED``, ``pass``, or a value carrying an in-field annotation
+         such as ``REVISE — …``) fails closed.  A row with a non-null
+         structured key never falls back to prose.
+       * If ``output_summary`` also carries a prose ``Verdict:`` line, the
+         two normalized canonical tokens must agree EXACTLY; disagreement
+         fails closed (no equality bypass).
+
+    3. **Anchored prose fallback (serialized-null / absent key).**  The
+       durable producer (``get_recall_payload``) ALWAYS emits the top-level
+       ``verdict`` key — ``null`` for legacy/no-structured rows.  Serialized
+       ``null`` represents ABSENCE of historical structured evidence and MAY
+       use the strictly parsed legacy prose candidate; the absent-key form
+       (direct input) is treated identically.  Extract exactly ONE physical
+       line matching
+       ``^Verdict:[ \t]*<canonical-token>(?:[ \t]annotation)?$`` — the
+       canonical token optionally followed by horizontal whitespace and a
+       human annotation (e.g. ``Verdict: PASS — rationale``).  Horizontal
+       whitespace only — ``\\s`` is NOT used because it can consume a newline.
        * Zero matching lines → no extractable evidence (fail closed).
-       * Two or more matching lines → conflict rejection (fail closed).
-       * Duplicate same verdict and conflicting verdict are both rejected.
+       * Two or more matching lines → conflict rejection (fail closed);
+         duplicate same-token candidates are rejected too.
        * Newline-split ``Verdict:\nPASS`` is rejected (different lines).
        * Case-variant labels (e.g. ``pass``) are rejected.
-       * Malformed labels (anything other than PASS/FAIL/REVISE/APPROVE) are rejected.
+       * Non-canonical labels (``APPROVED``, ``PASS.``, ``PASS—…``) are
+         rejected.
 
-    3. **No permissive unanchored scraping.**  There is no line-by-line JSON
+    4. **No permissive unanchored scraping.**  There is no line-by-line JSON
        fallback, no bare ``verdict:`` prefix search, and no unanchored
-       ``Verdict:`` match — the two paths above (structured field, anchored
-       line) are the only extraction modes.  Anything else fails closed.
-
-    4. **No structured evidence fallback.**  When a ``verdict`` key is
-       present but its value is malformed (non-string, null, empty, or
-       disagreeing with anchored prose), extraction fails closed — the
-       engine does not fall back to prose for a row that claims structured
-       data.
+       ``Verdict:`` match — the two paths above (non-null structured field,
+       anchored line) are the only extraction modes.  Anything else fails
+       closed.
 
     5. **Malformed Verdict: candidate lines fail closed unconditionally.**
-       Any physical line starting with ``Verdict:`` that does NOT match the
-       strict ``PASS|FAIL|REVISE|APPROVE`` pattern is a malformed candidate.  A
-       single malformed line fails closed regardless of whether valid legacy
-       or structured evidence also exists — there is no structured-verdict
-       equality escape.  This covers ``Verdict: APPROVED``, mixed-evidence
-       (e.g. ``Verdict: PASS\nVerdict: APPROVED``), and structured
-       PASS paired with a malformed legacy candidate.
+       Any physical line starting with ``Verdict:`` that is not a valid
+       canonical candidate is a malformed candidate.  A single malformed line
+       fails closed regardless of whether valid legacy or structured evidence
+       also exists — there is no structured-verdict equality escape.  This
+       covers ``Verdict: APPROVED``, ``Verdict: PASS.`` (attached
+       punctuation), mixed-evidence rows (e.g.
+       ``Verdict: PASS\nVerdict: APPROVED``), and structured PASS paired
+       with a malformed legacy candidate.
     """
     import json
-    import re
     import subprocess
 
     result = subprocess.run(
@@ -483,31 +524,33 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
             f"Recall output for {task_id} is not a JSON object"
         )
 
-    structured_verdict = data.get("verdict")
     output_summary = data.get("output_summary", "") or ""
 
-    # Extract anchored legacy verdict line(s) from output_summary.
-    # Strict: one physical line per iteration; horizontal whitespace only;
-    # case-sensitive exact tokens PASS|FAIL|REVISE|APPROVE; no \s or MULTILINE
-    # that can consume a newline.
-    _LEGACY_RE = re.compile(r"^Verdict:[ \t]*(PASS|FAIL|REVISE|APPROVE)[ \t]*$")
+    # ── Anchored prose candidates (serialized-null / absent key) ──
+    # One physical line per iteration; horizontal whitespace only; the first
+    # whitespace-delimited token must be EXACTLY a canonical vocabulary
+    # member (case-sensitive); an optional whitespace-separated human
+    # annotation is allowed (e.g. "Verdict: PASS — rationale").  \\s is never
+    # used because it could consume a newline.
     legacy_candidates: list[str] = []
     for line in output_summary.splitlines():
-        m = _LEGACY_RE.match(line)
-        if m:
-            legacy_candidates.append(m.group(1))
+        m = _VERDICT_LINE_RE.match(line)
+        if m and m.group("token") in _CANONICAL_VERDICT_TOKENS:
+            legacy_candidates.append(m.group("token"))
 
     # ── Reject malformed Verdict: candidate lines ──
-    # Any physical line starting with "Verdict:" (case-sensitive) that does
-    # NOT match the strict PASS|FAIL|REVISE|APPROVE pattern is a malformed candidate.
-    # Per KB contract: ANY malformed candidate fails closed unconditionally —
-    # regardless of whether valid legacy or structured evidence is also present.
-    # This catches e.g. "Verdict: APPROVED"
+    # Any physical line starting with "Verdict:" (case-sensitive) that is not
+    # a valid canonical candidate is a malformed candidate.  Per the
+    # canonical contract, ANY malformed candidate fails closed
+    # unconditionally — regardless of whether valid legacy or structured
+    # evidence is also present.  This catches e.g. "Verdict: APPROVED",
+    # "Verdict: PASS." (attached punctuation), "Verdict: pass",
     # and "Verdict: PASS\nVerdict: APPROVED".
-    _MALFORMED_LINE_RE = re.compile(r"^Verdict:")
     malformed_lines: list[str] = []
     for line in output_summary.splitlines():
-        if _MALFORMED_LINE_RE.match(line) and not _LEGACY_RE.match(line):
+        m = _VERDICT_LINE_RE.match(line)
+        is_valid_candidate = m is not None and m.group("token") in _CANONICAL_VERDICT_TOKENS
+        if _MALFORMED_LINE_RE.match(line) and not is_valid_candidate:
             malformed_lines.append(line.strip())
     if malformed_lines:
         raise RuntimeError(
@@ -524,23 +567,34 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
             f"{legacy_candidates}"
         )
 
-    # ── 1. Structured verdict evidence (primary) ──
-    # Key presence, not value truthiness.  A JSON payload with a present
-    # ``verdict`` key MUST enter structured validation even when its value
-    # is ``null``, empty, or wrong-typed; all malformed present structured
-    # values fail closed and never fall back to output_summary.  Legacy
-    # strict prose fallback is reserved for records where the key is absent.
-    _has_structured_verdict = "verdict" in data
-    if _has_structured_verdict:
-        # Fail closed: structured verdict must be a non-empty string.
+    # ── 1. Structured verdict evidence (primary, non-null only) ──
+    # A NON-NULL top-level ``verdict`` is structured evidence and is primary:
+    # it must be a non-empty canonical token, agree with any prose candidate,
+    # and NEVER falls back to prose.  Serialized ``null`` is the durable
+    # producer's representation of ABSENCE of historical structured evidence
+    # (``get_recall_payload`` always emits the key; legacy/no-structured rows
+    # serialize as null) — it falls through to the strictly parsed prose
+    # candidate below.  The absent-key form (direct input) behaves the same.
+    structured_verdict = data.get("verdict")
+    if structured_verdict is not None:
+        # Fail closed: non-null structured verdict must be a non-empty string.
         if not isinstance(structured_verdict, str) or not structured_verdict.strip():
             raise RuntimeError(
                 f"Structured verdict for {task_id} is not a non-empty string: "
                 f"{type(structured_verdict).__name__}"
             )
         structured_verdict = structured_verdict.strip()
+        # Fail closed: structured verdict must be a canonical vocabulary
+        # token.  In-field annotations (e.g. "REVISE — STRUCTURAL ..."),
+        # case variants, and unknown labels are unusable structured evidence.
+        if structured_verdict not in _CANONICAL_VERDICT_TOKENS:
+            raise RuntimeError(
+                f"Structured verdict {structured_verdict!r} for {task_id} is not a "
+                f"canonical verdict token; expected one of "
+                f"{sorted(_CANONICAL_VERDICT_TOKENS)!r}"
+            )
         # Fail closed: disagreement between structured verdict and anchored
-        # legacy prose → conflict, do NOT proceed.
+        # prose → conflict, do NOT proceed.
         if legacy_verdict is not None and legacy_verdict != structured_verdict:
             raise RuntimeError(
                 f"Structured verdict {structured_verdict!r} disagrees with "
@@ -548,7 +602,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
             )
         return structured_verdict
 
-    # ── 2. Anchored legacy prose fallback ──
+    # ── 2. Anchored prose fallback (serialized-null / absent key) ──
     if legacy_verdict is not None:
         return legacy_verdict
 

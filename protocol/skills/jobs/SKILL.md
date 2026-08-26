@@ -156,6 +156,14 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 - the PR is still open and not draft;
 - the helper uses the configured merge method.
 
+Review/QA evidence extraction follows the **Merge-evidence contract** in
+`protocol/00-completion-contract.md` (canonical vocabulary
+`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
+`verdict` primary; serialized `null` — the durable recall producer's
+representation of legacy/no-structured rows — uses the strict annotated
+prose `Verdict: PASS — rationale` fallback; missing/contradictory/malformed/
+ambiguous evidence fails closed).
+
 It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
 
 The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
