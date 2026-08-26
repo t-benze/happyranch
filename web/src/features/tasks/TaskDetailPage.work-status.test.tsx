@@ -90,7 +90,7 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     });
 
     const card = await screen.findByRole('complementary', {
-      name: 'Execution status',
+      name: 'Task status and properties',
     });
     expect(card.textContent).toContain(
       'Stale-but-alive — no substantive update recorded',
@@ -118,7 +118,7 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     });
 
     const card = await screen.findByRole('complementary', {
-      name: 'Execution status',
+      name: 'Task status and properties',
     });
     expect(card.textContent).toContain('Recent update recorded');
     expect(card.textContent).toContain('Phase 3 of 6: tests passing');
@@ -135,7 +135,12 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     await screen.findByText('TASK-0091');
     // …and no execution-status card is invented.
     expect(
-      screen.queryByRole('complementary', { name: 'Execution status' }),
+      screen.queryByRole('region', { name: 'Execution status' }),
     ).toBeNull();
+    expect(
+      await screen.findByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeInTheDocument();
   });
 });

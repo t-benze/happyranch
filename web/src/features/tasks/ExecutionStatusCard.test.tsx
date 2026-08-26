@@ -8,7 +8,7 @@
  */
 import { render, screen } from '@testing-library/react';
 import { describe, expect, test } from 'vitest';
-import { ExecutionStatusCard } from './TaskDetailPage';
+import { ExecutionStatusDetails } from './TaskDetailPage';
 import type { WorkStatusResponse } from '@/lib/api/types';
 
 const FIXED_START = '2026-08-23T13:06:02Z';
@@ -90,8 +90,8 @@ function notApplicable(): WorkStatusResponse {
 
 describe('ExecutionStatusCard', () => {
   test('newly-started: renders state, start, fresh heartbeat, and the explicit no-update line', () => {
-    render(<ExecutionStatusCard status={newlyStarted()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={newlyStarted()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card).toBeTruthy();
     expect(card.textContent).toContain('Newly started — awaiting first update');
     expect(card.textContent).toContain('No substantive update recorded');
@@ -102,8 +102,8 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('recent progress: renders the receipt time AND the agent-written message', () => {
-    render(<ExecutionStatusCard status={recentProgress()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={recentProgress()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Recent update recorded');
     expect(card.textContent).toContain('Phase 3 of 6: tests passing');
     expect(card.textContent).toContain(local(FIXED_PROGRESS));
@@ -111,8 +111,8 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('stale-but-alive without receipt: actionable stale label + no-update line', () => {
-    render(<ExecutionStatusCard status={staleNoReceipt()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={staleNoReceipt()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain(
       'Stale-but-alive — no substantive update recorded',
     );
@@ -121,8 +121,8 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('stale-but-alive with old receipt: stale label + old content', () => {
-    render(<ExecutionStatusCard status={staleOldReceipt()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={staleOldReceipt()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain(
       'Stale-but-alive — last update older than 5 minutes',
     );
@@ -131,8 +131,8 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('terminal: explicit not-applicable, no heartbeat implying liveness', () => {
-    render(<ExecutionStatusCard status={notApplicable()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={notApplicable()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Not applicable');
     expect(card.textContent).toContain('terminal');
     expect(card.textContent).not.toContain('(fresh)');
@@ -143,8 +143,8 @@ describe('ExecutionStatusCard', () => {
   test('heartbeat never renders as a substantive update', () => {
     // Fresh heartbeat + no receipt: the Update row must be the explicit
     // no-update line — never a message built from the heartbeat timestamp.
-    render(<ExecutionStatusCard status={newlyStarted()} />);
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    render(<ExecutionStatusDetails status={newlyStarted()} />);
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('No substantive update recorded');
     // The heartbeat timestamp appears only on the heartbeat row, never as an
     // Update-row message.
@@ -153,7 +153,7 @@ describe('ExecutionStatusCard', () => {
 
   test('stale heartbeat freshness is labeled honestly', () => {
     render(
-      <ExecutionStatusCard
+      <ExecutionStatusDetails
         status={fixture({
           state: 'heartbeat_stale',
           label: 'Heartbeat stale — liveness not observed recently',
@@ -161,14 +161,14 @@ describe('ExecutionStatusCard', () => {
         })}
       />,
     );
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Heartbeat stale');
     expect(card.textContent).toContain('(stale)');
   });
 
   test('unavailable content is surfaced honestly, not fabricated', () => {
     render(
-      <ExecutionStatusCard
+      <ExecutionStatusDetails
         status={fixture({
           state: 'recent_progress',
           label: 'Recent update recorded',
@@ -180,7 +180,27 @@ describe('ExecutionStatusCard', () => {
         })}
       />,
     );
-    const card = screen.getByRole('complementary', { name: 'Execution status' });
+    const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('(content unavailable)');
+  });
+
+  test('long unbroken and prose values retain wrap-safe containment hooks', () => {
+    render(
+      <ExecutionStatusDetails
+        status={fixture({
+          label: `state-${'x'.repeat(180)}`,
+          latest_progress: {
+            timestamp: FIXED_PROGRESS,
+            message: `${'token'.repeat(80)} ordinary prose remains fully available`,
+            agent: 'dev_agent',
+          },
+        })}
+      />,
+    );
+    const card = screen.getByRole('region', { name: 'Execution status' });
+    for (const value of card.querySelectorAll('dd')) {
+      expect(value).toHaveClass('min-w-0', 'break-words');
+    }
+    expect(card.textContent).toContain('ordinary prose remains fully available');
   });
 });

@@ -632,7 +632,11 @@ function RailRow({
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
-      <dd className={`${valueClassName ?? 'min-w-0 min-w-max'} flex-1`}>{children}</dd>
+      <dd
+        className={`${valueClassName ?? 'min-w-0'} flex-1 break-words`}
+      >
+        {children}
+      </dd>
     </div>
   );
 }
@@ -650,7 +654,7 @@ function RailRow({
  * from a fresh heartbeat, and for non-applicable tasks it never implies a
  * live agent at all.
  */
-export function ExecutionStatusCard({ status }: { status: WorkStatusResponse }): JSX.Element {
+export function ExecutionStatusDetails({ status }: { status: WorkStatusResponse }): JSX.Element {
   const start = formatDateTime(status.session_start_ts);
   const hbTs = formatDateTime(status.heartbeat?.timestamp ?? null);
   const hbFreshness = status.heartbeat?.freshness;
@@ -664,12 +668,11 @@ export function ExecutionStatusCard({ status }: { status: WorkStatusResponse }):
   const progTs = formatDateTime(prog?.timestamp ?? null);
 
   return (
-    <aside aria-label="Execution status" className="lg:w-64 lg:shrink-0">
-      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
-        <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-          Execution status
-        </h3>
-        <dl className="space-y-3 text-sm">
+    <section aria-label="Execution status" className="min-w-0">
+      <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+        Execution status
+      </h3>
+      <dl className="min-w-0 space-y-3 text-sm">
           <RailRow label="State">
             <span className="text-text-primary font-medium">{status.label}</span>
           </RailRow>
@@ -710,9 +713,8 @@ export function ExecutionStatusCard({ status }: { status: WorkStatusResponse }):
               </span>
             </RailRow>
           )}
-        </dl>
-      </div>
-    </aside>
+      </dl>
+    </section>
   );
 }
 
@@ -727,40 +729,48 @@ export function ExecutionStatusCard({ status }: { status: WorkStatusResponse }):
  * honestly omitted rather than fabricated — surfacing them would need a
  * daemon/data-contract change, out of scope for this presentation-only leg.
  */
-function PropertyRail({
+export function TaskStatusCard({
   task,
   slug,
   jobs,
+  workStatus,
 }: {
   task: TaskRecord;
   slug: string | undefined;
   jobs: JobRecord[];
+  workStatus: WorkStatusResponse | null;
 }): JSX.Element {
   const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
   const created = formatDateTime(task.created_at);
 
   return (
-    <aside aria-label="Task properties" className="lg:w-64 lg:shrink-0">
-      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+    <aside aria-label="Task status and properties" className="min-w-0 lg:w-80 lg:shrink-0">
+      <div className="border-border-default bg-surface-raised min-w-0 rounded-xl border p-4">
+        <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+          Task status
+        </h2>
         <dl className="space-y-3 text-sm">
           <RailRow label="Status">
-            <span className="whitespace-nowrap">
+            <span className="inline-flex max-w-full flex-wrap">
               <StatusBadge status={task.status} blockKind={task.block_kind} />
             </span>
           </RailRow>
           {task.block_kind && (
             <RailRow label="Block kind">
-              <span className="text-text-secondary font-mono text-xs">
+              <span className="text-text-secondary break-words font-mono text-xs">
                 {task.block_kind}
               </span>
             </RailRow>
           )}
           {task.assigned_agent && (
             <RailRow label="Assignee">
-              <AgentChip
-                name={task.assigned_agent}
-                role={chipRole(task.assigned_agent)}
-              />
+              <span className="block max-w-full">
+                <AgentChip
+                  name={task.assigned_agent}
+                  role={chipRole(task.assigned_agent)}
+                  wrap
+                />
+              </span>
             </RailRow>
           )}
           {typeof threadId === 'string' && threadId && (
@@ -780,12 +790,12 @@ function PropertyRail({
                     <Link
                       key={j.id}
                       to={`/orgs/${slug}/jobs/${j.id}`}
-                      className="text-accent-default font-mono text-xs hover:underline"
+                      className="text-accent-default break-all font-mono text-xs hover:underline"
                     >
                       {j.id}
                     </Link>
                   ) : (
-                    <span key={j.id} className="font-mono text-xs">
+                    <span key={j.id} className="break-all font-mono text-xs">
                       {j.id}
                     </span>
                   ),
@@ -801,6 +811,11 @@ function PropertyRail({
             </RailRow>
           )}
         </dl>
+        {workStatus && (
+          <div className="border-border-default mt-4 min-w-0 border-t pt-4">
+            <ExecutionStatusDetails status={workStatus} />
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -1117,15 +1132,11 @@ export function TaskDetailPage(): JSX.Element {
 
             {task.data && (
               <>
-                {/* TASK-5522: server-derived work-status summary. Renders only
-                    when the envelope carried it (empty/legacy daemon → no card). */}
-                {chainQuery.data?.workStatus && (
-                  <ExecutionStatusCard status={chainQuery.data.workStatus} />
-                )}
-                <PropertyRail
+                <TaskStatusCard
                   task={task.data}
                   slug={slug}
                   jobs={jobsQuery.data?.jobs ?? []}
+                  workStatus={chainQuery.data?.workStatus ?? null}
                 />
               </>
             )}

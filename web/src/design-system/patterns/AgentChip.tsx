@@ -9,6 +9,8 @@
 interface AgentChipProps {
   name: string;
   role: 'manager' | 'worker' | 'founder';
+  /** Allow long identities to wrap when truncation would hide required data. */
+  wrap?: boolean;
 }
 
 const DOT_BG: Record<AgentChipProps['role'], string> = {
@@ -17,14 +19,18 @@ const DOT_BG: Record<AgentChipProps['role'], string> = {
   founder: 'bg-agent-founder',
 };
 
-export function AgentChip({ name, role }: AgentChipProps): JSX.Element {
+export function AgentChip({ name, role, wrap = false }: AgentChipProps): JSX.Element {
   return (
     <span className="text-fg inline-flex items-center gap-2 text-sm">
       <span
         aria-hidden="true"
         className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${DOT_BG[role]}`}
       />
-      <span className="truncate">{name}</span>
+      <span
+        className={wrap ? 'min-w-0 break-all' : 'truncate'}
+      >
+        {name}
+      </span>
     </span>
   );
 }
