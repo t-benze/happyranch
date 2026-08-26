@@ -3,6 +3,47 @@
 **Status:** Approved (brainstorm 2026-06-02)
 **Scope:** Web UI + daemon. Threads only.
 
+> **GH-688 Phase 1 (Slices B/C) overlay — read first.** Conversational REPLY
+> wakes are now coalesced per `(thread_id, agent_name)` in the durable
+> `thread_reply_delivery_state` table, and the web tail live indicator for
+> conversational replies is driven by the store-projected `reply_delivery`
+> pair list (see `2026-05-30-thread-broadcast-only-design.md` and
+> `docs/agent-guides/features-and-invariants.md` → Thread Broadcast Routing),
+> NOT by per-message inferred rows. This spec remains the authoritative
+> record of the *pre-Phase-1* per-message working indicator (the wire
+> `queued|working` split from `started_at`, the SSE invalidation contract,
+> and the elapsed ticker) for: (a) terminal responder history strips, which
+> are unchanged; and (b) special-purpose wakes (BOOTSTRAP / TASK_FOLLOWUP),
+> which hang off system rows and are intentionally outside `reply_delivery`
+> (preserved even when the same agent concurrently holds a conversational
+> REPLY pair).
+> **TASK-5553 purpose fidelity.** Every `responder_status` wire entry now
+> carries the authoritative invocation `purpose` (`reply` | `task_followup`;
+> BOOTSTRAP stays excluded from the grouped query), so in-flight
+> classification/dedup uses the wire purpose — NEVER the triggering row's
+> kind. A coalesced REPLY delivery range can anchor on a SYSTEM row (the
+> follow-on mint keys the first unacknowledged sequence, which may be a
+> system divider); with the wire purpose that REPLY is correctly suppressed
+> next to its store-projected pair row (exactly one replying bubble) while a
+> same-agent TASK_FOLLOWUP stays visible. Suppression is therefore
+> purpose-aware, never agent-name-only. Terminal per-message responder
+> history also renders under SYSTEM rows, so a settled system-row-anchored
+> REPLY range shows its terminal `replied` marker.
+> The transcript-tail bubbles for conversational pairs now render the honest
+> store projection. In the rail, running pairs stay individually visible
+> first with full wrapping identities; static queued pairs are grouped behind
+> a native accessible disclosure with truthful singular/plural counts and
+> inclusive ranges; retry-required diagnostics remain visible. Fully settled
+> pairs are absent from the live projection and remain inspectable through
+> terminal per-message history. Queued tail bubbles show a coalesced count +
+> inclusive range with static styling (never an active-subprocess claim), running pairs show
+> the claimed immutable range with `started_at` as the only subprocess
+> evidence, and `retry_required` pairs stay off the tail (they are a rail
+> diagnostic). The SSE invalidation contract below still keeps the pair
+> projection fresh: seq-bearing lifecycle events invalidate both
+> `thread-messages` and the `thread` detail query (Slice C added the latter
+> so the rail + tail refetch together).
+
 ## Problem
 
 When a message is posted to a thread, every non-speaker participant gets a REPLY

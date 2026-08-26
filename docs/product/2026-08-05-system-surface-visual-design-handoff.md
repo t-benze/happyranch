@@ -43,7 +43,7 @@ perceivable through text and structure, not color alone.
 | --- | --- | --- |
 | Operate | Dashboard, Threads, Tasks, Jobs, Todos | Dashboard is triage. Cards and assistant responses link to canonical records; they do not imply that they performed a record action. |
 | Organization | Agents, Teams, Work Hours | Explain membership, ownership, cadence, source-of-value, and current effective state. |
-| Govern | Skills, Settings | Skills retains its lifecycle ledger. Settings owns organization/runtime operating controls. Do not create browser-only authorization signals. |
+| Govern | Skills, Settings | Skills retains B2 custom-skill version, provenance, validation, eligibility, and materialization evidence. Settings owns organization/runtime operating controls. Do not create browser-only authorization signals. |
 | Evidence | KB, Artifacts, Audit, Dreams, Usage, Health | Present source, time/window, freshness or an explicit unavailable/derived state; route consequential action to the canonical record. |
 | Global | Organization switcher, command palette, help, assistant dock, account/runtime context | Available across normal AppShell routes. The assistant may navigate and show evidence; it has no direct governance-write control. |
 
@@ -145,7 +145,7 @@ selected issue acceptance criterion to proof. At minimum, provide:
 
 This handoff does not approve a wholesale visual rewrite, new design tokens or a
 design-system rebuild, route-path migration, responsive-shell work, new metrics or
-record fields, role/RBAC changes, assistant governance writes, Skills lifecycle
+record fields, role/RBAC changes, assistant governance writes, B2 custom-Skills
 changes, direct catalog writes, Work Hours scheduler/eligibility/resolution/routine
 changes, calendar/override/routine-authoring controls, cost/SLA/retention claims,
 or prototype-only fields. Those require a new product/engineering proposal.

@@ -11,7 +11,7 @@ from runtime.models import (
     TaskStatus,
 )
 from runtime.orchestrator.executors import ExecutorResult
-from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
 from runtime.orchestrator.teams import TeamsRegistry
 
 
@@ -20,6 +20,17 @@ def _ensure_protocol_skills(test_settings):
     """TASK-2511: pre-create protocol/skills/ source dirs so
     ensure_system_contracts_materialized can inject + verify on-disk."""
     _setup_protocol_skills(test_settings)
+
+
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_orchestrator(test_runtime):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    test_runtime already seeds the standard set; this fixture ensures the
+    module's default agents are present even if the shared set changes.
+    """
+    from tests.conftest import seed_test_agents
+    seed_test_agents(test_runtime, _DEFAULT_AGENTS)
 
 
 @pytest.fixture
@@ -580,27 +591,29 @@ def test_run_agent_routes_pi_workspace_to_pi_executor(
     assert "Use the injected task parameters directly" not in prompt
 
 
-def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtime, monkeypatch):
+def test_run_agent_fails_closed_when_agent_def_missing(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """THR-095/TASK-5293: with no active AgentDef, task launch must raise
+    AgentUnavailableError instead of silently defaulting to claude."""
     workspace = test_runtime.workspaces_dir / "engineering_head"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "task_history.md").write_text("# Task History: engineering_head\n\n")
     (workspace / "agent.yaml").write_text("repos: {}\n")
     (workspace / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
+    # Ensure NO org/agents/engineering_head.md exists (autouse fixture created
+    # it, so remove it to test the missing-AgentDef path).
+    (test_runtime.agents_dir / "engineering_head.md").unlink(missing_ok=True)
 
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     mock_executor = MagicMock()
-    mock_executor.run.return_value = ExecutorResult(
-        success=True,
-        duration_seconds=1,
-        session_id="sess-eh",
-    )
     with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
-        result, _ = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+        with pytest.raises(AgentUnavailableError):
+            orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
-    assert result.success is True
-    assert mock_executor.run.call_count == 1
+    assert mock_executor.run.call_count == 0
 
 
 def test_run_agent_materializes_todos_skill_on_task_path(

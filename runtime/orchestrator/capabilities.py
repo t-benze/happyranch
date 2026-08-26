@@ -10,6 +10,7 @@ def build_capabilities_prompt(
     prior_steps: list[StepRecord] | None = None,
     manager_name: str = "team_manager",
     self_only: bool = False,
+    reviewer_agents: list[str] | None = None,
 ) -> str:
     """Build the prompt sent to a task owner for each decision step.
 
@@ -129,6 +130,19 @@ def build_capabilities_prompt(
         "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
         "or final-leg matches wake you. Full shape: `protocol/00-completion-contract.md`.\n",
+        "### Reviewer legs (HARD REJECT)\n",
+        "Reviewer identities are configured per-org, not hardcoded: any chain leg whose",
+        "`agent` is one of this org's configured reviewer agents"
+        + (
+            " (" + ", ".join(repr(a) for a in reviewer_agents) + ")"
+            if reviewer_agents else ""
+        )
+        + " is a reviewer leg. Every reviewer leg MUST declare"
+        " `expect_verdict: \"APPROVE\"`; a reviewer leg that OMITS `expect_verdict` is a",
+        " HARD REJECT and the whole delegation is denied before any child spawns.",
+        " A reviewer leg that does not return an explicit APPROVE (REQUEST_CHANGES / REVISE /",
+        " BLOCK / missing verdict) never auto-advances downstream — the chain clears and",
+        " you are woken. Only an explicit APPROVE advances to the next leg (e.g. QA).\n",
         "**done** -- Task is complete (or you handled it yourself):",
         "```json",
         '{"action": "done", "summary": "<what was accomplished or your findings>"}',
@@ -168,7 +182,7 @@ def build_capabilities_prompt(
         "- NO fan-out review gate of any kind (founder ruling THR-012 msg "
         "129/131). The width cap (8) is a RESOURCE limit only; the real "
         "control over what lands is the PER-PR MERGE GATE (each mutating "
-        "child opens its own PR needing code_reviewer APPROVE + qa PASS "
+        "child opens its own PR needing reviewer APPROVE + qa PASS "
         "+ CI + founder/EM merge).\n"
         "- Children must own DISJOINT file sets (manager responsibility). "
         "Shared-file convergence routes through a SERIAL follow-up delegate "

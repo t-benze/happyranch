@@ -68,6 +68,24 @@ For review/QA-type workers, optionally include a structured verdict:
 
 `verdict` is a free-string field. Each team's workflow KB entry documents the allowed values (e.g., engineering uses `APPROVE | REQUEST_CHANGES | BLOCK` for reviews; `PASS | REVISE | BLOCK` for QA). Omit when not applicable. Inline delegation chains (see `decision.then` below) use this field to gate auto-advance.
 
+### Merge-evidence contract (guarded merge; THR-204)
+
+The guarded-merge engine (`runtime/daemon/pr_ci_merge.py`, `_recall_fetch_verdict`) extracts merge evidence from a persisted completion report — the structured top-level `verdict` field and the prose `Verdict:` lines in `summary`/`output_summary`. This contract is canonical for that extraction; it supersedes the earlier KB rule `guarded-merge-verdict-extraction` (which required a strict single-line, annotation-free grammar).
+
+**Canonical vocabulary.** Every extracted token — structured or prose — must be one of the canonical tokens `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`. This is the full shared review/QA producer vocabulary (never narrowed to the passing tokens): review persists `APPROVE | REQUEST_CHANGES | BLOCK`; QA persists `PASS | REVISE | BLOCK`, plus the legacy persisted `FAIL`. Tokens outside the vocabulary (e.g. `APPROVED`, `pass`, `COMMENT`, `ready_for_review`) are unknown/malformed and fail closed.
+
+**Structured evidence is primary (non-null only).** A NON-NULL top-level `verdict` value must be a canonical non-empty token. Empty/whitespace-only strings, non-string non-null values, case-variant, unknown, or in-field-annotated values (e.g. `"REVISE — STRUCTURAL ESCALATION — …"`) are unusable structured evidence: extraction fails closed and never falls back to prose. Producers must persist ONLY the canonical token in `verdict`; human context belongs in the prose summary.
+
+**Serializer-null legacy representation.** The durable recall producer (`runtime/infrastructure/database.py::get_recall_payload`) ALWAYS emits the top-level `verdict` key — `null` for legacy/no-structured rows (no persisted `task_results` verdict). Serialized `null` therefore represents ABSENCE of historical structured evidence, and the strictly parsed legacy prose candidate below MAY be used (exactly-one rule, full fail-closed grammar). An input that omits the key entirely is treated identically (direct-input compatibility).
+
+**Prose grammar.** A prose `Verdict:` line is anchored at line start and carries exactly one canonical token, optionally followed by horizontal whitespace and a human annotation — e.g. `Verdict: PASS` or `Verdict: PASS — rationale`. Whitespace-separated annotations (em dash, parentheses, `/`, `for …`) are valid; tokens with attached punctuation (`PASS.`, `PASS—…`) are malformed. Newline-split `Verdict:\nPASS`, case variants, and non-canonical tokens are malformed. Exactly ONE candidate line is accepted; zero → missing evidence (fail closed); two or more (including duplicate same-token candidates) → ambiguous (fail closed).
+
+**Agreement.** When both forms exist, their normalized canonical tokens must agree exactly; contradiction fails closed (no fallback, no equality bypass).
+
+**Fail-closed summary.** Missing evidence (serialized-null or absent key with no valid prose candidate), role-invalid outcomes at the downstream gate, contradictory structured/prose evidence, malformed/unknown tokens, ambiguous or multiple `Verdict:` candidates, newline-split candidates, non-null unusable structured values, and any other genuinely invalid form block the merge. Serialized `null` unlocks ONLY the strict prose grammar — malformed, duplicate, contradictory, or newline-split prose candidates still fail closed. The role gates are unchanged: review must equal `APPROVE` and QA must equal `PASS` — known non-passing canonical tokens (`REQUEST_CHANGES`, `BLOCK`, `REVISE`, `FAIL`) parse correctly (from a non-null structured value or a valid prose line) and are then rejected by the role gate (`merge_guard_review` / `merge_guard_qa`). Malformed evidence instead fails the extractor and surfaces as `github_error`. There is no permissive unanchored scraping.
+
+**Known grammar boundary (reconciled with durable evidence).** Live records show producers write bare tokens, `Verdict: TOKEN — rationale`, and whitespace-separated parenthesized/slash annotations; all are covered above. A small set of historical rows attach punctuation to the token (`Verdict: PASS.` / `Verdict: REQUEST_CHANGES.`) or embed annotations inside the structured field; those rows are genuinely invalid under this contract and fail closed — no grammar accommodation is made for them.
+
 ## Blocker path
 
 Use `"status": "blocked"` when you cannot finish and need the orchestrator to route around you. Set `"confidence": 0` and put the blocker reason in `summary` — the orchestrator reads it verbatim when deciding the next step.
@@ -85,7 +103,7 @@ Team-manager sessions must additionally include a structured `decision` object a
 - `"delegate"` — spawn a child task on another agent. Requires `agent` (target agent name) and `prompt` (child task brief). When re-delegating to an agent that has a FAILED child under this parent (e.g., retrying a failed fan-out slice), the field `revisit_of_task_id` is MANDATORY — it must carry the failed predecessor's task id so the orchestrator can track per-slice retry count from existing DB lineage (no schema migration). Omitting `revisit_of_task_id` in that context is a hard reject — the delegate is denied and the owner receives feedback to retry with the field set.
 - `"done"` — terminal; the root task finishes here. Optional `summary` for a final outcome note.
 - `"escalate"` — surface to the founder for resolution. Requires `reason`.
-- `"fanout"` — spawn N child tasks in parallel (2 ≤ N ≤ 8). Requires `children` (array of `{agent, prompt}` objects). `width_cap_ack` is required and must exactly equal the child count. Optional `join_summary` (prose directive for the join prompt). Each child may optionally carry `then`/`expect_verdict` to run its own inline delegation chain — a *pipeline carrier* (Phase 2). A child targeted at a **team manager** is decision-capable (mutating fan-out, THR-056 msg39): it can return delegate-chain decisions that spawn implementation subtrees inside its branch. A child targeted at a regular **worker** is read-only (its structured decisions are ignored; it completes with a summary). NO fan-out review gate of any kind (founder ruling THR-012 msg 129/131) — the width cap (8) is a machine-resource limit only; the real control over what lands is the per-PR merge gate: each mutating child opens its own PR needing code_reviewer APPROVE + qa PASS + CI + founder/EM merge.
+- `"fanout"` — spawn N child tasks in parallel (2 ≤ N ≤ 8). Requires `children` (array of `{agent, prompt}` objects). `width_cap_ack` is required and must exactly equal the child count. Optional `join_summary` (prose directive for the join prompt). Each child may optionally carry `then`/`expect_verdict` to run its own inline delegation chain — a *pipeline carrier* (Phase 2). A child targeted at a **team manager** is decision-capable (mutating fan-out, THR-056 msg39): it can return delegate-chain decisions that spawn implementation subtrees inside its branch. A child targeted at a regular **worker** is read-only (its structured decisions are ignored; it completes with a summary). NO fan-out review gate of any kind (founder ruling THR-012 msg 129/131) — the width cap (8) is a machine-resource limit only; the real control over what lands is the per-PR merge gate: each mutating child opens its own PR needing reviewer APPROVE + qa PASS + CI + founder/EM merge.
 - `"supersede"` — Its entire payload is exactly `{action, successor_brief, rationale, attestation}`; the two top-level strings are nonblank and `attestation` is strict/extra-forbid. The attestation requires a nonblank `recovery_reason` and `true` declarations for `policy_product_intent_unchanged`, `no_budget_or_external_commitment`, `no_permission_or_cross_team_change`, `no_schema_auth_security_privacy_or_data_access_change`, and `no_unresolved_founder_gate`. Missing, malformed, nested-extra, blank, mixed/override, or explicitly contrary declarations reject the decision before supersession mutation. This structural validation is **not proof** the declarations are true, cannot detect a valid-looking false declaration, and does not infer authority from prose. Managers MUST escalate policy/product intent, budget/external commitment, permission/cross-team, schema/auth/security/privacy/data-access, and unresolved Founder-gate concerns; that policy obligation is distinct from the retained audit evidence. The target, manager, session, and team are derived from the current claimed root server-side. It creates one pending same-manager/same-team successor and terminalizes the predecessor as `superseded` atomically, preserving the rationale, literal briefs, SHA-256 hashes, attestation evidence (including actor, session, and rule version), and bidirectional append-only provenance/audit rows. It is not a Founder escalation or approval, emits no Founder notification, and **rejects every thread-originated root** (`dispatched_from_thread_id` nonempty) until phase 2.
 
 **Field-name note:** the child task's brief lives in `decision.prompt`, not `decision.brief`. The schema silently ignores unknown keys, so writing `"brief"` produces a child task with an empty brief. Use `"prompt"`.
@@ -159,6 +177,19 @@ A manager can declare a multi-leg workflow in one decision via `decision.then` (
 ```
 
 The orchestrator spawns the first leg, then auto-advances to the next leg on each child terminal whose `verdict` matches the leg's `expect_verdict`. Any mismatch (or `status=blocked`) clears the chain and wakes the manager. The final leg's match wakes the manager too — chains do not auto-`done`. Each subsequent leg's brief is auto-suffixed with a "Prior leg context" block (the upstream worker's summary + verdict + output_dir).
+
+**Reviewer legs (THR-175).** Reviewer identities are configured per-org in the
+`reviewer_agents` org setting (DB-backed, default `["code_reviewer"]`), not
+hardcoded. Any chain leg whose `agent` is one of the org's configured
+reviewer agents is a *reviewer leg* and MUST declare
+`expect_verdict: "APPROVE"`. A reviewer leg that **omits** `expect_verdict` is
+a **HARD REJECT** — the whole delegation is denied before any child spawns,
+with remediation *set `expect_verdict: "APPROVE"` on every configured reviewer
+leg*. At the execution seam, a configured reviewer leg with a downstream leg
+never auto-advances unless it returns an explicit `APPROVE` verdict: a missing
+verdict or any non-approve verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` /
+equivalent) clears the chain and wakes the manager — QA/downstream is never
+spawned. Ordinary verdict-less non-reviewer legs are unaffected.
 
 Step-budget effect: declaring a chain consumes one orchestration step; auto-advances do NOT consume steps. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) costs 2 steps (declare + final wake) instead of 4.
 
@@ -326,6 +357,8 @@ The runtime primitive for waiting on external conditions is the existing jobs pl
 3. The task owner reports `status="blocked"` with `waiting_on_job_ids=["JOB-NNN"]`.
 4. The task remains `in_progress(blocked_on_job)` until the job is terminal. The normal blocked-on-job resume path reinvokes the task owner with the job result.
 5. On resume, the task owner inspects the job output. It reports `done` only if the job proves the external condition resolved successfully. Failure, timeout, or a missing/disputed result must produce a revise/fail/escalate decision — never a false completion.
+
+The same self-block and resume path applies to a delegated subtask; it receives the job result before continuing its brief.
 
 Do not infer external success from an intermediate signal. The poller job — not the task owner's session — reaches the terminal verdict; the task owner gates completion on that verdict alone.
 

@@ -27,6 +27,7 @@ import json
 import os
 import stat
 import subprocess
+import textwrap
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +44,7 @@ from runtime.orchestrator.adapter_store import (
 )
 from runtime.orchestrator.custom_adapter_registry import (
     BoundedReadError,
+    build_probe_input,
     get_adapter,
     list_adapters,
     register_custom_adapter,
@@ -119,6 +121,68 @@ sys.exit({exit_code})
 
     script_path = tmp_path / name
     script_path.write_text(script_body)
+    script_path.chmod(0o755)
+    return script_path
+
+
+def _make_behavioral_adapter_script(tmp_path: Path, name: str, mode: str = "success") -> Path:
+    """Create an executable that proves (or deliberately drops) probe input."""
+    script_path = tmp_path / name
+    script_path.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import sys
+        import time
+
+        request = json.load(sys.stdin)
+        if {mode!r} == "timeout":
+            time.sleep(60)
+        if {mode!r} == "empty":
+            sys.exit(0)
+        if {mode!r} == "malformed":
+            sys.stdout.write("not json")
+            sys.exit(0)
+
+        prompt = request["prompt"]
+        canary = next(
+            word for word in prompt.split()
+            if word.startswith("direct-connect-canary:")
+        )
+        result_text = (
+            canary
+            if {mode!r} in ("success", "null_agent_session", "nonzero_process")
+            else "direct-connect-canary:wrong" if {mode!r} == "wrong_canary"
+            else (
+                canary[:-1] if {mode!r} == "partial_canary"
+                else "direct-connect-canary:static" if {mode!r} == "static_response"
+                else "I explored the workspace and need another turn" if {mode!r} == "exploration_only"
+                else "provider did not receive the prompt"
+            )
+        )
+        payload = {{
+            "success": {mode!r} != "provider_error",
+            "duration_seconds": 0,
+            "session_id": (
+                "wrong-invocation" if {mode!r} == "wrong_invocation"
+                else "" if {mode!r} == "missing_invocation"
+                else request["invocation"]["invocation_id"]
+            ),
+            "returncode": 17 if {mode!r} == "inconsistent_returncode" else 0,
+            "stdout_tail": "untrusted stdout secret",
+            "stderr_tail": "untrusted stderr secret",
+            "result": {{"text": result_text}},
+            "error": "provider secret" if {mode!r} == "provider_error" else None,
+            "agent_session_id": None if {mode!r} == "null_agent_session" else "provider-session-123",
+            "adapter_metadata": {{
+                "adapter": "wrong-adapter" if {mode!r} == "wrong_adapter" else request["executor_context"]["provider"],
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            }},
+        }}
+        sys.stdout.write(json.dumps(payload))
+        if {mode!r} == "nonzero_process":
+            sys.exit(9)
+    """))
     script_path.chmod(0o755)
     return script_path
 
@@ -373,6 +437,99 @@ class TestConformanceProbe:
         assert result.success is True
         assert result.adapter_metadata.contract_version == 1
         assert result.adapter_metadata.adapter == "conformant-adapter"
+
+    def test_direct_probe_input_guides_wrapper_mediated_terminal_provider_proof(self):
+        canary = "direct-connect-canary:opaque-proof"
+
+        probe_input = build_probe_input("behavioral-adapter", prompt_canary=canary)
+
+        assert "entire normal v1 AdapterInput.prompt" in probe_input.prompt
+        assert "real provider invocation" in probe_input.prompt
+        assert "genuine terminal provider response" in probe_input.prompt
+        assert "wrapper owns the AdapterOutput envelope" in probe_input.prompt
+        assert "must not fabricate AdapterOutput" in probe_input.prompt
+        assert "terminal provider response; the wrapper must include it in " in probe_input.prompt
+        assert "AdapterOutput.result.text" in probe_input.prompt
+        assert "Do not use optional tools or explore the workspace" in probe_input.prompt
+        assert "Normal task behavior is unchanged" in probe_input.prompt
+        assert canary in probe_input.prompt
+
+    def test_direct_behavioral_probe_forwards_unique_canary_and_retains_provider_session_id(
+        self, tmp_path: Path,
+    ):
+        script = _make_behavioral_adapter_script(tmp_path, "behavioral-adapter")
+
+        result = run_conformance_probe(
+            str(script), "behavioral-adapter", require_prompt_delivery=True,
+        )
+
+        assert result.success is True
+        assert result.agent_session_id == "provider-session-123"
+
+        second = run_conformance_probe(
+            str(script), "behavioral-adapter", require_prompt_delivery=True,
+        )
+        assert result.result is not None and second.result is not None
+        assert result.result.text != second.result.text
+
+    def test_direct_behavioral_probe_accepts_non_resumable_adapter_without_provider_session_id(
+        self, tmp_path: Path,
+    ):
+        script = _make_behavioral_adapter_script(
+            tmp_path, "non-resumable-adapter", "null_agent_session",
+        )
+
+        result = run_conformance_probe(
+            str(script), "non-resumable-adapter", require_prompt_delivery=True,
+        )
+
+        assert result.success is True
+        assert result.agent_session_id is None
+
+    @pytest.mark.parametrize(
+        ("mode", "reason"),
+        [
+            ("swallowed_prompt", "terminal result did not prove prompt delivery"),
+            ("partial_canary", "terminal result did not prove prompt delivery"),
+            ("exploration_only", "terminal result did not prove prompt delivery"),
+            ("static_response", "terminal result did not prove prompt delivery"),
+            ("wrong_canary", "terminal result did not prove prompt delivery"),
+            ("provider_error", "provider reported failure"),
+            ("wrong_invocation", "invocation id is missing or does not match"),
+            ("missing_invocation", "invocation id is missing or does not match"),
+            ("wrong_adapter", "adapter identity mismatch"),
+            ("inconsistent_returncode", "return code is inconsistent"),
+            ("nonzero_process", "provider process exited nonzero"),
+            ("malformed", "malformed output"),
+            ("empty", "absent terminal output"),
+        ],
+    )
+    def test_direct_behavioral_probe_rejects_non_terminal_or_unproven_output(
+        self, tmp_path: Path, mode: str, reason: str,
+    ):
+        script = _make_behavioral_adapter_script(tmp_path, f"behavioral-{mode}", mode)
+
+        with pytest.raises(ValueError, match=reason) as exc_info:
+            run_conformance_probe(
+                str(script), f"behavioral-{mode}", require_prompt_delivery=True,
+            )
+
+        assert "provider secret" not in str(exc_info.value)
+        assert "untrusted stdout" not in str(exc_info.value)
+        assert "untrusted stderr" not in str(exc_info.value)
+
+    def test_direct_behavioral_probe_timeout_is_bounded_and_safe(self, tmp_path: Path, monkeypatch):
+        script = _make_behavioral_adapter_script(tmp_path, "behavioral-timeout", "timeout")
+        monkeypatch.setattr(
+            "runtime.orchestrator.custom_adapter_registry.CONFORMANCE_PROBE_TIMEOUT_SECONDS", 0.05,
+        )
+
+        with pytest.raises(ValueError, match="timed out") as exc_info:
+            run_conformance_probe(
+                str(script), "behavioral-timeout", require_prompt_delivery=True,
+            )
+
+        assert "stderr tail" not in str(exc_info.value)
 
     def test_adapter_exit_nonzero_fails(self, tmp_path: Path):
         script = _make_fake_adapter_script(
@@ -1509,7 +1666,20 @@ sys.exit(0)
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         from runtime.orchestrator import custom_adapter_registry as car
 
-        monkeypatch.setattr(car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", 1.5)
+        # The probe deadline starts in ``_read_bounded`` immediately after the
+        # child is spawned, so the child must exec its interpreter, consume
+        # stdin, and flush the diagnostic within this budget. The old hardcoded
+        # 1.5s budget could expire before the child's stderr landed under
+        # full-suite CPU contention (``scripts/local_ci.sh all`` with
+        # ``pytest -n 4`` — KB local-ci-stderr-timeout-tail-flake, confirmed
+        # TASK-5008/TASK-5223), making this assertion flaky for scheduling
+        # reasons unrelated to the timeout-diagnostic guarantee. Spawn→
+        # diagnostic latency is ~10ms idle and <=~180ms under heavy synthetic
+        # contention on this hardware, so 10s is a >50x-margin budget that
+        # stays a short probe vs the 30s production default. The guarantee is
+        # unchanged: stderr emitted before the deadline must still appear in
+        # the capped timeout diagnostic.
+        monkeypatch.setattr(car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", 10.0)
         script = self._make_stderr_then_hang_script(tmp_path)
 
         with pytest.raises(ValueError) as exc_info:

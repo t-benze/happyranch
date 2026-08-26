@@ -1,6 +1,6 @@
 """Agent Todos — CLI for schedule management and agent callbacks (THR-105).
 
-Founder/operator: list, show, pause, cancel, edit.
+Founder/operator: list, show, pause, cancel, renew, edit.
 Agent callbacks: create (autonomous arming), spawn (fire dispatch).
 Single-line invocations that POST to the daemon which enforces
 self-target, capability gates, and validation server-side.
@@ -29,6 +29,44 @@ def _client_and_org(args: argparse.Namespace) -> tuple[OpcClient, str]:
 
 
 TODOS_BASE = "/schedules"
+
+_WEEKDAY_LABELS = {
+    "MO": "Mon", "TU": "Tue", "WE": "Wed", "TH": "Thu",
+    "FR": "Fri", "SA": "Sat", "SU": "Sun",
+}
+
+
+def _recurring_display(rule: dict) -> str:
+    """Render the stored bounded recurrence shape for `todos show`."""
+    freq = str(rule.get("freq", "")).lower()
+    interval = rule.get("interval", 1)
+    unit = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}.get(freq, freq)
+    unit = f"{unit}s" if interval != 1 else unit
+    cadence = f"every {interval} {unit}"
+    parts: list[str] = []
+    byday = rule.get("byday")
+    if isinstance(byday, list) and byday:
+        labels = ", ".join(_WEEKDAY_LABELS.get(str(day), str(day)) for day in byday)
+        if rule.get("ordinal"):
+            cadence += f" on the {rule['ordinal']} {labels}"
+        else:
+            cadence += f" on {labels}"
+    elif rule.get("bymonthday") is not None:
+        cadence += f" on day {rule['bymonthday']}"
+    time = rule.get("time")
+    tz = rule.get("tz")
+    if time and tz:
+        parts.append(f"{time} {tz}")
+    if rule.get("count") is not None:
+        parts.append(f"ends after {rule['count']}")
+    elif rule.get("until"):
+        parts.append(f"ends on {rule['until']}")
+    return " · ".join([cadence, *parts])
+
+
+def _needs_attention(schedule: dict) -> bool:
+    """A re-armed schedule retains attention only until a successful dispatch."""
+    return schedule.get("status") == "armed" and bool(schedule.get("error"))
 
 
 # ── management commands ─────────────────────────────────────────────────
@@ -73,7 +111,10 @@ def cmd_schedules_show(args: argparse.Namespace) -> None:
     print(f"  status={body['status']}  kind={body['kind']}")
     print(f"  fire_at={_fmt_ts(body['fire_at'])}  timezone={body['timezone']}")
     if body.get("recurrence"):
-        print(f"  recurrence={json.dumps(body['recurrence'])}")
+        if body.get("kind") == "recurring":
+            print(f"  recurrence={_recurring_display(body['recurrence'])}")
+        else:
+            print(f"  recurrence={json.dumps(body['recurrence'])}")
     print(f"  brief: {body['normalized_brief']}")
     print(f"  instruction: {body['source_instruction']}")
     print(f"  fire_count={body['fire_count']}  active={body['active']}")
@@ -83,6 +124,8 @@ def cmd_schedules_show(args: argparse.Namespace) -> None:
         print(f"  spawned_tasks={body['spawned_task_ids']}")
     if body.get("last_fired_at"):
         print(f"  last_fired_at={_fmt_ts(body['last_fired_at'])}")
+    if _needs_attention(body):
+        print("  Needs attention: most recent occurrence failed or timed out")
     print(f"  created_at={_fmt_ts(body['created_at'])}  updated_at={_fmt_ts(body['updated_at'])}")
 
 
@@ -102,6 +145,17 @@ def cmd_schedules_cancel(args: argparse.Namespace) -> None:
         return
     body = r.json()
     print(f"ok: {body['schedule_id']} cancelled (status={body['status']})")
+
+
+def cmd_schedules_renew(args: argparse.Namespace) -> None:
+    client, slug = _client_and_org(args)
+    path = f"/api/v1/orgs/{slug}{TODOS_BASE}/{args.schedule_id}/renew"
+    r = client.post(path, json={"indefinite": True}) if args.indefinite else client.post(path)
+    if not _ok(r):
+        return
+    body = r.json()
+    mode = "indefinite" if body["indefinite"] else "renewed"
+    print(f"ok: {body['schedule_id']} {mode} (status={body['status']})")
 
 
 def _edit_payload_from_file(path: str) -> dict:
@@ -197,7 +251,7 @@ def cmd_schedules_create(args: argparse.Namespace) -> None:
 
 def register(sub) -> None:
     # ── founder/operator management surface: todos ──────────────────
-    p_todos = sub.add_parser("todos", help="Agent Todos — list/show/pause/cancel/edit schedules")
+    p_todos = sub.add_parser("todos", help="Agent Todos — list/show/pause/cancel/renew/edit schedules")
     todos_sub = p_todos.add_subparsers(dest="todos_command", required=True)
 
     p_list = todos_sub.add_parser("list", help="List Todos")
@@ -224,6 +278,12 @@ def register(sub) -> None:
     p_cancel.add_argument("schedule_id")
     p_cancel.set_defaults(func=cmd_schedules_cancel)
 
+    p_renew = todos_sub.add_parser("renew", help="Renew a Todo review window")
+    p_renew.add_argument("--org", default=None)
+    p_renew.add_argument("schedule_id")
+    p_renew.add_argument("--indefinite", action="store_true")
+    p_renew.set_defaults(func=cmd_schedules_renew)
+
     p_edit = todos_sub.add_parser("edit", help="Edit a Todo (fire_at, recurrence, timezone)")
     p_edit.add_argument("--org", default=None)
     p_edit.add_argument("schedule_id")
@@ -246,7 +306,7 @@ def register(sub) -> None:
 
     # ── agent create callback: schedules create ──────────────────
     p_create = sched_sub.add_parser(
-        "create", help="Create a new schedule (Todo) — agent autonomous arming",
+        "create", help="Create a documented one-shot, weekly, or recurring Todo from JSON",
     )
     p_create.add_argument("--org", required=True)
     p_create.add_argument("--from-file", required=True)

@@ -1,10 +1,10 @@
-"""Platform isolation primitives for macOS canonical store.
+"""Platform operations for the canonical skill store.
 
-Provides macOS-only implementation for:
+Provides explicit macOS and Linux same-owner implementations for:
 - Symlink creation and validation
 - Executor process launch
 
-Linux and Windows are NOT supported in this release — explicitly fail closed.
+Windows and unknown platforms are NOT supported — explicitly fail closed.
 """
 
 from __future__ import annotations

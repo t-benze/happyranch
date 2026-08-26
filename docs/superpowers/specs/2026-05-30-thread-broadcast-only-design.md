@@ -2,6 +2,21 @@
 
 **Date:** 2026-05-30
 **Status:** Draft, pending implementation.
+**Superseded (2026-08-25, THR-198 seq 108-110 + Slice B):** the Phase-2 thread
+mention-routing program is founder-approved and **production routing is now
+ENABLED**. **Slice A (storage)** landed additive columns
+`threads.mention_routing_enabled` (INTEGER NOT NULL DEFAULT 1) and
+`thread_messages.mentions_json` (TEXT), a pure parse/resolver module
+(`runtime/daemon/thread_mentions.py`), and store-seam persistence of the
+derived valid-participant mention set for every conversational write.
+**Slice B wires the resolver into every conversational REPLY wake-selection
+seam at message-write time**, so the **visual-only routing doctrine in this
+spec is explicitly SUPERSEDED**: body `@`-mentions ARE routing signals when
+the thread setting is enabled (default), per the ratified matrix
+(disabled/zero-valid → broadcast; valid mentions → exactly that set),
+while `thread_messages.addressed_to_json` stays unwritten/unread with its
+separate cleanup plan intact. Web control and analytics validation remain
+LATER slices.
 **Origin:** Founder-reported pattern on THR-011 (tourism-org, 2026-05-29): the founder addressed seq 10 to `["finance_agent"]` only; finance_agent's seq 11 prose-mentioned `@admin_head 你那边合同库归档...` but its structured `addressed_to_json` was empty; no invocation was ever minted for admin_head, so the hand-off was silently dropped. Founder diagnosis: structured `addressed_to` invites exactly this class of silent-drop bug, and every reasonable thread should broadcast to all participants.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive this changes.
@@ -39,6 +54,16 @@ Root cause (verified in this codebase, 2026-05-29):
 - Dropping the `thread_messages.addressed_to_json` column. Kept as nullable, unread by new code, scheduled for cleanup in a later release.
 - Dropping `thread_messages.kind='decline'` rows or the `decline_reason` column. Old rows readable for audit; new code never writes either.
 - Body @-mention parsing. We considered it; it relocates the same fragility under an unstructured surface. Skill discipline in the invocation prompt is the only routing signal.
+  **Phase-2 supersession (THR-198 seq 108-110, Slice B landed):** the founder
+  approved structured body-@-mention parsing as the Phase-2 routing signal;
+  Slice A shipped the parse/resolver + `thread_messages.mentions_json`
+  storage (server-derived at the two store seams) and Slice B **enables
+  production mention routing** — the visual-only doctrine here is
+  superseded. The wake-set matrix (disabled/zero-valid → broadcast; valid
+  participant mentions → exactly that set) lives in
+  `runtime/daemon/thread_mentions.py`; TASK_FOLLOWUP/BOOTSTRAP stay
+  isolated; see `docs/agent-guides/features-and-invariants.md` (Thread
+  Broadcast Routing).
 - "Expected responders" hint (a softer `addressed_to`). Rejected as likely to collapse back into the original concept.
 - Runtime ping-pong brake beyond the existing `turn_cap`. We accept that an over-eager agent pair can burn through a thread; audit logs make it visible.
 - `notify_thread_compose` (the founder-side Feishu push when an agent **opens** a new thread). Kept — the founder needs the heads-up to even know the thread exists. Only in-thread back-and-forth pings are removed.
@@ -58,7 +83,20 @@ For each participant p in thread.participants:
         status = pending
 ```
 
+**GH-688 Phase 1 (landed):** the per-message mint loop above is replaced by the
+store-owned conversational-arrival path (`Database.record_conversational_arrival`
+in Slice A, wired in Slice B). The recipient set is identical — every
+participant except the speaker — and body `@`-mentions remain visible text,
+never routing signals. The store coalesces: one `(thread_id, agent_name)` pair
+holds at most one unstarted `REPLY` (queued) and at most one running `REPLY`;
+a burst advances the queued wake's `required_through_seq` instead of minting
+per-message rows. Newly minted tokens are enqueued only after the arrival
+transaction commits. See `docs/agent-guides/features-and-invariants.md` →
+Thread Broadcast Routing for the full Phase-1 contract.
+
 The founder is **not** a participant in `thread_participants` today and never has been — she's modeled exclusively as the `FOUNDER_LITERAL = "@founder"` address token. With addressing removed she has no presence in the participant set, so no special-case skip is needed in the mint loop. She continues to read every thread via the web UI; the only thread-related Feishu push she still receives is `notify_thread_compose` (agent opens a new thread).
+
+**GH-688 Phase 1 Slice C presentation (TASK-5553 purpose fidelity; TASK-5589 compact rail).** The web UI surfaces the store-projected pair state (a compact "Reply delivery" rail section plus the transcript-tail live indicator) from the `reply_delivery` wire list — never from inferred per-message rows. The rail prioritizes individually distinguishable `running` pairs with full wrapping identities, groups static `queued` pairs behind an accessible disclosure with truthful singular/plural counts and inclusive ranges, and keeps `retry_required` visible as a diagnostic with the last terminal reason where the store recorded one. Fully settled pairs are absent from this live projection; terminal per-message responder history remains its truthful inspection surface and also renders under SYSTEM rows (a settled system-row-anchored REPLY range shows its terminal `replied` marker). **Purpose fidelity:** every `responder_status` wire entry carries the authoritative invocation `purpose` (`reply` | `task_followup`; BOOTSTRAP stays excluded from the grouped query); in-flight classification/dedup on the web uses that wire purpose, never the triggering row's kind — a coalesced REPLY range anchored on a system row is correctly suppressed next to its pair row (exactly one replying bubble) while a same-agent TASK_FOLLOWUP stays visible. The six reply-wake lifecycle audit actions (created / coalesced / claimed / settled / cancelled / recovered) are emitted atomically at the store transitions that already know the durable outcome, under the existing `task_id = THR-*` scope convention.
 
 No selective addressing. No `@all` token. No `@founder` token. The participant set bounds the broadcast.
 
@@ -87,6 +125,23 @@ of the following hold:
   not "noted".
 - No other participant has already covered the same ground in a recent
   reply.
+- You have not already substantively answered that question, request,
+  or hand-off in a later message of your own.
+
+Before replying, read the full conversation supplied in this invocation —
+every message in the history, not just the newest messages in this wake's
+delivery range — and check whether this wake re-delivers a request you
+already answered. (In a resumed session, the earlier transcript is already
+in your context; read it too.) If your own later message already
+substantively answered the request, decline silently — nothing further is
+owed. Coverage is a question of substance, never of sequence or position
+alone: a later message from you that merely acknowledges, restates, or
+agrees does not count as an answer.
+
+Exception: if the newest message in this wake's delivery range contains a
+distinct request you have not yet answered — for example a genuine
+follow-up question — reply as you normally would. Do not use the
+"already answered" rule to suppress legitimate follow-up questions.
 
 The founder is a participant; she reads the full thread in the web UI.
 You do not need to "keep her informed" by replying.
@@ -94,6 +149,22 @@ You do not need to "keep her informed" by replying.
 If you are unsure: decline. The thread can always be re-engaged by another
 message.
 ```
+
+**Amendment (TASK-5735):** the doctrine above closes a confirmed shipping
+gap in the original text — it did not tell an invoked agent to check whether
+that SAME agent already substantively answered the delivered request in a
+later message of its own (the invocation re-delivers a request the agent
+covered). The corrected doctrine (a) requires reading the full supplied
+conversation beyond the delivery range before deciding, (b) mandates a
+silent decline when the invoked agent's own later message already answered
+the request, (c) judges coverage on substance — never on sequence or
+position alone — so a later acknowledgment/restatement is not an answer,
+and (d) preserves the exception where the newest delivery-range message
+contains a distinct unanswered request (e.g. a genuine follow-up question).
+The original unique-role/direct-question, substantive-content, and
+other-participant-coverage conditions are unchanged. The injected text lives
+in `_decline_by_default_doctrine()` in `runtime/daemon/thread_runner.py`,
+shared by both the full and resumed/delta REPLY prompt builders.
 
 Injected by a new section in the thread-invocation prompt builder (`src/daemon/thread_runner.py`, around the "You are participating in thread …" block at line 109). Gated to `purpose=REPLY` only — not BOOTSTRAP (new participant should engage on first turn), not TASK_FOLLOWUP (agent has an explicit obligation to report).
 

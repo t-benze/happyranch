@@ -4,9 +4,9 @@
 When a manager receives a REPLY/BOOTSTRAP invocation in a thread that carries
 unresolved ``task_escalated`` system messages whose live task rows are still
 supersedable, the prompt MUST name the concrete task ids and the resolution
-options available for each: ``continue`` (resume the SAME task in place —
-only valid when the predecessor's block kind is ``"escalated"``) and
-``resolves`` (dispatch a new task naming the predecessor — valid for both
+options available for each: the named manual break-glass ``continue`` route
+(only for a founder-directed manual action on an ``"escalated"`` predecessor)
+and ``resolves`` (dispatch a new task naming the predecessor — valid for both
 ``"escalated"`` and ``"delegated"`` block kinds).
 """
 from __future__ import annotations
@@ -37,6 +37,18 @@ from runtime.models import (
 from runtime.orchestrator.org_config import OrgConfig
 
 _NOW = datetime(2026, 6, 29, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_thread_escalation_guardrail(tmp_path):
+    """Thread launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agents used in this module so the launch guard admits them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path), ("engineering_head", "dev_agent"))
 
 
 def _fake_thread() -> ThreadRecord:
@@ -497,6 +509,16 @@ async def test_run_invocation_injects_guardrail_for_supersedable_escalation(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -551,6 +573,16 @@ async def test_run_invocation_skips_guardrail_for_non_supersedable_predecessor(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -602,6 +634,16 @@ async def test_run_invocation_guardrail_omits_continue_for_delegated_predecessor
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 1, 2, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)
@@ -663,6 +705,16 @@ async def test_run_invocation_guardrail_mixed_escalated_and_delegated(
         thread_id="THR-001", agent_name="engineering_head",
         triggering_seq=3, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the
+    # runner's queued→running CAS succeeds.
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "engineering_head", 2, 3, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     ws = tmp_path / "workspaces" / "engineering_head"
     ws.mkdir(parents=True)

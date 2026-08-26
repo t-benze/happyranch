@@ -41,46 +41,29 @@ _logger = logging.getLogger(__name__)
 # bearer tokens and uses SessionTracker identity instead.
 agent_skills_router = APIRouter()
 
+
 def _recover_audit_event_mandatory(
     db,
     *,
     slug: str,
-    agent: str = "operator",
     detail: str,
-    reason_codes: list[str] | None = None,
+    reason_codes: list[str],
     skill_id: str | None = None,
-    version: str | None = None,
+    agent: str = "operator",
     ok: bool = False,
-    severity: str = "error",
-    source: str = "operator_recovery",
 ) -> None:
-    """Emit a durable audit event for operator recovery paths.
-
-    Persistence is mandatory for refusal and recovery events.  On
-    failure this helper raises HTTPException(500) — the caller must
-    NOT return or proceed with any destructive action.
-    """
+    """Persist every recovery refusal before returning to the operator."""
     try:
-        db.insert_skill_validation_event(  # type: ignore[union-attr]
-            skill_id=skill_id or f"hr:{slug}",
-            slug=slug,
-            agent=agent,
-            source=source,
-            severity=severity,
-            ok=ok,
-            version=version,
-            findings=[detail],
-            reason_codes=reason_codes or [],
+        db.insert_skill_validation_event(
+            skill_id=skill_id or f"custom:{slug}", slug=slug, agent=agent,
+            source="operator_recovery", severity="error", ok=ok, version=None,
+            findings=[detail], reason_codes=reason_codes,
         )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Recovery audit event persistence failed: {exc}. "
-                f"No changes were made. Retry recovery after resolving "
-                f"the persistence issue."
-            ),
-        )
+            detail="Recovery audit persistence failed; no canonical package was changed",
+        ) from exc
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -111,8 +94,8 @@ def _user_registry(org: OrgState) -> SkillRegistry:
 
     THR-055: This legacy store is RETIRED. The org_root/skills/ directory
     no longer feeds any catalog, effective, or detail API. All custom-skill
-    discovery, assignment, and lifecycle management now routes through the
-    lifecycle ledger (``/skill-lifecycle/*`` routes). This helper returns
+    discovery, assignment, and materialization now routes through the
+    B2 custom-skill records. This helper returns
     an empty registry; the quarantine migration copies legacy content to
     the immutable ArtifactStore for reference, never for materialization.
 
@@ -125,8 +108,7 @@ def _user_registry(org: OrgState) -> SkillRegistry:
 def _union_catalog(org: OrgState) -> list[tuple[SkillEntry, str]]:
     """Build the union of managed catalog and system contracts ONLY.
 
-    THR-055: User-authored custom skills are excluded — the lifecycle
-    ledger is the sole source for custom-skill discovery, assignment, and
+    THR-055: User-authored custom skills are excluded — the B2 custom-skill is the sole source for custom-skill discovery, assignment, and
     materialization. Legacy quarantined content from org_root/skills/
     must never appear in catalog or effective API results.
 
@@ -415,9 +397,8 @@ def agent_skills_effective(
     except Exception:
         pass
 
-    # THR-055: Union is release-managed skills only.
-    # User-authored custom skills are resolved via the lifecycle ledger
-    # (/skill-lifecycle/* routes), not through this legacy effective API.
+    # THR-055: Union is release-managed skills only. B2 custom skills use
+    # their dedicated custom-skills API and are not exposed here.
     union: dict[str, tuple[SkillEntry, str]] = {}
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
@@ -498,7 +479,7 @@ def agent_skills_effective(
             })
 
     # THR-055 B2: custom skills are a separate visibility projection, never
-    # lifecycle assignments.  Do not infer materialization from an allow rule.
+    # B2 eligibility assignments. Do not infer materialization from an allow rule.
     try:
         from runtime.skills.custom import service as custom_service
         from runtime.skills.eligibility import (
@@ -919,9 +900,7 @@ def create_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill creation is retired.
 
-    Use the THR-055 lifecycle routes instead:
-    - Agents: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals
-    - Humans: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals (then claim/validate/etc.)
+    Use POST /api/v1/orgs/{slug}/custom-skills for founder authoring.
 
     Existing legacy skills are quarantined and available read-only.
     """
@@ -929,7 +908,7 @@ def create_skill(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill creation is retired. Use /skill-lifecycle/proposals for agent proposals and the lifecycle routes for management.",
+            "detail": "Direct skill creation is retired. Use the B2 custom-skills routes.",
             "migration": "Existing user-authored skills have been quarantined. Use GET /skills to list them read-only.",
         },
     )
@@ -945,8 +924,7 @@ def validate_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill validation is retired.
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/validate
+    Use the B2 custom-skills routes.
 
     Legacy validation read org_root/skills — that filesystem path is no longer
     an authoritative catalog or materialization source.
@@ -955,7 +933,7 @@ def validate_skill(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill validation is retired. Use /skill-lifecycle/validate for lifecycle-managed validation.",
+            "detail": "Direct skill validation is retired. Use the B2 custom-skills routes.",
         },
     )
 
@@ -971,14 +949,14 @@ def edit_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill editing is retired.
 
-    Use THR-055 lifecycle routes for all skill management.
+    Use the B2 custom-skills routes for skill management.
     Existing legacy skills are quarantined and available read-only.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill editing is retired. Use /skill-lifecycle routes for lifecycle management.",
+            "detail": "Direct skill editing is retired. Use the B2 custom-skills routes.",
         },
     )
 
@@ -1024,20 +1002,18 @@ def assign_skill(
 ) -> dict:
     """LEGACY-CUTOVER: Direct skill assignment is retired.
 
-    Use THR-055 lifecycle routes:
-    - POST /api/v1/orgs/{slug}/skill-lifecycle/assign
-      with body: {"skill_id": "hr:my-skill", "agent_name": "dev_agent", "version_id": <id>}
+    Use B2 custom-skill eligibility management.
     """
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail={
             "code": "legacy_cutover",
-            "detail": "Direct skill assignment is retired. Use /skill-lifecycle/assign with lifecycle-managed versions.",
+            "detail": "Direct skill assignment is retired. Use B2 custom-skill eligibility management.",
         },
     )
 
 
-# ── Route: GET /skills/{skill_id}/status (lifecycle status) ──────────────
+# ── Route: GET /skills/{skill_id}/status (current materialization status) ─
 
 @router.get("/skills/{skill_id}/status")
 def skill_status(
@@ -1092,7 +1068,7 @@ def skill_status(
             "at": last_validation.get("created_at"),
         }
 
-    # Build assignments[] — per-agent lifecycle state
+    # Build assignments[] — per-agent materialization state
     assignments: list[dict] = []
     agents_policy = policy.get("agents", {})
 
@@ -1144,794 +1120,123 @@ def skill_status(
 # ── Recovery request model ───────────────────────────────────────────────
 
 
-class SkillRecoverRequest(BaseModel):
-    """Operator-invoked recovery for a named corrupted canonical package.
 
-    All fields required. Identity/path inputs are strictly validated before
-    any deletion.
-    """
+class SkillRecoverRequest(BaseModel):
+    """Operator request to remove one corrupted B2 canonical package."""
+
     slug: str
     version: str
     content_hash: str
 
-    @field_validator("slug")
+    @field_validator("slug", "version")
     @classmethod
-    def _slug_non_empty(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("slug must not be empty")
-        if ".." in v or "/" in v or "\\" in v:
-            raise ValueError("slug must not contain path separators or '..'")
-        return v
-
-    @field_validator("version")
-    @classmethod
-    def _version_non_empty(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("version must not be empty")
-        if ".." in v or "/" in v or "\\" in v:
-            raise ValueError("version must not contain path separators or '..'")
-        return v
+    def _safe_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not value or ".." in value or "/" in value or "\\" in value:
+            raise ValueError("must be a non-empty identifier without path separators")
+        return value
 
     @field_validator("content_hash")
     @classmethod
-    def _content_hash_valid_sha256(cls, v: str) -> str:
-        import re as _re
-        v = v.strip()
-        if not v:
-            raise ValueError("content_hash must not be empty")
-        if not _re.match(r"^[a-f0-9]{64}$", v):
-            raise ValueError(
-                "content_hash must be exactly 64 lowercase hex characters "
-                "(raw SHA-256 hex digest)"
-            )
-        return v
+    def _content_hash_valid_sha256(cls, value: str) -> str:
+        import re
 
+        value = value.strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", value):
+            raise ValueError("must be exactly 64 lowercase hex characters")
+        return value
 
-# ── Route: POST /skills/recover ──────────────────────────────────────────
 
 @router.post("/skills/recover", status_code=200)
-def skill_recover(
-    body: SkillRecoverRequest,
-    request: Request,
-    org: OrgDep,
-):
-    """Operator-invoked one-step recovery for a corrupted canonical package.
-
-    Narrowly scoped: validates identity/path inputs, checks ledger provenance,
-    revalidates member SHA-256 hashes against the ArtifactStore, then deletes
-    ONLY the corrupted canonical package directory. The next materialization
-    will rebuild from the ArtifactStore (which must be verified against
-    the release source for same-owner deployments).
-
-    Fails closed without valid authority/provenance. Never automatic.
-    set-executor only repairs links after byte integrity passes; this endpoint
-    is the sole operator surface for recovering corrupted bytes.
-    """
-    from runtime.config import settings as rt_settings
-    from runtime.skills.canonical_store import CanonicalSkillStore
-    from runtime.platform.isolation import detect_platform_isolation
-    from runtime.skills.lifecycle.service import SkillLifecycleService
-    from runtime.orchestrator._paths import OrgPaths
-    from runtime.infrastructure.artifact_store import ArtifactStore
-    from runtime.skills.lifecycle import stores as lifecycle_stores
-    import json as _json
+def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
+    """Fail-closed operator recovery for a B2 custom-skill package."""
     import shutil
 
-    slug = body.slug
-    version = body.version
-    content_hash = body.content_hash
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.platform.isolation import detect_platform_isolation
+    from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
 
-    # ── 1. Validate ledger provenance ─────────────────────────────
-    service = SkillLifecycleService()
+    if not body.version.isdecimal() or str(int(body.version)) != body.version:
+        raise HTTPException(status_code=400, detail="version must be the B2 version ID")
+    conn = getattr(org.db, "_conn", org.db)
+    record = conn.execute(
+        """SELECT s.id AS skill_id, s.current_version_id, s.retired_at,
+                  v.content_hash, v.content_artifact_key, v.validation_state
+             FROM custom_skills s JOIN custom_skill_versions v ON v.skill_id = s.id
+            WHERE s.org_slug = ? AND s.slug = ? AND v.id = ?""",
+        (org.slug, body.slug, int(body.version)),
+    ).fetchone()
+    if record is None:
+        _recover_audit_event_mandatory(org.db, slug=body.slug, agent="operator", ok=False,
+            detail=f"No B2 custom-skill version found for {body.slug}@{body.version}", reason_codes=["b2_provenance_not_found"])
+        raise HTTPException(status_code=404, detail="B2 custom-skill version not found")
+    if record["current_version_id"] != int(body.version):
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Recovery refused because the requested B2 version is not current", reason_codes=["stale_current_version"])
+        raise HTTPException(status_code=409, detail="Recovery requires the current B2 custom-skill version")
+    if record["retired_at"] is not None or record["validation_state"] != "valid":
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Recovery refused because the current B2 custom-skill version is ineligible", reason_codes=["ineligible_current_version"])
+        raise HTTPException(status_code=409, detail="Current B2 custom-skill version is not eligible for recovery")
+    if record["content_hash"] != body.content_hash:
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="B2 version content hash does not match recovery request", reason_codes=["hash_mismatch"])
+        raise HTTPException(status_code=400, detail="content_hash does not match B2 version provenance")
+    artifact_key = record["content_artifact_key"]
     try:
-        pkgs = service.list_catalog(org.db)
+        artifact_bytes = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(artifact_key)
     except Exception as exc:
-        # Emit durable failure event before refusing
-        _recover_audit_event_mandatory(
-            org.db, slug=slug, agent="operator",
-            ok=False,
-            detail=f"Ledger query failure for recover {slug}@{version}: {exc}",
-            reason_codes=["ledger_query_failure"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to query lifecycle ledger: {exc}",
-        )
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail=f"B2 content artifact unavailable: {exc}", reason_codes=["artifact_not_found"])
+        raise HTTPException(status_code=400, detail="B2 content artifact is unavailable") from exc
+    if hashlib.sha256(artifact_bytes).hexdigest() != body.content_hash:
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="B2 content artifact hash does not match version provenance", reason_codes=["artifact_hash_mismatch"])
+        raise HTTPException(status_code=400, detail="B2 content artifact does not match version provenance")
 
-    pkg_match = None
-    for pkg in pkgs:
-        if pkg.slug == slug and pkg.version == version:
-            pkg_match = pkg
-            break
-
-    if pkg_match is None:
-        _recover_audit_event_mandatory(
-            org.db, slug=slug, agent="operator",
-            ok=False,
-            detail=(
-                f"No PUBLISHED lifecycle package found for "
-                f"{slug}@{version}"
-            ),
-            reason_codes=["package_not_found"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"No PUBLISHED lifecycle package found for "
-                f"{slug}@{version}. Recovery requires an active "
-                f"lifecycle ledger entry."
-            ),
-        )
-
-    # Validate content_hash matches ledger
-    if pkg_match.content_hash != content_hash:
-        _recover_audit_event_mandatory(
-            org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", ok=False,
-            detail=(
-                f"content_hash mismatch: provided {content_hash[:16]}..., "
-                f"ledger has {pkg_match.content_hash[:16]}..."
-            ),
-            reason_codes=["hash_mismatch"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"content_hash mismatch: provided {content_hash[:16]}..., "
-                f"ledger has {pkg_match.content_hash[:16]}..."
-            ),
-        )
-
-    # ── 2. Validate artifact store member hashes ──────────────────
-    org_root = org.root
-    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-    manifest = None  # May be populated if content_artifact_key exists
-
-    if pkg_match.content_artifact_key:
-        try:
-            manifest_bytes = artifact_store.read(pkg_match.content_artifact_key)
-        except Exception:
-            _recover_audit_event_mandatory(
-                org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", ok=False,
-                detail=(
-                    f"Manifest artifact not found: "
-                    f"{pkg_match.content_artifact_key}"
-                ),
-                reason_codes=["artifact_not_found"],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=(
-                    f"Manifest artifact not found: "
-                    f"{pkg_match.content_artifact_key}"
-                ),
-            )
-
-        # Verify manifest hash against ledger
-        actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
-        if actual_manifest_hash != content_hash:
-            _recover_audit_event_mandatory(
-                org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", ok=False,
-                detail=(
-                    f"Manifest artifact hash mismatch: "
-                    f"expected {content_hash[:16]}..., "
-                    f"got {actual_manifest_hash[:16]}..."
-                ),
-                reason_codes=["manifest_hash_mismatch"],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Manifest artifact hash mismatch: "
-                    f"expected {content_hash[:16]}..., "
-                    f"got {actual_manifest_hash[:16]}... "
-                    f"ArtifactStore may also be corrupted."
-                ),
-            )
-
-        # Parse manifest and validate member hashes
-        try:
-            manifest = _json.loads(manifest_bytes.decode("utf-8"))
-        except Exception:
-            _recover_audit_event_mandatory(
-                org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", ok=False,
-                detail="Manifest artifact is not valid JSON",
-                reason_codes=["invalid_manifest"],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Manifest artifact is not valid JSON",
-            )
-
-        if isinstance(manifest, dict) and "members" in manifest:
-            for member in manifest["members"]:
-                member_path = member.get("path", "")
-                member_hash = member.get("hash", "")
-                member_key = member.get("artifact_key", "")
-
-                try:
-                    member_bytes = artifact_store.read(member_key)
-                except Exception:
-                    _recover_audit_event_mandatory(
-                        org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", ok=False,
-                        detail=(
-                            f"Member artifact not found: {member_key}. "
-                            f"Recovery requires intact ArtifactStore."
-                        ),
-                        reason_codes=["member_artifact_not_found"],
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Member artifact not found: {member_key}. "
-                            f"Recovery requires intact ArtifactStore."
-                        ),
-                    )
-
-                # Validate strict sha256:<64 lowercase hex> format
-                # Uses the single canonical validator from canonical_store
-                try:
-                    expected_hex = parse_strict_sha256_hash(member_hash)
-                except ValueError as exc:
-                    _recover_audit_event_mandatory(
-                        org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", ok=False,
-                        detail=(
-                            f"Member {member_path} hash invalid: {exc}"
-                        ),
-                        reason_codes=["malformed_hash"],
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Member {member_path} hash invalid: {exc}"
-                        ),
-                    )
-
-                actual_hex = hashlib.sha256(member_bytes).hexdigest()
-                if actual_hex != expected_hex:
-                    _recover_audit_event_mandatory(
-                        org.db, skill_id=pkg_match.skill_id, slug=slug,
-                        agent="operator", ok=False,
-                        detail=(
-                            f"Member {member_path} hash mismatch: "
-                            f"expected {expected_hex[:16]}..., "
-                            f"got {actual_hex[:16]}..."
-                        ),
-                        reason_codes=["member_hash_mismatch"],
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Member {member_path} hash mismatch: "
-                            f"expected {expected_hex[:16]}..., "
-                            f"got {actual_hex[:16]}... "
-                            f"ArtifactStore appears corrupted — "
-                            f"recovery requires intact artifact bytes."
-                        ),
-                    )
-
-    # ── 3. Refuse recovery of valid (non-corrupted) targets ───────
-    isolation = detect_platform_isolation()
-    store = CanonicalSkillStore(settings=rt_settings, isolation=isolation)
-    pkg_path = store.canonical_path(slug, version, content_hash)
-
-    if not pkg_path.exists():
-        _recover_audit_event_mandatory(
-            org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", ok=False,
-            detail=(
-                f"Canonical package not found at {pkg_path}. "
-                f"Package will be rebuilt on next materialization."
-            ),
-            reason_codes=["package_not_found_on_disk"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Canonical package not found at {pkg_path}. "
-                f"Nothing to recover — package will be rebuilt on "
-                f"next materialization."
-            ),
-        )
-
-    # Verify the target is actually corrupted — refuse valid targets.
-    # For manifest-based packages, validate each canonical member's
-    # SHA-256 against the manifest's declared hashes. If ALL match,
-    # the target is valid and recovery is refused.
-    if isinstance(manifest, dict) and "members" in manifest:
-        all_members_valid = True
-        for member in manifest["members"]:
-            member_path_str = member["path"]
-            member_file = pkg_path / member_path_str
-            if member_file.is_file():
-                try:
-                    expected_hex = parse_strict_sha256_hash(
-                        member["hash"])
-                except ValueError:
-                    all_members_valid = False
-                    break
-                actual_hex = hashlib.sha256(
-                    member_file.read_bytes()).hexdigest()
-                if actual_hex != expected_hex:
-                    all_members_valid = False
-                    break
-            else:
-                all_members_valid = False
-                break
-
-        if all_members_valid:
-            _recover_audit_event_mandatory(
-                org.db, skill_id=pkg_match.skill_id, slug=slug,
-                agent="operator", ok=False,
-                detail=(
-                    f"Recovery refused: canonical package {slug}@{version} "
-                    f"at {pkg_path} is valid (all member hashes match ledger)."
-                ),
-                reason_codes=["valid_target_refused"],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Canonical package {slug}@{version} at {pkg_path} "
-                    f"is valid (all member hashes match ledger). "
-                    f"No recovery needed. Refusing to delete a valid "
-                    f"target."
-                ),
-            )
-
-    # ── 3. Emit durable recovery event BEFORE deletion ────────────
-    # Persistence must succeed before any destructive action.
-    # If the event write fails, the canonical package is left
-    # untouched (fail-closed) — the operator can retry.
+    store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
+    package_path = store.canonical_path(body.slug, body.version, body.content_hash)
+    if not package_path.exists():
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Canonical package is absent; next materialization will build it", reason_codes=["package_not_found_on_disk"])
+        raise HTTPException(status_code=404, detail="Canonical package is absent; nothing to recover")
+    expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact_bytes + b"\x00").hexdigest()
     try:
-        org.db.insert_skill_validation_event(
-            skill_id=pkg_match.skill_id,
-            slug=slug,
-            agent="operator",
-            source="operator_recovery",
-            severity="info",
-            ok=True,
-            version=version,
-            findings=[
-                f"Operator recovery: deleting corrupted canonical package "
-                f"{slug}@{version} (hash={content_hash[:16]}...) at {pkg_path}. "
-                f"Next materialization will rebuild from ArtifactStore."
-            ],
-            reason_codes=["operator_recovery"],
-        )
+        target_valid = store.compute_tree_hash(body.slug, body.version, body.content_hash) == expected_tree_hash
+    except CanonicalStoreError:
+        target_valid = False
+    if target_valid:
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail="Recovery refused because the B2 canonical package is valid", reason_codes=["valid_target_refused"])
+        raise HTTPException(status_code=409, detail="Canonical package is valid; refusing to delete it")
+    try:
+        org.db.insert_skill_validation_event(skill_id=record["skill_id"], slug=body.slug, agent="operator",
+            source="operator_recovery", severity="info", ok=True, version=body.version,
+            findings=["Operator recovery removed a corrupted B2 canonical package."], reason_codes=["operator_recovery"])
     except Exception as exc:
-        # Event persistence failed — fail closed.
-        # Do NOT delete the package; canonical bytes stay unchanged.
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Recovery event persistence failed: {exc}. "
-                f"The canonical package was NOT deleted — it remains "
-                f"intact on disk. Retry recovery after resolving the "
-                f"persistence issue."
-            ),
-        )
-
-    # ── 4. Delete the corrupted package (only after event persisted) ──
+        raise HTTPException(status_code=500, detail="Recovery audit persistence failed; canonical package was not deleted") from exc
     try:
-        # Make writable first (hardened packages are readonly)
-        from runtime.skills.canonical_store import _make_writable_for_removal
-        _make_writable_for_removal(pkg_path)
-        shutil.rmtree(pkg_path)
+        _make_writable_for_removal(package_path)
+        shutil.rmtree(package_path)
     except Exception as exc:
-        _recover_audit_event_mandatory(
-            org.db, skill_id=pkg_match.skill_id, slug=slug,
-            agent="operator", ok=False,
-            detail=(
-                f"Failed to delete corrupted package {slug}@{version} "
-                f"at {pkg_path} (successful recovery event was "
-                f"already persisted): {exc}"
-            ),
-            reason_codes=["deletion_failed"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete corrupted package: {exc}",
-        )
-
-    return {
-        "ok": True,
-        "action": "recovered",
-        "slug": slug,
-        "version": version,
-        "content_hash": content_hash,
-        "canonical_path": str(pkg_path),
-        "message": (
-            f"Corrupted canonical package {slug}@{version} deleted. "
-            f"Restart daemon or trigger next launch to rebuild from "
-            f"the ArtifactStore (which must be verified against the "
-            f"release source for same-owner deployments)."
-        ),
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# THR-055 B1: POST /skills/agent — verified-agent create-skill route
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Prohibited body keys — same set as proposal route, plus org_slug
-_PROHIBITED_BODY_KEYS_B1 = frozenset({
-    "task_id", "session_id", "proposer_agent",
-    "org", "org_slug", "agent", "agent_name",
-    "actor", "eligibility", "permission", "permissions",
-})
-
-
-def _get_b1_protected_slugs(org: OrgState) -> frozenset:
-    """Build the live B1 protected-slug set from system contracts + release catalog.
-
-    Consults SYSTEM_CONTRACTS and the runtime skills registry (release-managed
-    skills only). Fails closed: if the registry cannot be loaded, raises
-    HTTP 500 rather than falling back to a stale static list.
-
-    This is the authoritative protected-slug set for the B1 create path only.
-    """
-    from runtime.skills.registry import SkillRegistry
-
-    release_dir = org.settings.project_root / "runtime" / "skills"
-    if not release_dir.is_dir():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "code": "protected_slugs_unavailable",
-                "detail": "Canonical release-managed skill registry is missing or unreadable. Protected-slug enforcement is mandatory.",
-            },
-        )
-    try:
-        package_dirs = tuple(
-            path for path in release_dir.iterdir()
-            if path.is_dir() and ((path / "skill.yaml").exists() or (path / "SKILL.md").exists())
-        )
-        if not package_dirs:
-            raise RuntimeError("release registry has no package directories")
-
-        expected_entries: set[tuple[str, str]] = set()
-        for package_dir in package_dirs:
-            manifest_path = package_dir / "skill.yaml"
-            skill_md_path = package_dir / "SKILL.md"
-            if not manifest_path.is_file() or not skill_md_path.is_file():
-                raise RuntimeError(f"incomplete release package: {package_dir.name}")
-            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict):
-                raise RuntimeError(f"invalid release manifest: {package_dir.name}")
-            skill_id = manifest.get("id", f"hr:{package_dir.name}")
-            skill_slug = manifest.get("slug", package_dir.name)
-            if not isinstance(skill_id, str) or not skill_id or not isinstance(skill_slug, str) or not skill_slug:
-                raise RuntimeError(f"invalid release identity: {package_dir.name}")
-            expected_entries.add((skill_id, skill_slug))
-        if len(expected_entries) != len(package_dirs):
-            raise RuntimeError("duplicate release package identity")
-
-        registry = SkillRegistry(skills_root=release_dir)
-        loaded_entries = registry.list_all()
-        loaded_identities: set[tuple[str, str]] = set()
-        for entry in loaded_entries:
-            entry_obj = entry[0] if isinstance(entry, tuple) else entry
-            skill_id = getattr(entry_obj, "id", None)
-            skill_slug = getattr(entry_obj, "slug", None)
-            if not isinstance(skill_id, str) or not skill_id or not isinstance(skill_slug, str) or not skill_slug:
-                raise RuntimeError("invalid loaded release identity")
-            loaded_identities.add((skill_id, skill_slug))
-        if len(loaded_identities) != len(loaded_entries) or loaded_identities != expected_entries:
-            raise RuntimeError("partial release registry load")
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "code": "protected_slugs_unavailable",
-                "detail": "Cannot load release-managed skill registry. Protected-slug enforcement is mandatory.",
-            },
-        )
-    return frozenset({skill_slug for _, skill_slug in loaded_identities} | {sc.id for sc in SYSTEM_CONTRACTS})
+        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+            detail=f"Failed to delete corrupted B2 canonical package: {exc}", reason_codes=["deletion_failed"])
+        raise HTTPException(status_code=500, detail="Failed to delete corrupted canonical package") from exc
+    return {"ok": True, "action": "recovered", "slug": body.slug, "version": body.version,
+            "content_hash": body.content_hash, "canonical_path": str(package_path), "skill_id": record["skill_id"],
+            "artifact_key": artifact_key,
+            "message": "Corrupted B2 canonical package deleted; next materialization rebuilds from verified B2 artifact provenance."}
 
 
 @agent_skills_router.post("/skills/agent", status_code=201)
 def create_skill_agent(
     org: OrgDep,
     request: Request,
-    body_raw: dict = RequestBody(..., description="Package metadata and content (no identity fields)"),
+    body_raw: dict = RequestBody(..., description="B2 custom-skill metadata and content"),
     session_id: str = Query(..., min_length=1),
 ) -> dict:
-    """B1: Create a custom skill via verified agent session binding.
+    """Create a B2 custom skill from verified SessionTracker provenance."""
+    from runtime.daemon.routes.custom_skills import create_agent_custom_skill
 
-    **Agent-only.** This route does NOT accept the master bearer token.
-    The caller provides only an opaque active session ID; the server
-    independently derives org, task_id, agent_name, and session_id from
-    the SessionTracker context (four-part server-authoritative provenance).
-
-    This is an ADDITIONAL verified-agent authoring path. The created skill
-    enters PROPOSED status and is hidden by default. B2 eligibility, human
-    web editor, effective visibility, migration/cutover, and proposal-review
-    resurrection are explicitly deferred.
-
-    Enforced invariants:
-    - No bearer token (401 bearer_not_accepted)
-    - No body identity keys (403 body_identity_rejected)
-    - Valid session with org context
-    - Cross-org denial
-    - Binding lease + active session re-verification
-    - standard_operational only
-    - Protected slug enforcement (system contracts + release registry, live)
-    - Nonempty task brief digest (the task must have a non-blank brief)
-    - Deterministic validation with validator version + findings
-    - Atomic persistence: all B1 provenance (org/task/agent/session,
-      brief digest, content hash, validator version/findings) committed
-      in the SAME transaction as the package
-    - Zero residue on any failure path
-    """
-    import hashlib as _hashlib
-    from runtime.skills.lifecycle.service import LifecycleError, SkillLifecycleService
-    from runtime.skills.lifecycle.models import LifecycleStatus
-
-    _b1_service = SkillLifecycleService()
-    _VALIDATOR_VERSION = "THR-055/1.0.0"
-
-    # ── Reject bearer token ──────────────────────────────────────────
-    if "authorization" in request.headers:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "bearer_not_accepted",
-                "detail": "This route is for agent-session skill creation only. "
-                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
-            },
-        )
-
-    # ── Reject ANY prohibited body identity/authority key BEFORE
-    #    any parsing, session lookup, or persistence. ──
-    for key in _PROHIBITED_BODY_KEYS_B1:
-        if key in body_raw:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "body_identity_rejected",
-                    "detail": f"{key} must not be set in the request body. "
-                              "Identity is derived from the server's verified session context.",
-                },
-            )
-
-    # ── Extract package fields from clean body ───────────────────────
-    slug = body_raw.get("slug", "")
-    name = body_raw.get("name", "")
-    skill_md = body_raw.get("skill_md", "")
-    version = body_raw.get("version", "0.1.0")
-    policy_class = body_raw.get("policy_class", "standard_operational")
-    description = body_raw.get("description", "")
-    references = body_raw.get("references", {}) or {}
-    assets = body_raw.get("assets", {}) or {}
-
-    # ── Resolve session context ──────────────────────────────────────
-    context = org.sessions.get_context_by_session(session_id)
-    if context is not None:
-        verified_org, task_id, agent_name = context
-        # Cross-org check
-        if verified_org != org.slug:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "cross_org_session",
-                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
-                              f"not '{org.slug}'. Org is derived from the server's "
-                              "verified session context.",
-                },
-            )
-    else:
-        resolved = org.sessions.get_by_session(session_id)
-        if resolved is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "unknown_session",
-                    "detail": f"No active session found for session_id '{session_id}'.",
-                },
-            )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "missing_org_context",
-                "detail": f"Session {session_id} has no org context.",
-            },
-        )
-
-    # ── Acquire binding lease and re-verify session ──────────────────
-    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
-    with binding_lease:
-        expected_session = org.sessions.get_active(task_id, agent_name)
-        if expected_session != session_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "session_not_current",
-                    "detail": f"Session {session_id} is not current for "
-                              f"task {task_id} agent {agent_name}.",
-                },
-            )
-
-        # ── Enforce B1 invariants before any persistence ─────────────
-        # 1. policy_class must be standard_operational
-        if policy_class != "standard_operational":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "invalid_policy_class",
-                    "detail": f"B1 only supports standard_operational. "
-                              f"Got: {policy_class}",
-                },
-            )
-
-        # 2. Protected slug enforcement (live registry)
-        protected_slugs = _get_b1_protected_slugs(org)
-        clean_slug = slug.strip()
-        if clean_slug in protected_slugs:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "protected_slug",
-                    "detail": f"Slug '{clean_slug}' is protected and cannot be used "
-                              "for a custom skill.",
-                },
-            )
-
-        # 3. Nonempty skill_md with heading
-        if not isinstance(skill_md, str) or not skill_md.strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "skill_md_empty",
-                    "detail": "SKILL.md content is empty or missing.",
-                },
-            )
-        if not skill_md.strip().startswith("#"):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "skill_md_no_heading",
-                    "detail": "SKILL.md must start with a Markdown heading.",
-                },
-            )
-
-        # 4. Nonempty task brief digest
-        task_record = org.db.get_task(task_id)
-        if task_record is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "task_not_found",
-                    "detail": f"Task {task_id} not found. "
-                              "The active session must be bound to an existing task.",
-                },
-            )
-        task_brief = (task_record.brief or "").strip()
-        if not task_brief:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "missing_task_brief",
-                    "detail": f"Task {task_id} has no brief. "
-                              "B1 requires a nonempty task brief for provenance digest.",
-                },
-            )
-        task_brief_digest = _hashlib.sha256(task_brief.encode("utf-8")).hexdigest()
-
-        # 5. Required metadata
-        if not slug or not isinstance(slug, str) or not slug.strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "missing_slug",
-                    "detail": "Required field 'slug' is missing or empty.",
-                },
-            )
-        if not name or not isinstance(name, str) or not name.strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "missing_name",
-                    "detail": "Required field 'name' is missing or empty.",
-                },
-            )
-
-        # 6. Deterministic validation — references/assets filename safety
-        validator_findings: list[str] = []
-        validator_reason_codes: list[str] = []
-        for fname in references:
-            try:
-                _validate_artifact_filename(fname)
-            except ValueError as exc:
-                validator_findings.append(f"Invalid reference filename '{fname}': {exc}")
-                validator_reason_codes.append("invalid_reference_filename")
-        for fname in assets:
-            try:
-                _validate_artifact_filename(fname)
-            except ValueError as exc:
-                validator_findings.append(f"Invalid asset filename '{fname}': {exc}")
-                validator_reason_codes.append("invalid_asset_filename")
-
-        # (g) Dry-materialization check
-        try:
-            _dry_materialize(clean_slug, skill_md, references, assets)
-        except Exception as exc:
-            validator_findings.append(f"Dry materialization failed: {exc}")
-            validator_reason_codes.append("materialization_error")
-
-        validation_ok = len(validator_findings) == 0
-
-        # Pack B1 provenance into event metadata — committed atomically
-        # INSIDE the service's existing transaction via extra_event_metadata.
-        b1_event_metadata = {
-            "task_brief_digest": task_brief_digest,
-            "validator_version": _VALIDATOR_VERSION,
-            "validator_ok": validation_ok,
-            "validator_findings": validator_findings,
-            "validator_reason_codes": validator_reason_codes,
-            "b1_create_path": True,
-        }
-
-        # ── Persist via existing SkillLifecycleService ────────────────
-        # All B1 provenance is passed through extra_event_metadata and
-        # committed in the SAME durable transaction as the package + event.
-        try:
-            pkg = _b1_service.submit_proposal(
-                db=org.db,
-                actor_kind="agent",
-                slug=clean_slug,
-                name=name,
-                description=description,
-                skill_md=skill_md,
-                version=version,
-                policy_class=policy_class,
-                references=references,
-                assets=assets,
-                task_id=task_id,
-                session_id=session_id,
-                proposer_agent=agent_name,
-                purpose="B1 create-skill — additional verified-agent authoring path",
-                target_agent_suggestion="",
-                protected_slugs=protected_slugs,
-                org_root=org.root,
-                extra_event_metadata=b1_event_metadata,
-            )
-        except LifecycleError as e:
-            raise HTTPException(
-                status_code=e.status_code,
-                detail={"code": e.code, "detail": e.detail},
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": "create_failed",
-                    "detail": f"Skill creation failed: {exc}",
-                },
-            )
-
-    return {
-        "skill_id": pkg.skill_id,
-        "version_id": pkg.id,
-        "version": pkg.version,
-        "status": pkg.status.value,
-        "content_hash": pkg.content_hash,
-        "content_artifact_key": pkg.content_artifact_key,
-        "proposal_task_id": pkg.proposal_task_id,
-        "provenance": {
-            "verified_org": verified_org,
-            "task_id": task_id,
-            "agent_name": agent_name,
-            "session_id": session_id,
-            "task_brief_digest": task_brief_digest,
-            "validator_version": _VALIDATOR_VERSION,
-            "validation_ok": validation_ok,
-        },
-    }
+    return create_agent_custom_skill(org.slug, session_id, org, request, body_raw)

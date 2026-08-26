@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,8 +32,14 @@ from runtime.models import (
     TokenUsage,
 )
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.host_supervisor import (
+    AdmissionController,
+    HostSessionSupervisor,
+    canary_policy,
+)
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.platform.session_backend import CleanupStatus
 from runtime.runtime import RuntimeDir
 
 pytestmark = pytest.mark.integration
@@ -132,6 +140,24 @@ def _insert_one_shot(db: Database, schedule_id: str, status=ScheduleStatus.FIRIN
     ))
 
 
+def _make_host_supervisor():
+    """THR-207 real-caller wiring: schedule fires run through the daemon-wide
+    HostSessionSupervisor (honest no-enforcement passthrough backend)."""
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    return build_default_host_supervisor()
+
+
+def _write_daemon_token(tmp_path: Path) -> None:
+    """The autouse ``_isolate_canonical_store`` conftest points
+    ``HAPPYRANCH_DAEMON_HOME`` at ``<tmp>/.happyranch``, which contains no
+    ``daemon.token`` — so the spawn route rejects every request with
+    "daemon token file missing". Write a test token so the real spawn
+    callback (and the THR-207 real-producer acceptance) can run."""
+    home = tmp_path / ".happyranch"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "daemon.token").write_text("test-daemon-token")
+
+
 def _assert_task_created(db: Database, brief: str, agent: str, team: str) -> str:
     tasks = db.list_tasks(limit=10)
     for task in tasks:
@@ -145,6 +171,7 @@ def _assert_task_created(db: Database, brief: str, agent: str, team: str) -> str
 @pytest.mark.asyncio
 async def test_schedule_fire_creates_task_via_spawn(tmp_path, monkeypatch):
     """Full integration: schedule fire -> spawn callback -> task created."""
+    _write_daemon_token(tmp_path)
     settings = Settings()
     db = Database(tmp_path / "test.db")
     org_dir = _setup_org(tmp_path, db)
@@ -188,6 +215,7 @@ async def test_schedule_fire_creates_task_via_spawn(tmp_path, monkeypatch):
         settings=settings,
         executor_factory=lambda name, settings, paths:
             _SpawningExecutor(client, "test-org", "SCHEDULE-001"),
+        host_supervisor=_make_host_supervisor(),
     )
 
     # Verify schedule transitioned to FIRED
@@ -247,6 +275,7 @@ async def test_schedule_no_callback_marks_failed(tmp_path):
         schedule_id="SCHEDULE-001",
         settings=settings,
         executor_factory=lambda name, settings, paths: _NoCallbackExecutor(),
+        host_supervisor=_make_host_supervisor(),
     )
 
     record = db.schedules.get("SCHEDULE-001")
@@ -281,6 +310,7 @@ async def test_schedule_executor_failure_marks_failed(tmp_path):
         schedule_id="SCHEDULE-002",
         settings=settings,
         executor_factory=lambda name, settings, paths: _FailingExecutor(),
+        host_supervisor=_make_host_supervisor(),
     )
 
     record = db.schedules.get("SCHEDULE-002")
@@ -291,6 +321,7 @@ async def test_schedule_executor_failure_marks_failed(tmp_path):
 @pytest.mark.asyncio
 async def test_schedule_weekly_fire_rearms(tmp_path):
     """Weekly schedule fire -> spawn -> re-armed with next fire_at."""
+    _write_daemon_token(tmp_path)
     from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
     settings = Settings()
@@ -350,6 +381,7 @@ async def test_schedule_weekly_fire_rearms(tmp_path):
         settings=settings,
         executor_factory=lambda name, settings, paths:
             _SpawningExecutor(client, "test-org", "SCHEDULE-003"),
+        host_supervisor=_make_host_supervisor(),
     )
 
     record = db.schedules.get("SCHEDULE-003")
@@ -374,6 +406,7 @@ async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
     The spawn callback resolves the row to EXPIRED after a successful fire
     whose next occurrence exceeds expires_at.  run_schedule must recognize
     EXPIRED as a valid callback-resolved terminal state and leave it alone."""
+    _write_daemon_token(tmp_path)
     from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
     settings = Settings()
@@ -437,6 +470,7 @@ async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
         settings=settings,
         executor_factory=lambda name, settings, paths:
             _SpawningExecutor(client, "test-org", "SCHEDULE-004"),
+        host_supervisor=_make_host_supervisor(),
     )
 
     record = db.schedules.get("SCHEDULE-004")
@@ -557,6 +591,7 @@ async def test_run_schedule_forwards_model_to_executor_run(tmp_path):
         schedule_id="SCHEDULE-MODEL-1",
         settings=Settings(),
         executor_factory=factory,
+        host_supervisor=_make_host_supervisor(),
     )
 
     assert captured_model.get("model") == "gpt-5.6-terra", (
@@ -601,6 +636,7 @@ async def test_run_schedule_refreshes_repos_before_executor_run(tmp_path, monkey
     await run_schedule(
         org_state=org_state, schedule_id="SCHEDULE-REFRESH", settings=Settings(),
         executor_factory=lambda *_args, **_kwargs: _Executor(),
+        host_supervisor=_make_host_supervisor(),
     )
 
     assert events == ["refresh_workspace_repos", "executor.run"]
@@ -652,9 +688,307 @@ async def test_run_schedule_no_model_preserves_default_behavior(tmp_path):
         schedule_id="SCHEDULE-MODEL-2",
         settings=Settings(),
         executor_factory=factory,
+        host_supervisor=_make_host_supervisor(),
     )
 
     assert captured_model.get("model") is None, (
         f"model should be None when AgentDef has no model, "
         f"got {captured_model.get('model')!r}"
     )
+
+
+# ── THR-207 real-producer acceptance: schedule fires through the wired
+# ── HostSessionSupervisor ──────────────────────────────────────────────────
+
+
+class _RecordingSpawnExecutor:
+    """Fake schedule executor that records whether it was invoked and, when
+    ``spawn=True``, calls the real ``schedules spawn`` callback through the
+    TestClient (the full end-to-end fire path)."""
+
+    def __init__(self, client, slug: str, schedule_id: str, *, spawn: bool = False,
+                 entered: threading.Event | None = None,
+                 release: threading.Event | None = None) -> None:
+        self._client = client
+        self._slug = slug
+        self._schedule_id = schedule_id
+        self._spawn = spawn
+        self.entered = entered
+        self.release = release
+        self.called = 0
+
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
+        self.called += 1
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            # The body is blocked mid-flight (like a real communicate loop);
+            # the fake backend's finish() releases it (teardown unblocks the
+            # loop). Returns success, exactly like a fire whose spawn
+            # callback never fired -> run_schedule marks no_callback.
+            self.release.wait(timeout=10)
+        if self._spawn:
+            resp = self._client.post(
+                f"/api/v1/orgs/{self._slug}/schedules/{self._schedule_id}/spawn",
+                json={"summary": "Dispatched the scheduled task."},
+            )
+            assert resp.status_code == 200, resp.text
+        return _FakeResult(success=True)
+
+
+class _ReleaseOnFinishBackend:
+    """Fake SessionBackend whose ``finish`` releases the executor body —
+    the deterministic stand-in for "containment teardown unblocks the
+    communicate loop" (the wired supervisor runs with this backend injected
+    so the acceptance test controls the launch/finish transitions)."""
+
+    def __init__(self, release: threading.Event | None = None) -> None:
+        self.release = release
+        self.calls = {"prepare": 0, "launch": 0, "finish": 0, "abandon": 0}
+        self.finish_reasons: list[str] = []
+        self.launched_pid = 0
+
+    def probe(self):
+        from runtime.platform.session_backend import CapabilityReport
+        return CapabilityReport(backend="acceptance", backend_version="1.0", capabilities={})
+
+    def prepare(self, request, policy):
+        self.calls["prepare"] += 1
+        from runtime.platform.session_backend import PendingHandle
+        return PendingHandle(backend="acceptance", token="acc-1", request_id=request.logical_id)
+
+    def launch(self, pending, spec):
+        self.calls["launch"] += 1
+        from runtime.platform.session_backend import RunningHandle
+        self.launched_pid = 4242 + self.calls["launch"]
+        return RunningHandle(
+            backend="acceptance", token=pending.token, request_id=pending.request_id,
+            root_pid=self.launched_pid, start_identity="boot-1", process=None,
+        )
+
+    def finish(self, running, terminal_reason, grace_seconds, samples=None):
+        self.calls["finish"] += 1
+        self.finish_reasons.append(terminal_reason)
+        if self.release is not None:
+            self.release.set()
+        from runtime.platform.session_backend import Receipt
+        return Receipt(
+            backend="acceptance", terminal_reason=terminal_reason,
+            cleanup_status=CleanupStatus.CLEAN, cleanup_duration_seconds=0.1,
+            quiescent=True, wall_time_seconds=1.0,
+        )
+
+    def abandon(self, pending):
+        self.calls["abandon"] += 1
+
+    def sample(self, running):
+        from runtime.platform.session_backend import ResourceSample
+        return ResourceSample(sampled_at=time.monotonic())
+
+    def recover(self, handle_token):
+        from runtime.platform.session_backend import RecoveryResult
+        return RecoveryResult(recovered=False, evidence="fake")
+
+
+async def _wait_for_event(event, timeout: float = 8.0) -> None:
+    """Poll a threading.Event with yields so the asyncio loop keeps running
+    (a blocking ``Event.wait`` on the loop thread starves the tasks under
+    test)."""
+    deadline = time.monotonic() + timeout
+    while not event.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert event.is_set(), "event not set in time"
+
+
+class _PausingAdmission(AdmissionController):
+    """Deterministic grant-to-first-gate window for the real producer: the
+    lease is granted (ownership transferred) and the run pauses before the
+    attempt's first gate, so a real ``supervisor.shutdown()`` lands in the
+    window the reviewer found (TASK-5600 [HIGH])."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.granted = threading.Event()
+        self.release = threading.Event()
+
+    def acquire(self, request, timeout=None):
+        lease = super().acquire(request, timeout=timeout)
+        if lease is not None:
+            self.granted.set()
+            assert self.release.wait(timeout=10)
+        return lease
+
+
+@pytest.mark.asyncio
+async def test_schedule_fire_acceptance_normal_path_releases_lease_exactly_once(tmp_path):
+    """Real producer acceptance: a schedule fire runs through the wired
+    HostSessionSupervisor end to end (admission -> launch body -> spawn
+    callback -> terminal). One bounded receipt publishes and the admission
+    lease releases exactly once; the ownership registry is empty."""
+    _write_daemon_token(tmp_path)
+    settings = Settings()
+    db = Database(tmp_path / "test.db")
+    org_dir = _setup_org(tmp_path, db)
+    _insert_one_shot(db, "SCHEDULE-ACC-1")
+
+    from runtime.daemon.org_state import OrgState
+    teams = TeamsRegistry.load(org_dir)
+    org_state = OrgState(
+        slug="test-org", root=org_dir, db=db, teams=teams,
+        settings=settings, orchestrator=_FakeOrch(),
+    )
+    from runtime.daemon.app import create_app
+    from fastapi.testclient import TestClient
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+    from runtime.daemon import paths as daemon_paths
+    rt = RuntimeDir.init(tmp_path / "rt")
+    state = DaemonState.from_runtime(rt, settings)
+    state.orgs["test-org"] = org_state
+    state.queue._running = True
+    client = TestClient(create_app(state), base_url="http://testserver")
+    client.headers.update({"Authorization": f"Bearer {daemon_paths.read_token()}"})
+
+    receipts = []
+    backend = _ReleaseOnFinishBackend()
+    supervisor = HostSessionSupervisor(
+        backend=backend, policy=canary_policy(), publisher=receipts.append,
+    )
+    exec_factory = lambda name, settings, paths: _RecordingSpawnExecutor(
+        client, "test-org", "SCHEDULE-ACC-1", spawn=True,
+    )
+    await run_schedule(
+        org_state=org_state, schedule_id="SCHEDULE-ACC-1", settings=settings,
+        executor_factory=exec_factory, host_supervisor=supervisor,
+    )
+
+    record = db.schedules.get("SCHEDULE-ACC-1")
+    assert record.status == ScheduleStatus.FIRED
+    # The fire went through the supervisor: exactly one lease released, the
+    # ownership registry is empty (no leaked active registration), and one
+    # bounded receipt published for the successful fire.
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+    assert len(receipts) == 1
+    assert receipts[0].terminal_reason == "success"
+    assert backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_fire_acceptance_shutdown_post_grant_never_launches(tmp_path):
+    """Real producer acceptance: the daemon drain fires between the admission
+    grant and the attempt's first gate (the TASK-5600 [HIGH] window). The
+    fire never launches the executor, the row is left FIRING for daemon-
+    restart recovery, and the lease releases exactly once with no receipt."""
+    settings = Settings()
+    db = Database(tmp_path / "test.db")
+    org_dir = _setup_org(tmp_path, db)
+    _insert_one_shot(db, "SCHEDULE-ACC-2")
+
+    from runtime.daemon.org_state import OrgState
+    teams = TeamsRegistry.load(org_dir)
+    org_state = OrgState(
+        slug="test-org", root=org_dir, db=db, teams=teams,
+        settings=settings, orchestrator=_FakeOrch(),
+    )
+
+    executor_box = {}
+    exec_factory = lambda name, settings, paths: (
+        executor_box.setdefault("exec", _RecordingSpawnExecutor(
+            None, "test-org", "SCHEDULE-ACC-2", spawn=False,
+        ))
+    )
+    receipts = []
+    admission = _PausingAdmission(cap=8, monotonic=time.monotonic)
+    supervisor = HostSessionSupervisor(
+        backend=_ReleaseOnFinishBackend(),
+        policy=canary_policy(),
+        publisher=receipts.append,
+        admission=admission,
+    )
+
+    async def _fire():
+        await run_schedule(
+            org_state=org_state, schedule_id="SCHEDULE-ACC-2", settings=settings,
+            executor_factory=exec_factory, host_supervisor=supervisor,
+        )
+
+    task = asyncio.create_task(_fire())
+    # Poll with yields — a blocking Event.wait() on the loop thread would
+    # starve the task itself.
+    await _wait_for_event(admission.granted)
+    supervisor.shutdown()  # the real daemon drain
+    admission.release.set()
+    await asyncio.wait_for(task, timeout=10)
+
+    record = db.schedules.get("SCHEDULE-ACC-2")
+    # Pre-launch shutdown winner: nothing ran; the row stays FIRING for
+    # daemon-restart recovery (recover_firing) — identical to a shutdown
+    # that cancels the worker mid-run pre-wiring.
+    assert record.status == ScheduleStatus.FIRING
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0
+    assert receipts == []
+    # The executor never launched, and no handle was prepared (the ownership
+    # gate refused before prepare).
+    assert executor_box["exec"].called == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_fire_acceptance_shutdown_mid_body_finishes_exactly_once(tmp_path):
+    """Real producer acceptance: the daemon drain lands while the fire's
+    executor body is in flight. The durable SHUTDOWN winner freezes
+    first-wins; containment (backend.finish) runs exactly once with reason
+    ``shutdown`` and releases the body; one receipt publishes; the lease
+    releases exactly once; the row reaches its normal no_callback terminal
+    (the fire ran but never spawned)."""
+    settings = Settings()
+    db = Database(tmp_path / "test.db")
+    org_dir = _setup_org(tmp_path, db)
+    _insert_one_shot(db, "SCHEDULE-ACC-3")
+
+    from runtime.daemon.org_state import OrgState
+    teams = TeamsRegistry.load(org_dir)
+    org_state = OrgState(
+        slug="test-org", root=org_dir, db=db, teams=teams,
+        settings=settings, orchestrator=_FakeOrch(),
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    receipts = []
+    backend = _ReleaseOnFinishBackend(release=release)
+    supervisor = HostSessionSupervisor(
+        backend=backend, policy=canary_policy(), publisher=receipts.append,
+    )
+    exec_factory = lambda name, settings, paths: _RecordingSpawnExecutor(
+        None, "test-org", "SCHEDULE-ACC-3", spawn=False,
+        entered=entered, release=release,
+    )
+
+    async def _fire():
+        await run_schedule(
+            org_state=org_state, schedule_id="SCHEDULE-ACC-3", settings=settings,
+            executor_factory=exec_factory, host_supervisor=supervisor,
+        )
+
+    task = asyncio.create_task(_fire())
+    await _wait_for_event(entered)  # the executor body is in flight
+    supervisor.shutdown()  # the real daemon drain
+    await asyncio.wait_for(task, timeout=10)
+
+    record = db.schedules.get("SCHEDULE-ACC-3")
+    # The body ran (no spawn callback) -> run_schedule's normal no_callback
+    # transition; the supervisor's containment finished exactly once with
+    # the durable SHUTDOWN winner.
+    assert record.status == ScheduleStatus.FAILED
+    assert record.error == "no_callback"
+    assert backend.finish_reasons == ["shutdown"]
+    assert len(receipts) == 1
+    assert receipts[0].terminal_reason == "shutdown"
+    assert supervisor._admission.released_total() == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor.active_count() == 0

@@ -20,6 +20,7 @@ export function TypingBubble({
   startedAt,
   nowMs,
   trailing,
+  caption,
 }: {
   agentName: string;
   status: 'queued' | 'working';
@@ -33,10 +34,22 @@ export function TypingBubble({
    * abort is no longer a TypingBubble `trailing` use.
    */
   trailing?: ReactNode;
+  /**
+   * Optional caption override (GH-688 Phase 1 Slice C). The threads
+   * transcript drives the tail live indicator from the store-projected pair
+   * state and passes an honest caption such as "queued · 4 messages coalesced
+   * · messages 19–22" or "replying… 12s · messages 19–22". When omitted the
+   * default "replying… <elapsed>" / "queued" caption is used, keeping the
+   * System Assistant dock unchanged.
+   */
+  caption?: string;
 }): JSX.Element {
   const now = nowMs ?? Date.now();
   const working = status === 'working';
-  const caption = working ? `replying… ${formatElapsed(startedAt, now)}`.trimEnd() : 'queued';
+  const defaultCaption = working
+    ? `replying… ${formatElapsed(startedAt, now)}`.trimEnd()
+    : 'queued';
+  const shownCaption = caption ?? defaultCaption;
 
   return (
     // Compact inline indicator (a-thread-detail `.replying`): a bold name row
@@ -50,7 +63,7 @@ export function TypingBubble({
       <div className="flex items-center gap-2">
         <span className="text-fg truncate text-sm font-semibold">{agentName}</span>
         <span className={`text-caption ${working ? 'text-info' : 'text-text-muted'}`}>
-          {caption}
+          {shownCaption}
         </span>
         {trailing ? <span className="ml-auto shrink-0">{trailing}</span> : null}
       </div>

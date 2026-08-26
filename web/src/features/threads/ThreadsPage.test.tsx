@@ -35,6 +35,8 @@ function mkThread(
     composed_from_dream_id: string | null;
     last_speaker: string | null;
     started_at: string;
+    pinned: boolean;
+    last_activity_at: string | null;
   }>,
 ) {
   return {
@@ -51,6 +53,9 @@ function mkThread(
     transcript_path: null as string | null,
     composed_from_dream_id: null as string | null,
     last_speaker: 'agent_a' as string | null,
+    pinned: false,
+    pinned_at: null as string | null,
+    last_activity_at: null as string | null,
     ...overrides,
   };
 }
@@ -1136,7 +1141,7 @@ describe('ThreadsPage — abort replies', () => {
 
   function mkMsgWithResponders(
     seq: number,
-    responders: Array<{ agent_name: string; status: string }>,
+    responders: Array<{ agent_name: string; status: string; purpose?: string }>,
   ) {
     return {
       seq,
@@ -1149,15 +1154,18 @@ describe('ThreadsPage — abort replies', () => {
       attachments: [],
       responder_status: responders.map((r) => ({
         agent_name: r.agent_name,
+        purpose: r.purpose ?? 'reply',
         status: r.status,
         responded_at: null,
         started_at: null,
+        decline_reason: null,
+        category: null,
       })),
     };
   }
 
   function mountThreadWithResponders(
-    responders: Array<{ agent_name: string; status: string }>,
+    responders: Array<{ agent_name: string; status: string; purpose?: string }>,
   ) {
     const thread = mkThread(threadId, 'Test thread');
     server.use(
@@ -1470,5 +1478,459 @@ describe('ThreadsPage — Tasks from this thread panel (THR-061 seq79)', () => {
     expect(
       await screen.findByText('No tasks dispatched from this thread yet'),
     ).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Reply delivery — store-projected pair state (GH-688 Phase 1 Slice C) */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () => {
+  const threadId = 'THR-5512';
+
+  function mountThreadWithReplyDelivery(
+    replyDelivery: Array<{
+      agent_name: string;
+      state: 'queued' | 'running' | 'retry_required';
+      from_seq: number;
+      through_seq: number;
+      coalesced_message_count: number;
+      started_at?: string | null;
+      last_terminal_reason?: string | null;
+    }>,
+    responders: Array<{ agent_name: string; status: string; purpose?: string }> = [],
+    // Extra transcript rows beyond the default MESSAGE row — used to hang
+    // special-purpose (TASK_FOLLOWUP) in-flight responders off SYSTEM rows,
+    // the triggering-row kind they actually attach to (GH-688 Phase 1).
+    extraMessages: Array<{
+      seq: number;
+      kind: 'message' | 'system';
+      responder_status: Array<{
+        agent_name: string;
+        status: string;
+        purpose?: string;
+      }>;
+    }> = [],
+  ) {
+    const thread = mkThread(threadId, 'Test thread');
+    const delivery = replyDelivery.map((d) => ({
+      agent_name: d.agent_name,
+      state: d.state,
+      from_seq: d.from_seq,
+      through_seq: d.through_seq,
+      coalesced_message_count: d.coalesced_message_count,
+      started_at: d.started_at ?? null,
+      updated_at: '2026-05-14T00:00:00Z',
+      last_terminal_reason: d.last_terminal_reason ?? null,
+    }));
+    const msg = {
+      seq: 1,
+      speaker: 'founder',
+      kind: 'message' as const,
+      body_markdown: 'hi',
+      decline_reason: null,
+      system_payload: null,
+      created_at: '2026-05-14T00:00:00Z',
+      attachments: [],
+      responder_status: responders.map((r) => ({
+        agent_name: r.agent_name,
+        purpose: r.purpose ?? 'reply',
+        status: r.status,
+        responded_at: null,
+        started_at: null,
+        decline_reason: null,
+        category: null,
+      })),
+    };
+    const messages = [
+      msg,
+      ...extraMessages.map((em) => ({
+        seq: em.seq,
+        speaker: em.kind === 'system' ? 'agent_x' : 'founder',
+        kind: em.kind,
+        body_markdown: em.kind === 'message' ? 'hi' : null,
+        decline_reason: null,
+        system_payload:
+          em.kind === 'system'
+            ? { kind_tag: 'task_completed', task_id: 'TASK-9' }
+            : null,
+        created_at: '2026-05-14T00:00:00Z',
+        attachments: [],
+        responder_status: em.responder_status.map((r) => ({
+          agent_name: r.agent_name,
+          purpose: r.purpose ?? 'reply',
+          status: r.status,
+          responded_at: null,
+          started_at: null,
+          decline_reason: null,
+          category: null,
+        })),
+      })),
+    ];
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [thread] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+        HttpResponse.json({
+          ...thread,
+          participants: ['dev_agent', 'qa_engineer', 'support_lead'],
+          messages,
+          reply_delivery: delivery,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+        HttpResponse.json({
+          messages,
+          reply_delivery: delivery,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+        HttpResponse.text('', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
+      // The page also queries the tasks panel and the fresh-tokens rail row;
+      // stub them so onUnhandledRequest noise stays silent (repo convention).
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tasks`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
+        HttpResponse.json({ rollup: [] }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
+  }
+
+  test('renders the Reply delivery rail from the store projection (queued + running)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([
+      {
+        agent_name: 'qa_engineer',
+        state: 'queued',
+        from_seq: 2,
+        through_seq: 4,
+        coalesced_message_count: 3,
+      },
+      {
+        agent_name: 'dev_agent',
+        state: 'running',
+        from_seq: 1,
+        through_seq: 3,
+        coalesced_message_count: 3,
+        started_at: '2026-05-14T00:00:30Z',
+      },
+    ]);
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    // Active work stays visible; queued receipts are compact until disclosed.
+    expect(rail.getByText('dev_agent')).toBeVisible();
+    await userEvent.click(rail.getByText('1 queued delivery'));
+    expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
+    // running row — replying + immutable range.
+    expect(rail.getByText(/replying/)).toBeInTheDocument();
+    expect(rail.getByText(/messages 1–3/)).toBeInTheDocument();
+    // The transcript tail mirrors the same pair projection.
+    expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
+    expect(screen.getByLabelText('dev_agent is replying')).toBeInTheDocument();
+  });
+
+  test('queued pair is never portrayed as an active subprocess', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([
+      {
+        agent_name: 'qa_engineer',
+        state: 'queued',
+        from_seq: 2,
+        through_seq: 4,
+        coalesced_message_count: 3,
+      },
+    ]);
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    // The queued TypingBubble carries the honest caption and aria-label.
+    expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
+    await userEvent.click(rail.getByText('1 queued delivery'));
+    expect(rail.getByText('3 messages coalesced · messages 2–4')).toBeInTheDocument();
+    expect(rail.queryByText(/replying/)).not.toBeInTheDocument();
+  });
+
+  test('retry_required renders as a rail diagnostic with the last terminal reason', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([
+      {
+        agent_name: 'support_lead',
+        state: 'retry_required',
+        from_seq: 2,
+        through_seq: 5,
+        coalesced_message_count: 4,
+        last_terminal_reason: 'timeout',
+      },
+    ]);
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    expect(
+      screen.getByText('retry required · messages 2–5 · last: timeout'),
+    ).toBeInTheDocument();
+    // retry_required never renders as typing / a subprocess.
+    expect(screen.queryByLabelText('support_lead is replying')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('support_lead is queued')).not.toBeInTheDocument();
+  });
+
+  test('EXACT regression: system seq 39 + founder msg seq 40 + running REPLY range 39-40 renders exactly ONE replying row', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Founder's THR-198 edge: the coalesced REPLY delivery range STARTS on a
+    // SYSTEM row (seq 39, a resumed divider). The REPLY invocation hangs off
+    // that system row with purpose='reply' on the wire — the selector must
+    // classify it as a REPLY (owned by the pair projection) and suppress it,
+    // so only the store-projected pair bubble renders.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'investment_advisor',
+          state: 'running',
+          from_seq: 39,
+          through_seq: 40,
+          coalesced_message_count: 2,
+          started_at: '2026-05-14T00:00:30Z',
+        },
+      ],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'reply' },
+          ],
+        },
+        {
+          seq: 40,
+          kind: 'message',
+          responder_status: [],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Exactly ONE replying row for the single conversational REPLY — no
+    // duplicate from the system-row-anchored invocation.
+    expect(screen.getAllByLabelText('investment_advisor is replying')).toHaveLength(1);
+    // The rail shows the running pair with the inclusive range.
+    const rail = within(screen.getByLabelText('Reply delivery'));
+    expect(rail.getByText(/replying/)).toBeInTheDocument();
+    expect(rail.getByText(/messages 39–40/)).toBeInTheDocument();
+  });
+
+  test('same-agent system-row REPLY range + genuine TASK_FOLLOWUP both stay visible (no agent-only suppression)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // investment_advisor concurrently holds (a) a RUNNING REPLY pair anchored
+    // on system seq 39 (purpose='reply' on the wire) and (b) a working
+    // TASK_FOLLOWUP on system seq 41 (purpose='task_followup'). Suppression
+    // must mask ONLY the REPLY (owned by the pair) — the followup row stays.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'investment_advisor',
+          state: 'running',
+          from_seq: 39,
+          through_seq: 40,
+          coalesced_message_count: 2,
+          started_at: '2026-05-14T00:00:30Z',
+        },
+      ],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'reply' },
+          ],
+        },
+        {
+          seq: 41,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'investment_advisor', status: 'working', purpose: 'task_followup' },
+          ],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Pair bubble (REPLY) + preserved special-purpose followup bubble.
+    expect(screen.getAllByLabelText('investment_advisor is replying')).toHaveLength(2);
+  });
+
+  test('system-row-anchored REPLY terminal state restores the per-message replied marker', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // The REPLY anchored on system seq 39 SETTLED (status='replied' on the
+    // wire with purpose='reply'); the transcript must render the terminal
+    // replied marker on that system row (TASK-5553) — the pair projection is
+    // fully settled so the rail section is absent.
+    mountThreadWithReplyDelivery(
+      [],
+      [],
+      [
+        {
+          seq: 39,
+          kind: 'system',
+          responder_status: [
+            {
+              agent_name: 'investment_advisor',
+              status: 'replied',
+              purpose: 'reply',
+            },
+          ],
+        },
+        {
+          seq: 40,
+          kind: 'message',
+          responder_status: [],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Test thread')).toBeInTheDocument();
+    // The system-row replied marker is visible; no fabricated in-flight row.
+    expect(screen.getByText('replied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('investment_advisor is replying')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reply delivery')).not.toBeInTheDocument();
+  });
+
+  test('omits the Reply delivery section when the projection is empty', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([]);
+
+    expect(await screen.findByText('Test thread')).toBeInTheDocument();
+    expect(screen.queryByText('Reply delivery')).not.toBeInTheDocument();
+  });
+
+  test('preserves special-purpose in-flight rows not covered by a pair entry', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // TASK_FOLLOWUP in-flight rows are NOT in the reply-delivery projection
+    // (they hang off SYSTEM rows); the inferred in-flight tail must keep them.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'qa_engineer',
+          state: 'queued',
+          from_seq: 2,
+          through_seq: 4,
+          coalesced_message_count: 3,
+        },
+      ],
+      [],
+      [
+        {
+          seq: 2,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'ops_lead', status: 'working', purpose: 'task_followup' },
+          ],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Pair-projected bubble (queued caption) + preserved inferred working row.
+    expect(screen.getByLabelText('qa_engineer is queued')).toBeInTheDocument();
+    expect(screen.getByLabelText('ops_lead is replying')).toBeInTheDocument();
+  });
+
+  test('same agent REPLY pair and TASK_FOLLOWUP wake both render (purpose-aware suppression)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // dev_agent concurrently holds a queued conversational REPLY pair (store
+    // projection) AND a working TASK_FOLLOWUP wake on a SYSTEM row. The
+    // agent-name-only suppression would hide the special-purpose row; the
+    // purpose-aware filter (wire purpose, not row kind) must keep BOTH rows
+    // visible.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'dev_agent',
+          state: 'queued',
+          from_seq: 1,
+          through_seq: 1,
+          coalesced_message_count: 1,
+        },
+      ],
+      [{ agent_name: 'dev_agent', status: 'queued' }], // REPLY wake on the message row
+      [
+        {
+          seq: 2,
+          kind: 'system',
+          responder_status: [
+            { agent_name: 'dev_agent', status: 'working', purpose: 'task_followup' },
+          ],
+        },
+      ],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    // Store-projected REPLY pair bubble.
+    expect(screen.getByLabelText('dev_agent is queued')).toBeInTheDocument();
+    // Same-agent TASK_FOLLOWUP in-flight bubble is preserved.
+    expect(screen.getByLabelText('dev_agent is replying')).toBeInTheDocument();
+  });
+
+  test('conversational REPLY-only coalescing is unchanged (no duplicate typing bubble)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // A REPLY wake on a MESSAGE row for an agent whose pair is queued must be
+    // masked by the store projection: exactly ONE queued bubble renders.
+    mountThreadWithReplyDelivery(
+      [
+        {
+          agent_name: 'dev_agent',
+          state: 'queued',
+          from_seq: 1,
+          through_seq: 2,
+          coalesced_message_count: 2,
+        },
+      ],
+      [{ agent_name: 'dev_agent', status: 'queued' }],
+    );
+
+    expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('dev_agent is queued')).toHaveLength(1);
+    // No fabricated second typing bubble for the masked REPLY row.
+    expect(screen.queryByLabelText('dev_agent is replying')).not.toBeInTheDocument();
+  });
+
+  test('detail error keeps the error state and no Reply delivery section', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const thread = mkThread(threadId, 'Test thread');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [thread] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+        HttpResponse.json(
+          { detail: { code: 'boom' } },
+          { status: 500 },
+        ),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tasks`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
+        HttpResponse.json({ rollup: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+        HttpResponse.text('', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/${threadId}`);
+
+    expect(await screen.findByText(/Failed to load thread/i)).toBeInTheDocument();
+    expect(screen.queryByText('Reply delivery')).not.toBeInTheDocument();
   });
 });

@@ -148,6 +148,12 @@ PRD's approved cutline (§3.1 "Bounded monthly grammar," item 5 below).
 | `count` | int ≥ 1 \| null | all | "Ends: After N **successful dispatches**." **Never passed as RRULE `COUNT` (item 1 — see §5.4 for the full mechanism).** Mutually exclusive with `until`. Both null = "Ends: Never" (§6.4). |
 
 `YEARLY` carries no `byday`/`bymonthday`/`ordinal` — the occurrence day is
+anchored. For a full recurring-editor PATCH only, an inactive selector may be
+sent as explicit `null` to clear it from the stored-rule merge. The service
+removes those accepted `byday`/`bymonthday`/`ordinal` clears before validation
+and persistence; canonical stored rules therefore omit inactive selectors.
+This is a PATCH-clear boundary, not a grammar expansion: DAILY/YEARLY remain
+selector-free and MONTHLY still has exactly one bounded selector.
 always `anchor_date`'s own month/day; this keeps yearly inside the bounded
 scope instead of growing a second by-month grammar nobody asked for. A
 leap-day (Feb 29) `anchor_date` skips non-leap years identically to a
@@ -742,22 +748,17 @@ audit call (§3.4) is added at the pre-existing `ARMED→FIRING` claim
 (`schedule_scheduler.py:120`), for all `kind` values.
 
 **Occurrence key / idempotent dispatch (item 7 — qa_engineer seq243/246).**
-v1 already guarantees at-most-once dispatch per fire through the existing
-`ARMED→FIRING` status transition (`schedule_scheduler.py:48-50,120`,
-`schedule_store.py:235-254` `recover_firing` for the crash-mid-fire case):
-the scheduler claims a due row by flipping its status before enqueuing, so
-a concurrent tick or a restart catch-up sees `FIRING`, not `ARMED`, and
-never re-claims it. v2 does not need a new persisted key or table — it
-**names** the existing mechanism's key explicitly so it is testable: the
-occurrence key is `(schedule_id, fire_at)` at the instant of claim, and
-idempotency is enforced by the fact that a claimed row's `fire_at` changes
-on every re-arm (§7.2 above), so a stale duplicate claim attempt against the
-same `(schedule_id, fire_at)` pair always finds the row already in `FIRING`
-or already re-armed with a *different* `fire_at`. This is the same
-mechanism for `ONE_SHOT`, `WEEKLY`, and `RECURRING` — v2 introduces no new
-idempotency surface, only documents the existing one so qa_engineer can
-write a red/green test that claims the same key twice and asserts exactly
-one root task.
+At-most-once dispatch per fire requires an atomic `ARMED→FIRING`
+compare-and-set (`schedule_scheduler.py:48-50,120`; `ScheduleStore.claim_firing`):
+the claim updates only a row that is still `ARMED`, and the scheduler enqueues
+only when that update affects one row. A concurrent tick or restart catch-up
+that loses the claim sees no affected row and does not enqueue. v2 does not
+need a new persisted key or table — the occurrence key is `(schedule_id,
+fire_at)` at the instant of claim, and a claimed row's `fire_at` changes on
+every re-arm (§7.2 above), so a stale duplicate claim attempt against the same
+pair finds the row already in `FIRING` or re-armed with a *different*
+`fire_at`. This is the same mechanism for `ONE_SHOT`, `WEEKLY`, and
+`RECURRING`.
 
 ### 7.3 Missed-fire / stale path
 
@@ -814,6 +815,21 @@ protocol. The allowed-fields list (`_ALLOWED_EDIT_FIELDS`,
 new editable field is added here (review-renewal is a **separate** control,
 §7.6, precisely because it touches `expires_at`/`indefinite`, which
 `edit()` deliberately excludes).
+
+For a native `RECURRING` PATCH that supplies a recurrence and/or top-level
+timezone edit but omits `fire_at`, the daemon derives and persists the next
+eligible occurrence from the fully merged, validated rule. The caller does not
+calculate recurrence or DST. If `fire_at` is supplied, the existing strict
+exact-match validation remains: it is an assertion of the server-computed next
+occurrence, not an alternate scheduling authority. This omission-and-derive
+rule is native-recurring only; one-shot and legacy weekly PATCH semantics stay
+unchanged.
+
+An ARMED or PAUSED founder PATCH may also supply `start_date` as an intentional
+rephase, optionally alongside the validated rule/timezone patch. The daemon
+sets `anchor_date` to that normalized date and derives `fire_at`; no browser
+calculation is accepted as authority. The existing `schedule_edited` action
+audits the requested `start_date` and before/after recurrence and fire timing.
 
 **Anchor-reset rule (item 4 — dev_agent seq245, product_lead seq248):** a
 timing-only edit (a change to `time` or `tz` inside `recurrence`, or to
@@ -911,12 +927,17 @@ the skill's preconditions (explicit-instruction-only, self-target,
 mandatory normalization) — those are kind-agnostic already. The example
 payload does **not** include `anchor_date` — it is server-computed
 (§3.2/§7.1) and must not appear in the agent-authored request.
+For an explicit native-recurring phase, that payload may instead include the
+top-level transient `start_date` (`YYYY-MM-DD`) and omit `fire_at`; the daemon
+validates the selected local rule/DST occurrence and persists only its managed
+`anchor_date` plus derived UTC fire.
 
 ### 8.2 CLI / API + OpenAPI/TS parity — revised (item 6, item 10)
 
-`ScheduleCreateBody`/`ScheduleEditBody` (`routes/schedules.py:59-77,
-263-273`) need no new Pydantic fields (`recurrence: dict` already accepts
-the richer shape; `kind: str` already accepts a new string value) — but
+`ScheduleCreateBody`/`ScheduleEditBody` expose the optional top-level
+`start_date` phase field for native recurring schedules; it is transient, not
+a recurrence key or DB field. The existing `recurrence: dict` accepts the
+richer rule shape; `kind: str` already accepts a new string value, but
 `kind`'s implicit value set (today informally `"one_shot"|"weekly"`) should
 gain an explicit note/enum in the OpenAPI schema so `"recurring"` isn't
 silently undocumented. **New:** a `POST /schedules/{id}/renew` route and

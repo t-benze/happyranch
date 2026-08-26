@@ -792,16 +792,17 @@ def _seed_skills_and_config(
     # Agent definition
     agents_dir = org_dir / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
-    (agents_dir / f"{agent_name}.md").write_text(
-        "---\n"
-        f"name: {agent_name}\n"
-        "team: engineering\n"
-        "role: worker\n"
-        f"executor: {agent_executor}\n"
-        "---\n\n"
-        f"# {agent_name}\n\nBuild software.\n"
-        "## Routine Tasks\n\n- Triage open tickets.\n"
-    )
+    for name in (agent_name, "alice"):
+        (agents_dir / f"{name}.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            "team: engineering\n"
+            "role: worker\n"
+            f"executor: {agent_executor}\n"
+            "---\n\n"
+            f"# {name}\n\nBuild software.\n"
+            "## Routine Tasks\n\n- Triage open tickets.\n"
+        )
 
 
 def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
@@ -918,6 +919,9 @@ class TestCallPathManagedSkillsIndex:
 
     def _make_thread_state(self, tmp_path: Path, agent: str = "alice"):
         """Create a FakeOrgState with thread, messages, and invocation."""
+        from runtime.orchestrator._paths import OrgPaths
+        from tests.conftest import seed_test_agents
+        seed_test_agents(OrgPaths(root=tmp_path), (agent,))
         db = Database(tmp_path / "happyranch.db")
         db.insert_thread(ThreadRecord(
             id="THR-001", subject="Test thread",
@@ -932,6 +936,16 @@ class TestCallPathManagedSkillsIndex:
             thread_id="THR-001", agent_name=agent,
             triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
         )
+        # GitHub #688 Slice B: seed the delivery-state queued slot so the
+        # runner's queued→running CAS succeeds.
+        db._conn.execute(
+            "INSERT INTO thread_reply_delivery_state "
+            "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+            "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("THR-001", agent, 0, 1, inv.invocation_token,
+             "2026-01-01T00:00:00+00:00"),
+        )
+        db._conn.commit()
         ws = tmp_path / "workspaces" / agent
         ws.mkdir(parents=True)
         (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1107,6 +1121,17 @@ class TestCallPathManagedSkillsIndex:
             thread_id="THR-001", agent_name="alice",
             triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
         )
+        # GitHub #688 Slice B: seed the delivery-state queued slot (ack=1,
+        # req=2) so the runner's CAS succeeds and the resume delta path is
+        # exercised (last_resumed_seq=1 < running_from=2).
+        db._conn.execute(
+            "INSERT INTO thread_reply_delivery_state "
+            "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+            "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("THR-001", "alice", 1, 2, inv.invocation_token,
+             "2026-01-01T00:00:00+00:00"),
+        )
+        db._conn.commit()
         ws = tmp_path / "workspaces" / "alice"
         ws.mkdir(parents=True)
         (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1232,6 +1257,15 @@ class TestCallPathManagedSkillsIndex:
             thread_id="THR-001", agent_name="alice",
             triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
         )
+        # GitHub #688 Slice B: seed the delivery-state queued slot.
+        db._conn.execute(
+            "INSERT INTO thread_reply_delivery_state "
+            "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+            "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("THR-001", "alice", 0, 1, inv.invocation_token,
+             "2026-01-01T00:00:00+00:00"),
+        )
+        db._conn.commit()
         ws = tmp_path / "workspaces" / "alice"
         ws.mkdir(parents=True)
         (ws / "agent.yaml").write_text("executor: claude\n")

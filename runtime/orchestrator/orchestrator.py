@@ -62,6 +62,14 @@ class WorkspaceNotInitialized(RuntimeError):
     """
 
 
+class AgentUnavailableError(RuntimeError):
+    """Raised when a task launch targets an agent with no active definition."""
+
+
+class AgentTerminatedError(AgentUnavailableError):
+    """Raised when a task launch targets an agent that has been terminated."""
+
+
 def _indent(text: str, prefix: str) -> str:
     """Indent every line of text with prefix (for YAML block-literal emission)."""
     if not text:
@@ -263,11 +271,21 @@ class Orchestrator:
         """Resolve the per-agent executor from org/agents/<name>.md frontmatter.
 
         THR-095: AgentDef.executor is the SINGLE authoritative store.
-        agent.yaml is no longer read for executor resolution.
+        agent.yaml is no longer read for executor resolution. Absent or
+        terminated agents fail closed rather than silently falling back to
+        ``claude``.
         """
-        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
         agent_def = load_agent(self._paths, agent_name)
-        return agent_def.executor if agent_def else "claude"
+        if agent_def is None:
+            if is_terminated(self._paths, agent_name):
+                raise AgentTerminatedError(
+                    f"agent {agent_name!r} has been terminated"
+                )
+            raise AgentUnavailableError(
+                f"agent {agent_name!r} has no active definition"
+            )
+        return agent_def.executor
 
     def _resolve_model_name(self, agent_name: str) -> str | None:
         """Resolve the per-agent model from org/agents/<name>.md frontmatter.
@@ -276,9 +294,17 @@ class Orchestrator:
         agent.yaml is no longer read for model resolution.
         Returns the model string if set, or None when absent.
         """
-        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
         agent_def = load_agent(self._paths, agent_name)
-        return agent_def.model if agent_def else None
+        if agent_def is None:
+            if is_terminated(self._paths, agent_name):
+                raise AgentTerminatedError(
+                    f"agent {agent_name!r} has been terminated"
+                )
+            raise AgentUnavailableError(
+                f"agent {agent_name!r} has no active definition"
+            )
+        return agent_def.model
 
     def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
         """Resolve the per-session timeout, walking task -> org_settings DB ->
@@ -361,8 +387,8 @@ class Orchestrator:
                 f"You are {agent_name}. Use the start-task skill to handle this task.\n"
             )
         # role_guidance is the per-task overlay (managers get the capabilities
-        # block; workers get nothing extra beyond the brief). Empty prompt =>
-        # omit the line entirely so workers don't see a dangling block scalar.
+        # block; workers only get a blocked-jobs resume header when applicable).
+        # Empty prompt => omit the line so workers don't see a dangling block scalar.
         role_guidance_block = (
             f"  role_guidance: |\n{_indent(prompt, '    ')}\n"
             if prompt and prompt.strip()

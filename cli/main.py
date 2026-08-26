@@ -56,6 +56,8 @@ from cli.commands.runtime import (  # noqa: F401  (re-export for back-compat)
     cmd_init,
     cmd_orgs,
     cmd_orgs_init,
+    cmd_orgs_portability_preflight,
+    cmd_orgs_reconcile_portability,
     cmd_orgs_unload,
     cmd_runtime,
     cmd_use,

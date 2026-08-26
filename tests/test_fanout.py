@@ -1530,6 +1530,62 @@ class TestFanoutPipeline:
             f"carrier should FAIL on verdict mismatch, got {carrier.status}"
         )
 
+    def test_fail_closed_on_completed_carrier_leg_without_report(self, runtime, db, monkeypatch):
+        """A completed carrier leg without its durable report must fail/wake.
+
+        The no-report path has an expected verdict, so it is not a valid
+        verdict-less chain completion.  It must terminate the carrier and
+        feed the fan-out barrier rather than stranding both rows.
+        """
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.run_step import (
+            _enqueue_parent_if_waiting,
+            _spawn_fanout_children,
+        )
+
+        for a in ("dev_agent", "qa_engineer"):
+            (runtime.workspaces_dir / a).mkdir(parents=True)
+        db.insert_task(TaskRecord(
+            id="T-NOREPORT", brief="no report carrier",
+            assigned_agent="engineering_head", task_type="task",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(), paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+        monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (_make_result(), _make_report("done")))
+        _spawn_fanout_children(
+            orch, db.get_task("T-NOREPORT"), "T-NOREPORT", 1,
+            children=[
+                {"agent": "dev_agent", "prompt": "build", "expect_verdict": "APPROVE"},
+                {"agent": "qa_engineer", "prompt": "plain"},
+            ],
+            width=2, manager_agent="engineering_head", step_audit_id=1,
+        )
+        carrier_id, plain_id = (
+            next((cid for cid in db.get_children("T-NOREPORT") if db.get_task(cid).active_chain is not None)),
+            next((cid for cid in db.get_children("T-NOREPORT") if db.get_task(cid).active_chain is None)),
+        )
+        leg_id = db.get_children(carrier_id)[0]
+        db.update_task(leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        # Deliberately no task_result row for leg_id.
+        _enqueue_parent_if_waiting(orch, leg_id)
+
+        carrier = db.get_task(carrier_id)
+        assert carrier.status == TaskStatus.FAILED
+        assert carrier.active_chain is None
+        assert db.get_children(carrier_id) == [leg_id]
+
+        db.update_task(plain_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=plain_id, agent="qa_engineer", session_id="s",
+            status="completed", confidence_score=80, output_summary="plain done",
+        )
+        _enqueue_parent_if_waiting(orch, plain_id)
+        assert list(q._items).count(("test", "T-NOREPORT")) == 1
+
     # ── §3.6 test 7: restart recovery ──
 
     def test_all_carriers_terminal_sweep_reenqueues_parent(self, runtime, db, monkeypatch):

@@ -95,6 +95,7 @@ class AuditLogger:
         *,
         actor: str = "founder",
         thread_id: str | None = None,
+        resolution_path: str = "manual_break_glass",
     ) -> None:
         """Record that an escalated task was resolved.
 
@@ -103,7 +104,11 @@ class AuditLogger:
         thread when the resolution came from the thread surface. Back-compat:
         both params are keyword-only with founder/None defaults.
         """
-        payload: dict = {"decision": decision, "rationale": rationale}
+        payload: dict = {
+            "decision": decision,
+            "rationale": rationale,
+            "resolution_path": resolution_path,
+        }
         if thread_id is not None:
             payload["thread_id"] = thread_id
         self._db.insert_audit_log(
@@ -111,6 +116,20 @@ class AuditLogger:
             agent=actor,
             action="escalation_resolved",
             payload=payload,
+        )
+
+    def log_escalation_continuation_rejected(
+        self, task_id: str, *, actor: str, payload: dict,
+    ) -> None:
+        """Record a rejected THR-166 autonomous-continuation attempt.
+
+        This is intentionally separate from the legacy/manual resolution audit:
+        rejected policy attempts must remain reviewable without changing the
+        meaning of ``audit_log.task_id``.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id, agent=actor,
+            action="escalation_continuation_rejected", payload=payload,
         )
 
     def log_zombie_flagged(self, task_id: str, agent: str) -> None:
@@ -138,6 +157,36 @@ class AuditLogger:
             task_id=task_id, agent=agent,
             action="zombie_cleared",
             payload={"reason": "zombie recovered — flag cleared"},
+        )
+
+    def log_portability_reconciled(
+        self,
+        *,
+        task_id: str,
+        actor: str,
+        request_hash: str,
+        evidence: dict,
+        disposition: str,
+        before: dict,
+        after: dict,
+    ) -> None:
+        """Record a founder-authorized portability zombie reconciliation.
+
+        Uses the ordinary ``task_id`` scope (the reconciled task), not a new
+        scope prefix. Payload carries the SHA-256 request hash, founder evidence,
+        disposition, and before/after state so the human decision is auditable.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=actor,
+            action="portability_reconciled",
+            payload={
+                "request_hash": request_hash,
+                "evidence": evidence,
+                "disposition": disposition,
+                "before": before,
+                "after": after,
+            },
         )
 
     def log_task_cancelled(
@@ -1891,6 +1940,45 @@ class AuditLogger:
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "reason": reason,
+            },
+        )
+
+    def log_job_reconciled_orphaned(
+        self,
+        *,
+        task_id: str,
+        job_id: str,
+        reason: str,
+        evidence: dict,
+        before: dict,
+        after: dict,
+    ) -> None:
+        """Durable audit for the never-started pending-job reconciliation seam.
+
+        Records the founder-authorized bookkeeping terminalization of an
+        abandoned never-dispatched job (THR-195): the full non-live proof
+        evidence, the row's before/after lifecycle state, and the reason, so
+        the action is auditable and recovery-aware. ``agent`` is ``"system"``
+        — the transition is a system reconciliation, not a founder or agent
+        review decision.
+
+        The row is inserted UNCOMMITTED (``insert_audit_log_uncommitted``) and
+        participates in the caller's transaction: the caller must commit via
+        ``Database.commit()`` — and ``rollback()`` on any failure — so the
+        guarded job transition and this audit record are atomic; an audit
+        failure can never leave a terminalized job without its durable
+        non-live proof.
+        """
+        self._db.insert_audit_log_uncommitted(
+            task_id=task_id,
+            agent="system",
+            action="job_reconciled_orphaned",
+            payload={
+                "job_id": job_id,
+                "reason": reason,
+                "evidence": evidence,
+                "before": before,
+                "after": after,
             },
         )
 

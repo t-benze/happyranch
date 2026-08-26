@@ -2,7 +2,7 @@
 
 > **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
 > now uses the **canonical skill store + workspace symlink architecture**
-> (macOS-only). The legacy per-session copy model is REMOVED. The executor
+> (macOS and Linux). The legacy per-session copy model is REMOVED. The executor
 > and daemon share the same OS identity — linked, validated relative skill
 > links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
 > user-facing and executor-facing guidance surface names both roots.
@@ -11,7 +11,8 @@
 > See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
 > symlinks" for ownership, provenance, link validation, refusal/withdrawal/
 > retention semantics, integrity verification, and the compatibility-fallback
-> boundary. Linux and Windows are NOT supported — explicitly fail closed.
+> boundary. Windows and unknown platforms are NOT supported — explicitly fail
+> closed.
 >
 > **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
 > protected, or claim write/chmod/ACL denial. The prompt guard is operational
@@ -20,11 +21,21 @@
 > same-UID process may mutate, race validation, and affect active/overlapping
 > sessions. Manual recovery only: (a) ``set-executor`` for broken links,
 > (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
-> corrupted canonical bytes. No automatic repair from same-UID local source.
+> corrupted canonical bytes of the eligible current B2 version. No automatic
+> repair from same-UID local source.
 > Recovery requires that an authoritative re-sync/redeploy of release or
 > custom artifacts has occurred outside the compromised same-owner local
 > source before recovery can safely materialize again. Policy withdrawal
 > and atomic link repair remain safe.
+
+**Supported host contract:** macOS (darwin) and native Linux use the same
+same-owner POSIX adapter: relative symlinks, same-directory ``os.replace``,
+cosmetic chmod hardening, and direct ``subprocess.Popen`` launch. Linux hosts
+must provide those filesystem/process semantics; missing primitives fail
+through the existing named refusal paths. Containers and network filesystems
+are supported only when they preserve those semantics. Windows and unknown
+platforms have no fallback. See the current Linux design in
+``docs/superpowers/specs/2026-08-22-linux-canonical-store-design.md``.
 
 # Agent Executors And Permissions
 
@@ -245,7 +256,8 @@ a workspace convention) → read the daemon-issued wrapper path from
 ``GET /runtime/custom-cli/status`` → the candidate CLI's single
 ``POST /runtime/custom-cli/connect`` declares its OWN
 ``workspace_adapter_id`` in the manifest and both proves wrapper integrity
-and creates the connection record → the browser auto-calls
+and creates the receipt-only connection record (it starts zero subprocesses)
+→ the browser auto-calls
 ``POST /runtime/custom-cli/{operation_id}/commit`` the moment it lands →
 Connected, no PENDING wait, no founder click. Founders can check the same
 terminal outcome from the CLI with
@@ -256,6 +268,26 @@ contract. The PENDING/approve/reject/bind-profile routes below remain as
 operator-only one-time disposition tooling for legacy records — a new
 custom CLI should always use the ordinary Connect
 flow instead.
+
+Before submitting the receipt, wrapper authors must locally send a fresh,
+opaque canary through the ordinary one-shot provider path in the entire
+``AdapterInput.prompt`` through one real provider invocation. It must obtain a
+genuine terminal provider response containing the complete canary, then the
+wrapper—not the provider—must construct ``AdapterOutput`` with that canary in
+``result.text``. It must not fabricate a static success. The short probe guides
+no optional tool use or workspace exploration, without enforcing or collecting
+telemetry about provider-internal actions; normal task behavior is unchanged.
+Trusted daemon commit/projection repeats this bounded behavioral proof before it
+writes an adapter or profile; success also requires the matching invocation ID,
+canonical adapter ID, and consistent terminal return code. Provider
+``agent_session_id`` is optional and resume-only: a wrapper must faithfully
+propagate it when the provider supplies one, but it must never fabricate one or
+use it as a substitute for the HappyRanch invocation-identity proof. A wrapper
+must faithfully propagate terminal provider errors and must never invent success
+without a terminal provider response. Direct conformance does not require optional token usage:
+only candidates that declare ``token_metering`` must supply trustworthy
+canonical ``token_usage``. Failure diagnostics are category-only and never
+persist provider stdout, stderr, errors, or the canary.
 
 **Adapter lifecycle (legacy scoped-submission mechanism — operator-only, not the normal UI path):**
 
@@ -339,10 +371,7 @@ required by its own agentic CLI. It MUST NOT rely on
 on daemon translation of policy or provider-specific allow-rule syntax. That
 existing v1 field remains a legacy nullable, provider-specific compatibility
 field; ``CustomAdapterExecutor`` supplies ``null`` for custom-adapter
-invocations. For example, CodeBuddy's ``--permission-mode dontAsk`` denies
-every tool call in non-interactive mode rather than approving it, so it is not
-a valid substitute for that CLI's actual auto-approve/bypass-permissions mode.
-Wrappers must also preserve the daemon-provided callback
+invocations. Wrappers must also preserve the daemon-provided callback
 environment, including ``PATH``, so the agent can make required ``happyranch``
 callbacks after ordinary workspace actions. This is verified through wrapper
 review and founder approval; it adds no new daemon-supplied or
@@ -680,6 +709,17 @@ repos:
 ```
 
 **THR-095:** `happyranch init-agent` no longer creates or touches `agent.yaml`.
+
+**GH-709 Slice C (readiness marker):** `happyranch init-agent` reports `done`
+only after the **selected executor profile's exact readiness marker** exists
+as a valid regular file produced by the bootstrap. The bootstrap now also
+materializes the workspace skills tree, so the claude marker
+`.claude/skills/start-task/SKILL.md` exists immediately after init (not only
+at first session spawn); `codex`/`opencode`/`pi` use `AGENTS.md`; custom
+profiles use their registered `readiness_marker_fragment`. An unregistered
+profile, a missing/wrong-profile marker, or a non-regular marker (directory,
+dangling link) emits a per-agent `error` — never `done` — the stream stops at
+the first error (no `all_done`), and the CLI exits nonzero.
 
 ## Switching an Existing Agent's Executor
 

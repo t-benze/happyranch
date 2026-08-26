@@ -11,10 +11,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.models import (
+    AuthorityAuditEvent,
+    AuthorityAuditEventType,
+    AuthorityAuditPayload,
+    AuthorityCandidate,
+    AuthorityEvaluation,
+    AuthorityFenceResult,
+    AuthorityRedactionClass,
+    AuthorityRetentionClass,
     BlockKind,
     DreamKbCandidate,
     DreamRecord,
     DreamStatus,
+    ScheduleStatus,
     TaskAttachmentRecord,
     TaskRecord,
     TaskStatus,
@@ -26,12 +35,26 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    ThreadReplyArrival,
+    ThreadReplyClaim,
+    ThreadReplyDeliveryState,
+    ThreadReplyRecoveryEntry,
+    ThreadReplySettlement,
+    ReplyDeliveryProjection,
     ThreadScopedAttachment,
     ThreadStatus,
     TokenUsage,
+    WorkHourStatus,
+    validate_authority_digest,
+    validate_authority_version,
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
+from runtime.daemon.thread_mentions import (
+    parse_mentions,
+    resolve_wake_set,
+    valid_mentions,
+)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -42,8 +65,154 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class AuthorityAuditMigrationRefusal(Exception):
+    """Legacy ``authority_audit`` rows reference candidates that do not exist,
+    so the candidate-FK retrofit was refused atomically. The legacy schema and
+    data are left intact for inspection."""
+
+
+# Corrected DB-level lifecycle-guard trigger body. Requires the referenced
+# ``authority_evaluations`` row's disposition to exactly mirror the candidate's
+# frozen disposition (created -> evaluated: NEW.disposition; evaluated ->
+# consumed: OLD.disposition), so an append-only escalate evaluation can never
+# durably freeze a continue_same_root candidate. Used by BOTH the fresh
+# ``_create_authority_tables`` script and the legacy retrofit, so the two
+# surfaces can never drift.
+_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_lifecycle_guard
+                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+                ON authority_candidates
+                FOR EACH ROW
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                    WHERE NOT (
+                        -- created -> evaluated: requires a committed evaluation row
+                        -- whose disposition exactly equals the freshly set
+                        -- disposition (NULL -> value), so an append-only escalate
+                        -- evaluation can never freeze a continue_same_root candidate;
+                        -- consumed_at is still NULL.
+                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                         AND NEW.lifecycle_state = 'evaluated'
+                         AND NEW.disposition IS NOT NULL
+                         AND NEW.consumed_at IS NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = NEW.disposition))
+                        OR
+                        -- evaluated -> consumed: exactly-once; disposition frozen;
+                        -- a committed evaluation row with the SAME frozen
+                        -- disposition must exist; consumed_at is stamped exactly
+                        -- once (NULL -> value).
+                        (OLD.lifecycle_state = 'evaluated'
+                         AND NEW.lifecycle_state = 'consumed'
+                         AND NEW.disposition IS OLD.disposition
+                         AND OLD.consumed_at IS NULL
+                         AND NEW.consumed_at IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = OLD.disposition))
+                        OR
+                        -- no-op on the guarded columns (e.g. updated_at-only writes).
+                        (NEW.lifecycle_state = OLD.lifecycle_state
+                         AND NEW.disposition IS OLD.disposition
+                         AND NEW.consumed_at IS OLD.consumed_at)
+                    );
+                END;
+"""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _authority_claim_key(
+    root_task_id: str,
+    manager_session_id: str,
+    causal_event_id: str,
+    policy_digest: str,
+    prompt_digest: str,
+    model_digest: str,
+) -> str:
+    """Deterministic CAS key for the authority candidate claim tuple.
+
+    One durable candidate wins the
+    root/session/causal-event/policy-prompt-model tuple. The key is a sha256
+    digest of the tuple joined with unit-separator bytes so distinct inputs
+    cannot collide across field boundaries. It is the ``claim_key`` UNIQUE
+    column on ``authority_candidates`` — the database-level exactly-one
+    arbiter (not merely the in-process lock).
+    """
+    material = "\x1f".join(
+        (
+            root_task_id,
+            manager_session_id,
+            causal_event_id,
+            policy_digest,
+            prompt_digest,
+            model_digest,
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _parse_authority_fence_results(raw: str | None) -> dict[str, AuthorityFenceResult] | None:
+    """Parse a persisted fence-results JSON column back into typed results."""
+    if raw is None:
+        return None
+    data = json.loads(raw)
+    return {name: AuthorityFenceResult.model_validate(value) for name, value in data.items()}
+
+
+def _validate_authority_class(value: str, field: str, enum_cls) -> str:
+    """Validate a controlled retention/redaction classification value.
+
+    Raises ValueError for any value outside the closed vocabulary — the caller
+    must fail loudly BEFORE any durable write, so a bad classification can
+    never be swallowed by conflict handling into a phantom CAS loser.
+    """
+    allowed = {member.value for member in enum_cls}
+    if value not in allowed:
+        raise ValueError(
+            f"{field} must be one of: {', '.join(sorted(allowed))}; got {value!r}"
+        )
+    return value
+
+
+def _serialize_authority_fence_results(
+    fence_results: dict | None,
+) -> str | None:
+    """Strictly validate and serialize a fence-results mapping.
+
+    Each value must be a closed ``AuthorityFenceResult`` (extra keys and
+    unknown codes are rejected); fence names must be non-empty strings. Returns
+    the JSON column value, or None for an absent mapping. Raises ValueError
+    (via Pydantic) rather than silently storing or redacting anything.
+    """
+    if fence_results is None:
+        return None
+    if not isinstance(fence_results, dict):
+        raise ValueError("fence_results must be a dict mapping fence name -> AuthorityFenceResult")
+    normalized: dict[str, AuthorityFenceResult] = {}
+    for name, value in fence_results.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("fence result names must be non-empty strings")
+        normalized[name] = AuthorityFenceResult.model_validate(value)
+    return json.dumps(
+        {name: result.model_dump(mode="json") for name, result in normalized.items()}
+    )
+
+
+def _serialize_authority_audit_payload(payload: object | None) -> str | None:
+    """Strictly validate and serialize an authority audit payload.
+
+    The payload must be a closed ``AuthorityAuditPayload`` — unknown keys,
+    nested arbitrary JSON, prose, credentials, and raw model exchanges are
+    rejected. Returns the JSON column value, or None for an absent payload.
+    """
+    if payload is None:
+        return None
+    model = AuthorityAuditPayload.model_validate(payload)
+    return json.dumps(model.model_dump(mode="json", exclude_none=True))
 
 
 def _synchronized(method):
@@ -147,6 +316,125 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
         raise ValueError(f"Invalid cursor: {cursor!r}")
 
 
+# Shared SELECT for the stale never-started pending observation (THR-195): the
+# single source of truth for BOTH the managed-store scan
+# (``Database.list_stale_pending_jobs``) and the read-only registry scan
+# (``scan_stale_pending_jobs_readonly``), so the observation predicate
+# (``status='pending' AND started_at IS NULL AND created_at <= cutoff``) can
+# never drift between the two paths.
+_STALE_PENDING_JOBS_SCAN_SQL = (
+    "SELECT id, task_id, agent_name, title, review_required, created_at "
+    "FROM jobs WHERE status='pending' AND started_at IS NULL "
+    "AND created_at <= ? ORDER BY created_at, id"
+)
+
+# Active-WAL observation is a DIRECT read of the source store (founder
+# ruling TASK-5542/TASK-5544): the temporary snapshot/copy machinery is
+# retired entirely. An active-WAL source is opened in place with a genuine
+# SQLite read-only connection (``mode=ro``) which consults the ``-wal`` so
+# WAL-only committed candidates are observed. The FOUNDER CONTRACT protects
+# the durable source ``happyranch.db`` and ``happyranch.db-wal`` BYTES ONLY:
+# SQLite's WAL reader — even ``mode=ro`` — initializes WAL shared memory and
+# may CREATE, MODIFY, or REMOVE the WAL-index ``happyranch.db-shm`` as
+# transient reader/lock/index behavior, and that is explicitly permitted
+# (TASK-5544 ruling; creation/modification/removal are all allowed, and no
+# ``-shm`` existence/hash/mtime identity is ever asserted). The source main
+# DB and ``-wal`` are NEVER written: a read-only connection cannot append WAL
+# frames, checkpoint, recover, or run DDL/DML, so both stay byte-identical
+# before/after every observation. No snapshot, no copy, no temp directory
+# anywhere.
+
+
+def _scan_stale_pending_jobs_direct_wal(
+    db_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only WAL-aware observation directly on the SOURCE store.
+
+    Founder-authorized fourth-round correction (TASK-5542): the active-WAL
+    source is opened in place with a genuine SQLite read-only connection
+    (``file:...?mode=ro``) for the duration of one query and closed. The
+    reader consults the ``-wal`` so candidates committed only to the WAL are
+    observed; SQLite's own WAL-reader protocol gives every reader a coherent
+    committed view without any copy or stat-guard. The source main DB and
+    ``-wal`` are never written (a read-only connection cannot append WAL
+    frames, checkpoint, or recover), so both files stay byte-identical
+    before/after every observation and no row/schema/audit state can change.
+
+    SQLite's WAL reader may CREATE, MODIFY, or REMOVE the source
+    ``-shm`` (WAL-index shared memory) as transient reader/lock/index
+    behavior — explicitly permitted by the founder contract (TASK-5544); no
+    ``-shm`` existence/hash/mtime identity is asserted. Only the durable
+    source ``happyranch.db`` and ``happyranch.db-wal`` bytes are protected
+    (byte-identical before/after).
+
+    Fail closed: a missing main DB is handled by the caller (``[]``); a
+    malformed main file raises ``sqlite3.DatabaseError`` and a schema without
+    a ``jobs`` table raises ``sqlite3.OperationalError`` — observation never
+    fabricates candidates and never mutates the source.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            _STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def scan_stale_pending_jobs_readonly(
+    db_path: Path, cutoff_iso: str,
+) -> list[dict]:
+    """Read-only stale-pending observation over one org store.
+
+    THR-195 observation MUST NOT durably mutate any store: it never creates a
+    missing DB, never enables WAL, never runs the schema migration guards, and
+    never writes the source ``-wal``. The founder contract (TASK-5544)
+    protects the durable source ``happyranch.db`` and ``happyranch.db-wal``
+    BYTES ONLY — the SQLite WAL-index ``happyranch.db-shm`` may be created,
+    modified, or removed by read-side WAL access and that is explicitly
+    permitted, so no ``-shm`` identity is ever asserted. This helper
+    therefore never opens the source with ``Database(db_path)`` (whose
+    ``__init__`` creates the file, enables WAL, and runs migrations).
+
+    Route selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
+    checkpoints and removes them on the last close), so the main file holds
+    every committed row — ``immutable=1`` reads it fully and provably cannot
+    create sidecars. When sidecars exist (store open in this process — e.g. a
+    loaded org — or crash leftovers), the scan opens the SOURCE directly with
+    a genuine read-only WAL-aware connection (``mode=ro``): WAL-only
+    committed candidates are observed, the source main DB and ``-wal`` stay
+    byte-identical before/after, and the source ``-shm`` is the explicitly
+    permitted shared-memory surface (creation/modification/removal by the
+    WAL reader allowed; founder ruling TASK-5544; no snapshot/copy/temp
+    directory is used). Either way the scan sees every committed candidate
+    row and durably writes only the permitted ``-shm`` shared-memory surface
+    (which it may create or remove) — never the source ``.db``/``-wal``.
+
+    A missing DB file returns ``[]`` — nothing to observe, nothing created.
+    A store that cannot be read (malformed file, or a pre-migration/
+    irrelevant schema without a ``jobs`` table) raises
+    ``sqlite3.DatabaseError``/``OperationalError``: fail closed at this leaf —
+    never mutate, never fabricate candidates; the all-org coordinator
+    (``scan_all_org_stale_pending``) isolates and logs such a failure so it
+    cannot abort daemon startup or suppress other org roots.
+    """
+    if not db_path.is_file():
+        return []
+    wal = Path(f"{db_path}-wal")
+    shm = Path(f"{db_path}-shm")
+    if wal.exists() or shm.exists():
+        return _scan_stale_pending_jobs_direct_wal(db_path, cutoff_iso)
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(_STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -165,7 +453,11 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_jobs_table_if_needed()
         self._migrate_drop_talk_surface_if_needed()
+        self._retire_skill_lifecycle_if_present()
         self._create_tables()
+        self._create_authority_tables()
+        self._retrofit_authority_audit_fk_if_needed()
+        self._retrofit_authority_lifecycle_trigger_if_needed()
         self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
@@ -192,6 +484,49 @@ class Database:
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
         return self.db_path
+
+    def _retire_skill_lifecycle_if_present(self) -> None:
+        """Permanently remove legacy lifecycle tables and their content blobs."""
+        tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'skill_lifecycle_%'"
+            )
+        }
+        if not tables:
+            return
+        artifact_keys: list[str] = []
+        if "skill_lifecycle_packages" in tables:
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(skill_lifecycle_packages)")}
+            if "content_artifact_key" in columns:
+                artifact_keys = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT content_artifact_key FROM skill_lifecycle_packages WHERE content_artifact_key IS NOT NULL"
+                    )
+                ]
+        try:
+            self._conn.execute("BEGIN")
+            ordered = (
+                "skill_lifecycle_materializations",
+                "skill_lifecycle_assignments",
+                "skill_lifecycle_events",
+                "skill_lifecycle_packages",
+            )
+            for table in (*[name for name in ordered if name in tables], *sorted(tables - set(ordered))):
+                self._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
+
+        store = ArtifactStore(self.db_path.parent / "artifacts")
+        for artifact_key in artifact_keys:
+            try:
+                store.delete(artifact_key)
+            except ArtifactNotFound:
+                pass
 
     def _migrate_jobs_table_if_needed(self) -> None:
         """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
@@ -839,7 +1174,9 @@ class Database:
                 turn_cap INTEGER NOT NULL DEFAULT 500,
                 turns_used INTEGER NOT NULL DEFAULT 0,
                 summary TEXT,
-                transcript_path TEXT
+                transcript_path TEXT,
+                pinned_at TEXT,
+                mention_routing_enabled INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
@@ -868,6 +1205,7 @@ class Database:
                 decline_reason TEXT,
                 system_payload_json TEXT,
                 sent_from_task_id TEXT,
+                mentions_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
             );
@@ -945,6 +1283,32 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
+
+            -- GitHub #688 Phase 1 Slice A: additive, provider-neutral
+            -- per-(thread_id, agent_name) conversational REPLY delivery state.
+            -- Intentionally dark until Slice B wires the route/runner
+            -- activation; no existing writer/runner path reads or writes it.
+            -- Invocation rows in ``thread_invocations`` remain the immutable
+            -- per-attempt authority; this table only records which single
+            -- queued/running REPLY token currently owns each pair's delivery
+            -- obligation plus the acknowledged/required watermarks.
+            CREATE TABLE IF NOT EXISTS thread_reply_delivery_state (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                acknowledged_through_seq INTEGER NOT NULL DEFAULT 0,
+                required_through_seq INTEGER NOT NULL DEFAULT 0,
+                queued_invocation_token TEXT,
+                running_invocation_token TEXT,
+                running_from_seq INTEGER,
+                running_through_seq INTEGER,
+                last_terminal_reason TEXT,
+                last_terminal_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_reply_delivery_state_thread
+                ON thread_reply_delivery_state(thread_id);
 
             CREATE TABLE IF NOT EXISTS jobs (
                 id                       TEXT PRIMARY KEY,
@@ -1113,99 +1477,6 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_cse_skill_id ON custom_skill_events(skill_id);
 
-            -- THR-055: custom-skill lifecycle ledger (additive, immutable)
-            CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                skill_id    TEXT NOT NULL,
-                slug        TEXT NOT NULL,
-                name        TEXT NOT NULL,
-                version     TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                policy_class TEXT NOT NULL DEFAULT 'standard_operational',
-                description TEXT NOT NULL DEFAULT '',
-                skill_md    TEXT NOT NULL DEFAULT '',
-                content_artifact_key TEXT,
-                status      TEXT NOT NULL DEFAULT 'proposed',
-                created_at  TEXT NOT NULL,
-                created_by  TEXT NOT NULL DEFAULT '',
-                proposal_task_id    TEXT,
-                proposal_session_id TEXT,
-                proposer_agent      TEXT,
-                reviewer          TEXT,
-                review_decision   TEXT,
-                review_rationale  TEXT,
-                reviewed_at       TEXT,
-                publisher              TEXT,
-                published_at           TEXT,
-                publication_decision_id INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_skill_id
-                ON skill_lifecycle_packages(skill_id);
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_status
-                ON skill_lifecycle_packages(status);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_packages_hash
-                ON skill_lifecycle_packages(skill_id, content_hash);
-
-            CREATE TABLE IF NOT EXISTS skill_lifecycle_events (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                skill_id            TEXT NOT NULL,
-                package_version_id  INTEGER,
-                event_type          TEXT NOT NULL,
-                actor               TEXT NOT NULL DEFAULT '',
-                actor_role          TEXT NOT NULL DEFAULT '',
-                previous_status     TEXT,
-                new_status          TEXT,
-                content_hash        TEXT,
-                metadata_json       TEXT,
-                created_at          TEXT NOT NULL,
-                task_id             TEXT,
-                session_id          TEXT,
-                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_skill_id
-                ON skill_lifecycle_events(skill_id);
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_created_at
-                ON skill_lifecycle_events(created_at);
-
-            CREATE TABLE IF NOT EXISTS skill_lifecycle_assignments (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                skill_id            TEXT NOT NULL,
-                agent_name          TEXT NOT NULL,
-                package_version_id  INTEGER NOT NULL,
-                version             TEXT NOT NULL,
-                content_hash        TEXT NOT NULL,
-                assigned_by         TEXT NOT NULL DEFAULT '',
-                assigned_at         TEXT NOT NULL,
-                active              INTEGER NOT NULL DEFAULT 1,
-                rolled_back_by            TEXT,
-                rolled_back_at            TEXT,
-                rollback_reason           TEXT,
-                rollback_target_version_id INTEGER,
-                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_skill
-                ON skill_lifecycle_assignments(skill_id);
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_agent
-                ON skill_lifecycle_assignments(agent_name);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_assignments_unique_active
-                ON skill_lifecycle_assignments(skill_id, agent_name)
-                WHERE active = 1;
-
-            CREATE TABLE IF NOT EXISTS skill_lifecycle_materializations (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                skill_id            TEXT NOT NULL,
-                agent_name          TEXT NOT NULL,
-                package_version_id  INTEGER NOT NULL,
-                version             TEXT NOT NULL,
-                content_hash        TEXT NOT NULL,
-                success             INTEGER NOT NULL DEFAULT 0,
-                error_message       TEXT,
-                session_context     TEXT,
-                created_at          TEXT NOT NULL,
-                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_lifecycle_materializations_skill_agent
-                ON skill_lifecycle_materializations(skill_id, agent_name);
             """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
@@ -1228,26 +1499,6 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass
-        # THR-055: content_artifact_key column for artifact-backed package retention
-        try:
-            self._conn.execute(
-                "ALTER TABLE skill_lifecycle_packages ADD COLUMN content_artifact_key TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass
-        # THR-055 proposal review: separate claimant identity (never overwrites created_by)
-        try:
-            self._conn.execute(
-                "ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_by TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass
-        try:
-            self._conn.execute(
-                "ALTER TABLE skill_lifecycle_packages ADD COLUMN claimed_at TEXT"
             )
         except sqlite3.OperationalError:
             pass
@@ -1296,6 +1547,13 @@ class Database:
                 "WHERE output_dir LIKE 'artifacts/%'"
             )
             self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # THR-105 recurrence v2: nullable terminal cause for naturally ended
+        # schedules. Existing rows intentionally remain NULL.
+        try:
+            self._conn.execute("ALTER TABLE schedules ADD COLUMN end_reason TEXT")
         except sqlite3.OperationalError:
             pass
 
@@ -1465,6 +1723,16 @@ class Database:
             "ON threads(composed_from_dream_id) "
             "WHERE composed_from_dream_id IS NOT NULL"
         )
+        # Founder-workspace pin state (THR-209): additive nullable timestamp;
+        # non-NULL = pinned. Existing rows (and fresh inserts) stay NULL until
+        # the founder pins. Presentation-only — never affects messages,
+        # participants, unread, or lifecycle.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN pinned_at TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Task-session post-to-existing-thread provenance (THR-027): the task id
         # whose live session appended a message via POST /threads/{id}/post-as-agent.
         # Additive nullable; existing rows + founder/compose/reply messages stay
@@ -1472,6 +1740,25 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_messages ADD COLUMN sent_from_task_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # Phase-2 thread mention routing (THR-198, seq 108-110 approval):
+        # per-thread default-enabled switch + per-message structured mention
+        # signal. Both additive and statement-identical to the fresh CREATE
+        # definitions above — existing threads adopt the enabled default,
+        # historical messages stay NULL, no replay. Storage only in Slice A;
+        # routing behavior lands in Slice B.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN "
+                "mention_routing_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_messages ADD COLUMN mentions_json TEXT"
             )
         except sqlite3.OperationalError:
             pass
@@ -1546,6 +1833,292 @@ class Database:
                 "WHERE status='resolved_superseded'"
             )
             self._conn.commit()
+
+    def _create_authority_tables(self) -> None:
+        """THR-181 Track A Slice 1: additive durable authority foundation.
+
+        Creates three dedicated, clearly named ``authority_*`` tables plus
+        their indexes and DB-level protections. This is *purely additive* —
+        it never alters ``audit_log``, ``tasks``, or any existing column/row
+        meaning (``audit_log.task_id`` scope prefixes and
+        ``tasks.blocked_on_job_ids`` / revisit/lineage fields are untouched).
+
+        Idempotent: every statement is ``IF NOT EXISTS``, so re-opening the
+        same database (or a pre-migration v0 file) is a no-op on the second
+        run. Boot ordering: called from ``__init__`` after ``_create_tables``
+        so the FK target exists before the tables that reference it.
+
+        Append-only surfaces (``authority_evaluations`` and
+        ``authority_audit``) carry BEFORE UPDATE / BEFORE DELETE triggers that
+        RAISE(ABORT). ``authority_candidates`` blocks deletion and any change
+        to its identity columns, while allowing the narrow lifecycle
+        transition (created -> evaluated -> consumed) performed only through
+        the persistence API below.
+        """
+        self._conn.executescript(f"""
+            CREATE TABLE IF NOT EXISTS authority_candidates (
+                id                       TEXT PRIMARY KEY,
+                claim_key                TEXT NOT NULL UNIQUE,
+                root_task_id             TEXT NOT NULL,
+                team                     TEXT NOT NULL,
+                manager_agent            TEXT NOT NULL,
+                manager_session_id       TEXT NOT NULL,
+                causal_event_id          TEXT NOT NULL,
+                causal_event_digest      TEXT NOT NULL,
+                causal_result_id         TEXT,
+                policy_id                TEXT NOT NULL,
+                policy_version           TEXT NOT NULL,
+                policy_digest            TEXT NOT NULL,
+                prompt_id                TEXT NOT NULL,
+                prompt_version           TEXT NOT NULL,
+                prompt_digest            TEXT NOT NULL,
+                model_id                 TEXT NOT NULL,
+                model_version            TEXT NOT NULL,
+                model_digest             TEXT NOT NULL,
+                snapshot_digest          TEXT NOT NULL,
+                snapshot_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (snapshot_retention_class IN ('digest_only','shadow','indefinite')),
+                snapshot_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (snapshot_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                disposition              TEXT
+                    CHECK (disposition IS NULL OR disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                lifecycle_state          TEXT NOT NULL DEFAULT 'created'
+                    CHECK (lifecycle_state IN ('created','evaluated','consumed')),
+                consumed_at              TEXT,
+                created_at               TEXT NOT NULL,
+                updated_at               TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_candidates_root
+                ON authority_candidates(root_task_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_candidates_root_outcome
+                ON authority_candidates(root_task_id, disposition);
+
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_no_delete
+                BEFORE DELETE ON authority_candidates
+                BEGIN SELECT RAISE(ABORT, 'authority candidates cannot be deleted'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_candidates_identity_immutable
+                BEFORE UPDATE ON authority_candidates
+                WHEN OLD.claim_key != NEW.claim_key
+                  OR OLD.root_task_id != NEW.root_task_id
+                  OR OLD.team != NEW.team
+                  OR OLD.manager_agent != NEW.manager_agent
+                  OR OLD.manager_session_id != NEW.manager_session_id
+                  OR OLD.causal_event_id != NEW.causal_event_id
+                  OR OLD.causal_event_digest != NEW.causal_event_digest
+                  OR OLD.causal_result_id IS NOT NEW.causal_result_id
+                  OR OLD.policy_id != NEW.policy_id
+                  OR OLD.policy_version != NEW.policy_version
+                  OR OLD.policy_digest != NEW.policy_digest
+                  OR OLD.prompt_id != NEW.prompt_id
+                  OR OLD.prompt_version != NEW.prompt_version
+                  OR OLD.prompt_digest != NEW.prompt_digest
+                  OR OLD.model_id != NEW.model_id
+                  OR OLD.model_version != NEW.model_version
+                  OR OLD.model_digest != NEW.model_digest
+                  OR OLD.snapshot_digest != NEW.snapshot_digest
+                  OR OLD.snapshot_retention_class != NEW.snapshot_retention_class
+                  OR OLD.snapshot_redaction_class != NEW.snapshot_redaction_class
+                  OR OLD.fence_results_json IS NOT NEW.fence_results_json
+                  OR OLD.created_at != NEW.created_at
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority candidate identity is immutable');
+                END;
+
+            CREATE TABLE IF NOT EXISTS authority_evaluations (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id             TEXT NOT NULL UNIQUE REFERENCES authority_candidates(id),
+                disposition              TEXT NOT NULL
+                    CHECK (disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                disposition_code         TEXT NOT NULL
+                    CHECK (disposition_code IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error',
+                         'low_confidence','timeout','malformed_output','injection_guard','audit_failure')),
+                response_digest          TEXT NOT NULL,
+                response_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (response_retention_class IN ('digest_only','shadow','indefinite')),
+                response_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (response_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                created_at               TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_evaluations_candidate
+                ON authority_evaluations(candidate_id);
+
+            CREATE TRIGGER IF NOT EXISTS authority_evaluations_no_update
+                BEFORE UPDATE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_evaluations_no_delete
+                BEFORE DELETE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_audit (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                event_type   TEXT NOT NULL
+                    CHECK (event_type IN
+                        ('candidate_claimed','candidate_claim_lost',
+                         'evaluation_recorded','candidate_consumed')),
+                payload_json TEXT,
+                created_at   TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_audit_candidate
+                ON authority_audit(candidate_id);
+
+            CREATE TRIGGER IF NOT EXISTS authority_audit_no_update
+                BEFORE UPDATE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_audit_no_delete
+                BEFORE DELETE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+
+            -- DB-level lifecycle enforcement (not only Python): blocks fabrication
+            -- through a raw ``Database.execute`` UPDATE. Only the intended finite
+            -- transitions are permitted, disposition and consumed_at are immutable
+            -- once set, and the ``evaluated``/``consumed`` states require a
+            -- consistent ``authority_evaluations`` row for the candidate whose
+            -- disposition exactly mirrors the candidate's frozen disposition.
+            -- The trigger body references ``authority_evaluations`` (created above),
+            -- which SQLite resolves at trigger execution time. Databases created at
+            -- earlier reviewed heads that already carry the weaker trigger body are
+            -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
+            {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
+            """)
+        self._conn.commit()
+
+    def _retrofit_authority_audit_fk_if_needed(self) -> None:
+        """Idempotent forward retrofit of the ``authority_audit`` candidate FK.
+
+        The corrective head (07eaaed0) added
+        ``authority_audit.candidate_id REFERENCES authority_candidates(id)``,
+        but that reference lives only inside ``CREATE TABLE IF NOT EXISTS``. A
+        database created at the prior reviewed head (405697a0) therefore
+        retains an ``authority_audit`` table WITHOUT the FK after opening the
+        corrected build — ``CREATE TABLE IF NOT EXISTS`` is a no-op on the
+        already-existing table, so a raw ``Database.execute`` orphan INSERT
+        succeeds and commits. Fresh-database tests cannot see this.
+
+        This retrofit upgrades that legacy table in place, atomically and
+        idempotently:
+
+        * If ``authority_audit`` is absent, this is a no-op — the corrected
+          ``_create_authority_tables`` creates it with the FK on fresh files.
+        * If the table already carries the FK, this is a no-op (idempotent).
+        * If the table is the legacy no-FK shape, it is rebuilt as a
+          transactionally-safe replacement table: every valid row is copied
+          verbatim (id, candidate_id, event_type, payload_json, created_at —
+          identity and order preserved), the old table is dropped, the new
+          table is renamed into place, and the index + append-only triggers
+          are recreated. All DDL and the row copy run inside ONE explicit
+          transaction, so a mid-migration failure rolls back with no partial
+          replacement, no synthetic empty table, and no data loss; a later
+          reopen retries the whole migration.
+        * Legacy orphan audit rows (a ``candidate_id`` with no matching
+          ``authority_candidates`` row) are never deleted, rewritten, or
+          re-parented. The migration refuses atomically — raising
+          :class:`AuthorityAuditMigrationRefusal` before any mutation — and
+          leaves the old schema/data intact for inspection.
+
+        ``executescript`` is deliberately avoided: it issues an implicit
+        COMMIT and swallows mid-script rollback, which would defeat the
+        atomicity requirement. Every statement runs through ``execute`` so a
+        failure raises with the whole transaction rolled back.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='authority_audit'"
+        ).fetchone()
+        if exists is None:
+            return
+        fks = self._conn.execute(
+            "PRAGMA foreign_key_list(authority_audit)"
+        ).fetchall()
+        if fks:
+            return
+        orphan_count = self._conn.execute(
+            "SELECT COUNT(*) FROM authority_audit a "
+            "WHERE NOT EXISTS (SELECT 1 FROM authority_candidates c "
+            "WHERE c.id = a.candidate_id)"
+        ).fetchone()[0]
+        if orphan_count:
+            raise AuthorityAuditMigrationRefusal(
+                f"authority_audit contains {orphan_count} legacy orphan row(s) whose "
+                "candidate_id has no matching authority_candidates row; refusing to "
+                "retrofit the candidate FK. The legacy schema and data are left intact "
+                "for inspection."
+            )
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute(
+                """
+                CREATE TABLE authority_audit__new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                    event_type   TEXT NOT NULL
+                        CHECK (event_type IN
+                            ('candidate_claimed','candidate_claim_lost',
+                             'evaluation_recorded','candidate_consumed')),
+                    payload_json TEXT,
+                    created_at   TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                "INSERT INTO authority_audit__new "
+                "(id, candidate_id, event_type, payload_json, created_at) "
+                "SELECT id, candidate_id, event_type, payload_json, created_at "
+                "FROM authority_audit"
+            )
+            self._conn.execute("DROP TABLE authority_audit")
+            self._conn.execute(
+                "ALTER TABLE authority_audit__new RENAME TO authority_audit"
+            )
+            self._conn.execute(
+                "CREATE INDEX idx_authority_audit_candidate "
+                "ON authority_audit(candidate_id)"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_update "
+                "BEFORE UPDATE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.execute(
+                "CREATE TRIGGER authority_audit_no_delete "
+                "BEFORE DELETE ON authority_audit "
+                "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _retrofit_authority_lifecycle_trigger_if_needed(self) -> None:
+        """Idempotent forward retrofit of the lifecycle-guard trigger body.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` inside ``_create_authority_tables`` is
+        a no-op on a database that already carries the trigger, so a database
+        created at an earlier reviewed head (which embedded the weaker body
+        that accepted ANY evaluation row) would keep the weak body forever.
+        This retrofit drops and recreates the trigger ONLY when the stored
+        body is the legacy one (detected by the missing disposition-mirroring
+        condition); on every later open it is a no-op, so a database never
+        carries per-boot DDL churn and the ``-wal``/``-shm`` history stays
+        stable. The recreated body is the exact
+        ``_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`` constant used by
+        ``_create_authority_tables``, so the two surfaces cannot drift.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'"
+            " AND name='authority_candidates_lifecycle_guard'"
+        ).fetchone()
+        if row is not None and "e.disposition = NEW.disposition" in row["sql"]:
+            return
+        self._conn.execute(
+            "DROP TRIGGER IF EXISTS authority_candidates_lifecycle_guard"
+        )
+        self._conn.execute(_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL)
+        self._conn.commit()
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
         """Add scope columns and make task_id nullable for conversation usage."""
@@ -3002,6 +3575,40 @@ class Database:
         """Commit the current transaction — public companion to insert_audit_log_uncommitted."""
         self._conn.commit()
 
+    def _emit_reply_wake_audit(
+        self,
+        *,
+        thread_id: str,
+        agent_name: str,
+        action: str,
+        payload: dict,
+    ) -> None:
+        """Emit one reply-delivery lifecycle audit row INSIDE the open store
+        transaction (caller commits). GH-688 Phase 1 Slice C.
+
+        The six approved actions — thread_reply_wake_created / _coalesced /
+        _claimed / _settled / _cancelled / _recovered — are written at the
+        exact store transitions that already know the durable outcome, so
+        duplicate queue notifications (stale claim CAS no-ops) and idempotent
+        recovery can never fabricate false events. The existing
+        ``audit_log.task_id = THR-*`` scope-prefix convention is unchanged;
+        ``agent`` is the wake owner so /audit?agent= filters naturally.
+        Payloads carry only truthfully observed fields (agent, inclusive
+        range, 8-char token prefix, outcome/reason/follow-on result) and
+        never expose full single-use invocation tokens.
+        """
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id,
+            agent=agent_name,
+            action=action,
+            payload=payload,
+        )
+
+    @_synchronized
+    def rollback(self) -> None:
+        """Roll back the current transaction — companion to insert_audit_log_uncommitted."""
+        self._conn.rollback()
+
     @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
@@ -4155,6 +4762,76 @@ class Database:
         return [self._row_to_job(r) for r in rows]
 
     @_synchronized
+    def list_job_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered job-id query (no cap, DB-side filter).
+
+        ``list_jobs_db`` is a presentation list capped (default 50) and ordered
+        newest-first; using it for a liveness check can hide an old active row
+        behind newer terminal rows. This returns every job id whose status is
+        in ``statuses`` so a portability preflight cannot miss an active job.
+        Read-only; returns ids only, not full job records.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT id FROM jobs WHERE status IN ({placeholders}) "
+            "ORDER BY created_at, id",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    @_synchronized
+    def list_stale_pending_jobs(self, cutoff_iso: str) -> list[dict]:
+        """Read-only scan for never-started pending jobs older than ``cutoff_iso``.
+
+        Predicate: ``status='pending' AND started_at IS NULL AND created_at <=
+        cutoff`` — a row that was submitted but never dispatched (no
+        ``transition_job_to_running`` ever stamped ``started_at``) and has
+        reached the observation threshold. Purely observational: callers
+        must NOT use this as a reaper/retry/cancel mechanism. Returns a
+        lightweight dict per row (id/task_id/agent_name/title/review_required/
+        created_at) — not full JobRecords — because this is a diagnostic scan.
+        """
+        rows = self._conn.execute(
+            _STALE_PENDING_JOBS_SCAN_SQL,
+            (cutoff_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def transition_never_started_job_to_failed(
+        self, job_id: str, *, now_iso: str, reason: str,
+    ) -> None:
+        """Guarded bookkeeping transition: pending + never-started → failed.
+
+        The terminalization seam for founder-authorized reconciliation of
+        abandoned never-dispatched jobs (THR-195). Only a row that is STILL
+        ``status='pending'`` AND ``started_at IS NULL`` can be reconciled;
+        any concurrent dispatch (which first transitions to ``running`` and
+        stamps ``started_at``) makes this a no-op ValueError. Mirrors the
+        guarded UPDATE shape of ``transition_job_to_rejected`` — callers get
+        no ad-hoc SQL path.
+
+        The UPDATE is deliberately left UNCOMMITTED: the caller owns the
+        surrounding transaction so this terminalization and its
+        ``job_reconciled_orphaned`` audit row commit atomically
+        (``insert_audit_log_uncommitted`` + ``commit()``) and roll back
+        together on any failure — a terminalized job must never survive
+        without its durable non-live-proof audit record.
+        """
+        cur = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason=?, finished_at=?, "
+            "duration_ms=COALESCE(duration_ms, 0) "
+            "WHERE id=? AND status='pending' AND started_at IS NULL",
+            (reason, now_iso, job_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"not_never_started_pending: job {job_id} cannot be reconciled"
+            )
+
+    @_synchronized
     def transition_job_to_rejected(
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
@@ -4254,8 +4931,9 @@ class Database:
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary,
                 transcript_path,
-                composed_by, composed_from_task_id, composed_from_dream_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                composed_by, composed_from_task_id, composed_from_dream_id,
+                pinned_at, mention_routing_enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -4271,6 +4949,8 @@ class Database:
                 t.composed_by,
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
+                t.pinned_at.isoformat() if t.pinned_at else None,
+                1 if t.mention_routing_enabled else 0,
             ),
         )
         self._conn.commit()
@@ -4293,6 +4973,15 @@ class Database:
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
             composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
             last_speaker=row["last_speaker"] if "last_speaker" in keys else None,
+            pinned_at=(
+                datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
+            ) if "pinned_at" in keys else None,
+            mention_routing_enabled=(
+                bool(row["mention_routing_enabled"])
+            ) if "mention_routing_enabled" in keys else True,
+            last_activity_at=(
+                datetime.fromisoformat(row["last_activity_at"]) if row["last_activity_at"] else None
+            ) if "last_activity_at" in keys else None,
         )
 
     @_synchronized
@@ -4308,18 +4997,37 @@ class Database:
         query = (
             "SELECT t.*, "
             "(SELECT tm.speaker FROM thread_messages tm "
-            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker "
+            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker, "
+            "(SELECT MAX(tm.created_at) FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id) AS last_activity_at "
             "FROM threads t "
+        )
+        # THR-209 pinning: pinned threads rank above unpinned, ordered by most
+        # recent thread activity (last message created_at, falling back to
+        # started_at). Unpinned threads keep their EXACT existing order — the
+        # activity sort is conditional on pinned_at being set, so it is a no-op
+        # (NULL for every row → tie) for unpinned rows.
+        pinned_rank = "CASE WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END"
+        pinned_activity = (
+            "CASE WHEN t.pinned_at IS NOT NULL THEN COALESCE("
+            "(SELECT MAX(tm.created_at) FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id), t.started_at) END DESC"
         )
         params: tuple
         if status:
             if status == "archived":
-                query += "WHERE t.status = ? ORDER BY COALESCE(t.archived_at, t.started_at) DESC LIMIT ?"
+                base_order = "COALESCE(t.archived_at, t.started_at) DESC"
             else:
-                query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+                base_order = "t.started_at DESC"
+            query += (
+                f"WHERE t.status = ? ORDER BY {pinned_rank}, {pinned_activity}, "
+                f"{base_order} LIMIT ?"
+            )
             params = (status, limit)
         else:
-            query += "ORDER BY t.started_at DESC LIMIT ?"
+            query += (
+                f"ORDER BY {pinned_rank}, {pinned_activity}, t.started_at DESC LIMIT ?"
+            )
             params = (limit,)
         cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]
@@ -4413,6 +5121,70 @@ class Database:
         )
         self._conn.commit()
 
+    def _append_thread_message_uncommitted(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        decline_reason: str | None = None,
+        system_payload: dict | None = None,
+        attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
+        mentions: list[str] | None = None,
+    ) -> int:
+        """Allocate seq + insert a message (and its attachments) WITHOUT
+        opening or committing a transaction. Callers must own the transaction
+        (``BEGIN IMMEDIATE`` / ``BEGIN``) and commit/rollback themselves.
+
+        Returns the allocated seq.
+        """
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        )
+        next_seq = cursor.fetchone()["next_seq"]
+        self._conn.execute(
+            "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+            "body_markdown, decline_reason, system_payload_json, "
+            "sent_from_task_id, mentions_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                next_seq,
+                speaker,
+                kind.value,
+                body_markdown,
+                decline_reason,
+                json.dumps(system_payload) if system_payload else None,
+                sent_from_task_id,
+                json.dumps(mentions) if mentions is not None else None,
+                _now().isoformat(),
+            ),
+        )
+        for ordinal, attachment in enumerate(attachments or []):
+            self._conn.execute(
+                "INSERT INTO thread_message_attachments ("
+                "thread_id, message_seq, ordinal, artifact_name, display_name, "
+                "size_bytes, content_type, uploaded_by, created_at, "
+                "thread_attachment_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    next_seq,
+                    ordinal,
+                    attachment.artifact_name,
+                    attachment.display_name,
+                    attachment.size_bytes,
+                    attachment.content_type,
+                    attachment.uploaded_by,
+                    _now().isoformat(),
+                    attachment.thread_attachment_id,
+                ),
+            )
+        return next_seq
+
     @_synchronized
     def append_thread_message(
         self,
@@ -4434,48 +5206,16 @@ class Database:
         """
         try:
             self._conn.execute("BEGIN")
-            cursor = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
-                "FROM thread_messages WHERE thread_id = ?",
-                (thread_id,),
+            next_seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=kind,
+                body_markdown=body_markdown,
+                decline_reason=decline_reason,
+                system_payload=system_payload,
+                attachments=attachments,
+                sent_from_task_id=sent_from_task_id,
             )
-            next_seq = cursor.fetchone()["next_seq"]
-            self._conn.execute(
-                "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
-                "body_markdown, decline_reason, system_payload_json, "
-                "sent_from_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    thread_id,
-                    next_seq,
-                    speaker,
-                    kind.value,
-                    body_markdown,
-                    decline_reason,
-                    json.dumps(system_payload) if system_payload else None,
-                    sent_from_task_id,
-                    _now().isoformat(),
-                ),
-            )
-            for ordinal, attachment in enumerate(attachments or []):
-                self._conn.execute(
-                    "INSERT INTO thread_message_attachments ("
-                    "thread_id, message_seq, ordinal, artifact_name, display_name, "
-                    "size_bytes, content_type, uploaded_by, created_at, "
-                    "thread_attachment_id"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        thread_id,
-                        next_seq,
-                        ordinal,
-                        attachment.artifact_name,
-                        attachment.display_name,
-                        attachment.size_bytes,
-                        attachment.content_type,
-                        attachment.uploaded_by,
-                        _now().isoformat(),
-                        attachment.thread_attachment_id,
-                    ),
-                )
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -4533,6 +5273,7 @@ class Database:
                 decline_reason=r["decline_reason"],
                 system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
                 attachments=attachments_by_seq.get(r["seq"], []),
+                mentions=json.loads(r["mentions_json"]) if r["mentions_json"] else [],
                 created_at=datetime.fromisoformat(r["created_at"]),
             )
             for r in rows
@@ -4560,6 +5301,7 @@ class Database:
             decline_reason=row["decline_reason"],
             system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
             attachments=attachments_by_seq.get(seq, []),
+            mentions=json.loads(row["mentions_json"]) if row["mentions_json"] else [],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -5060,6 +5802,136 @@ class Database:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    def _autonomous_continuation_retry_lineage_cte(self) -> str:
+        """Return the persisted per-slice retry predicate used by THR-166.
+
+        The production retry ceiling treats a FAILED direct child as exhausted
+        when its revisit chain contains an earlier FAILED child of this same
+        parent.  Keep the 200-hop bound aligned with
+        ``run_step._is_slice_retry_exhausted``.
+        """
+        return """WITH RECURSIVE retry_lineage
+                   (child_id, id, parent_task_id, status, revisit_of_task_id, depth) AS (
+                   SELECT id, id, parent_task_id, status, revisit_of_task_id, 0
+                     FROM tasks
+                    WHERE parent_task_id = ? AND status = 'failed'
+                   UNION ALL
+                   SELECT retry_lineage.child_id, predecessor.id,
+                          predecessor.parent_task_id, predecessor.status,
+                          predecessor.revisit_of_task_id, retry_lineage.depth + 1
+                     FROM retry_lineage
+                     JOIN tasks AS predecessor
+                       ON predecessor.id = retry_lineage.revisit_of_task_id
+                    WHERE retry_lineage.depth < 199
+               )"""
+
+    @_synchronized
+    def autonomous_continuation_budget_exhausted(
+        self, task_id: str, *, max_steps: int, max_revise_rounds: int,
+    ) -> bool:
+        """Whether a root is under any absolute THR-166 budget blocker.
+
+        This derives all three durable causes from task state and lineage:
+        orchestration steps, the configured revise-round cap, and the existing
+        per-slice retry ceiling.  It intentionally does not inspect request
+        evidence or manager-authored prose.
+        """
+        cte = self._autonomous_continuation_retry_lineage_cte()
+        row = self._conn.execute(
+            f"""{cte}
+                SELECT 1
+                  FROM tasks
+                 WHERE id = ?
+                   AND (
+                       orchestration_step_count >= ?
+                       OR (? > 0 AND revision_count >= ?)
+                       OR EXISTS (
+                           SELECT 1 FROM retry_lineage
+                            WHERE depth > 0
+                              AND parent_task_id = ?
+                              AND status = 'failed'
+                       )
+                   )""",
+            (task_id, task_id, max_steps, max_revise_rounds,
+             max_revise_rounds, task_id),
+        ).fetchone()
+        return row is not None
+
+    @_synchronized
+    def continue_escalation_from_followup(
+        self,
+        *,
+        task_id: str,
+        thread_id: str,
+        dispatcher: str,
+        invocation_token: str,
+        max_steps: int,
+        max_revise_rounds: int,
+        note: str,
+        audit_payload: dict,
+    ) -> bool:
+        """Atomically consume the causal follow-up and make one queue intent.
+
+        The caller has already validated policy/evidence.  This transaction is
+        the final authority boundary: cancellation, a stale status, budget
+        exhaustion, or a replay rolls the whole operation back.  The caller may
+        notify the in-memory queue only after this commit; ``try_claim_for_step``
+        remains the at-most-once admission gate if that notification is replayed.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN")
+            cte = self._autonomous_continuation_retry_lineage_cte()
+            self._conn.execute(
+                f"""{cte}
+                UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND cancelled_at IS NULL
+                     AND orchestration_step_count < ?
+                     AND (? <= 0 OR revision_count < ?)
+                     AND NOT EXISTS (
+                         SELECT 1 FROM retry_lineage
+                          WHERE depth > 0
+                            AND parent_task_id = ?
+                            AND status = 'failed'
+                     )""",
+                (task_id, TaskStatus.PENDING.value, note, now, task_id,
+                 TaskStatus.ESCALATED.value, max_steps, max_revise_rounds,
+                 max_revise_rounds, task_id),
+            )
+            # sqlite3 reports ``rowcount=-1`` for an UPDATE prefixed by a
+            # recursive CTE, so use SQLite's statement-local change count.
+            if self._conn.execute("SELECT changes()").fetchone()[0] != 1:
+                self._conn.rollback()
+                return False
+            token_update = self._conn.execute(
+                """UPDATE thread_invocations SET status = 'consumed', consumed_at = ?
+                   WHERE invocation_token = ? AND thread_id = ? AND agent_name = ?
+                     AND purpose = ? AND status = 'pending'""",
+                (now, invocation_token, thread_id, dispatcher,
+                 ThreadInvocationPurpose.TASK_FOLLOWUP.value),
+            )
+            if token_update.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (task_id, dispatcher, "escalation_continued_autonomously",
+                 json.dumps(audit_payload), now),
+            )
+            self._conn.execute(
+                """UPDATE escalation_notifications
+                   SET consumed_at = ?, consumed_by = 'autonomous-continuation'
+                   WHERE task_id = ? AND consumed_at IS NULL""",
+                (now, task_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
     @_synchronized
     def mark_invocation_declined(
         self, token: str, *, decline_reason: str | None = None
@@ -5153,19 +6025,71 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_pending_thread_invocations(self) -> list[ThreadInvocation]:
+        """Return every org-wide ``pending`` thread invocation (any thread).
+
+        Used by the portability preflight quiescence check: a pending reply/
+        bootstrap/task-followup invocation is in-flight work and must block.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations "
+            "WHERE status = ? ORDER BY id",
+            (ThreadInvocationStatus.PENDING.value,),
+        )
+        return [self._row_to_invocation(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def list_started_invocations_for_agent(
+        self, agent_name: str,
+    ) -> list[tuple[str, str]]:
+        """Return (invocation_token, thread_id) for pending invocations that
+        have already started (``started_at`` is set) for ``agent_name``.
+        """
+        cursor = self._conn.execute(
+            "SELECT invocation_token, thread_id FROM thread_invocations "
+            "WHERE agent_name = ? AND status = 'pending' AND started_at IS NOT NULL",
+            (agent_name,),
+        )
+        return [(row["invocation_token"], row["thread_id"]) for row in cursor.fetchall()]
+
+    @_synchronized
+    def decline_unstarted_invocations_for_agent(
+        self, agent_name: str, *, decline_reason: str,
+    ) -> int:
+        """Decline all pending, not-yet-started invocations for ``agent_name``.
+
+        Returns the number of rows updated.
+        """
+        now = _now().isoformat()
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations "
+            "SET status = ?, decline_reason = ?, consumed_at = ? "
+            "WHERE agent_name = ? AND status = 'pending' AND started_at IS NULL",
+            (ThreadInvocationStatus.DECLINED.value, decline_reason, now, agent_name),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
     def list_invocations_for_thread_grouped_by_seq(
         self, thread_id: str
     ) -> dict[int, list[dict[str, object]]]:
-        """Return {triggering_seq: [{agent_name, status, consumed_at}, ...]}
+        """Return {triggering_seq: [{agent_name, purpose, status, consumed_at}, ...]}
         for every REPLY and TASK_FOLLOWUP invocation in this thread.
 
         Used by GET /threads/{id} to build the per-message responder_status
         strip. Status values are the raw DB values (pending/consumed/declined/
         failed); the route's response builder renames consumed → replied.
 
-        REPLY invocations hang off MESSAGE rows; TASK_FOLLOWUP invocations hang
-        off the SYSTEM row (task_completed / task_failed / task_escalated) that
-        wakes a thread-dispatched agent (run_step._append_followup_system_and_reinvoke).
+        Each entry carries the authoritative ``purpose`` (''reply'' |
+        ''task_followup'') so classification/dedup on the wire NEVER has to
+        infer purpose from the triggering row's kind. A conversational REPLY
+        invocation can hang off a SYSTEM row — the coalesced delivery range
+        starts at the first unacknowledged sequence, which may be a system row
+        (e.g. a resumed/terminal divider) rather than the founder message that
+        caused the arrival. TASK_FOLLOWUP invocations hang off the SYSTEM row
+        (task_completed / task_failed / task_escalated) that wakes a
+        thread-dispatched agent (run_step._append_followup_system_and_reinvoke).
         Including TASK_FOLLOWUP lets the in-flight strip surface the woken agent
         on its system row. BOOTSTRAP is deliberately excluded — it has no
         triggering message row to attach a responder strip to.
@@ -5176,8 +6100,8 @@ class Database:
         this single timestamp regardless of which path consumed the invocation.
         """
         rows = self._conn.execute(
-            "SELECT triggering_seq, agent_name, status, consumed_at, started_at, "
-            "decline_reason "
+            "SELECT triggering_seq, agent_name, purpose, status, consumed_at, "
+            "started_at, decline_reason "
             "FROM thread_invocations "
             "WHERE thread_id = ? AND purpose IN ('reply', 'task_followup') "
             "ORDER BY triggering_seq, agent_name",
@@ -5187,6 +6111,7 @@ class Database:
         for r in rows:
             entry = {
                 "agent_name": r["agent_name"],
+                "purpose": r["purpose"],
                 "status": r["status"],
                 "consumed_at": r["consumed_at"],
                 "started_at": r["started_at"],
@@ -5251,6 +6176,1266 @@ class Database:
         self._conn.commit()
         return cursor.rowcount
 
+    # ── GitHub #688 Phase 1 Slice A: reply delivery state store ──────────
+    #
+    # HANDOFF CONTRACT (Slice B):
+    #   These primitives are intentionally UNHOOKED in Slice A. Slice B MUST
+    #   call them atomically with its route/runner activation:
+    #     * cutover_thread_reply_delivery_state(thread_id) — once per thread at
+    #       activation (and again on reopen; it is idempotent) to seed/coalesce
+    #       per-pair state from any legacy pending REPLY rows.
+    #     * recover_reply_delivery_state() — at startup, before thread workers
+    #       start, replacing the conversational REPLY portion of
+    #       _sweep_on_startup's generic reaper (Branch 6). Enqueue the returned
+    #       tokens AFTER commit. BOOTSTRAP and TASK_FOLLOWUP keep the generic
+    #       reaper's daemon_restart semantics.
+    #   The claim (queued → running CAS) and settlement primitives are Slice B;
+    #   routes/runner must NOT open-code the queued/running token transitions.
+
+    def _row_to_reply_delivery_state(self, row) -> ThreadReplyDeliveryState:
+        return ThreadReplyDeliveryState(
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            acknowledged_through_seq=int(row["acknowledged_through_seq"] or 0),
+            required_through_seq=int(row["required_through_seq"] or 0),
+            queued_invocation_token=row["queued_invocation_token"],
+            running_invocation_token=row["running_invocation_token"],
+            running_from_seq=row["running_from_seq"],
+            running_through_seq=row["running_through_seq"],
+            last_terminal_reason=row["last_terminal_reason"],
+            last_terminal_at=row["last_terminal_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @_synchronized
+    def get_reply_delivery_state(
+        self, thread_id: str, agent_name: str,
+    ) -> ThreadReplyDeliveryState | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        row = cursor.fetchone()
+        return self._row_to_reply_delivery_state(row) if row else None
+
+    @_synchronized
+    def list_reply_delivery_states(self) -> list[ThreadReplyDeliveryState]:
+        """Every per-pair reply delivery state row (diagnostic surface)."""
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "ORDER BY thread_id, agent_name",
+        )
+        return [self._row_to_reply_delivery_state(r) for r in cursor.fetchall()]
+
+    def _thread_tail_seq(self, thread_id: str) -> int:
+        """Highest transcript seq for ``thread_id`` (0 for an empty thread)."""
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS tail "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        return int(row["tail"])
+
+    def _mint_reply_invocation_uncommitted(
+        self, thread_id: str, agent_name: str, triggering_seq: int,
+    ) -> str:
+        """INSERT a pending REPLY invocation row inside the open transaction.
+
+        Mirrors ``mint_thread_invocation`` without committing so the caller can
+        bundle the mint with the state transition in one atomic transaction.
+        Returns the generated invocation token.
+        """
+        import uuid as _uuid
+        token = _uuid.uuid4().hex
+        now = _now().isoformat()
+        self._conn.execute(
+            "INSERT INTO thread_invocations (thread_id, agent_name, "
+            "invocation_token, triggering_seq, purpose, status, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (thread_id, agent_name, token, triggering_seq,
+             ThreadInvocationPurpose.REPLY.value, now),
+        )
+        return token
+
+    @_synchronized
+    def cutover_thread_reply_delivery_state(
+        self, thread_id: str,
+    ) -> list[ThreadReplyDeliveryState]:
+        """Idempotently initialize per-pair reply delivery state for a thread.
+
+        Callable explicitly by Slice B (per thread at activation / on reopen);
+        Slice A does NOT auto-run it. For every CURRENT participant pair that
+        has no state row yet:
+
+          * no legacy pending REPLY → seed acknowledged_through_seq and
+            required_through_seq to the thread tail (no queued/running token):
+            Phase 1 starts at cutover and creates no historic work.
+          * legacy pending REPLY(s) → derive ``from_seq`` = MIN(triggering_seq)
+            across that pair's pending REPLYs; terminalize exactly those rows
+            (status='failed', decline_reason='coalesced_cutover'); mint exactly
+            one replacement pending REPLY and record it as queued, covering
+            ``from_seq`` .. current tail (acknowledged = from_seq - 1,
+            required = tail).
+
+        Idempotent: a pair that already has a state row is left untouched, so
+        repeat invocation/reopen never duplicates a queued wake or
+        re-terminalizes rows. Only REPLY rows are touched — TASK_FOLLOWUP and
+        BOOTSTRAP are never terminalized or minted here, and
+        ``last_resumed_seq`` is never read.
+        """
+        now = _now().isoformat()
+        created: list[ThreadReplyDeliveryState] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            # Every cutoff-defining read (tail, participants, state existence,
+            # legacy pending REPLY selection) runs AFTER the write lock is held
+            # so a concurrent append cannot commit between the snapshot and the
+            # state commit (a torn snapshot would drop a message from the
+            # required range).
+            tail = self._thread_tail_seq(thread_id)
+            participants = [
+                p.agent_name for p in self.list_thread_participants(thread_id)
+            ]
+            for agent_name in participants:
+                existing = self._conn.execute(
+                    "SELECT 1 FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                if existing is not None:
+                    continue  # already cut over — idempotent no-op
+
+                # Legacy pending REPLYs for this pair (never BOOTSTRAP /
+                # TASK_FOLLOWUP).
+                legacy = self._conn.execute(
+                    "SELECT MIN(triggering_seq) AS from_seq "
+                    "FROM thread_invocations "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply'",
+                    (thread_id, agent_name),
+                ).fetchone()
+                from_seq = legacy["from_seq"]
+                if from_seq is not None:
+                    # Terminalize exactly those legacy pending REPLYs with an
+                    # explicit coalesced_cutover receipt.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'coalesced_cutover', consumed_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ? "
+                        "AND status = 'pending' AND purpose = 'reply'",
+                        (now, thread_id, agent_name),
+                    )
+                    # Mint exactly one replacement queued REPLY covering
+                    # from_seq .. tail.
+                    token = self._mint_reply_invocation_uncommitted(
+                        thread_id, agent_name, from_seq,
+                    )
+                    self._conn.execute(
+                        "INSERT INTO thread_reply_delivery_state "
+                        "(thread_id, agent_name, acknowledged_through_seq, "
+                        "required_through_seq, queued_invocation_token, "
+                        "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (thread_id, agent_name, from_seq - 1, tail, token, now),
+                    )
+                else:
+                    # No legacy pending REPLY: seed to tail, nothing queued.
+                    self._conn.execute(
+                        "INSERT INTO thread_reply_delivery_state "
+                        "(thread_id, agent_name, acknowledged_through_seq, "
+                        "required_through_seq, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (thread_id, agent_name, tail, tail, now),
+                    )
+                row = self._conn.execute(
+                    "SELECT * FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                created.append(self._row_to_reply_delivery_state(row))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return created
+
+    def _running_recovery_fail_reason(
+        self, inv, *, same_pair: bool, right_purpose: bool,
+        pending: bool, started: bool, range_ok: bool,
+    ) -> str:
+        """Truthful fail-closed diagnostic for a non-recoverable running slot.
+
+        Ordered so the most specific cause wins while keeping the distinct
+        terminal vs malformed vs ownership causes that Slice B's retry
+        projection and audit settlement depend on.
+        """
+        if inv is None or not same_pair or not right_purpose:
+            return "invalid_running_token_on_recovery"
+        if not pending:
+            return "running_already_terminal_on_recovery"
+        if not range_ok:
+            return "malformed_running_range_on_recovery"
+        if not started:
+            return "running_missing_start_evidence_on_recovery"
+        return "invalid_running_token_on_recovery"
+
+    @_synchronized
+    def recover_reply_delivery_state(self) -> list[ThreadReplyRecoveryEntry]:
+        """Durable reply-delivery recovery (Slice A ships it UNHOOKED).
+
+        Slice B must call this at startup (before thread workers start) and
+        enqueue the returned tokens after commit, replacing the conversational
+        REPLY portion of the generic reaper. Contract per state row:
+
+          * queued token set, running clear → validate it is a pending
+            UNSTARTED same-pair REPLY (the claim CAS enforces the same
+            precondition). Valid → retain and return it. A queued receipt
+            with started_at set (malformed/crash-window state) fails closed
+            with a PAIR-SCOPED sweep: retire every owned pending REPLY
+            receipt, clear the queued slot, preserve required_through_seq,
+            never mint/return a replacement — the next conversational arrival
+            mints the single covering wake. Any other invalid queued token →
+            fail closed: clear the queued slot, record a diagnostic, return
+            nothing.
+          * both ownership slots populated → corruption. Fail closed: clear
+            both slots, record a diagnostic, return nothing, never mint.
+          * running token set → recoverable ONLY when the receipt is owned by
+            this pair, is a REPLY, is still PENDING (the expected interrupted
+            in-flight status), carries started evidence, and its durable range
+            is internally consistent (acknowledged <= running_from <=
+            running_through <= required). Recoverable → terminalize ONLY that
+            owned attempt as daemon_restart, preserve the unacknowledged
+            required range, clear running, mint/record exactly one replacement
+            queued REPLY. Otherwise (consumed/failed/declined terminal,
+            missing, wrong-pair, wrong-purpose, malformed range, missing start)
+            → fail closed: clear the running slot, record a truthful
+            diagnostic, never mint/return a runnable token.
+
+        Repeat recovery is idempotent: after a running row is replaced its slot
+        holds a queued token, so a second pass retains rather than re-mints.
+        BOOTSTRAP / TASK_FOLLOWUP rows are never touched.
+        """
+        now = _now().isoformat()
+        results: list[ThreadReplyRecoveryEntry] = []
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE queued_invocation_token IS NOT NULL "
+            "OR running_invocation_token IS NOT NULL "
+            "ORDER BY thread_id, agent_name",
+        ).fetchall()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                thread_id = row["thread_id"]
+                agent_name = row["agent_name"]
+                running_token = row["running_invocation_token"]
+                queued_token = row["queued_invocation_token"]
+
+                if running_token is not None and queued_token is not None:
+                    # Both ownership slots populated: the mutually-exclusive
+                    # claim/settle invariant was violated. Fail closed with a
+                    # transactionally atomic PAIR-SCOPED sweep: retire EVERY
+                    # invocation owned by this corrupt row's (thread_id,
+                    # agent_name) pair that is purpose REPLY and status PENDING
+                    # — including unreferenced same-pair pending receipts the
+                    # slots never pointed at — so no duplicate/orphaned pending
+                    # REPLY survives once Slice B replaces generic reaping. The
+                    # sweep is gated on the pair, purpose='reply', and
+                    # status='pending', so a foreign-pair, wrong-purpose,
+                    # missing, or already-terminal receipt (even one referenced
+                    # by a corrupt slot) is never mutated. No blanket global
+                    # reaper is issued. Then clear both slots, record a
+                    # truthful corruption diagnostic, and never mint or return
+                    # a runnable replacement.
+                    swept = self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'corrupt_both_slots_on_recovery', "
+                        "consumed_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ? "
+                        "AND status = 'pending' AND purpose = 'reply'",
+                        (now, thread_id, agent_name),
+                    )
+                    self._conn.execute(
+                        "UPDATE thread_reply_delivery_state SET "
+                        "queued_invocation_token = NULL, "
+                        "running_invocation_token = NULL, "
+                        "running_from_seq = NULL, running_through_seq = NULL, "
+                        "last_terminal_reason = ?, last_terminal_at = ?, "
+                        "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                        ("corrupt_both_slots_on_recovery", now, now,
+                         thread_id, agent_name),
+                    )
+                    # One truthful cancelled audit per corrupted pair — the
+                    # pair-scoped sweep retired its owned obligations with a
+                    # diagnostic reason; never mint a replacement.
+                    self._emit_reply_wake_audit(
+                        thread_id=thread_id, agent_name=agent_name,
+                        action="thread_reply_wake_cancelled",
+                        payload={
+                            "agent_name": agent_name,
+                            "boundary_seq": int(row["required_through_seq"] or 0),
+                            "reason": "corrupt_both_slots_on_recovery",
+                            "swept_count": swept.rowcount,
+                        },
+                    )
+                    continue
+
+                if running_token is not None:
+                    inv = self._conn.execute(
+                        "SELECT * FROM thread_invocations "
+                        "WHERE invocation_token = ?",
+                        (running_token,),
+                    ).fetchone()
+                    same_pair = (
+                        inv is not None
+                        and inv["thread_id"] == thread_id
+                        and inv["agent_name"] == agent_name
+                    )
+                    right_purpose = (
+                        inv is not None
+                        and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                    )
+                    pending = (
+                        inv is not None
+                        and inv["status"] == ThreadInvocationStatus.PENDING.value
+                    )
+                    started = inv is not None and inv["started_at"] is not None
+
+                    acknowledged = int(row["acknowledged_through_seq"] or 0)
+                    required = int(row["required_through_seq"] or 0)
+                    running_from = row["running_from_seq"]
+                    running_through = row["running_through_seq"]
+                    range_ok = (
+                        running_from is not None
+                        and running_through is not None
+                        and acknowledged <= running_from
+                        and running_from <= running_through
+                        and running_through <= required
+                    )
+
+                    recoverable = (
+                        same_pair and right_purpose and pending
+                        and started and range_ok
+                    )
+
+                    if not recoverable:
+                        reason = self._running_recovery_fail_reason(
+                            inv, same_pair=same_pair,
+                            right_purpose=right_purpose, pending=pending,
+                            started=started, range_ok=range_ok,
+                        )
+                        # Fail closed: clear the running slot (never leave an
+                        # ownership slot referencing a terminal/mismatched/
+                        # malformed attempt), never mint a replacement, never
+                        # return a runnable token. The invocation row itself is
+                        # left untouched so truthful terminal diagnostics survive.
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "running_invocation_token = NULL, "
+                            "running_from_seq = NULL, "
+                            "running_through_seq = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            (reason, now, now, thread_id, agent_name),
+                        )
+                        continue
+
+                    # Recoverable interrupted in-flight attempt: terminalize
+                    # ONLY the owned pending receipt as daemon_restart, preserve
+                    # the unacknowledged required range, clear running,
+                    # mint/record exactly one replacement queued REPLY.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'failed', "
+                        "decline_reason = 'daemon_restart', consumed_at = ? "
+                        "WHERE invocation_token = ? AND status = 'pending'",
+                        (now, running_token),
+                    )
+                    replacement = self._mint_reply_invocation_uncommitted(
+                        thread_id, agent_name, acknowledged + 1,
+                    )
+                    self._conn.execute(
+                        "UPDATE thread_reply_delivery_state SET "
+                        "running_invocation_token = NULL, "
+                        "running_from_seq = NULL, "
+                        "running_through_seq = NULL, "
+                        "queued_invocation_token = ?, "
+                        "last_terminal_reason = 'daemon_restart', "
+                        "last_terminal_at = ?, updated_at = ? "
+                        "WHERE thread_id = ? AND agent_name = ?",
+                        (replacement, now, now, thread_id, agent_name),
+                    )
+                    self._emit_reply_wake_audit(
+                        thread_id=thread_id, agent_name=agent_name,
+                        action="thread_reply_wake_recovered",
+                        payload={
+                            "agent_name": agent_name,
+                            "kind": "replacement_queued",
+                            "from_seq": acknowledged + 1,
+                            "through_seq": required,
+                            "token_prefix": replacement[:8],
+                        },
+                    )
+                    results.append(ThreadReplyRecoveryEntry(
+                        thread_id=thread_id,
+                        agent_name=agent_name,
+                        invocation_token=replacement,
+                        kind="replacement_queued",
+                    ))
+                    continue
+
+                if queued_token is not None:
+                    inv = self._conn.execute(
+                        "SELECT * FROM thread_invocations "
+                        "WHERE invocation_token = ?",
+                        (queued_token,),
+                    ).fetchone()
+                    same_pair = (
+                        inv is not None
+                        and inv["thread_id"] == thread_id
+                        and inv["agent_name"] == agent_name
+                    )
+                    right_purpose = (
+                        inv is not None
+                        and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                    )
+                    pending = (
+                        inv is not None
+                        and inv["status"] == ThreadInvocationStatus.PENDING.value
+                    )
+                    started = inv is not None and inv["started_at"] is not None
+                    # A valid queued wake is a same-pair pending REPLY whose
+                    # receipt is UNSTARTED — claim_conversational_reply
+                    # enforces the identical precondition. started_at on a
+                    # queued receipt is malformed/crash-window state: the
+                    # worker claim would no-op and the pair would strand
+                    # forever, with later arrivals only coalescing into it.
+                    valid_queued = (
+                        inv is not None
+                        and same_pair and right_purpose and pending
+                        and not started
+                    )
+                    if valid_queued:
+                        self._emit_reply_wake_audit(
+                            thread_id=thread_id, agent_name=agent_name,
+                            action="thread_reply_wake_recovered",
+                            payload={
+                                "agent_name": agent_name,
+                                "kind": "retained_queued",
+                                "from_seq": (
+                                    int(row["acknowledged_through_seq"] or 0) + 1
+                                ),
+                                "through_seq": int(row["required_through_seq"] or 0),
+                                "token_prefix": queued_token[:8],
+                            },
+                        )
+                        results.append(ThreadReplyRecoveryEntry(
+                            thread_id=thread_id,
+                            agent_name=agent_name,
+                            invocation_token=queued_token,
+                            kind="retained_queued",
+                        ))
+                    elif same_pair and right_purpose and pending and started:
+                        # Queued slot references a started receipt: invalid
+                        # queued ownership. Fail closed with a transactionally
+                        # atomic PAIR-SCOPED sweep (same class as the
+                        # both-slots corruption branch): retire EVERY owned
+                        # pending REPLY receipt for this pair — including
+                        # unreferenced orphans no slot points at — so no
+                        # pending REPLY survives that no claim can ever run,
+                        # then clear the queued slot. Never mint or return a
+                        # runnable replacement (no unowned provider run).
+                        # required_through_seq is preserved, so the next
+                        # conversational arrival mints a fresh wake covering
+                        # the retained range (no swallowed arrival).
+                        swept = self._conn.execute(
+                            "UPDATE thread_invocations SET status = 'failed', "
+                            "decline_reason = 'invalid_queued_started_on_recovery', "
+                            "consumed_at = ? "
+                            "WHERE thread_id = ? AND agent_name = ? "
+                            "AND status = 'pending' AND purpose = 'reply'",
+                            (now, thread_id, agent_name),
+                        )
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "queued_invocation_token = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            ("invalid_queued_started_on_recovery", now, now,
+                             thread_id, agent_name),
+                        )
+                        self._emit_reply_wake_audit(
+                            thread_id=thread_id, agent_name=agent_name,
+                            action="thread_reply_wake_cancelled",
+                            payload={
+                                "agent_name": agent_name,
+                                "boundary_seq": int(row["required_through_seq"] or 0),
+                                "reason": "invalid_queued_started_on_recovery",
+                                "swept_count": swept.rowcount,
+                            },
+                        )
+                    else:
+                        # Fail closed: clear the queued slot, return nothing.
+                        self._conn.execute(
+                            "UPDATE thread_reply_delivery_state SET "
+                            "queued_invocation_token = NULL, "
+                            "last_terminal_reason = ?, last_terminal_at = ?, "
+                            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                            ("invalid_queued_token_on_recovery", now, now,
+                             thread_id, agent_name),
+                        )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return results
+
+    # ── GitHub #688 Phase 1 Slice B: reply delivery state wiring ────────────
+    #
+    # Slice A shipped the table + cutover/recovery primitives UNHOOKED. Slice B
+    # owns the route/runner activation and the atomic conversational-arrival,
+    # claim, and settlement operations. The store is the single authority for
+    # the queued/running token transitions; routes/runner MUST NOT open-code
+    # them. All state-changing methods run one explicit SQLite transaction
+    # (BEGIN IMMEDIATE) so the append+arrival / append+settle+broadcast units
+    # are atomic and queue notifications happen strictly after commit.
+
+    @_synchronized
+    def list_open_thread_ids(self) -> list[str]:
+        """Every OPEN thread id (activation cutover sweep at startup)."""
+        cursor = self._conn.execute(
+            "SELECT id FROM threads WHERE status = 'open' ORDER BY id",
+        )
+        return [r["id"] for r in cursor.fetchall()]
+
+    def _apply_arrival_uncommitted(
+        self, thread_id: str, agent_name: str, seq: int,
+    ) -> ThreadReplyArrival:
+        """Raise ``required_through_seq`` to ``seq`` for one recipient pair,
+        minting exactly one queued REPLY only when neither queued nor running
+        ownership exists. Runs inside an open transaction (no commit).
+
+        ``seq`` must be the just-appended conversational message sequence;
+        the speaker is excluded by the caller. A missing pair row is created
+        with acknowledged = seq - 1 (no historic replay) so Phase 1 delivery
+        for a newly-seen pair starts at this message.
+        """
+        now = _now().isoformat()
+        row = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        ).fetchone()
+        if row is None:
+            # New pair: seed acknowledged = seq - 1 (tail before this message),
+            # required = seq, and mint one queued wake covering seq..seq.
+            token = self._mint_reply_invocation_uncommitted(
+                thread_id, agent_name, seq,
+            )
+            self._conn.execute(
+                "INSERT INTO thread_reply_delivery_state "
+                "(thread_id, agent_name, acknowledged_through_seq, "
+                "required_through_seq, queued_invocation_token, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (thread_id, agent_name, seq - 1, seq, token, now),
+            )
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=agent_name,
+                action="thread_reply_wake_created",
+                payload={
+                    "agent_name": agent_name,
+                    "from_seq": seq,
+                    "through_seq": seq,
+                    "token_prefix": token[:8],
+                },
+            )
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=token,
+                coalesced=False, from_seq=seq, through_seq=seq,
+            )
+
+        acknowledged = int(row["acknowledged_through_seq"] or 0)
+        required = int(row["required_through_seq"] or 0)
+        queued = row["queued_invocation_token"]
+        running = row["running_invocation_token"]
+        if seq <= required:
+            # Idempotent safety: already covered by the required watermark.
+            # No durable change — deliberately NO audit (a duplicate/backdated
+            # notification must not fabricate a coalesced event).
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=None,
+                coalesced=True, from_seq=acknowledged + 1, through_seq=required,
+            )
+
+        new_required = seq
+        if queued is not None or running is not None:
+            # Coalesce: raise required only; the existing wake already owns the
+            # delivery obligation.
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
+                "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                (new_required, now, thread_id, agent_name),
+            )
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=agent_name,
+                action="thread_reply_wake_coalesced",
+                payload={
+                    "agent_name": agent_name,
+                    "from_seq": acknowledged + 1,
+                    "through_seq": new_required,
+                },
+            )
+            return ThreadReplyArrival(
+                agent_name=agent_name, invocation_token=None,
+                coalesced=True,
+                from_seq=acknowledged + 1, through_seq=new_required,
+            )
+
+        # No queued/running ownership: mint one queued wake covering
+        # acknowledged+1 .. seq.
+        from_seq = acknowledged + 1
+        token = self._mint_reply_invocation_uncommitted(
+            thread_id, agent_name, from_seq,
+        )
+        self._conn.execute(
+            "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
+            "queued_invocation_token = ?, updated_at = ? "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (new_required, token, now, thread_id, agent_name),
+        )
+        self._emit_reply_wake_audit(
+            thread_id=thread_id, agent_name=agent_name,
+            action="thread_reply_wake_created",
+            payload={
+                "agent_name": agent_name,
+                "from_seq": from_seq,
+                "through_seq": new_required,
+                "token_prefix": token[:8],
+            },
+        )
+        return ThreadReplyArrival(
+            agent_name=agent_name, invocation_token=token,
+            coalesced=False, from_seq=from_seq, through_seq=new_required,
+        )
+
+    def _derive_conversational_mentions(
+        self,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None,
+    ) -> list[str] | None:
+        """Server-side derivation of the durable mention signal for a
+        conversational write (THR-198 Slice A). Only kind=MESSAGE rows carry
+        the signal; system/decline rows stay NULL. The stored value is the
+        canonical valid set: live participants at write time, excluding the
+        speaker, deduped in first-occurrence order — derived from
+        ``body_markdown``, never client-declared.
+        """
+        if kind is not ThreadMessageKind.MESSAGE:
+            return None
+        participants = [
+            r["agent_name"] for r in self._conn.execute(
+                "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+        ]
+        return valid_mentions(
+            parse_mentions(body_markdown), participants, speaker,
+        )
+
+    def _thread_mention_routing_enabled(self, thread_id: str) -> bool:
+        """Read the thread's per-thread mention-routing switch (THR-198).
+
+        Additive column with NOT NULL DEFAULT 1; a missing thread is treated
+        as enabled (the ratified default) so routing never silently widens on
+        a stale read inside a write transaction. Called under the connection
+        lock by the conversational seams only.
+        """
+        row = self._conn.execute(
+            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+        return bool(row["mention_routing_enabled"]) if row else True
+
+    @_synchronized
+    def record_conversational_arrival(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
+        recipients: list[str],
+    ) -> tuple[int, list[ThreadReplyArrival]]:
+        """Atomic conversational-arrival: append the message and, for every
+        recipient (already excluding the speaker), raise required_through_seq
+        and create/coalesce exactly one queued REPLY.
+
+        Returns (seq, arrivals). ``arrivals`` carry the newly-minted queue
+        tokens (invocation_token is None when coalesced); the caller enqueues
+        them ONLY after this transaction commits.
+        """
+        arrivals: list[ThreadReplyArrival] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            mentions = self._derive_conversational_mentions(
+                thread_id, speaker, kind, body_markdown,
+            )
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=kind,
+                body_markdown=body_markdown,
+                attachments=attachments,
+                sent_from_task_id=sent_from_task_id,
+                mentions=mentions,
+            )
+            # Phase-2 mention routing (THR-198, Slice B): the wake set is
+            # resolved at write time from the persisted structured mention
+            # signal + the thread's default-enabled setting. Disabled or
+            # zero-valid fall back to the full recipient broadcast; valid
+            # mentions narrow to exactly that stable set. ``recipients`` is
+            # the caller-declared broadcast candidate set (participants minus
+            # speaker at every call site), so the broadcast fallback is
+            # byte-identical to pre-Slice-B behavior.
+            wake_set = resolve_wake_set(
+                mentions or [],
+                recipients,
+                speaker,
+                mention_routing_enabled=self._thread_mention_routing_enabled(
+                    thread_id,
+                ),
+            )
+            for name in wake_set:
+                arrivals.append(
+                    self._apply_arrival_uncommitted(thread_id, name, seq)
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return seq, arrivals
+
+    def _settle_reply_uncommitted(
+        self,
+        token: str,
+        *,
+        outcome: str,
+        decline_reason: str | None = None,
+    ) -> ThreadReplySettlement | None:
+        """Settle a conversational REPLY terminal path inside the open
+        transaction. Returns None when ``token`` is not the running token of
+        any delivery-state row (caller falls back to the legacy terminal path).
+
+        Settlement contract (brief item 4):
+          * reply/decline acknowledge ONLY the claimed coverage
+            (``running_through``). The agent's own reply sequence is never
+            part of its own required range (recipients exclude the speaker),
+            so acknowledging through the claimed range never swallows an
+            arrival that landed after the prompt was built.
+          * arrivals during the run (``required > running_through``) yield
+            exactly one post-settlement follow-on covering the retained
+            unacknowledged range; it is the single wake for all of them.
+          * failed/timeout do NOT advance acknowledgement, mint no immediate
+            retry, and leave ``retry_required`` (``required > acknowledged``)
+            for the next conversational arrival to cover.
+        """
+        now = _now().isoformat()
+        row = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state "
+            "WHERE running_invocation_token = ? OR queued_invocation_token = ?",
+            (token, token),
+        ).fetchone()
+        if row is None:
+            return None
+        thread_id = row["thread_id"]
+        agent_name = row["agent_name"]
+        acknowledged = int(row["acknowledged_through_seq"] or 0)
+        required = int(row["required_through_seq"] or 0)
+        if row["running_invocation_token"] == token:
+            running_through = int(row["running_through_seq"] or 0)
+        else:
+            # A queued (not-yet-claimed) token: its delivery coverage is
+            # acknowledged+1 .. required. Declining/replying to the whole
+            # unclaimed wake acknowledges that full coverage.
+            running_through = required
+
+        if outcome == "reply":
+            status = ThreadInvocationStatus.CONSUMED.value
+        elif outcome == "decline":
+            status = ThreadInvocationStatus.DECLINED.value
+        elif outcome == "timeout":
+            status = ThreadInvocationStatus.TIMEOUT.value
+        else:
+            status = ThreadInvocationStatus.FAILED.value
+        # reply/decline acknowledge exactly the claimed coverage; failure and
+        # timeout leave the previously acknowledged watermark untouched.
+        new_ack = running_through if outcome in ("reply", "decline") else acknowledged
+
+        self._conn.execute(
+            "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (status, decline_reason, now, token),
+        )
+        terminal_reason = (
+            decline_reason if outcome in ("failed", "timeout") else None
+        )
+        self._conn.execute(
+            "UPDATE thread_reply_delivery_state SET "
+            "queued_invocation_token = NULL, "
+            "running_invocation_token = NULL, running_from_seq = NULL, "
+            "running_through_seq = NULL, acknowledged_through_seq = ?, "
+            "last_terminal_reason = ?, last_terminal_at = ?, updated_at = ? "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (new_ack, terminal_reason, now, now, thread_id, agent_name),
+        )
+
+        follow_on: str | None = None
+        if outcome in ("reply", "decline") and required > new_ack:
+            # Exactly one follow-on covering arrivals strictly after the
+            # immutable running range (``required > running_through``). Its
+            # triggering_seq is the first unacknowledged sequence.
+            follow_on = self._mint_reply_invocation_uncommitted(
+                thread_id, agent_name, new_ack + 1,
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "queued_invocation_token = ?, updated_at = ? "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (follow_on, now, thread_id, agent_name),
+            )
+
+        self._emit_reply_wake_audit(
+            thread_id=thread_id, agent_name=agent_name,
+            action="thread_reply_wake_settled",
+            payload={
+                "agent_name": agent_name,
+                "outcome": outcome,
+                "acknowledged_through_seq": new_ack,
+                "required_through_seq": required,
+                "retry_required": (required > new_ack and follow_on is None),
+                "follow_on_token_prefix": follow_on[:8] if follow_on else None,
+                "decline_reason": decline_reason,
+            },
+        )
+
+        return ThreadReplySettlement(
+            thread_id=thread_id,
+            agent_name=agent_name,
+            outcome=outcome,  # type: ignore[arg-type]
+            acknowledged_through_seq=new_ack,
+            required_through_seq=required,
+            # ``retry_required`` is the residual-obligation diagnostic: True
+            # only when the range is still unacknowledged AND no follow-on wake
+            # was minted to carry it (failure/timeout). A reply/decline that
+            # minted a follow-on has an active queued wake, so it is not
+            # retry_required.
+            retry_required=(required > new_ack and follow_on is None),
+            follow_on_token=follow_on,
+        )
+
+    @_synchronized
+    def settle_conversational_reply(
+        self,
+        *,
+        token: str,
+        outcome: str,
+        decline_reason: str | None = None,
+    ) -> ThreadReplySettlement | None:
+        """Public settlement seam for a conversational REPLY terminal path.
+
+        Returns None when the token is not the running token of any delivery-
+        state row (BOOTSTRAP/TASK_FOLLOWUP, or an already-settled/stale REPLY);
+        the caller then applies the legacy terminal transition.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            settlement = self._settle_reply_uncommitted(
+                token,
+                outcome=outcome,
+                decline_reason=decline_reason,
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return settlement
+
+    @_synchronized
+    def reply_conversational(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        body_markdown: str | None,
+        attachments: list[ThreadAttachment] | None,
+        token: str,
+        token_purpose: ThreadInvocationPurpose,
+    ) -> tuple[int, ThreadReplySettlement | None, list[ThreadReplyArrival]]:
+        """Atomic reply: append the reply message, settle the held token, and
+        broadcast to every OTHER participant.
+
+        Returns (seq, settlement, arrivals). ``settlement`` is None for a
+        non-REPLY token (BOOTSTRAP/TASK_FOLLOWUP use the legacy consume); the
+        broadcast to other participants always uses the coalescing arrival path
+        (replacing the legacy per-recipient REPLY mint).
+        """
+        now = _now().isoformat()
+        arrivals: list[ThreadReplyArrival] = []
+        settlement: ThreadReplySettlement | None = None
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            participants = [
+                p["agent_name"] for p in self._conn.execute(
+                    "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchall()
+            ]
+            mentions = valid_mentions(
+                parse_mentions(body_markdown), participants, speaker,
+            )
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=speaker,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_markdown,
+                attachments=attachments,
+                mentions=mentions,
+            )
+            if token_purpose is ThreadInvocationPurpose.REPLY:
+                settlement = self._settle_reply_uncommitted(
+                    token,
+                    outcome="reply",
+                )
+                if settlement is None:
+                    # Legacy/stale pending REPLY not owned by delivery state:
+                    # fall back to the legacy consume transition.
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status = 'consumed', "
+                        "consumed_at = ? WHERE invocation_token = ? "
+                        "AND status = 'pending'",
+                        (now, token),
+                    )
+            else:
+                self._conn.execute(
+                    "UPDATE thread_invocations SET status = 'consumed', "
+                    "consumed_at = ? WHERE invocation_token = ? "
+                    "AND status = 'pending'",
+                    (now, token),
+                )
+            # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
+            # the broadcast at write time from the persisted structured
+            # mention signal + the thread setting. TASK_FOLLOWUP and BOOTSTRAP
+            # are ISOLATED — they keep the full participants-minus-speaker
+            # broadcast and are never mention-routed.
+            if token_purpose is ThreadInvocationPurpose.REPLY:
+                wake_set = resolve_wake_set(
+                    mentions, participants, speaker,
+                    mention_routing_enabled=self._thread_mention_routing_enabled(
+                        thread_id,
+                    ),
+                )
+            else:
+                wake_set = [
+                    name for name in participants if name != speaker
+                ]
+            for name in wake_set:
+                arrivals.append(
+                    self._apply_arrival_uncommitted(thread_id, name, seq)
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return seq, settlement, arrivals
+
+    @_synchronized
+    def claim_conversational_reply(
+        self, token: str,
+    ) -> ThreadReplyClaim | None:
+        """Durable queued→running CAS for a conversational REPLY.
+
+        Succeeds only when ``token`` is the pair's queued_invocation_token AND
+        the receipt is a pending, unstarted, same-pair REPLY. In one
+        transaction it transfers queued→running, snapshots the immutable
+        inclusive range (running_from = acknowledged + 1, running_through =
+        required), and stamps started_at. A duplicate/stale job returns None so
+        the runner no-ops before any prompt/subprocess work.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT * FROM thread_reply_delivery_state "
+                "WHERE queued_invocation_token = ?",
+                (token,),
+            ).fetchone()
+            if row is None or row["running_invocation_token"] is not None:
+                self._conn.commit()
+                return None
+            inv = self._conn.execute(
+                "SELECT * FROM thread_invocations WHERE invocation_token = ?",
+                (token,),
+            ).fetchone()
+            valid = (
+                inv is not None
+                and inv["thread_id"] == row["thread_id"]
+                and inv["agent_name"] == row["agent_name"]
+                and inv["purpose"] == ThreadInvocationPurpose.REPLY.value
+                and inv["status"] == ThreadInvocationStatus.PENDING.value
+                and inv["started_at"] is None
+            )
+            if not valid:
+                self._conn.commit()
+                return None
+            acknowledged = int(row["acknowledged_through_seq"] or 0)
+            required = int(row["required_through_seq"] or 0)
+            running_from = acknowledged + 1
+            running_through = required
+            self._conn.execute(
+                "UPDATE thread_invocations SET started_at = ? "
+                "WHERE invocation_token = ? AND status = 'pending'",
+                (now, token),
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "queued_invocation_token = NULL, "
+                "running_invocation_token = ?, running_from_seq = ?, "
+                "running_through_seq = ?, updated_at = ? "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (token, running_from, running_through, now,
+                 row["thread_id"], row["agent_name"]),
+            )
+            self._emit_reply_wake_audit(
+                thread_id=row["thread_id"], agent_name=row["agent_name"],
+                action="thread_reply_wake_claimed",
+                payload={
+                    "agent_name": row["agent_name"],
+                    "from_seq": running_from,
+                    "through_seq": running_through,
+                    "token_prefix": token[:8],
+                },
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return ThreadReplyClaim(
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            invocation_token=token,
+            acknowledged_through_seq=acknowledged,
+            required_through_seq=required,
+            running_from_seq=running_from,
+            running_through_seq=running_through,
+        )
+
+    @_synchronized
+    def discard_reply_delivery(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str | None = None,
+        decline_reason: str,
+        status: ThreadInvocationStatus = ThreadInvocationStatus.FAILED,
+    ) -> int:
+        """Terminalize owned conversational REPLY state with an explicit
+        discard boundary (abort / archive / participant removal).
+
+        Terminalizes every pending REPLY invocation for (thread_id[,
+        agent_name]) under ``status`` + ``decline_reason``, clears the queued/
+        running ownership slots + range, and advances acknowledged to required
+        so no queued/running/retry_required obligation survives and a later
+        message starts after the boundary. Never touches BOOTSTRAP /
+        TASK_FOLLOWUP rows and never resurrects a discarded wake.
+        Returns the number of reply invocation rows terminalized.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            # Snapshot the per-pair obligations BEFORE the terminalizing
+            # UPDATE so each affected pair emits exactly one truthful cancelled
+            # audit. Two obligation classes are merged: (a) every pair with a
+            # pending REPLY invocation (legacy-only pairs without a state row
+            # included), and (b) every pair with a live delivery-state
+            # obligation — a queued/running token, or an unacknowledged
+            # retry_required range — even when no pending receipt row exists
+            # (e.g. a failed wake awaiting the next conversational arrival).
+            # Boundary = state required watermark when present, else the
+            # pair's max triggering seq.
+            if agent_name is None:
+                pair_rows = self._conn.execute(
+                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                    "AS max_seq FROM thread_invocations "
+                    "WHERE thread_id = ? AND status = 'pending' "
+                    "AND purpose = 'reply' GROUP BY agent_name",
+                    (thread_id,),
+                ).fetchall()
+                state_rows = self._conn.execute(
+                    "SELECT agent_name FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND (queued_invocation_token IS NOT NULL "
+                    "OR running_invocation_token IS NOT NULL "
+                    "OR required_through_seq > acknowledged_through_seq)",
+                    (thread_id,),
+                ).fetchall()
+            else:
+                pair_rows = self._conn.execute(
+                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                    "AS max_seq FROM thread_invocations "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply' "
+                    "GROUP BY agent_name",
+                    (thread_id, agent_name),
+                ).fetchall()
+                state_rows = self._conn.execute(
+                    "SELECT agent_name FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ? "
+                    "AND (queued_invocation_token IS NOT NULL "
+                    "OR running_invocation_token IS NOT NULL "
+                    "OR required_through_seq > acknowledged_through_seq)",
+                    (thread_id, agent_name),
+                ).fetchall()
+            # Merge state-only pairs (n = 0 receipts terminalized by the sweep)
+            # into the audit set without duplicate rows.
+            seen: set[str] = set()
+            merged: list[dict] = []
+            for pr in pair_rows:
+                merged.append(pr)
+                seen.add(pr["agent_name"])
+            for sr in state_rows:
+                if sr["agent_name"] not in seen:
+                    merged.append({"agent_name": sr["agent_name"], "n": 0,
+                                   "max_seq": None})
+                    seen.add(sr["agent_name"])
+            if agent_name is None:
+                cursor = self._conn.execute(
+                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                    "consumed_at = ? WHERE thread_id = ? AND status = 'pending' "
+                    "AND purpose = 'reply'",
+                    (status.value, decline_reason, now, thread_id),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                    "consumed_at = ? WHERE thread_id = ? AND agent_name = ? "
+                    "AND status = 'pending' AND purpose = 'reply'",
+                    (status.value, decline_reason, now, thread_id, agent_name),
+                )
+            if agent_name is None:
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "acknowledged_through_seq = required_through_seq, "
+                    "queued_invocation_token = NULL, "
+                    "running_invocation_token = NULL, running_from_seq = NULL, "
+                    "running_through_seq = NULL, "
+                    "last_terminal_reason = ?, last_terminal_at = ?, "
+                    "updated_at = ? WHERE thread_id = ?",
+                    (decline_reason, now, now, thread_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "acknowledged_through_seq = required_through_seq, "
+                    "queued_invocation_token = NULL, "
+                    "running_invocation_token = NULL, running_from_seq = NULL, "
+                    "running_through_seq = NULL, "
+                    "last_terminal_reason = ?, last_terminal_at = ?, "
+                    "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                    (decline_reason, now, now, thread_id, agent_name),
+                )
+            for pr in merged:
+                pair_agent = pr["agent_name"]
+                st = self._conn.execute(
+                    "SELECT required_through_seq FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, pair_agent),
+                ).fetchone()
+                boundary = (
+                    int(st["required_through_seq"] or 0)
+                    if st is not None else int(pr["max_seq"] or 0)
+                )
+                self._emit_reply_wake_audit(
+                    thread_id=thread_id, agent_name=pair_agent,
+                    action="thread_reply_wake_cancelled",
+                    payload={
+                        "agent_name": pair_agent,
+                        "boundary_seq": boundary,
+                        "reason": decline_reason,
+                        "swept_count": int(pr["n"]),
+                    },
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return cursor.rowcount
+
+    @_synchronized
+    def list_reply_delivery_projections(
+        self, thread_id: str,
+    ) -> list[ReplyDeliveryProjection]:
+        """Pair-level reply_delivery projection for a thread (server contract).
+
+        Derived from ``thread_reply_delivery_state`` only — never fabricated
+        from per-message invocation rows. A fully-settled pair (nothing queued/
+        running/required) is omitted; terminal history remains on the
+        per-message responder strips. ``coalesced_message_count`` is the number
+        of transcript rows the wake's range covers (COUNT, not subtraction).
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state WHERE thread_id = ? "
+            "ORDER BY agent_name",
+            (thread_id,),
+        ).fetchall()
+        out: list[ReplyDeliveryProjection] = []
+        for row in rows:
+            acknowledged = int(row["acknowledged_through_seq"] or 0)
+            required = int(row["required_through_seq"] or 0)
+            queued = row["queued_invocation_token"]
+            running = row["running_invocation_token"]
+            running_from = row["running_from_seq"]
+            running_through = row["running_through_seq"]
+            started_at = None
+            if running is not None:
+                state = "running"
+                from_seq = int(running_from or 0)
+                through_seq = int(running_through or 0)
+                inv = self._conn.execute(
+                    "SELECT started_at FROM thread_invocations "
+                    "WHERE invocation_token = ?",
+                    (running,),
+                ).fetchone()
+                if inv is not None:
+                    started_at = inv["started_at"]
+            elif queued is not None:
+                state = "queued"
+                from_seq = acknowledged + 1
+                through_seq = required
+            elif required > acknowledged:
+                state = "retry_required"
+                from_seq = acknowledged + 1
+                through_seq = required
+            else:
+                continue  # fully settled — omit from the live projection
+            cnt = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM thread_messages "
+                "WHERE thread_id = ? AND seq >= ? AND seq <= ?",
+                (thread_id, from_seq, through_seq),
+            ).fetchone()
+            out.append(ReplyDeliveryProjection(
+                agent_name=row["agent_name"],
+                state=state,  # type: ignore[arg-type]
+                from_seq=from_seq,
+                through_seq=through_seq,
+                coalesced_message_count=int(cnt["n"]),
+                started_at=started_at,
+                updated_at=row["updated_at"],
+                last_terminal_reason=row["last_terminal_reason"],
+            ))
+        return out
+
     @_synchronized
     def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:
         self._conn.execute(
@@ -5281,6 +7466,234 @@ class Database:
                 (status.value, thread_id),
             )
         self._conn.commit()
+
+    @_synchronized
+    def set_thread_subject(self, thread_id: str, *, subject: str) -> None:
+        """Update a thread's display title (THR-209 rename).
+
+        Identity (id), participants, routing, unread, and lifecycle are
+        untouched — only the durable ``subject`` changes. The caller is
+        responsible for the ``thread_renamed`` audit row.
+        """
+        self._conn.execute(
+            "UPDATE threads SET subject = ? WHERE id = ?",
+            (subject, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_pinned(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear founder-workspace pin state (THR-209).
+
+        Pin state is presentation-only: this write touches ``pinned_at`` and
+        nothing else — no message, notification, participant, unread, or
+        activity-timestamp effect. The caller is responsible for the
+        ``thread_pinned``/``thread_unpinned`` audit row.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_subject_uncommitted(self, thread_id: str, *, subject: str) -> None:
+        """Update a thread's subject WITHOUT committing (THR-209 rename).
+
+        Deliberately left UNCOMMITTED: the caller owns the surrounding
+        transaction (``BEGIN IMMEDIATE`` … ``commit()``/``rollback()``) so the
+        rename and its ``thread_renamed`` audit row commit atomically. This
+        helper never commits independently inside an atomic unit (TASK-5644).
+        """
+        self._conn.execute(
+            "UPDATE threads SET subject = ? WHERE id = ?",
+            (subject, thread_id),
+        )
+
+    @_synchronized
+    def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear thread pin state WITHOUT committing (THR-209).
+
+        Same contract as ``set_thread_subject_uncommitted``: the caller owns
+        the surrounding transaction so the pin transition and its audit row
+        are atomic.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+
+    @_synchronized
+    def rename_thread_with_audit(
+        self, thread_id: str, *, subject: str, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder rename + ``thread_renamed`` audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative subject read, the
+        idempotence decision, the subject UPDATE, and the audit row insert
+        commit together — and roll back together on ANY failure — so a rename
+        can never survive without its audit row and concurrent renames always
+        record the truthful sequential old→new chain (last successful save
+        wins). The whole unit holds the connection lock, so no other thread
+        can join or commit the open transaction from the inside.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{old_subject, new_subject}`` payload shape.
+
+        Returns True when a durable transition occurred; False for an
+        identical (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT subject FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            old_subject = row["subject"]
+            if old_subject == subject:
+                self._conn.rollback()
+                return False
+            self.set_thread_subject_uncommitted(thread_id, subject=subject)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_renamed",
+                payload={"old_subject": old_subject, "new_subject": subject},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def set_thread_pinned_with_audit(
+        self, thread_id: str, *, pinned: bool, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder pin/unpin + audit row (THR-209).
+
+        ONE rollback-safe transaction: the authoritative ``pinned_at`` read,
+        the idempotence decision, the pin state UPDATE, and the
+        ``thread_pinned``/``thread_unpinned`` audit row commit together — and
+        roll back together on ANY failure — so pin state can never survive
+        without its audit row. Concurrent same-state requests yield exactly
+        one audit row for the one durable transition (the loser is a true
+        no-op); opposite-state requests re-read the durable state inside their
+        transaction, so neither is misclassified from a stale pre-lock
+        snapshot. The whole unit holds the connection lock, so no other thread
+        can join the open transaction.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-* scope
+        (``task_id`` = thread id), the founder ``actor``, and the
+        ``{pinned}`` payload shape.
+
+        Returns True when a durable transition occurred; False for a
+        same-state (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT pinned_at FROM threads WHERE id = ?", (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            currently_pinned = row["pinned_at"] is not None
+            if currently_pinned == pinned:
+                self._conn.rollback()
+                return False
+            self.set_thread_pinned_uncommitted(thread_id, pinned=pinned)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_pinned" if pinned else "thread_unpinned",
+                payload={"pinned": pinned},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def set_thread_mention_routing_uncommitted(
+        self, thread_id: str, *, enabled: bool,
+    ) -> None:
+        """Toggle a thread's mention-routing switch WITHOUT committing
+        (THR-198 Slice B).
+
+        Same contract as ``set_thread_pinned_uncommitted``: the caller owns
+        the surrounding transaction so the toggle and its
+        ``thread_mention_routing_changed`` audit row are atomic.
+        """
+        self._conn.execute(
+            "UPDATE threads SET mention_routing_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, thread_id),
+        )
+
+    @_synchronized
+    def set_thread_mention_routing_with_audit(
+        self, thread_id: str, *, enabled: bool, actor: str = "founder",
+    ) -> bool:
+        """Atomic founder toggle of per-thread mention routing + audit row
+        (THR-198 Slice B).
+
+        ONE rollback-safe transaction: the authoritative
+        ``mention_routing_enabled`` read, the idempotence decision, the state
+        UPDATE, and the ``thread_mention_routing_changed`` audit row commit
+        together — and roll back together on ANY failure — so the setting can
+        never survive without its audit row and concurrent same-state
+        requests yield exactly one audit row for the one durable transition.
+
+        The audit row keeps the documented ``audit_log.task_id`` = THR-*
+        scope (``task_id`` = thread id), the founder ``actor``, and the
+        ``{mention_routing_enabled}`` payload shape.
+
+        Returns True when a durable transition occurred; False for a
+        same-state (no-op) save — true no-ops write nothing and are not
+        audited. Raises ValueError for an unknown thread.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT mention_routing_enabled FROM threads WHERE id = ?",
+                (thread_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"thread {thread_id} not found")
+            currently_enabled = bool(row["mention_routing_enabled"])
+            if currently_enabled == enabled:
+                self._conn.rollback()
+                return False
+            self.set_thread_mention_routing_uncommitted(
+                thread_id, enabled=enabled,
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=actor,
+                action="thread_mention_routing_changed",
+                payload={"mention_routing_enabled": enabled},
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def set_thread_transcript_path(
@@ -5477,6 +7890,25 @@ class Database:
         return [self._dream_row_to_model(row) for row in rows]
 
     @_synchronized
+    def list_dream_ids_by_status(self, statuses: set[str]) -> list[str]:
+        """Exhaustive status-filtered dream-id query (no cap, DB-side filter).
+
+        ``list_dreams`` is a presentation list capped at 500 and ordered
+        newest-first; using it for a liveness check can hide an old active row
+        behind 500 newer terminal rows. This returns every dream id whose
+        status is in ``statuses`` so a portability preflight cannot miss an
+        active dream. Read-only.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT id FROM dreams WHERE status IN ({placeholders})",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    @_synchronized
     def get_last_successful_dream(self, agent_name: str) -> DreamRecord | None:
         row = self._conn.execute(
             "SELECT * FROM dreams WHERE agent_name = ? AND status = 'completed' "
@@ -5512,6 +7944,135 @@ class Database:
             values,
         )
         self._conn.commit()
+
+    @_synchronized
+    def update_dream_status_if(
+        self,
+        dream_id: str,
+        expected_status: DreamStatus,
+        new_status: DreamStatus,
+        **fields: object,
+    ) -> bool:
+        """Atomically transition a dream only if it is still ``expected_status``.
+
+        Returns ``True`` if the row was updated, ``False`` if the expected
+        status no longer matched (e.g. a concurrent termination set it to
+        SKIPPED). Extra fields are persisted only on a successful transition.
+        """
+        allowed = {
+            "started_at", "ended_at", "summary", "transcript_path",
+            "new_learnings_count", "kb_candidate_count", "founder_thread_id",
+            "session_id", "error",
+        }
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unsupported dream fields: {sorted(bad)}")
+        assignments = ["status = ?"]
+        values: list[object] = [new_status.value]
+        for key, value in fields.items():
+            assignments.append(f"{key} = ?")
+            if hasattr(value, "isoformat"):
+                value = value.isoformat()
+            values.append(value)
+        values.append(dream_id)
+        values.append(expected_status.value)
+        cursor = self._conn.execute(
+            f"UPDATE dreams SET {', '.join(assignments)} WHERE id = ? AND status = ?",
+            values,
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def terminate_agent_cleanups(self, agent_name: str) -> None:
+        """Atomically cancel/skip/decline all future work for ``agent_name``.
+
+        Runs every cleanup DML statement and each audit write inside ONE
+        explicit SQLite transaction (``BEGIN IMMEDIATE`` / ``COMMIT``). On any
+        exception the COMPLETE transaction is rolled back BEFORE the exception
+        propagates, so control returns to the caller with no open transaction
+        and no partial cancellation or audit residue. The caller is responsible
+        for archiving the AgentDef/workspace and removing team membership first
+        (or rolling them back if this method raises).
+        """
+        now_iso = _now().isoformat()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Cancel armed schedules.
+            schedule_rows = self._conn.execute(
+                "SELECT id FROM schedules WHERE agent_name = ? AND status = ?",
+                (agent_name, ScheduleStatus.ARMED.value),
+            ).fetchall()
+            if schedule_rows:
+                self._conn.execute(
+                    "UPDATE schedules SET status = ?, active = 0, updated_at = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (ScheduleStatus.CANCELLED.value, now_iso, agent_name, ScheduleStatus.ARMED.value),
+                )
+                for row in schedule_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="schedule_cancelled",
+                        payload={"reason": "agent_terminated"},
+                    )
+
+            # Skip pending work-hours wakes.
+            wake_rows = self._conn.execute(
+                "SELECT id FROM work_hours WHERE agent_name = ? AND status = ?",
+                (agent_name, WorkHourStatus.PENDING.value),
+            ).fetchall()
+            if wake_rows:
+                self._conn.execute(
+                    "UPDATE work_hours SET status = ?, ended_at = ?, error = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (WorkHourStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, WorkHourStatus.PENDING.value),
+                )
+                for row in wake_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="work_hour_skipped",
+                        payload={"reason": "agent_terminated"},
+                    )
+
+            # Skip pending dreams.
+            dream_rows = self._conn.execute(
+                "SELECT id FROM dreams WHERE agent_name = ? AND status = ?",
+                (agent_name, DreamStatus.PENDING.value),
+            ).fetchall()
+            if dream_rows:
+                self._conn.execute(
+                    "UPDATE dreams SET status = ?, ended_at = ?, error = ? "
+                    "WHERE agent_name = ? AND status = ?",
+                    (DreamStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, DreamStatus.PENDING.value),
+                )
+                for row in dream_rows:
+                    self.insert_audit_log_uncommitted(
+                        task_id=row["id"],
+                        agent=agent_name,
+                        action="dream_skipped",
+                        payload={"reason": "agent_terminated"},
+                    )
+
+            # Decline not-yet-started thread invocations.
+            self._conn.execute(
+                "UPDATE thread_invocations "
+                "SET status = ?, decline_reason = ?, consumed_at = ? "
+                "WHERE agent_name = ? AND status = ? AND started_at IS NULL",
+                (
+                    ThreadInvocationStatus.DECLINED.value,
+                    "agent_terminated",
+                    now_iso,
+                    agent_name,
+                    ThreadInvocationStatus.PENDING.value,
+                ),
+            )
+
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _dream_candidate_row_to_model(self, row) -> DreamKbCandidate:
         return DreamKbCandidate(
@@ -5734,6 +8295,405 @@ class Database:
             (task_id,),
         )
         return [dict(row) for row in cur.fetchall()]
+
+    # --- THR-181 Track A Slice 1: authority candidate/evaluation/audit API ---
+    #
+    # Narrow, additive persistence for the pre-escalation authority-evaluation
+    # foundation. No evaluator is invoked here and no policy is enforced — these
+    # methods only persist/read controlled records. Prose-bearing content is
+    # stored as digests; raw bearer/provider credentials, task prose, and
+    # unredacted model exchanges are never accepted or persisted.
+
+    @_synchronized
+    def claim_authority_candidate(
+        self,
+        *,
+        root_task_id: str,
+        team: str,
+        manager_agent: str,
+        manager_session_id: str,
+        causal_event_id: str,
+        causal_event_digest: str,
+        causal_result_id: str | None,
+        policy_id: str,
+        policy_version: str,
+        policy_digest: str,
+        prompt_id: str,
+        prompt_version: str,
+        prompt_digest: str,
+        model_id: str,
+        model_version: str,
+        model_digest: str,
+        snapshot_digest: str,
+        snapshot_retention_class: str = "digest_only",
+        snapshot_redaction_class: str = "redacted",
+        fence_results: dict | None = None,
+    ) -> tuple[str, bool]:
+        """Deterministic, barrier-ready CAS claim/create contract.
+
+        Exactly one durable candidate wins the
+        root/session/causal-event/policy-prompt-model tuple. The candidate id
+        and ``claim_key`` are both derived deterministically from that tuple,
+        and ``claim_key`` carries a UNIQUE constraint, so a concurrent second
+        claim with the same tuple cannot mint a second candidate.
+
+        Returns ``(candidate_id, won)``. ``won`` is True only for the caller
+        whose INSERT actually created the row (the durable winner). A loser
+        receives the same deterministic ``candidate_id`` as the winner and
+        ``won=False`` — the documented loser result. Callers must never assert
+        incidental thread ordering; the UNIQUE constraint, not scheduling, is
+        the arbiter. No evaluator is invoked and no consumption occurs here.
+
+        Controlled inputs (``snapshot_retention_class``/
+        ``snapshot_redaction_class``) are validated against their closed
+        vocabulary and raise ``ValueError`` before any durable write.
+        Non-uniqueness constraint failures raise ``sqlite3.IntegrityError``;
+        the deterministic id/``claim_key`` uniqueness race maps to the
+        ``(candidate_id, won=False)`` loser result ONLY when the conflicting
+        row is proven to be the exact deterministic immutable claim tuple — a
+        raw-SQL/imported row occupying either key under a different identity
+        raises ``sqlite3.IntegrityError`` instead of misreporting an
+        unrelated durable row as the winner. Never a phantom loser with no
+        row.
+        """
+        # Pre-serialization validation — reject prose/credentials/model exchanges
+        # smuggled into digest fields and non-closed fence results BEFORE any row
+        # is written (no silent redaction, no durable residue).
+        validate_authority_digest(causal_event_digest, "causal_event_digest")
+        validate_authority_digest(policy_digest, "policy_digest")
+        validate_authority_digest(prompt_digest, "prompt_digest")
+        validate_authority_digest(model_digest, "model_digest")
+        validate_authority_digest(snapshot_digest, "snapshot_digest")
+        validate_authority_version(policy_version, "policy_version")
+        validate_authority_version(prompt_version, "prompt_version")
+        validate_authority_version(model_version, "model_version")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
+        # Controlled-input validation BEFORE any durable write: an invalid
+        # snapshot retention/redaction class must fail loudly here, never be
+        # turned by conflict handling into a phantom CAS loser.
+        _validate_authority_class(
+            snapshot_retention_class, "snapshot_retention_class", AuthorityRetentionClass
+        )
+        _validate_authority_class(
+            snapshot_redaction_class, "snapshot_redaction_class", AuthorityRedactionClass
+        )
+
+        claim_key = _authority_claim_key(
+            root_task_id,
+            manager_session_id,
+            causal_event_id,
+            policy_digest,
+            prompt_digest,
+            model_digest,
+        )
+        candidate_id = f"AUTH-CAND-{claim_key}"
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cur = self._conn.execute(
+                """INSERT INTO authority_candidates (
+                   id, claim_key, root_task_id, team, manager_agent,
+                   manager_session_id, causal_event_id, causal_event_digest,
+                   causal_result_id, policy_id, policy_version, policy_digest,
+                   prompt_id, prompt_version, prompt_digest,
+                   model_id, model_version, model_digest,
+                   snapshot_digest, snapshot_retention_class,
+                   snapshot_redaction_class, fence_results_json,
+                   disposition, lifecycle_state, consumed_at,
+                   created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, NULL, 'created', NULL, ?, ?)""",
+            (
+                candidate_id,
+                claim_key,
+                root_task_id,
+                team,
+                manager_agent,
+                manager_session_id,
+                causal_event_id,
+                causal_event_digest,
+                causal_result_id,
+                policy_id,
+                policy_version,
+                policy_digest,
+                prompt_id,
+                prompt_version,
+                prompt_digest,
+                model_id,
+                model_version,
+                model_digest,
+                snapshot_digest,
+                snapshot_retention_class,
+                snapshot_redaction_class,
+                fence_results_json,
+                now,
+                now,
+            ),
+        )
+        except sqlite3.IntegrityError as exc:
+            # Scope conflict-to-CAS-loss handling to the intended uniqueness
+            # race ONLY. id (PRIMARY KEY) and claim_key (UNIQUE) are both
+            # derived deterministically from the same claim tuple, so a
+            # UNIQUE/PRIMARYKEY violation means the exact tuple was already
+            # claimed — the documented loser result. Any other constraint
+            # failure (CHECK, NOT NULL, FK) is a real defect and must raise;
+            # it must never masquerade as won=False with a phantom loser id
+            # and no durable row.
+            if exc.sqlite_errorname in (
+                "SQLITE_CONSTRAINT_UNIQUE",
+                "SQLITE_CONSTRAINT_PRIMARYKEY",
+            ):
+                self._conn.rollback()
+                # Prove the conflicting row IS the exact deterministic
+                # immutable tuple before returning the loser result. A
+                # raw-SQL or imported row can occupy the derived candidate id
+                # under a different claim_key, or the claim_key under a
+                # different id; neither is our tuple, and reporting either as
+                # the winner would misattribute an unrelated durable row.
+                # Query by BOTH relevant keys and validate the complete
+                # immutable tuple (both derived keys plus the six claim-tuple
+                # source fields; claim_key is their sha256, so equality is
+                # the tuple proof). The exact tuple row occupies both keys,
+                # so it is necessarily the only match when present. On any
+                # absence or contradiction, fail closed with an integrity
+                # failure instead of returning a loser.
+                winner = self._conn.execute(
+                    """SELECT id, claim_key, root_task_id, manager_session_id,
+                              causal_event_id, policy_digest, prompt_digest,
+                              model_digest
+                       FROM authority_candidates
+                       WHERE id = ? OR claim_key = ?""",
+                    (candidate_id, claim_key),
+                ).fetchone()
+                if (
+                    winner is not None
+                    and winner["id"] == candidate_id
+                    and winner["claim_key"] == claim_key
+                    and winner["root_task_id"] == root_task_id
+                    and winner["manager_session_id"] == manager_session_id
+                    and winner["causal_event_id"] == causal_event_id
+                    and winner["policy_digest"] == policy_digest
+                    and winner["prompt_digest"] == prompt_digest
+                    and winner["model_digest"] == model_digest
+                ):
+                    return candidate_id, False
+                raise sqlite3.IntegrityError(
+                    "authority CAS collision: conflicting row does not match "
+                    "the deterministic immutable claim tuple"
+                ) from exc
+            raise
+        self._conn.commit()
+        return candidate_id, cur.rowcount == 1
+
+    @_synchronized
+    def record_authority_evaluation(
+        self,
+        *,
+        candidate_id: str,
+        disposition: str,
+        disposition_code: str,
+        response_digest: str,
+        response_retention_class: str = "digest_only",
+        response_redaction_class: str = "redacted",
+        fence_results: dict | None = None,
+    ) -> int:
+        """Atomically persist the single immutable evaluation for a candidate.
+
+        Writes the evaluation row and transitions the candidate
+        ``created -> evaluated`` (setting its mirrored disposition) in ONE
+        transaction. On any failure the whole transaction rolls back — no
+        evaluation row and no candidate transition survive.
+
+        The DB is the single-evaluation guard: ``authority_evaluations.
+        candidate_id`` carries a UNIQUE constraint, so a second evaluation
+        for the same candidate (or a missing candidate, via the FK) raises
+        ``sqlite3.IntegrityError`` and rolls back. Stores only the response
+        *digest* and controlled disposition/code — never raw response text.
+        """
+        validate_authority_digest(response_digest, "response_digest")
+        fence_results_json = _serialize_authority_fence_results(fence_results)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("BEGIN")
+        try:
+            cur = self._conn.execute(
+                """INSERT INTO authority_evaluations (
+                       candidate_id, disposition, disposition_code,
+                       response_digest, response_retention_class,
+                       response_redaction_class, fence_results_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate_id,
+                    disposition,
+                    disposition_code,
+                    response_digest,
+                    response_retention_class,
+                    response_redaction_class,
+                    fence_results_json,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                """UPDATE authority_candidates
+                   SET disposition = ?, lifecycle_state = 'evaluated', updated_at = ?
+                   WHERE id = ?""",
+                (disposition, now, candidate_id),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def record_authority_audit(
+        self,
+        *,
+        candidate_id: str,
+        event_type: str,
+        payload: dict | None = None,
+    ) -> int:
+        """Append one immutable audit event. The table's BEFORE UPDATE/DELETE
+        triggers make it append-only at the DB level, and candidate attribution
+        is DB-enforced via a foreign key to ``authority_candidates``."""
+        # API validation (in addition to the DB-level FK): closed event
+        # vocabulary, closed payload, and an existing candidate.
+        event_type_value = AuthorityAuditEventType(event_type).value
+        payload_json = _serialize_authority_audit_payload(payload)
+        exists = self._conn.execute(
+            "SELECT 1 FROM authority_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError(
+                f"authority audit requires an existing candidate: {candidate_id!r}"
+            )
+        cur = self._conn.execute(
+            """INSERT INTO authority_audit (candidate_id, event_type, payload_json, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                candidate_id,
+                event_type_value,
+                payload_json,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    @_synchronized
+    def consume_authority_candidate(self, candidate_id: str) -> bool:
+        """Exactly-once consumption CAS.
+
+        Transitions ``evaluated -> consumed`` (setting ``consumed_at``) only
+        if the candidate is currently evaluated. Returns True only for the
+        first call; any later call — or a call on a candidate that was never
+        evaluated (a partial record) — returns False, so no partial record
+        becomes a future continuation and no extra consumption occurs.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            """UPDATE authority_candidates
+               SET lifecycle_state = 'consumed', consumed_at = ?, updated_at = ?
+               WHERE id = ? AND lifecycle_state = 'evaluated'""",
+            (now, now, candidate_id),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def _authority_candidate_from_row(self, row) -> AuthorityCandidate:
+        return AuthorityCandidate(
+            id=row["id"],
+            claim_key=row["claim_key"],
+            root_task_id=row["root_task_id"],
+            team=row["team"],
+            manager_agent=row["manager_agent"],
+            manager_session_id=row["manager_session_id"],
+            causal_event_id=row["causal_event_id"],
+            causal_event_digest=row["causal_event_digest"],
+            causal_result_id=row["causal_result_id"],
+            policy_id=row["policy_id"],
+            policy_version=row["policy_version"],
+            policy_digest=row["policy_digest"],
+            prompt_id=row["prompt_id"],
+            prompt_version=row["prompt_version"],
+            prompt_digest=row["prompt_digest"],
+            model_id=row["model_id"],
+            model_version=row["model_version"],
+            model_digest=row["model_digest"],
+            snapshot_digest=row["snapshot_digest"],
+            snapshot_retention_class=row["snapshot_retention_class"],
+            snapshot_redaction_class=row["snapshot_redaction_class"],
+            fence_results=_parse_authority_fence_results(row["fence_results_json"]),
+            disposition=row["disposition"],
+            lifecycle_state=row["lifecycle_state"],
+            consumed_at=row["consumed_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @_synchronized
+    def get_authority_candidate(self, candidate_id: str) -> AuthorityCandidate | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._authority_candidate_from_row(row)
+
+    @_synchronized
+    def get_authority_candidate_by_claim(self, claim_key: str) -> AuthorityCandidate | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE claim_key = ?", (claim_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._authority_candidate_from_row(row)
+
+    @_synchronized
+    def list_authority_candidates_for_root(self, root_task_id: str) -> list[AuthorityCandidate]:
+        rows = self._conn.execute(
+            "SELECT * FROM authority_candidates WHERE root_task_id = ? ORDER BY id",
+            (root_task_id,),
+        ).fetchall()
+        return [self._authority_candidate_from_row(r) for r in rows]
+
+    @_synchronized
+    def get_authority_evaluation(self, candidate_id: str) -> AuthorityEvaluation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_evaluations WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return AuthorityEvaluation(
+            id=row["id"],
+            candidate_id=row["candidate_id"],
+            disposition=row["disposition"],
+            disposition_code=row["disposition_code"],
+            response_digest=row["response_digest"],
+            response_retention_class=row["response_retention_class"],
+            response_redaction_class=row["response_redaction_class"],
+            fence_results=_parse_authority_fence_results(row["fence_results_json"]),
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
+    def list_authority_audit(self, candidate_id: str) -> list[AuthorityAuditEvent]:
+        rows = self._conn.execute(
+            "SELECT * FROM authority_audit WHERE candidate_id = ? ORDER BY id",
+            (candidate_id,),
+        ).fetchall()
+        return [
+            AuthorityAuditEvent(
+                id=r["id"],
+                candidate_id=r["candidate_id"],
+                event_type=r["event_type"],
+                payload=(
+                    AuthorityAuditPayload.model_validate(json.loads(r["payload_json"]))
+                    if r["payload_json"]
+                    else None
+                ),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
 
     @_synchronized
     def close(self) -> None:

@@ -97,15 +97,24 @@ def runtime(runtime_container: Path) -> Path:
 def seed_workspace(org_root: Path, agent: str) -> Path:
     """Create the minimum workspace layout needed for `_run_agent`.
 
-    The orchestrator's WorkspaceNotInitialized guard only checks the
-    start-task SKILL.md marker — we don't need a real CLAUDE.md,
-    settings.json, or task_history.md for the fake Claude binary to
-    succeed, because `fake_claude.sh` parses task_id/session_id out of the
-    prompt instead of running the skill."""
+    Only the workspace ROOT is seeded here. Every entry under
+    ``.claude/skills/`` is owned by the daemon's canonical-skill
+    materializer: it builds the canonical ``start-task`` package and creates
+    a managed symlink at ``.claude/skills/start-task`` BEFORE the
+    orchestrator's WorkspaceNotInitialized guard checks the start-task
+    SKILL.md marker (``_run_agent`` / thread_runner materialize first).
+
+    The fixture must NOT create an ordinary directory at that managed-symlink
+    path: the materializer is fail-closed and refuses ordinary directories
+    at expected link paths with
+    ``SymlinkMaterializationError(ordinary_dir_at_link_path)``, which would
+    abort every task/thread executor spawn (DREAM-405 finding 2, PR #691).
+
+    We don't need a real CLAUDE.md, settings.json, or task_history.md for
+    the fake Claude binary to succeed, because `fake_claude.sh` parses
+    task_id/session_id out of the prompt instead of running the skill."""
     ws = org_root / "workspaces" / agent
-    skill_dir = ws / ".claude" / "skills" / "start-task"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text("# start-task (test stub)\n")
+    ws.mkdir(parents=True, exist_ok=True)
     return ws
 
 
@@ -185,6 +194,13 @@ def live_daemon(
     # Disable executor launch spacing (issue #85) so integration runs stay fast
     # and deterministic — the 1.5s default would serialize same-provider launches.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
+    # Executor launch is registration-only. Pin the test binaries in the
+    # isolated machine-local registry before the daemon starts.
+    from runtime.orchestrator.executor_binary_registry import save_registry
+    save_registry({
+        "claude": str(fake_claude),
+        "codex": str(fake_codex),
+    })
     from runtime.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)

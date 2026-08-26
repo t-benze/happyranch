@@ -38,6 +38,13 @@ from runtime.infrastructure.learnings_store import (
     PromotedLocked,
 )
 from runtime.infrastructure.memory_migration import migrate_workspace
+from runtime.models import (
+    DreamStatus,
+    ScheduleStatus,
+    TaskStatus,
+    ThreadInvocationStatus,
+    WorkHourStatus,
+)
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
@@ -138,6 +145,61 @@ def _executor_switch_materialize(
             return errors
 
     return errors
+
+
+def _bootstrap_readiness_marker(
+    org: OrgState,
+    workspace: Path,
+    agent_name: str,
+    agent_def: AgentDef | None,
+    provider: str,
+) -> None:
+    """GH-709 Slice C: produce + verify the selected executor profile's marker.
+
+    The bootstrap producers are the workspace adapters (``CLAUDE.md`` /
+    ``AGENTS.md``) and the canonical skill materializer (which produces the
+    claude profile marker ``.claude/skills/start-task/SKILL.md`` — otherwise
+    only materialized at session spawn). Materializing at init time makes the
+    regenerated workspace launch-ready immediately; ``context="bootstrap"``
+    still materializes the full system-contract union (all ordinary contexts).
+
+    Marker resolution follows the orchestrator's existing contract
+    (``Orchestrator._readiness_marker``): ``get_profile(provider).
+    readiness_marker_fragment``. An unregistered profile is a blocked agent
+    (relocation runbook §7.1 step 1) — the marker cannot be verified, so init
+    must not report ``done``.
+
+    Raises an actionable error when the profile is unregistered or the exact
+    marker is missing / not a regular file — the route converts it into a
+    per-agent ``error`` event (no ``done``, no ``all_done``).
+    """
+    from runtime.orchestrator.executor_registry import get_registry
+
+    skills_root = org.settings.project_root / "runtime" / "skills"
+    materialize_workspace_skills(
+        workspace, org.settings,
+        slug=org.slug,
+        context="bootstrap",
+        provider=provider,
+        agent_name=agent_name,
+        team=agent_def.team if agent_def else "engineering",
+        skills_root=skills_root,
+        org_root=org.root,
+        db=org.db,
+    )
+
+    profile = get_registry().get_profile(provider)
+    if profile is None:
+        raise RuntimeError(
+            f"executor profile {provider!r} is not registered on this machine; "
+            "register it before initializing (readiness marker cannot be verified)"
+        )
+    marker = workspace / profile.readiness_marker_fragment
+    if not marker.is_file():
+        raise RuntimeError(
+            f"readiness marker for executor profile {provider!r} is missing or not "
+            f"a regular file: {profile.readiness_marker_fragment!r}"
+        )
 
 
 class InitBody(BaseModel):
@@ -241,6 +303,32 @@ class FounderCreateAgentBody(BaseModel):
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+_TERMINATED_AGENTS_DIRNAME = "_terminated"
+_TERMINATED_WORKSPACES_DIRNAME = "_terminated"
+
+
+def _terminated_agents_dir(paths: OrgPaths) -> Path:
+    return paths.agents_dir / _TERMINATED_AGENTS_DIRNAME
+
+
+def _terminated_workspaces_dir(paths: OrgPaths) -> Path:
+    return paths.workspaces_dir / _TERMINATED_WORKSPACES_DIRNAME
+
+
+def _move_dir_atomically(src: Path, dst: Path) -> None:
+    """Move a directory, preferring an atomic same-filesystem rename.
+
+    ``dst`` must not already exist. Falls back to ``shutil.move`` only when
+    the source and destination are on different filesystems.
+    """
+    if dst.exists():
+        raise FileExistsError(f"destination already exists: {dst}")
+    try:
+        os.rename(src, dst)
+    except OSError:
+        shutil.move(str(src), str(dst))
+
+
 def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[str, str]:
     """Validate the caller is a team manager and return (manager_name, manager_team).
 
@@ -271,6 +359,52 @@ def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[st
     )
 
 
+def _collect_quiescence_conflicts(org: OrgState, agent_name: str) -> list[dict]:
+    """Return stable IDs/kinds of live work that blocks termination.
+
+    Non-terminal directly assigned tasks (including children assigned to this
+    worker), already-started thread invocations, firing schedules, running
+    work-hours wakes, running dreams, and pending/running jobs attributable to
+    the worker are all conflicts. Each entry is ``{"kind": ..., "id": ...}``.
+    """
+    conflicts: list[dict] = []
+    db = org.db
+
+    # Non-terminal tasks assigned to this agent.
+    non_terminal_statuses = {
+        TaskStatus.PENDING.value,
+        TaskStatus.IN_PROGRESS.value,
+        TaskStatus.ESCALATED.value,
+    }
+    for task in db.list_tasks(assigned_agent=agent_name, limit=10000):
+        if task.status.value in non_terminal_statuses:
+            conflicts.append({"kind": "task", "id": task.id})
+
+    # Already-started (but not yet consumed/declined) thread invocations.
+    for token, _thread_id in db.list_started_invocations_for_agent(agent_name):
+        conflicts.append({"kind": "thread_invocation", "id": token})
+
+    # Firing schedules.
+    for sched in db.schedules.list(agent=agent_name, status=ScheduleStatus.FIRING, limit=500):
+        conflicts.append({"kind": "schedule", "id": sched.id})
+
+    # Running work-hours wakes.
+    for wh in db.work_hours.list(agent=agent_name, limit=500):
+        if wh.status == WorkHourStatus.RUNNING:
+            conflicts.append({"kind": "work_hour", "id": wh.id})
+
+    # Running dreams.
+    for dream in db.list_dreams(agent=agent_name, limit=500):
+        if dream.status == DreamStatus.RUNNING:
+            conflicts.append({"kind": "dream", "id": dream.id})
+
+    # Pending/running jobs attributable to the worker.
+    for job in db.list_jobs_db(agent=agent_name, status=["pending", "running"], limit=500):
+        conflicts.append({"kind": "job", "id": job.id})
+
+    return conflicts
+
+
 def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) -> None:
     """Append a single learning line to learnings.md, creating the file+header if missing.
 
@@ -296,45 +430,66 @@ def _resolve_agent_model(paths: OrgPaths, agent_name: str) -> str | None:
 
 @router.get("/agents")
 def list_agents(slug: str, org: OrgDep) -> dict:
+    """Return the active agent roster.
+
+    The canonical active roster is ``prompt_loader.list_agents(paths)`` — the
+    set of approved agent markdown files under ``org/agents/``. This excludes
+    pending enrollments, terminated archives, and any stray workspace
+    directories that do not correspond to an active AgentDef.
+
+    Compatibility note: earlier implementations discovered agents by scanning
+    ``workspaces/`` and would surface workspace-only directories. That behavior
+    is not a documented requirement; the file-based roster is the supported
+    source of truth.
+    """
     paths = OrgPaths(root=org.root)
-    ws_dir = paths.workspaces_dir
-    if ws_dir.exists():
-        agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
-    else:
-        agent_names = []
     rows = []
-    for name in agent_names:
-        agent_def = prompt_loader.load_agent(paths, name)
+    for agent_def in prompt_loader.list_agents(paths):
+        name = agent_def.name
         # THR-095: repos are read from AgentDef.repos (org/agents/<name>.md).
         # agent.yaml is no longer the source for repos.
-        repos = dict(agent_def.repos) if agent_def else {}
+        repos = dict(agent_def.repos) if agent_def.repos else {}
         rows.append({
             "name": name,
-            "team": agent_def.team if agent_def else None,
-            "role": agent_def.role if agent_def else None,
-            "executor": agent_def.executor if agent_def else None,
-            "model": _resolve_agent_model(paths, name),
-            "description": agent_def.description if agent_def else None,
+            "team": agent_def.team,
+            "role": agent_def.role,
+            "executor": agent_def.executor,
+            "model": agent_def.model,
+            "description": agent_def.description,
             # Phase 2: additive read-only fields (D6 spec)
             "repos": repos,
-            "system_prompt": agent_def.system_prompt if agent_def else "",
+            "system_prompt": agent_def.system_prompt,
         })
     return {"agents": rows}
 
 
 @router.post("/agents/init")
 async def init_agents(slug: str, body: InitBody, org: OrgDep):
+    """Initialize agent workspaces.
+
+    With ``agent`` set, initializes exactly that agent (even a name without
+    an AgentDef yet — the workspace bootstrap is provider-derived). With
+    ``agent`` unset (bulk), targets are the canonical active AgentDef roster
+    only — ``prompt_loader.list_agents(paths)`` — never workspace
+    directories, team-registry members without an AgentDef, or
+    ``_pending``/``_terminated`` enrollments (GH-709 Slice B).
+
+    GH-709 Slice C: an agent is reported ``done`` only after the selected
+    executor profile's **exact readiness marker** exists as a valid regular
+    file produced by this bootstrap (workspace adapter + skill
+    materialization). An unregistered profile, a missing/wrong-profile
+    marker, a non-regular marker, or a bootstrap/materialization failure
+    emits a per-agent ``error`` event, never ``done``; the stream stops at
+    the first error (no ``all_done``) so the CLI exits nonzero.
+    """
     paths = OrgPaths(root=org.root)
 
     if body.agent is None:
-        ws_dir = paths.workspaces_dir
-        known: set[str] = set()
-        if org.teams is not None:
-            known.update(org.teams.all_agents())
-        if ws_dir.exists():
-            known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-        known.update([a.name for a in prompt_loader.list_agents(paths)])
-        targets = sorted(known)
+        # Bulk init derives targets from the canonical active AgentDef roster
+        # only (org/agents/*.md). Workspace directories, the team registry, and
+        # _pending/_terminated enrollments are never targets: bulk init must
+        # not bootstrap material into archive/reserved/stray roots (GH-709).
+        targets = sorted(a.name for a in prompt_loader.list_agents(paths))
     else:
         targets = [body.agent]
 
@@ -370,6 +525,13 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                 )
                 await asyncio.to_thread(
                     ctx.create_agent_dirs, workspace, agent_name,
+                )
+                # GH-709 Slice C: report done only after the selected executor
+                # profile's exact readiness marker exists as a valid regular
+                # file produced by this bootstrap.
+                await asyncio.to_thread(
+                    _bootstrap_readiness_marker, org, workspace, agent_name,
+                    agent_def, provider,
                 )
             except Exception as exc:
                 yield {"data": _json.dumps({
@@ -487,10 +649,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         _validate_executor(body.executor or "claude")
-        # Check for duplicate: look in both pending and active.
-        if (prompt_loader.load_pending_agent(paths, body.name) is not None
-                or prompt_loader.load_agent(paths, body.name) is not None):
-            raise HTTPException(status_code=409, detail=f"agent {body.name!r} already enrolled")
+        # Reuse any name that has ever been enrolled (active, pending, or
+        # terminated) to keep historical identity unambiguous.
+        if prompt_loader.is_name_unavailable(paths, body.name):
+            detail = {"code": "agent_name_unavailable", "name": body.name}
+            if prompt_loader.is_terminated(paths, body.name):
+                detail["reason"] = "a terminated agent with this name exists"
+            raise HTTPException(status_code=409, detail=detail)
         # Validate target_team BEFORE inserting — avoid zombie enrollment files.
         async with org.teams_lock:
             target_team = body.target_team or manager_team
@@ -615,6 +780,84 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         existing = prompt_loader.load_agent(paths, body.name)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+
+        # Only non-manager workers may be terminated. Removing a manager would
+        # corrupt the team hierarchy.
+        if existing.role == "manager":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "manager_terminate_forbidden",
+                    "name": body.name,
+                    "reason": "terminating a team manager is not allowed",
+                },
+            )
+
+        # Enforce quiescence before any destructive archive step. Active work
+        # is never killed, cancelled, reassigned, or silently mutated.
+        conflicts = _collect_quiescence_conflicts(org, body.name)
+        if conflicts:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "agent_not_quiescent",
+                    "name": body.name,
+                    "conflicts": conflicts,
+                },
+            )
+
+        # Preflight archive collision and move feasibility BEFORE any state
+        # mutation. If the active AgentDef or workspace cannot be archived, we
+        # must return 409/500 with the agent still fully active: team
+        # membership, armed schedules, pending wakes/dreams, and unstarted
+        # invocations untouched.
+        active_path = paths.agents_dir / f"{body.name}.md"
+        terminated_agents_dir = _terminated_agents_dir(paths)
+        terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+        terminated_agent_path = terminated_agents_dir / f"{body.name}.md"
+        if terminated_agent_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "archive_collision",
+                    "name": body.name,
+                    "reason": "a terminated agent file already exists",
+                },
+            )
+
+        workspace = paths.workspaces_dir / body.name
+        terminated_workspace_dir = _terminated_workspaces_dir(paths)
+        terminated_workspace_dir.mkdir(parents=True, exist_ok=True)
+        terminated_workspace = terminated_workspace_dir / body.name
+        workspace_exists = workspace.exists()
+        if workspace_exists and terminated_workspace.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "archive_collision",
+                    "name": body.name,
+                    "reason": "a terminated workspace already exists",
+                },
+            )
+        if workspace_exists and not workspace.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "workspace_archive_failed",
+                    "name": body.name,
+                    "reason": "workspace path is not a directory",
+                },
+            )
+        if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "workspace_archive_failed",
+                    "name": body.name,
+                    "reason": "terminated workspace directory is not writable",
+                },
+            )
+
         async with org.teams_lock:
             agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
@@ -626,13 +869,88 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         "agent_team": agent_team,
                     },
                 )
-            # Unlink file first — if it raises, teams.yaml stays untouched.
-            active_path = paths.agents_dir / f"{body.name}.md"
-            active_path.unlink(missing_ok=True)
+
+            # Re-check quiescence under the lock: new live work may have been
+            # assigned between the outer check and lock acquisition.
+            conflicts = _collect_quiescence_conflicts(org, body.name)
+            if conflicts:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "agent_not_quiescent",
+                        "name": body.name,
+                        "conflicts": conflicts,
+                    },
+                )
+
+            # Archive the filesystem identity FIRST. If this fails, no DB or
+            # team mutation has occurred yet, so the agent remains fully active.
+            os.replace(active_path, terminated_agent_path)
+            if workspace_exists:
+                try:
+                    _move_dir_atomically(workspace, terminated_workspace)
+                except Exception:
+                    try:
+                        os.replace(terminated_agent_path, active_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": "workspace_archive_failed",
+                            "name": body.name,
+                        },
+                    )
+
+            # Remove team membership while still holding the lock. If the
+            # subsequent DB cleanup fails, we roll this back together with the
+            # filesystem archive.
             org.teams.remove_worker(manager_team, body.name)
-        workspace = paths.workspaces_dir / body.name
-        if workspace.exists():
-            shutil.rmtree(workspace)
+
+            # Atomically cancel armed schedules, skip pending wakes/dreams, and
+            # decline unstarted invocations. A failure here rolls back the team
+            # and filesystem archive so the agent stays active and consistent.
+            try:
+                org.db.terminate_agent_cleanups(body.name)
+            except Exception:
+                _logger = logging.getLogger(__name__)
+                _logger.exception(
+                    "terminate cleanup failed for %s; rolling back archive",
+                    body.name,
+                )
+                # Roll back team membership first.
+                try:
+                    org.teams.add_worker(manager_team, body.name)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back team membership for %s",
+                        body.name,
+                    )
+                # Roll back the filesystem archive.
+                try:
+                    if workspace_exists and terminated_workspace.exists():
+                        _move_dir_atomically(terminated_workspace, workspace)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back workspace archive for %s",
+                        body.name,
+                    )
+                try:
+                    if terminated_agent_path.exists():
+                        os.replace(terminated_agent_path, active_path)
+                except OSError:
+                    _logger.exception(
+                        "failed to roll back agent file archive for %s",
+                        body.name,
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "terminate_cleanup_failed",
+                        "name": body.name,
+                    },
+                )
+
         audit.log_agent_managed(
             scope_id=scope_id,
             action="terminate",
@@ -640,7 +958,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             source=source,
             actor=manager_name,
         )
-        return {"ok": True}
+        return {"ok": True, "status": "terminated"}
 
     raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
 
@@ -688,12 +1006,12 @@ async def founder_create_agent(
     # ---- team mutation + agent file write, under the same lock ----
     async with org.teams_lock:
         # Duplicate check inside the lock to close TOCTOU between check + write.
-        if (prompt_loader.load_pending_agent(paths, body.name) is not None
-                or prompt_loader.load_agent(paths, body.name) is not None):
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "agent_exists", "name": body.name},
-            )
+        # Terminated names are also unavailable to preserve historical identity.
+        if prompt_loader.is_name_unavailable(paths, body.name):
+            detail = {"code": "agent_exists", "name": body.name}
+            if prompt_loader.is_terminated(paths, body.name):
+                detail["reason"] = "a terminated agent with this name exists"
+            raise HTTPException(status_code=409, detail=detail)
 
         if body.role == "worker":
             assert body.team is not None
@@ -814,6 +1132,247 @@ _VALID_EXECUTORS: tuple[str, ...] = ()  # populated lazily
 _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 
 
+# ---------------------------------------------------------------------------
+# THR-190: bounded declared-write rollback journal for executor switch.
+# ---------------------------------------------------------------------------
+# The executor-switch bootstrap writer chain is
+# ``set_agent_executor -> ContextBuilder.ensure_workspace_ready -> provider
+# adapter -> PersistentWorkspaceSetup.ensure + provider writers``. Its whole
+# write surface is a small, explicit set of bootstrap-owned paths (listed
+# below). ``_BootstrapRollbackJournal`` captures/restores exactly that set
+# (absence/presence/type/content) and NEVER traverses the workspace,
+# ``repos/``, or the canonical skill links materialized by the union.
+#
+# Four Step-0 checks make lossless compensation possible (all run before
+# ``_executor_switch_materialize`` — the first mutation):
+#  * ``_bootstrap_legacy_migration_unsupported`` — a structured legacy
+#    ``learnings/`` (with ``memory/`` absent) would trigger the unbounded
+#    ``learnings/ -> memory/`` migration during bootstrap, which a bounded
+#    journal cannot reverse; the switch fails closed BEFORE materialization.
+#  * ``_bootstrap_unsupported_owned_paths`` — a symlink or non-regular entry
+#    at an owned path cannot be restored exactly after a write-through or
+#    replace; the switch fails closed BEFORE materialization so the union
+#    reconciler can never follow a symlinked owned directory either.
+#  * ``_bootstrap_uncapturable_owned_files`` — a present regular owned file
+#    whose ``read_bytes()`` raises ``OSError`` is materially distinct from an
+#    absent file (rollback must never delete a file it could not capture);
+#    the switch fails closed BEFORE materialization and never represents
+#    the file as absent.
+#  * ``_BootstrapRollbackJournal.capture`` — the AUTHORITATIVE rollback
+#    capture runs in Step 0, before the first mutation, and the route fails
+#    closed (400 ``executor_bootstrap_failed``) if the capture observes ANY
+#    uncapturable declared file. This closes the second-read window where a
+#    preflight read succeeds but a later capture read fails after
+#    materialization has already mutated: materialization/bootstrap/
+#    frontmatter/audit can never run unless every pre-existing
+#    declared-write target has already been captured as rollback
+#    bytes/state.
+#
+# The drift-tripwire test (tests/daemon/test_routes_agents.py) instruments
+# the real adapter bootstrap call against these constants so future adapter
+# evolution cannot silently outrun the journal.
+
+# Bootstrap-owned regular-file paths (relative to the workspace root).
+_BOOTSTRAP_OWNED_FILES: tuple[str, ...] = (
+    "CLAUDE.md",             # claude provider writer
+    "AGENTS.md",             # codex/opencode/pi provider writer
+    ".claude/settings.json",  # claude provider writer
+    "opencode.json",         # opencode provider writer
+    "task_history.md",       # PersistentWorkspaceSetup.ensure
+    "recent_tasks.md",       # legacy rename source (recent_tasks.md -> task_history.md)
+    "memory/_index.md",      # MemoryStore index (create/regenerate)
+)
+
+# Directories bootstrap may create (removed only if empty and newly created).
+_BOOTSTRAP_OWNED_DIRS: tuple[str, ...] = (".claude", "memory")
+
+
+def _bootstrap_legacy_migration_unsupported(workspace: Path) -> bool:
+    """True when bootstrap would run the legacy ``learnings/ -> memory/`` migration.
+
+    ``migrate_workspace`` performs its (unbounded) structural move only when
+    ``memory/`` is absent AND ``learnings/`` is present; in every other case
+    it is a no-op. A bounded declared-write journal cannot reverse that move
+    losslessly, so the executor switch fails closed BEFORE any materialization
+    or bootstrap mutation when this gate fires.
+    """
+    return (workspace / "learnings").exists() and not (workspace / "memory").exists()
+
+
+def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
+    """Return owned paths bootstrap cannot safely mutate (symlink / non-regular).
+
+    Bootstrap may write through an owned path (following a symlink) or
+    atomically replace it. A pre-existing symlink (e.g. a symlinked
+    ``AGENTS.md``) or a non-regular entry (directory, FIFO, socket, device)
+    at an owned path cannot be losslessly compensated: writing through a
+    symlink mutates its (arbitrary, possibly external) target, and replacing
+    it discards the link. The caller must therefore reject the switch BEFORE
+    any mutation — including union materialization, which reconciles the
+    bootstrap-owned ``.claude`` directory.
+
+    Detection uses ``is_symlink`` first (an ``lstat`` that never follows the
+    link), so a symlink is classified without reading or touching its
+    target. ``exists``/``is_file``/``is_dir`` are only consulted after the
+    path is known not to be a symlink.
+    """
+    unsupported: list[str] = []
+    for rel in _BOOTSTRAP_OWNED_FILES:
+        fp = workspace / rel
+        if fp.is_symlink():
+            unsupported.append(rel)
+        elif fp.exists() and not fp.is_file():
+            unsupported.append(rel)
+    for dirname in _BOOTSTRAP_OWNED_DIRS:
+        d = workspace / dirname
+        if d.is_symlink():
+            unsupported.append(dirname)
+        elif d.exists() and not d.is_dir():
+            unsupported.append(dirname)
+    return unsupported
+
+
+def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
+    """Return owned regular files whose bytes cannot be captured.
+
+    A present regular file whose ``read_bytes()`` raises ``OSError`` is
+    materially distinct from an absent file: bootstrap may overwrite it (or
+    fail after partial writes) and the journal cannot restore content it
+    never read. ``_bootstrap_unsupported_owned_paths`` already rejects
+    symlinks and non-regular types; this gate catches regular files that are
+    present but unreadable so the switch fails closed BEFORE any mutation
+    (including union materialization), never representing the file as absent.
+    """
+    uncapturable: list[str] = []
+    for rel in _BOOTSTRAP_OWNED_FILES:
+        fp = workspace / rel
+        if fp.is_file() and not fp.is_symlink():
+            try:
+                fp.read_bytes()
+            except OSError:
+                uncapturable.append(rel)
+    return uncapturable
+
+
+class _BootstrapRollbackJournal:
+    """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
+
+    Records only ``_BOOTSTRAP_OWNED_FILES``/``_BOOTSTRAP_OWNED_DIRS``
+    (absence/presence/type/content). ``restore`` returns a list of
+    compensation error strings (empty when clean). Files that did not exist
+    before bootstrap are removed; files that existed are restored to their
+    original bytes; newly-created owned directories are removed when empty.
+    Canonical skill links and all other workspace content are never touched.
+    No broad workspace/repos traversal occurs on either the capture or the
+    restore path.
+
+    Capture is the AUTHORITATIVE rollback read and runs in Step-0 preflight,
+    BEFORE ``_executor_switch_materialize`` (the first mutation) and before
+    any adapter writer, frontmatter, or audit write — so
+    materialization/bootstrap/frontmatter/audit can never mutate unless every
+    pre-existing declared-write target that may need restoration has already
+    been captured as rollback bytes/state. The route fails closed (400
+    ``executor_bootstrap_failed``) if ``capture`` observes ANY uncapturable
+    declared file.
+
+    A present regular file whose bytes cannot be read is a THIRD state,
+    distinct from both absence and captured content. It is recorded in
+    ``_uncapturable`` — NEVER as ``None``/absent, because ``restore``
+    interprets ``None`` as "absent before bootstrap" and would delete the
+    file. ``_bootstrap_uncapturable_owned_files`` rejects this state during
+    Step-0 preflight (before any mutation), so capture normally does not
+    encounter it; the distinct state remains the fail-closed backstop: any
+    restore around an uncapturable file reports an error instead of deleting
+    it, and ``uncapturable()`` lets the route abort before the first
+    mutation should capture ever observe one.
+    """
+
+    __slots__ = ("_files", "_uncapturable", "_dirs")
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes | None] = {}
+        self._uncapturable: set[str] = set()
+        self._dirs: set[str] = set()
+
+    def uncapturable(self) -> list[str]:
+        """Sorted declared files observed present-but-unreadable at capture.
+
+        The route fails closed on this set during Step-0 preflight, before
+        the first mutation — closing the second-read window where a preflight
+        read succeeds but the authoritative capture read fails after
+        materialization has already mutated.
+        """
+        return sorted(self._uncapturable)
+
+    @classmethod
+    def capture(cls, workspace: Path) -> "_BootstrapRollbackJournal":
+        journal = cls()
+        for rel in _BOOTSTRAP_OWNED_FILES:
+            fp = workspace / rel
+            original: bytes | None = None
+            if fp.is_file() and not fp.is_symlink():
+                try:
+                    original = fp.read_bytes()
+                except OSError:
+                    # Present regular file whose bytes cannot be captured.
+                    # Never collapse this into the absent (None) state —
+                    # restore() would delete a file it could not read.
+                    journal._uncapturable.add(rel)
+                    continue
+            journal._files[rel] = original
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if d.is_dir() and not d.is_symlink():
+                journal._dirs.add(dirname)
+        return journal
+
+    def restore(self, workspace: Path) -> list[str]:
+        errors: list[str] = []
+        for rel in sorted(self._uncapturable):
+            # Never delete or overwrite a file whose original bytes were
+            # never captured; compensation cannot be lossless, so surface
+            # the failure instead of guessing.
+            errors.append(
+                f"Uncapturable owned file {rel} cannot be compensated"
+            )
+        for rel, original in self._files.items():
+            fp = workspace / rel
+            if original is None:
+                # Absent before bootstrap — remove anything bootstrap created.
+                if fp.is_symlink() or fp.is_file():
+                    try:
+                        fp.unlink()
+                    except OSError as exc:
+                        errors.append(f"Failed to remove new file {rel}: {exc}")
+            elif fp.is_symlink() or not fp.is_file():
+                # Existed before but bootstrap replaced it with a link or
+                # deleted it — restore the original bytes.
+                try:
+                    if fp.is_symlink() or fp.exists():
+                        fp.unlink()
+                    fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+            else:
+                try:
+                    if fp.read_bytes() != original:
+                        fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+        # Remove newly-created owned directories (only when empty).
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if dirname not in self._dirs and d.is_dir() and not d.is_symlink():
+                try:
+                    if not any(d.iterdir()):
+                        d.rmdir()
+                except OSError as exc:
+                    errors.append(
+                        f"Failed to remove new directory {dirname}: {exc}"
+                    )
+        return errors
+
+
 class SetExecutorBody(BaseModel):
     executor: str
     clean: bool = False
@@ -881,6 +1440,123 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
+    # ── Step 0: Preflight — reject the switch before ANY mutation when the
+    # bounded declared-write journal cannot compensate losslessly ──
+    # 1. Structured legacy learnings/ state would trigger the unbounded
+    #    learnings/ -> memory/ migration during bootstrap; fail closed.
+    # 2. Symlinked / non-regular owned paths cannot be restored exactly;
+    #    fail closed BEFORE materialization so the union reconciler can
+    #    never follow a symlinked owned directory (e.g. workspace/.claude)
+    #    into an arbitrary external target.
+    # 3. A present regular owned file whose read_bytes() raises OSError is
+    #    materially distinct from an absent file — the journal must never
+    #    represent it as absent (rollback would delete it); fail closed
+    #    BEFORE materialization and every mutation.
+    # 4. AUTHORITATIVE rollback capture: every pre-existing declared-write
+    #    target must be captured as rollback bytes/state HERE, before the
+    #    first mutation, so materialization/bootstrap/frontmatter/audit can
+    #    never mutate unless capture was lossless. If the capture read fails
+    #    for any declared file (a second-read window after gate 3's read
+    #    succeeded), the switch fails closed before the first mutation.
+    # All gates and the capture run before _executor_switch_materialize and
+    # before any adapter writer — no materialize/bootstrap/frontmatter/audit
+    # mutation.
+    if has_workspace:
+        if _bootstrap_legacy_migration_unsupported(workspace):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "unsupported structured legacy learnings state: "
+                        "workspace holds learnings/ without memory/, which "
+                        "would require a learnings/ -> memory/ migration "
+                        "during bootstrap"
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because the workspace holds a "
+                        "structured legacy learnings/ directory that would "
+                        "require a learnings/ -> memory/ migration during "
+                        "the switch. Executor switching does not perform "
+                        "that migration; the previous executor has been "
+                        "preserved. Migrate the workspace via the normal "
+                        "init/session path before retrying."
+                    ),
+                },
+            )
+        unsupported = _bootstrap_unsupported_owned_paths(workspace)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned path is a symlink or unsupported "
+                        "non-regular type: " + ", ".join(sorted(unsupported))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because an owned path is a symlink or "
+                        "unsupported non-regular type. The previous executor "
+                        "has been preserved. Resolve the path conflict before "
+                        "retrying."
+                    ),
+                },
+            )
+        uncapturable = _bootstrap_uncapturable_owned_files(workspace)
+        if uncapturable:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned file is present but cannot be "
+                        "captured (read_bytes failed): "
+                        + ", ".join(sorted(uncapturable))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because a bootstrap-owned file is "
+                        "present but its contents could not be read, so the "
+                        "switch cannot be compensated losslessly. The "
+                        "previous executor has been preserved. Resolve the "
+                        "file readability issue before retrying."
+                    ),
+                },
+            )
+
+        # ── Authoritative rollback capture (before the first mutation) ──
+        # capture() is the single authoritative read of the declared write
+        # surface. It runs BEFORE _executor_switch_materialize so the switch
+        # can never mutate unless every pre-existing declared-write target
+        # has already been captured as rollback bytes/state. A declared file
+        # that gate 3 could read but capture cannot (TOCTOU second read)
+        # fails closed here, before any materialize/bootstrap/frontmatter/
+        # audit mutation.
+        rollback_journal = _BootstrapRollbackJournal.capture(workspace)
+        uncaptured = rollback_journal.uncapturable()
+        if uncaptured:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned file is present but cannot be "
+                        "captured (read_bytes failed): "
+                        + ", ".join(uncaptured)
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because a bootstrap-owned file is "
+                        "present but its contents could not be read, so the "
+                        "switch cannot be compensated losslessly. The "
+                        "previous executor has been preserved. Resolve the "
+                        "file readability issue before retrying."
+                    ),
+                },
+            )
+
     # ── Step 1: Materialize the six-context canonical union FIRST ──
     # This MUST complete successfully before any frontmatter is persisted.
     # On failure, the previous executor is preserved and a named HTTP
@@ -911,32 +1587,13 @@ async def set_agent_executor(
     # switch — no config change, no audit row. Only if this succeeds does
     # the switch become durable.
     if has_workspace:
-        # ── Snapshot pre-bootstrap workspace state ──
-        # Every file, directory, link, and their contents that existed
-        # before bootstrap must survive a subsequent bootstrap failure
-        # exactly. Only artifacts newly created by the failed attempt
-        # will be removed.
-        pre_bootstrap_snapshot: set[str] = set()
-        pre_bootstrap_contents: dict[str, bytes] = {}
-        for root_dir, dirnames, filenames in os.walk(str(workspace)):
-            root_path = Path(root_dir)
-            rel_root = root_path.relative_to(workspace)
-            pre_bootstrap_snapshot.add(str(rel_root))
-            for name in filenames:
-                rel = str(rel_root / name) if str(rel_root) != "." else name
-                pre_bootstrap_snapshot.add(rel)
-                # Snapshot contents for restoration if modified
-                fp = root_path / name
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        pre_bootstrap_contents[rel] = fp.read_bytes()
-                    except OSError:
-                        pass  # unreadable file — skip content snapshot
-            for name in dirnames:
-                pre_bootstrap_snapshot.add(
-                    str(rel_root / name) if str(rel_root) != "." else name
-                )
-
+        # ── Bounded declared-write rollback journal (THR-190) ──
+        # The journal was captured losslessly in Step 0 (before the first
+        # mutation). restore() compensates exactly the declared
+        # bootstrap-owned write surface; never traverse or read repos/ or
+        # other broad workspace content. The legacy learnings/ -> memory/
+        # migration is rejected up front (Step 0), so no full-workspace
+        # snapshot is ever taken on this path.
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         try:
             ctx.ensure_workspace_ready(
@@ -952,49 +1609,15 @@ async def set_agent_executor(
                 "union for provider=%s agent=%s: %s",
                 body.executor, agent_name, e,
             )
-            # ── Snapshot-and-restore compensation ──
-            # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
-            # 2. Restore any pre-existing files whose contents were modified.
-            # Every pre-existing workspace file/directory/link is preserved
-            # exactly. Errors during cleanup are surfaced, not suppressed.
-            errors: list[str] = []
-            # Restore modified pre-existing files to original contents
-            for rel, original_bytes in pre_bootstrap_contents.items():
-                fp = workspace / rel
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        current = fp.read_bytes()
-                        if current != original_bytes:
-                            fp.write_bytes(original_bytes)
-                    except OSError as exc:
-                        errors.append(
-                            f"Failed to restore file {rel}: {exc}"
-                        )
-            for root_dir, _dirnames, filenames in os.walk(
-                str(workspace), topdown=False,
-            ):
-                root_path = Path(root_dir)
-                for name in filenames:
-                    fp = root_path / name
-                    rel = fp.relative_to(workspace)
-                    if str(rel) not in pre_bootstrap_snapshot:
-                        try:
-                            fp.unlink()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new file {fp}: {exc}"
-                            )
-                # Remove empty directories that were newly created
-                if str(root_path) != str(workspace):
-                    rel_dir = root_path.relative_to(workspace)
-                    if str(rel_dir) not in pre_bootstrap_snapshot:
-                        try:
-                            if not any(root_path.iterdir()):
-                                root_path.rmdir()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new directory {root_path}: {exc}"
-                            )
+            # ── Bounded rollback compensation ──
+            # 1. Remove ONLY declared bootstrap-owned artifacts newly created
+            #    by this bootstrap attempt.
+            # 2. Restore any pre-existing declared bootstrap-owned files
+            #    whose contents (or absence/presence/type) changed.
+            # Canonical skill links and all non-owned workspace content are
+            # preserved exactly. Errors during cleanup are surfaced, not
+            # suppressed.
+            errors = rollback_journal.restore(workspace)
             if errors:
                 _logger.error(
                     "Executor switch bootstrap cleanup errors: %s",
@@ -1188,10 +1811,12 @@ def list_enrollments(
 ) -> dict:
     """List enrollments with optional ?status= and/or ?team= filters.
 
-    File-based: pending agents live in _pending/, active in agents_dir/.
+    File-based: pending agents live in _pending/, active in agents_dir/,
+    and terminated/archived agents live in agents_dir/_terminated/.
     The ?team= filter is voluntary scoping — it does not authenticate the
     caller as a member of that team. Founders always get an unfiltered view
-    when neither parameter is supplied.
+    when neither parameter is supplied. Terminated agents are surfaced only
+    when ?status=terminated is explicitly requested.
     """
     paths = OrgPaths(root=org.root)
 
@@ -1199,6 +1824,21 @@ def list_enrollments(
     # parsed AgentDef so the founder UI can render the same shape as the
     # active-agents table without a second roundtrip.
     all_enrollments: list[dict] = []
+
+    if enrollment_status == "terminated":
+        for agent in prompt_loader.list_terminated(paths):
+            all_enrollments.append({
+                "name": agent.name,
+                "team": agent.team,
+                "role": agent.role,
+                "executor": agent.executor,
+                "description": agent.description or "",
+                "status": "terminated",
+                "enrolled_by": agent.enrolled_by,
+                "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
+            })
+        return {"enrollments": all_enrollments}
+
     for agent in prompt_loader.list_pending(paths):
         all_enrollments.append({
             "name": agent.name,
@@ -1248,6 +1888,15 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         existing = prompt_loader.load_agent(paths, agent_name)
         if existing is not None:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+        if prompt_loader.is_terminated(paths, agent_name):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_name_unavailable",
+                    "name": agent_name,
+                    "reason": "a terminated agent with this name exists",
+                },
+            )
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
     # Refuse to promote an agent whose declared team isn't registered.

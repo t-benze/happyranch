@@ -51,6 +51,31 @@ export const THREADS_STRINGS = {
   statusArchived: 'archived',
   statusLive: 'live',
 
+  /* THR-209 rename + pin */
+  renameAction: 'Rename',
+  renameSave: 'Save',
+  renameCancel: 'Cancel',
+  renameTitleInputLabel: 'Thread title',
+  renameFailed: 'Rename failed. Please retry.',
+  pinnedSection: 'Pinned',
+  pinAction: 'Pin',
+  unpinAction: 'Unpin',
+  pinFailed: 'Pin change failed — restored to previous state.',
+  pinThread: (id: string) => `Pin thread ${id}`,
+  unpinThread: (id: string) => `Unpin thread ${id}`,
+  threadActionsMenu: 'Thread actions',
+  archiveAction: 'Archive',
+  resumeAction: 'Resume',
+
+  /* THR-198 Slice C — per-thread mention routing control */
+  mentionRoutingAction: 'Mention routing…',
+  mentionRoutingDialogTitle: 'Mention routing',
+  mentionRoutingToggleLabel: 'Route replies to mentioned participants',
+  mentionRoutingDescription:
+    'When on (default), a message that mentions one or more participants wakes exactly those participants — everyone else stays quiet until mentioned. When off, every message wakes all participants. This only chooses who gets woken; it is not priority, queueing, or fairness scheduling, and messages with no valid mentions always broadcast.',
+  mentionRoutingFailed: 'Routing change failed — restored to the previous state.',
+  mentionRoutingSaving: 'Saving…',
+
   /* System card labels */
   systemEventLabel: 'system',
 

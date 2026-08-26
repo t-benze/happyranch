@@ -25,6 +25,18 @@ from runtime.models import (
 from runtime.orchestrator.org_config import OrgConfig
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_thread_runner(tmp_path):
+    """Thread-runner launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace/agent.yaml. Seed active frontmatter
+    for the agents used in this module so the launch guard admits them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(OrgPaths(root=tmp_path), ("alice", "bob"))
+
+
 def test_render_message_includes_attachments() -> None:
     msg = ThreadMessage(
         thread_id="THR-001",
@@ -104,6 +116,25 @@ class FakeOrgState:
         self.slug = "test"
 
 
+def _seed_queued_reply(db, thread_id, agent_name, triggering_seq):
+    """Mint a pending REPLY and seed its delivery-state queued slot so the
+    runner's queued→running CAS succeeds (mirrors the durable stage a queued
+    coalesced wake leaves behind, as produced by record_conversational_arrival)."""
+    inv = db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=agent_name,
+        triggering_seq=triggering_seq, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (thread_id, agent_name, triggering_seq - 1, triggering_seq,
+         inv.invocation_token, "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    return inv
+
+
 CLAUDE_CREDIT_EXHAUSTED_RESULT = (
     '{"type":"result","subtype":"error_during_execution","is_error":true,'
     '"duration_ms":12543,"num_turns":1,"session_id":"sess-credit-limit",'
@@ -146,10 +177,7 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
 
     # Workspace stub so the runner can find agent.yaml.
     ws = tmp_path / "workspaces" / "alice"
@@ -195,10 +223,7 @@ async def test_run_invocation_no_callback_writes_thread_token_usage(tmp_path, mo
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -253,10 +278,7 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -310,10 +332,7 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -375,10 +394,7 @@ async def test_failed_thread_invocation_writes_usage_when_executor_returns_it(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -458,8 +474,7 @@ async def test_turn1_full_prompt_captures_session_id(tmp_path, monkeypatch):
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="hello")
-    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
@@ -486,8 +501,7 @@ async def test_turn2_resumes_with_delta(tmp_path, monkeypatch):
     db.append_thread_message(thread_id="THR-001", speaker="bob",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
     db.update_thread_session("THR-001", "alice", agent_session_id="claude-prior", last_resumed_seq=1)
-    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                    triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=2)
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
@@ -516,8 +530,7 @@ async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
     db.update_thread_session("THR-001", "alice", agent_session_id="claude-evicted", last_resumed_seq=0)
-    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
@@ -568,6 +581,15 @@ def test_build_delta_prompt_excludes_old_history_includes_new():
     assert "brand new point" in prompt
     assert "TOK-XYZ" in prompt
     assert "Decline-by-Default" in prompt
+    # TASK-5735: the resumed/delta REPLY builder must inject the same
+    # behavioral doctrine clauses as the full builder — inspect the full
+    # supplied conversation beyond the delivery range, and silently decline
+    # when the invoked agent already substantively answered in a later own
+    # message (with the distinct-unanswered-request exception preserved).
+    assert "already substantively answered" in prompt
+    assert "full conversation" in prompt
+    assert "delivery range" in prompt
+    assert "distinct request you have not yet answered" in prompt
     # It must NOT re-ship the full transcript header / participant roster.
     assert "Full message history follows" not in prompt
     assert "Participants:" not in prompt
@@ -582,10 +604,7 @@ async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatc
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -631,9 +650,11 @@ async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
-    """Two pending invocations for the same Claude participant must NOT run
-    their subprocesses concurrently — the per-(thread, agent) invocation lock
-    serializes all providers, and the Claude read→run→update path can't race."""
+    """A conversational REPLY and a BOOTSTRAP for the same participant must
+    NOT run their subprocesses concurrently — the per-(thread, agent)
+    invocation lock serializes all providers, and the Claude read→run→update
+    path can't race. (Two coalesced REPLYs can't coexist: the delivery-state
+    table holds a single queued slot per pair.)"""
     import asyncio
     import threading
     import time
@@ -645,10 +666,11 @@ async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
-    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
-    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    inv1 = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    inv2 = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -705,8 +727,7 @@ def _seed_thread_with_invocation(tmp_path):
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="hi")
-    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -773,9 +794,9 @@ async def test_runner_crash_publishes_settled_event(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_codex_invocations_serialize(tmp_path, monkeypatch):
-    """Two pending invocations for the same Codex participant must NOT run
-    concurrently — the provider-agnostic per-(thread, agent) lock serializes
-    all executors, not just Claude."""
+    """A conversational REPLY and a BOOTSTRAP for the same Codex participant
+    must NOT run concurrently — the provider-agnostic per-(thread, agent) lock
+    serializes all executors, not just Claude."""
     import asyncio
     import threading
     import time
@@ -787,10 +808,11 @@ async def test_codex_invocations_serialize(tmp_path, monkeypatch):
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
-    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
-    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    inv1 = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    inv2 = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: codex\n")
@@ -838,10 +860,8 @@ async def test_distinct_agents_same_thread_can_overlap(tmp_path, monkeypatch):
     db.add_thread_participant("THR-001", "bob", added_by="founder")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
-    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
-    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="bob",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv1 = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    inv2 = _seed_queued_reply(db, "THR-001", "bob", triggering_seq=1)
     for agent in ("alice", "bob"):
         ws = tmp_path / "workspaces" / agent
         ws.mkdir(parents=True)
@@ -895,10 +915,8 @@ async def test_same_agent_distinct_threads_can_overlap(tmp_path, monkeypatch):
         db.add_thread_participant(thread_id, "alice", added_by="founder")
         db.append_thread_message(thread_id=thread_id, speaker="founder",
                                  kind=ThreadMessageKind.MESSAGE, body_markdown="hi")
-    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
-    inv2 = db.mint_thread_invocation(thread_id="THR-002", agent_name="alice",
-                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv1 = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    inv2 = _seed_queued_reply(db, "THR-002", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -948,10 +966,7 @@ async def test_externally_failed_invocation_preserves_abort_reason(tmp_path, mon
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
 
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
@@ -1004,10 +1019,7 @@ async def test_externally_aborted_invocation_skips_session_update(tmp_path, monk
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
 
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
@@ -1095,16 +1107,13 @@ async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monk
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     # Authoritative AgentDef frontmatter with gpt-5.6-terra model.
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
@@ -1185,10 +1194,7 @@ async def test_clean_exit_no_callback_reinvoke_still_pending_auto_decline(tmp_pa
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1242,10 +1248,7 @@ async def test_nonzero_rc_no_callback_not_reinvoked(tmp_path, monkeypatch):
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1289,10 +1292,7 @@ async def test_timeout_no_callback_not_reinvoked(tmp_path, monkeypatch):
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1355,10 +1355,7 @@ async def test_nudge_reinvoke_exception_persists_runner_crash(tmp_path, monkeypa
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1399,10 +1396,7 @@ async def test_nudge_reinvoke_timeout_preserves_timeout_classification(tmp_path,
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1442,10 +1436,7 @@ async def test_nudge_reinvoke_nonzero_rc_preserves_no_callback_classification(tm
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1503,16 +1494,13 @@ async def test_thread_invocation_forwards_agent_model_to_executor_run(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     # Create AgentDef with a model in org/agents/<name>.md
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
@@ -1546,17 +1534,15 @@ async def test_thread_invocation_refreshes_repos_before_executor_run(tmp_path, m
         thread_id="THR-REFRESH", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-REFRESH", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-REFRESH", "alice", triggering_seq=1)
     workspace = tmp_path / "workspaces" / "alice"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("executor: claude\n")
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
-        "---\nname: alice\nteam: engineering\nrole: worker\nexecutor: claude\n---\n"
+        "---\nname: alice\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n"
+        "You are a test agent.\n"
     )
 
     import runtime.daemon.thread_runner as runner_mod
@@ -1594,16 +1580,13 @@ async def test_thread_invocation_no_model_preserves_default_behavior(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     # AgentDef with NO model
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\n---\n\n"
@@ -1642,15 +1625,12 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = db.mint_thread_invocation(
-        thread_id="THR-001", agent_name="alice",
-        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
-    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
     agent_dir = tmp_path / "org" / "agents"
-    agent_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "alice.md").write_text(
         "---\nname: alice\nteam: engineering\nrole: worker\n"
         "executor: claude\nmodel: gpt-5.6-terra\n---\n\n"
@@ -1698,4 +1678,457 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
     )
     assert all_model_kwargs[1] == "gpt-5.6-terra", (
         f"second call (fallback): expected model='gpt-5.6-terra', got {all_model_kwargs[1]!r}"
+    )
+
+
+# ── GitHub #688 Phase 1 Slice B: runner claim/settle/prompt-range wiring ──
+
+
+def _seed_queued_wake(db, thread_id, agent_name, *, ack, req):
+    """Mint a pending REPLY and seed its delivery-state queued slot covering
+    ack+1 .. req (explicit range — unlike _seed_queued_reply which covers a
+    single triggering seq)."""
+    inv = db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=agent_name,
+        triggering_seq=ack + 1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (thread_id, agent_name, ack, req, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    return inv
+
+
+class _RecordingExec:
+    """Fake executor that records every prompt it is handed."""
+
+    def __init__(self, *, prompts, result=None):
+        self._prompts = prompts
+        self._result = result or FakeExecutorResult(success=True)
+
+    def run(self, **kwargs):
+        self._prompts.append(kwargs.get("prompt", ""))
+        return self._result
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_noop_before_provider(tmp_path, monkeypatch):
+    """A REPLY whose token owns no delivery-state queued slot (stale/legacy
+    notification) no-ops before prompt materialization or any provider call."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    # Legacy direct mint with NO delivery-state row: run_invocation must
+    # refuse to claim it and return before any provider work.
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=calls),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert calls == []  # no prompt materialized, no provider call
+    # The token stays pending (no claim happened, nothing settled).
+    assert (
+        db.get_invocation_any_status(inv.invocation_token).status
+        is ThreadInvocationStatus.PENDING
+    )
+    assert db.list_reply_delivery_states() == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_notification_noop_after_claim(tmp_path, monkeypatch):
+    """A duplicate queue notification for an already-claimed token no-ops
+    before prompt materialization or provider work (claim CAS is durable)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=1)
+    # Simulate the real claim having already happened (running slot).
+    assert db.claim_conversational_reply(inv.invocation_token) is not None
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=calls),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert calls == []
+    # The original claim is untouched: still the running token.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.running_invocation_token == inv.invocation_token
+    assert st.queued_invocation_token is None
+
+
+@pytest.mark.asyncio
+async def test_claimed_reply_prompt_explicitly_covers_range_in_order(tmp_path, monkeypatch):
+    """A claimed conversational REPLY prompt explicitly states its inclusive
+    delivery range and renders every required message in order."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=3)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=prompts),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert prompts, "executor must have been invoked for a valid claimed wake"
+    first = prompts[0]
+    assert "## Delivery range" in first
+    assert "1 through 3" in first
+    # Required messages appear in order.
+    idx = [first.index(body) for body in ("m1", "m2", "m3")]
+    assert idx == sorted(idx)
+    # The clean-exit-without-callback run settled through the store: the claim
+    # was taken (range was stated), then the terminal path left retry_required
+    # with no acknowledgement advance and no hot-loop retry.
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.acknowledged_through_seq == 0
+    assert st.queued_invocation_token is None
+    assert st.running_invocation_token is None
+
+
+@pytest.mark.asyncio
+async def test_resume_delta_cannot_omit_required_messages(tmp_path, monkeypatch):
+    """Session resume is allowed only as an optimization: when the stored
+    watermark is below the claim's running_from_seq the delta includes every
+    required message and states the range explicitly."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3", "m4", "m5", "m6"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    # Prior turns acked through 2; the coalesced wake covers 3..6.
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=2, req=6)
+    db.update_thread_session(
+        "THR-001", "alice",
+        agent_session_id="claude-prior", last_resumed_seq=2,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=prompts),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    first = prompts[0]
+    assert "## Delivery range" in first
+    assert "3 through 6" in first
+    # Delta covers the whole required range and omits already-seen messages.
+    for body in ("m3", "m4", "m5", "m6"):
+        assert body in first
+    assert "m1" not in first and "m2" not in first
+
+
+@pytest.mark.asyncio
+async def test_resume_forbidden_when_watermark_at_or_above_running_from(tmp_path, monkeypatch):
+    """If the stored session watermark is at or above the claim's
+    running_from_seq, the runner must NOT trust the delta — it falls back to
+    the full prompt so no required message is ever omitted."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=3)
+    db.update_thread_session(
+        "THR-001", "alice",
+        agent_session_id="claude-prior", last_resumed_seq=1,
+    )  # watermark == running_from (1) → full prompt required
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=prompts),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    first = prompts[0]
+    assert "m1" in first and "m2" in first and "m3" in first  # full transcript
+    assert "## Delivery range" in first
+    assert "1 through 3" in first
+
+
+@pytest.mark.asyncio
+async def test_runner_failure_settles_retry_required_no_hot_loop(tmp_path, monkeypatch):
+    """Provider failure through the runner settles the claimed range via the
+    store: no acknowledgement advance, retry_required projection, no immediate
+    retry mint (next conversational arrival covers the retained range)."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    for body in ("m1", "m2", "m3"):
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body,
+        )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=3)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FailExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            r = FakeExecutorResult(success=False, error="Command exited with code 1: boom")
+            r.returncode = 1
+            return r
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FailExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None
+    assert st.acknowledged_through_seq == 0  # untouched by failure
+    assert st.required_through_seq == 3
+    assert st.queued_invocation_token is None  # no immediate retry / hot loop
+    assert st.running_invocation_token is None
+    assert st.last_terminal_reason and "no_callback" in st.last_terminal_reason
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.status is ThreadInvocationStatus.FAILED
+    # Projection reports retry_required (diagnostic, not a live subprocess).
+    proj = db.list_reply_delivery_projections("THR-001")
+    assert len(proj) == 1 and proj[0].state == "retry_required"
+    assert proj[0].started_at is None
+    # No pending REPLY was minted by the failure (no hot loop).
+    from runtime.models import ThreadInvocation
+    pending = [
+        i for i in db.list_thread_invocations("THR-001")
+        if i.status is ThreadInvocationStatus.PENDING
+    ]
+    assert pending == []
+
+
+@pytest.mark.asyncio
+async def test_runner_timeout_settles_via_store(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=1)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _TimeoutExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            return FakeExecutorResult(success=False, error="timeout")
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _TimeoutExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert (
+        db.get_invocation_any_status(inv.invocation_token).status
+        is ThreadInvocationStatus.TIMEOUT
+    )
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None and st.acknowledged_through_seq == 0
+    proj = db.list_reply_delivery_projections("THR-001")
+    assert proj and proj[0].state == "retry_required"
+
+
+@pytest.mark.asyncio
+async def test_runner_materialization_failure_settles_via_store(tmp_path, monkeypatch):
+    """A materialization failure terminalizes the claimed REPLY through the
+    store (failed, retry_required) BEFORE any provider spawn."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = _seed_queued_wake(db, "THR-001", "alice", ack=0, req=1)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
+
+    def _boom(*args, **kwargs):
+        raise SystemContractMaterializationError("skills corrupted")
+
+    monkeypatch.setattr(runner_mod, "materialize_workspace_skills", _boom)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _RecordingExec(prompts=calls),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert calls == []  # provider never spawned
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.status is ThreadInvocationStatus.FAILED
+    assert "materialization_failed" in (inv_after.decline_reason or "")
+    st = db.get_reply_delivery_state("THR-001", "alice")
+    assert st is not None and st.acknowledged_through_seq == 0
+    assert st.queued_invocation_token is None  # no hot-loop retry
+
+
+@pytest.mark.asyncio
+async def test_task_followup_runner_never_touches_delivery_state(tmp_path, monkeypatch):
+    """A TASK_FOLLOWUP invocation runs on the legacy path: no claim, no
+    delivery-state settlement, no reply-delivery row created — terminal
+    transitions go through fail_invocation."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="dispatch",
+    )
+    inv, _ = db.mint_followup_invocation_with_cap_extend(
+        "THR-001", agent_name="alice", triggering_seq=1,
+    )
+    assert inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FailExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            r = FakeExecutorResult(success=False, error="Command exited with code 1: boom")
+            r.returncode = 1
+            return r
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FailExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    # No reply-delivery-state row was ever created, claimed, or settled.
+    assert db.list_reply_delivery_states() == []
+    assert db.list_reply_delivery_projections("THR-001") == []
+    # The followup terminalized through the legacy fail path.
+    assert (
+        db.get_invocation_any_status(inv.invocation_token).status
+        is ThreadInvocationStatus.FAILED
     )

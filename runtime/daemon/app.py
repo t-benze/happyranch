@@ -28,9 +28,9 @@ from runtime.daemon.routes import (
     kb,
     metrics,
     orgs,
+    portability,
     runtime,
     schedules,
-    skill_lifecycle,
     skills,
     tasks,
     teams,
@@ -40,6 +40,7 @@ from runtime.daemon.routes import (
     schedules,
 )
 from runtime.daemon.routes import settings as settings_routes
+from runtime.daemon.metrics import error_label, route_template_label
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
 
@@ -161,30 +162,37 @@ async def _lifespan(app: FastAPI):
                 "THR-106 skill-id rename migration error for org %s: %s",
                 org.slug, exc,
             )
-        # THR-055: one-shot quarantine of legacy user-authored skills into
-        # the lifecycle ledger. Creates LEGACY_QUARANTINED PackageVersion
-        # records for pre-lifecycle filesystem skills. Idempotent by hash.
-        try:
-            from runtime.skills.lifecycle.stores import quarantine_legacy_user_skills
-            quarantined = quarantine_legacy_user_skills(
-                org.db, org.root, org.settings,
-            )
-            if quarantined > 0:
-                _logger.info(
-                    "THR-055 legacy skill quarantine for org %s: %d skills quarantined",
-                    org.slug, quarantined,
-                )
-        except Exception as exc:
-            _logger.warning(
-                "THR-055 legacy skill quarantine error for org %s: %s",
-                org.slug, exc,
-            )
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
                 "recovered %d orphaned jobs in org %s: %s",
                 len(recovered), org.slug, recovered,
             )
+
+    # THR-195: observation (read-only) of stale never-started pending jobs.
+    # Registry-wide: scans EVERY org root discovered via
+    # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
+    # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
+    # Read-only connections only: never creates/migrates/writes a store (the
+    # founder contract protects the durable source ``.db``/``-wal`` bytes;
+    # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
+    # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
+    # per-org observation failure is logged with org/root/error context and
+    # isolated, so it cannot abort daemon startup or suppress other org roots.
+    # Surfaces a recurrence of the historical submission-to-dispatch
+    # orphan; deliberately NOT a reaper — no automatic mutation.
+    if state.runtime is not None:
+        from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
+        for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
+            if stale_pending:
+                _logger.warning(
+                    "stale never-started pending jobs in org %s: %s",
+                    slug,
+                    [
+                        f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
+                        for r in stale_pending
+                    ],
+                )
 
     # _attach_thread_queue_wiring was called above (before workers).
     # The second call at the original location is now a no-op for
@@ -211,6 +219,18 @@ async def _lifespan(app: FastAPI):
                 org.orchestrator, _task_id,
                 trigger="startup_recovery", triggering_job_id=None,
             )
+
+    # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
+    # BEFORE the thread workers start draining each org's queue, so retained
+    # queued wakes and daemon_restart replacements are picked up exactly once
+    # (duplicate notifications remain harmless through the claim CAS).
+    from runtime.daemon.thread_queue import ThreadJob
+    for org in state.orgs.values():
+        for token in getattr(org, "_startup_recovered_thread_tokens", []):
+            await org.thread_queue.put(
+                ThreadJob(org_slug=org.slug, invocation_token=token),
+            )
+
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)
@@ -307,6 +327,14 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # ── Host-session drain (THR-207 Slice A real-caller wiring) ──
+        # Stop admission, cancel queued, and finish every owned attempt with a
+        # durable SHUTDOWN winner BEFORE the producer workers are cancelled, so
+        # a schedule fire already past admission observes the frozen reason at
+        # its next gate and never launches uncontained; its run loop releases
+        # the lease exactly once.
+        if state.host_supervisor is not None:
+            state.host_supervisor.shutdown()
         # ── Dashboard projection cleanup ──────────────────────────────
         # Cancel FIRST (before any await) so a refresh stuck in its
         # to_thread/warm path doesn't make daemon shutdown wait for
@@ -337,20 +365,40 @@ async def _lifespan(app: FastAPI):
         await state.close_all()
 
 
+async def metrics_timing_middleware(request: Request, call_next):
+    """HTTP timing middleware (THR-066 remediation, Slice 1).
+
+    Measures elapsed time around ``call_next``, then labels the latency by
+    the matched FastAPI route template (resolved AFTER routing, prefixed with
+    the request method) — never the literal ``request.url.path``.  A request
+    with no matched template records ``METHOD __unmatched__``; a request
+    whose handler raises records ``METHOD __error__`` (elapsed time is still
+    recorded and the original exception is re-raised).
+    """
+    t0 = _time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = _time.monotonic() - t0
+        request.app.state.daemon.metrics_registry.record_http_latency(
+            error_label(request.method), elapsed
+        )
+        raise
+    elapsed = _time.monotonic() - t0
+    route_path = getattr(request.scope.get("route"), "path", None)
+    request.app.state.daemon.metrics_registry.record_http_latency(
+        route_template_label(request.method, route_path), elapsed
+    )
+    return response
+
+
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry
 
-    @app.middleware("http")
-    async def _metrics_timing_middleware(request: Request, call_next):
-        t0 = _time.monotonic()
-        response = await call_next(request)
-        elapsed = _time.monotonic() - t0
-        route_key = f"{request.method} {request.url.path}"
-        request.app.state.daemon.metrics_registry.record_http_latency(route_key, elapsed)
-        return response
+    app.middleware("http")(metrics_timing_middleware)
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
@@ -369,12 +417,12 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(custom_skills.router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
     app.include_router(custom_skills.agent_custom_skills_router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
-    app.include_router(skill_lifecycle.dual_router, prefix="/api/v1/orgs/{slug}", tags=["skill-lifecycle"])
 
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])
     app.include_router(work_hours.router, prefix="/api/v1/orgs/{slug}", tags=["work-hours"])
     app.include_router(schedules.router, prefix="/api/v1/orgs/{slug}", tags=["schedules"])
+    app.include_router(portability.router, prefix="/api/v1/orgs/{slug}", tags=["portability"])
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])

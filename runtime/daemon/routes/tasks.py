@@ -19,6 +19,7 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
+from runtime.daemon.work_status import derive_work_status
 from runtime.infrastructure.task_attachment_store import (
     MAX_TASK_ATTACHMENTS_PER_TASK,
     MAX_TASK_ATTACHMENT_BYTES,
@@ -409,6 +410,11 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "blocked_on_jobs": blocked_on_jobs,
         "active_chain": active_chain,
         "superseded_by_task_id": superseded_by_task_id,
+        # TASK-5522: read-only derived work-status summary. Built from the
+        # task record (last_heartbeat) plus the existing audit rows
+        # (session_start / progress) — no schema, no synthetic audits, no
+        # background monitor. See runtime/daemon/work_status.py.
+        "work_status": derive_work_status(task, audit_log),
     }
 
 
@@ -729,6 +735,7 @@ async def resolve_escalation_in_process(
     brief: str = "",
     actor: str = "founder",
     thread_id: str | None = None,
+    resolution_path: str = "manual_break_glass",
 ) -> str:
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
     POST /tasks/{task_id}/resolve-escalation.
@@ -815,7 +822,7 @@ async def resolve_escalation_in_process(
                 decision=decision,
                 rationale=rationale,
                 actor=actor,
-                thread_id=thread_id,
+                thread_id=thread_id, resolution_path=resolution_path,
             )
             # Best-effort: consume any open notification rows not already
             # consumed by _supersede_predecessor_locked inside the helper.
@@ -849,7 +856,7 @@ async def resolve_escalation_in_process(
         org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
-            actor=actor, thread_id=thread_id,
+            actor=actor, thread_id=thread_id, resolution_path=resolution_path,
         )
         # Best-effort: mark any open notification rows for this task
         # consumed, so they don't dangle.

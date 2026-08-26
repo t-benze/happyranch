@@ -27,7 +27,13 @@ import { StatValue } from '@/design-system/patterns/StatValue';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
-import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
+import type {
+  ReplyDeliveryEntry,
+  ThreadAttachment,
+  ThreadAttachmentRef,
+  ThreadMessage,
+  ThreadRecord,
+} from '@/lib/api/types';
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
@@ -35,7 +41,9 @@ import { useThreadFreshTokens } from '@/hooks/tokens';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
   useAbortReplies,
+  useRenameThread,
   useSendFollowUp,
+  useSetThreadPinned,
   useThread,
   useThreadMessages,
   useThreadRoutes,
@@ -46,9 +54,11 @@ import {
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
+import { MentionRoutingDialog } from './MentionRoutingDialog';
 import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
+import { ReplyDeliveryStrip, replyDeliveryCaption } from './ReplyDeliveryStrip';
 import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
 import { describeError, THREADS_STRINGS as S } from './strings';
@@ -246,6 +256,141 @@ function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
 }
 
 /* ------------------------------------------------------------------ */
+/*  THR-209 pin / overflow helpers                                      */
+/* ------------------------------------------------------------------ */
+
+function PinIcon({ pinned }: { pinned: boolean }): JSX.Element {
+  return pinned ? (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
+    </svg>
+  ) : (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
+    </svg>
+  );
+}
+
+/**
+ * THR-209 overflow menu — compact, keyboard-accessible actions for the
+ * thread detail header. Native buttons, Escape closes, outside-click closes,
+ * aria-haspopup/expanded announce state.
+ */
+function ThreadOverflowMenu({
+  items,
+}: {
+  items: { label: string; onSelect: () => void; disabled?: boolean }[];
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onDocKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onDocKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onDocKey);
+    };
+  }, [open]);
+  const close = () => setOpen(false);
+  return (
+    <div className="relative" ref={ref}>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={S.threadActionsMenu}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        title="Thread actions"
+      >
+        ⋯
+      </Button>
+      {open && (
+        <div
+          role="menu"
+          className="border-border-default bg-surface shadow-pasture-sm absolute right-0 z-20 mt-1 flex min-w-40 flex-col rounded-md border p-1"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                close();
+                item.onSelect();
+              }}
+              className="text-text-primary hover:bg-surface-raised disabled:text-text-disabled rounded px-2 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * THR-209 row pin toggle. A per-row component so each row owns its own
+ * ``useSetThreadPinned`` mutation (the provider hooks bind one thread id).
+ */
+function RowPinControl({
+  thread,
+  onError,
+}: {
+  thread: ThreadRecord;
+  onError: (message: string) => void;
+}): JSX.Element {
+  const pinMutation = useSetThreadPinned(thread.thread_id);
+  const toggle = () => {
+    onError('');
+    pinMutation
+      .mutateAsync({ pinned: !thread.pinned })
+      .catch(() => onError(S.pinFailed));
+  };
+  return (
+    <button
+      type="button"
+      aria-label={thread.pinned ? S.unpinThread(thread.thread_id) : S.pinThread(thread.thread_id)}
+      title={thread.pinned ? S.unpinAction : S.pinAction}
+      disabled={pinMutation.isPending}
+      onClick={toggle}
+      className={`text-text-muted hover:bg-surface-raised hover:text-text-primary disabled:text-text-disabled shrink-0 rounded p-1.5 transition-colors ${
+        thread.pinned ? 'text-accent' : ''
+      }`}
+    >
+      <PinIcon pinned={thread.pinned} />
+    </button>
+  );
+}
+
+/**
+ * THR-209 visible pin-change error banner. aria-live so failures from
+ * optimistic mutations are announced; rendered in both the list and detail
+ * columns from the same page-level state.
+ */
+function PinErrorBanner({ message }: { message: string | null }): JSX.Element | null {
+  if (!message) return null;
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      className="border-border-default bg-surface-raised text-feedback-danger border-b px-4 py-2 text-xs"
+    >
+      {message}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Loading skeleton                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -327,9 +472,18 @@ export function ThreadsPage(): JSX.Element {
         ? openThreads
         : bucket === 'done'
           ? archivedThreads
-          : [...openThreads, ...archivedThreads].sort((a, b) =>
-              b.started_at.localeCompare(a.started_at),
-            );
+          : [...openThreads, ...archivedThreads].sort((a, b) => {
+              // THR-209 pinned-first merge: pinned threads rank above unpinned;
+              // within pinned, most recent activity (fallback started_at);
+              // unpinned keep the ordinary started_at DESC order.
+              if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+              if (a.pinned) {
+                return (b.last_activity_at ?? b.started_at).localeCompare(
+                  a.last_activity_at ?? a.started_at,
+                );
+              }
+              return b.started_at.localeCompare(a.started_at);
+            });
     if (!filter.trim()) return base;
     const needle = filter.toLowerCase();
     return base.filter(
@@ -338,6 +492,10 @@ export function ThreadsPage(): JSX.Element {
         t.thread_id.toLowerCase().includes(needle),
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
+  // THR-209: the server already returns pinned-first per status bucket, and the
+  // 'all' merge above preserves it — group client-side for the Pinned section.
+  const pinnedThreads = useMemo(() => threads.filter((t) => t.pinned), [threads]);
+  const unpinnedThreads = useMemo(() => threads.filter((t) => !t.pinned), [threads]);
 
   // Active-thread data
   const activeThread = useThread(threadId);
@@ -378,16 +536,53 @@ export function ThreadsPage(): JSX.Element {
 
   const anyWorking = useMemo(
     () =>
+      (activeThread.data?.reply_delivery ?? []).some((e) => e.state === 'running') ||
       messages.some((m) =>
         (m.responder_status ?? []).some((s) => s.status === 'working'),
       ),
-    [messages],
+    [messages, activeThread.data?.reply_delivery],
   );
   const nowMs = useNowMs(anyWorking);
 
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const abortReplies = useAbortReplies(threadId ?? '');
+  // THR-209 rename + pin mutations live at the page level; the detail header,
+  // the overflow menu, and the list rows all drive them.
+  const renameMutation = useRenameThread(threadId ?? '');
+  const pinMutation = useSetThreadPinned(threadId ?? '');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const startRename = () => {
+    setRenameDraft(activeThread.data?.subject ?? '');
+    setRenameError(null);
+    setRenaming(true);
+  };
+  const saveRename = async () => {
+    if (!renameDraft.trim()) return;
+    setRenameError(null);
+    try {
+      await renameMutation.mutateAsync({ subject: renameDraft });
+      setRenaming(false);
+    } catch {
+      // On failure retain the typed value and show the inline error (retry).
+      setRenameError(S.renameFailed);
+    }
+  };
+  const cancelRename = () => {
+    setRenaming(false);
+    setRenameError(null);
+  };
+  const togglePin = async (pinned: boolean) => {
+    setPinError(null);
+    try {
+      await pinMutation.mutateAsync({ pinned });
+    } catch {
+      setPinError(S.pinFailed);
+    }
+  };
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
@@ -403,6 +598,8 @@ export function ThreadsPage(): JSX.Element {
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  // THR-198 Slice C: per-thread mention-routing dialog (founder settings surface).
+  const [showMentionRouting, setShowMentionRouting] = useState(false);
   // Participant pending removal — drives the confirm dialog; null keeps it closed.
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const openNew = () => {
@@ -567,6 +764,8 @@ export function ThreadsPage(): JSX.Element {
           </div>
           </ContentWrap>
         </header>
+          {/* THR-209: visible pin-failure banner (optimistic rollback). */}
+          <PinErrorBanner message={pinError} />
         {/* Scroll body — same <ContentWrap> cap as the pinned header so the
             list column sits directly under the header at the 1180
             `max-w-content` cap with 26px padding. The flex sizer owns the
@@ -607,10 +806,17 @@ export function ThreadsPage(): JSX.Element {
             />
           )}
 
-          {/* Populated list */}
+          {/* Populated list — THR-209: pinned threads form a Pinned section
+              above the ordinary list; both groups honor the active
+              query/filter. Each row carries a sibling pin toggle. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
             <div className="flex flex-col gap-1">
-              {threads.map((t) => {
+              {pinnedThreads.length > 0 && (
+                <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
+                  {S.pinnedSection}
+                </h2>
+              )}
+              {pinnedThreads.map((t) => {
                 const path = routes.detail(t.thread_id);
                 const speaker = lastSpeakerChip(t.last_speaker);
                 return (
@@ -631,6 +837,41 @@ export function ThreadsPage(): JSX.Element {
                     }
                     href={path}
                     onSelect={() => navigate(path)}
+                    pinControl={
+                      <RowPinControl thread={t} onError={setPinError} />
+                    }
+                  />
+                );
+              })}
+              {pinnedThreads.length > 0 && unpinnedThreads.length > 0 && (
+                <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
+                  Threads
+                </h2>
+              )}
+              {unpinnedThreads.map((t) => {
+                const path = routes.detail(t.thread_id);
+                const speaker = lastSpeakerChip(t.last_speaker);
+                return (
+                  <InboxRow
+                    key={t.thread_id}
+                    threadId={t.thread_id}
+                    subject={t.subject}
+                    lastSpeaker={speaker ?? undefined}
+                    status={threadStatusOrFallback(t.status)}
+                    needsYou={false}
+                    active={t.thread_id === threadId}
+                    layout="thread"
+                    fromDream={!!t.composed_from_dream_id}
+                    meta={
+                      <span className="whitespace-nowrap tabular-nums">
+                        {relativeStartLabel(t.started_at, nowMs)}
+                      </span>
+                    }
+                    href={path}
+                    onSelect={() => navigate(path)}
+                    pinControl={
+                      <RowPinControl thread={t} onError={setPinError} />
+                    }
                   />
                 );
               })}
@@ -658,6 +899,19 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onRemoveParticipant={setRemoveTarget}
+          // THR-209 rename + pin
+          onRenameStart={startRename}
+          renaming={renaming}
+          renameDraft={renameDraft}
+          onRenameDraftChange={setRenameDraft}
+          onRenameSave={() => void saveRename()}
+          onRenameCancel={cancelRename}
+          renameError={renameError}
+          renameSaving={renameMutation.isPending}
+          onTogglePin={(pinned) => void togglePin(pinned)}
+          pinPending={pinMutation.isPending}
+          pinError={pinError}
+          onOpenMentionRouting={() => setShowMentionRouting(true)}
           composer={
             <Composer
               agents={composerAgents}
@@ -708,6 +962,12 @@ export function ThreadsPage(): JSX.Element {
             open={showArchive}
             onClose={() => setShowArchive(false)}
           />
+          <MentionRoutingDialog
+            threadId={threadId}
+            enabled={activeThread.data?.mention_routing_enabled ?? true}
+            open={showMentionRouting}
+            onClose={() => setShowMentionRouting(false)}
+          />
           <RemoveParticipantDialog
             threadId={threadId}
             agentName={removeTarget}
@@ -738,6 +998,8 @@ interface DetailColumnProps {
         participants: string[];
         summary: string | null;
         composed_from_dream_id?: string | null;
+        reply_delivery?: ReplyDeliveryEntry[];
+        pinned?: boolean;
       }
     | undefined;
   messages: ThreadMessage[];
@@ -749,6 +1011,20 @@ interface DetailColumnProps {
   onArchive: () => void;
   /** Open the confirm-remove dialog for the given participant. */
   onRemoveParticipant: (name: string) => void;
+  /* ---- THR-209 rename + pin ---- */
+  onRenameStart: () => void;
+  renaming: boolean;
+  renameDraft: string;
+  onRenameDraftChange: (value: string) => void;
+  onRenameSave: () => void;
+  onRenameCancel: () => void;
+  renameError: string | null;
+  renameSaving: boolean;
+  onTogglePin: (pinned: boolean) => void;
+  pinPending: boolean;
+  pinError: string | null;
+  /* ---- THR-198 Slice C: mention-routing dialog ---- */
+  onOpenMentionRouting: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -765,6 +1041,18 @@ function DetailColumn({
   onInvite,
   onArchive,
   onRemoveParticipant,
+  onRenameStart,
+  renaming,
+  renameDraft,
+  onRenameDraftChange,
+  onRenameSave,
+  onRenameCancel,
+  renameError,
+  renameSaving,
+  onTogglePin,
+  pinPending,
+  pinError,
+  onOpenMentionRouting,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -840,6 +1128,10 @@ function DetailColumn({
 
   const open = thread.status === 'open';
   const isDreamOriginated = !!thread.composed_from_dream_id;
+  // Store-projected pair reply-delivery state (GH-688 Phase 1). Undefined on
+  // older payloads / loading → empty list renders nothing (no live
+  // obligation). Never inferred from per-message rows.
+  const replyDelivery = thread.reply_delivery ?? [];
 
   return (
     <section className="flex h-full flex-col">
@@ -859,10 +1151,37 @@ function DetailColumn({
         participants={thread.participants}
         archiveSummary={thread.summary}
         dreamOriginated={isDreamOriginated}
+        renaming={renaming}
+        renameDraft={renameDraft}
+        onRenameDraftChange={onRenameDraftChange}
+        onRenameSave={onRenameSave}
+        onRenameCancel={onRenameCancel}
+        renameError={renameError}
+        renameSaving={renameSaving}
         actions={
-          <>
+          <div className="flex flex-wrap items-center gap-1">
             {/* Invite moved into the Participants rail (a-thread-detail);
-                the header carries only Archive + archived-thread affordances. */}
+                the header carries only Archive + archived-thread affordances.
+                THR-209 adds Rename + Pin/Unpin + a compact overflow menu. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRenameStart}
+              disabled={renaming}
+              title="Rename thread"
+            >
+              {S.renameAction}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onTogglePin(!thread.pinned)}
+              disabled={pinPending}
+              aria-label={thread.pinned ? S.unpinAction : S.pinAction}
+              title={thread.pinned ? S.unpinAction : S.pinAction}
+            >
+              {thread.pinned ? S.unpinAction : S.pinAction}
+            </Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (
@@ -874,9 +1193,22 @@ function DetailColumn({
                 Audit ↗
               </Link>
             )}
-          </>
+            <ThreadOverflowMenu
+              items={[
+                { label: S.renameAction, onSelect: onRenameStart, disabled: renaming },
+                {
+                  label: thread.pinned ? S.unpinAction : S.pinAction,
+                  onSelect: () => onTogglePin(!thread.pinned),
+                  disabled: pinPending,
+                },
+                { label: S.mentionRoutingAction, onSelect: onOpenMentionRouting },
+                { label: S.archiveAction, onSelect: onArchive, disabled: !open },
+              ]}
+            />
+          </div>
         }
       />
+      <PinErrorBanner message={pinError} />
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-auto">
@@ -886,6 +1218,7 @@ function DetailColumn({
               slug={slug}
               threadId={threadId}
               nowMs={nowMs}
+              replyDelivery={replyDelivery}
             />
           </div>
           <footer className="border-border-default bg-surface-sunken border-t p-3">
@@ -955,6 +1288,21 @@ function DetailColumn({
               </button>
             )}
           </div>
+
+          {/* Reply delivery — STORE-PROJECTED pair state (GH-688 Phase 1
+              Slice C). Renders only while any pair has a live obligation
+              (queued/running/retry_required); a fully-settled thread omits
+              the section entirely — no fabricated in-flight rows. The
+              transcript tail mirrors this same list, and the per-message
+              responder strips keep terminal history. */}
+          {replyDelivery.length > 0 && (
+            <div aria-label="Reply delivery">
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+                Reply delivery
+              </h3>
+              <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
+            </div>
+          )}
 
           {/* Linked tasks — compact COLORED CHIPS (status word + id in one
               pill), THR-061 a-thread-detail. ACTIVE tasks
@@ -1109,14 +1457,45 @@ interface TranscriptProps {
   slug?: string;
   threadId?: string;
   nowMs?: number;
+  /** Store-projected pair reply-delivery state (GH-688 Phase 1 Slice C). */
+  replyDelivery: ReplyDeliveryEntry[];
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Agents mid-reply (working) or waiting to reply (queued)
-  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
-  const inFlightKey = inFlight.map((s) => `${s.agent_name}:${s.status}`).join(',');
+  // Live pair-level obligations from the STORE projection (queued/running).
+  // These replace inferred per-message invocation rows for conversational
+  // REPLY wakes — the store owns the single-wake truth. retry_required pairs
+  // stay off the tail (they are diagnostics, never an active subprocess) and
+  // are surfaced in the right-rail Reply delivery strip instead.
+  const pairLive = useMemo(
+    () => replyDelivery.filter((e) => e.state === 'queued' || e.state === 'running'),
+    [replyDelivery],
+  );
+  const pairLiveAgents = useMemo(() => new Set(pairLive.map((e) => e.agent_name)), [pairLive]);
+  // Inferred in-flight rows NOT covered by a pair entry. Suppression is
+  // purpose-aware (GH-688 Phase 1 Slice C reviewer finding; TASK-5553): only a
+  // conversational REPLY wake — identified by the AUTHORITATIVE wire purpose
+  // carried from thread_invocations, never by the triggering row's kind — is
+  // masked when the store projection already owns that agent's pair.
+  // Special-purpose wakes (TASK_FOLLOWUP / BOOTSTRAP) are intentionally
+  // outside reply_delivery and ALWAYS preserved — even when the same agent
+  // concurrently holds a REPLY pair, so the followup in-flight strip keeps
+  // working (THR-061). A REPLY whose coalesced range anchors on a SYSTEM row
+  // still reads purpose='reply' on the wire and is therefore suppressed next
+  // to its pair row — exactly one replying bubble (founder THR-198 seq 77).
+  const inferredInFlight = useMemo(
+    () =>
+      selectInFlightResponders(messages).filter(
+        (s) => !(s.purpose === 'reply' && pairLiveAgents.has(s.agent_name)),
+      ),
+    [messages, pairLiveAgents],
+  );
+  const inFlightKey =
+    pairLive.map((e) => `${e.agent_name}:${e.state}`).join(',') +
+    '|' +
+    inferredInFlight.map((s) => `${s.agent_name}:${s.purpose}:${s.status}`).join(',');
 
   useEffect(() => {
     if (typeof endRef.current?.scrollIntoView === 'function') {
@@ -1148,13 +1527,21 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
             {/* System rows — centered "· system event · broadcast to all"
-                divider (THR-061 a-thread-detail .sys), not a chat bubble. */}
+                divider (THR-061 a-thread-detail .sys), not a chat bubble.
+                Terminal responder history (incl. a system-row-anchored REPLY
+                range that settled) renders as the same light strip below the
+                divider (TASK-5553): ResponderStatusStrip filters to terminal
+                states only, so in-flight rows never duplicate the tail
+                TypingBubbles. */}
             {variant === 'system' ? (
-              <SystemDivider
-                timestamp={m.created_at}
-                systemPayload={m.system_payload}
-                slug={slug}
-              />
+              <>
+                <SystemDivider
+                  timestamp={m.created_at}
+                  systemPayload={m.system_payload}
+                  slug={slug}
+                />
+                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
+              </>
             ) : (
               // Turn = per-sender avatar square + chat-bubble body column
               // (THR-061 a-thread-detail .turn). The responder strip aligns
@@ -1188,11 +1575,34 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
           </div>
         );
       })}
-      {inFlight.map((s) => (
+      {pairLive.map((e) => (
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-${s.agent_name}`} className="flex gap-3">
+        <div key={`typing-pair-${e.agent_name}`} className="flex gap-3">
+          <TurnAvatar name={e.agent_name} />
+          <div className="min-w-0 flex-1">
+            <TypingBubble
+              agentName={e.agent_name}
+              status={e.state === 'running' ? 'working' : 'queued'}
+              startedAt={e.started_at}
+              nowMs={nowMs}
+              // Honest store-projected caption: queued carries the coalesced
+              // count + inclusive range (never an active-subprocess claim),
+              // running carries the claimed immutable range.
+              caption={replyDeliveryCaption(e, nowMs)}
+              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+              // founder seq57). The generic `trailing` slot is intentionally left
+              // unused here — no abort control renders beside the replying row.
+            />
+          </div>
+        </div>
+      ))}
+      {inferredInFlight.map((s) => (
+        // Same avatar-indented turn structure as real messages above so the
+        // in-flight bubble's left edge lines up with the message bubbles
+        // (avatar + gap), instead of sitting flush-left / full-width.
+        <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="flex gap-3">
           <TurnAvatar name={s.agent_name} />
           <div className="min-w-0 flex-1">
             <TypingBubble

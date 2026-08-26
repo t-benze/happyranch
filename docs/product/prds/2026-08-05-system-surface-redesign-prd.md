@@ -26,7 +26,7 @@ The Work Hours enablement control is the first concrete application. Its target 
 - Work Hours resolves schedule leaves organization → team → agent. `GET /settings` returns raw tiers rather than a server-computed effective/provenance model; the UI currently derives the display while scheduler-side resolution remains authoritative. Invalid writes retain last-known-good configuration. A due eligible slot creates at most one wake record; a non-empty Markdown `## Routine Tasks` section generates one self-targeted root task per top-level bullet. Routine bullets are Markdown/system-prompt owned, not Work Hours configuration. Wakes, tasks, threads and Todo schedules are distinct records and behaviors.
 - The current Work Hours projection is not a blank slate: it has the feature switch in its header, an impact-preview then confirm/save eligibility flow, a confirm-before-disable safeguard, “saved; effective at the next scheduler pass” feedback, and a config-read recovery banner. Settings is a full page with a narrow content panel/left sub-navigation (plus a TopBar shortcut); Work Hours is a wider workspace under **Operate**, with overview/wakes tabs and agent detail. The desktop shell has no responsive reorganization target.
 - Dashboard, metrics, health, runtime/config/process claims, and streaming state are time-bounded daemon projections and can be unavailable or stale. A stream augments polling/cache; it is not a durable-delivery guarantee.
-- Skills direct catalog mutation is retired compatibility (`410 legacy_cutover`); the lifecycle proposal/decision ledger is the sole current Skills write path. Still-mounted legacy catalog create/edit controls are a reconciliation defect, not working product acceptance.
+- B2 custom Skills use the same immediately editable record for verified agents and founders. It is default Hidden — eligibility not configured, retains version/provenance/validation/materialization evidence, and has no legacy proposal UI, routes, history, or compatibility behavior.
 - The founder bundle is design evidence, not a current contract. `/__prototypes/*`, `/__design__`, mock providers, component registry, redirect plumbing, and NotFound are explicitly outside this product redesign scope.
 
 ### Redesign requirements (not yet authorized to build)
@@ -55,7 +55,7 @@ Success is measured only after a Founder-approved implementation: task-to-canoni
 | --- | --- | --- |
 | **Operate** | Dashboard, Inbox/Threads, Tasks, Jobs, Todos | Dashboard is an attention queue; Threads, Tasks, Jobs and Todos own their mutations and records. Do not conflate scheduled Todos with Work Hours wakes. |
 | **Organization** | Agents, Teams, Work Hours | Agent/team roster explains membership and ownership. Work Hours owns cadence configuration context, resolution/provenance, read-only routine-source visibility, next wakes, history and task linkage. |
-| **Govern** | Skills, Settings | Skills owns lifecycle ledger evidence; Settings owns organization and runtime operating controls. Client navigation must not suggest a control is authorized when the daemon denies it. |
+| **Govern** | Skills, Settings | Skills owns B2 custom-skill version, provenance, validation, eligibility, and materialization evidence; Settings owns organization and runtime operating controls. Client navigation must not suggest a control is authorized when the daemon denies it. |
 | **Evidence** | KB, Artifacts, Audit, Dreams, Usage, Health | These are sources, histories or projections. Show source/window/freshness and route actions back to their canonical decision record. |
 | **Global shell** | Organization switcher, command palette, help, assistant dock, account/runtime context | Present across normal AppShell routes. Assistant may navigate and present tool/source evidence but has no direct governance-write authority. |
 
@@ -66,7 +66,7 @@ The navigation may use these labels and grouping only after an approved delivery
 1. **Settings → Organization → Operating controls** holds organization-wide gates and eligibility policies whose change governs whether a domain can run at all. Each control shows scope, effective state, impact, validation outcome, and a link to the affected functional surface.
 2. **Settings → System** remains for restart-bound/read-only runtime facts and controls only when a supported system contract exists. It is not a catch-all for live organization switches.
 3. **Functional domain surfaces** own in-context configuration, effective resolution, workflow execution, and evidence. They may summarize a governing control and deep-link to it, but must not duplicate a mutable control or derive a divergent state.
-4. **Governance lifecycle surfaces** (currently Skills) preserve versioned decisions, technical validation, assignment and materialization as distinct dimensions; technical validation is not approval.
+4. **Custom Skills** preserve version/provenance, technical validation, eligibility, and materialization as distinct dimensions; technical validation is not a permission grant.
 5. **Evidence and assistant surfaces** may hand off to the authoritative record but never make an unsupported approval, authorization, retention, cost or freshness claim.
 
 ### Work Hours placement requirement
@@ -87,7 +87,7 @@ The user experience should ensure the setting is *discoverable* from Work Hours 
 4. **FR-4: Governance placement.** Organization-wide enabling/eligibility resides once in Settings → Organization operating controls; domain workflows retain context and a non-mutating deep-link. Every affected state explains the applicable gate without exposing a nonexistent per-agent switch. The Settings implementation carries forward the current eligibility impact preview, confirm-before-disable, server-error recovery, and next-scheduler-pass feedback, with sufficient roster/team data to make eligibility understandable.
 5. **FR-5: Work Hours contract preservation.** Any redesign of Work Hours preserves one organization gate; eligibility semantics; leaf-by-leaf resolution; server validation and last-known-good behavior; one-slot/one-wake uniqueness; limited startup catch-up; terminal wake failure evidence; and root-task provenance.
 6. **FR-6: Authority honesty.** Browser-visible controls never claim frontend role enforcement. Founder-authenticated baseline and server 401/403 response behavior remain explicit; no delegated roles, remote access, or assistant governance writes are inferred.
-7. **FR-7: Skills lifecycle honesty.** The lifecycle ledger remains the sole write path, direct catalog mutations remain `410 legacy_cutover`, and the mounted legacy UI stays a separately triaged engineering defect.
+7. **FR-7: B2 Skills honesty.** Verified agents and founders create the same immediately editable custom-skill record. It is default Hidden — eligibility not configured; legacy proposal UI, content, records, history, routes, adapters, and compatibility are deleted.
 8. **FR-8: State coverage and accessibility.** Each redesigned family defines loading, empty, populated, stale/disconnected, validation failure, 401/403 and recoverable error behavior, with semantic landmarks/controls, keyboard path, focus management, text status, and non-color cues.
 9. **FR-9: Compatibility and exclusions.** Retired `/schedule` and `/spend` bookmark redirects continue; developer/design routes remain excluded. No prototype-only fields, metrics, jobs metadata, approval state or permission claims become requirements without an authoritative record/API.
 
@@ -105,7 +105,7 @@ The user experience should ensure the setting is *discoverable* from Work Hours 
 - Changing daemon/browser authorization, granting manager/operator/self-service control, or asserting client-side RBAC.
 - Moving or duplicating Work Hours persistence, changing its single `working_hours` section/API, adding independent agent enablement, or changing eligibility, resolution, scheduler, wake, Markdown-owned routine source, catch-up or task-dispatch behavior.
 - DB-backed routine authoring, Markdown migration/cleanup, holidays, blackouts, urgent overrides, calendar/timeline, schedule prediction, print/export, or mobile-shell work.
-- Reviving direct Skills catalog writes, resolving mounted legacy Skills pages, expanding lifecycle participants/actions, or granting skills permissions.
+- Reviving a legacy Skills route, record, proposal workflow, compatibility layer, or granting skills permissions.
 - Assistant approval/denial or direct governance writes; retention, external analytics, billing/cost meter, SLA, remote/multi-user access, or prototype-only data contracts.
 
 ## Dependencies, delivery gates, and decision ledger

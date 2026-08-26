@@ -24,9 +24,22 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 ``agent.yaml`` is no longer read or written by any org-agent path. See
 `docs/agent-guides/runtime-and-configuration.md#agent-configuration-single-source-of-truth-thr-095`.
 
-`runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, and `reject_agent`. Routes and orchestrator code should read through this module against the per-org root.
+`runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
+
+## Agent Lifecycle: Enrollment, Approval, and Termination
+
+- **Enrollment.** `manage-agent enroll` creates a pending agent file under `org/agents/_pending/<name>.md`. A founder (or team manager with an active session) may enroll agents only into their own team.
+- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
+- **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
+  - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
+  - archives the workspace `workspaces/<name>/` to `workspaces/_terminated/<name>/`;
+  - removes the worker from its team;
+  - cancels armed schedules, skips pending wakes/dreams, and declines not-yet-started thread invocations with reason `agent_terminated`.
+- **Historic records are retained.** Tasks, task results, audit rows, token-usage rows, thread messages/participants, schedules, wakes, dreams, and archived files are never deleted or rewritten. The agent name cannot be re-enrolled while a terminated record exists, so historical identity remains unambiguous.
+- **Fail-closed launch.** The orchestrator and thread runner refuse to launch an agent whose active `.md` file is missing or archived. There is no silent fallback to `claude` for an unknown/terminated agent.
+- **Enumeration.** `GET /agents` and the default `GET /agents/enrollments` return active agents only. `GET /agents/enrollments?status=terminated` returns archived enrollment metadata.
 
 ## Task Status Vocabularies
 
@@ -35,6 +48,142 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 `block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (waiting on child subtasks) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` ⟺ a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
+
+## Derived Work-Status Summary (TASK-5522)
+
+`GET /tasks/{task_id}` carries a read-only `work_status` envelope key derived
+server-side (`runtime/daemon/work_status.py`) from the task record plus its
+existing audit rows — **no schema change, no synthetic audits, no background
+monitor**. It exposes only: the current-session start (latest assigned-agent
+`session_start` audit), the last heartbeat with an explicit freshness label,
+and the timestamp + concise agent-written message of the latest current-
+session `progress` receipt. Chain of thought, command stdout, workspace
+paths, session ids, and arbitrary audit payloads are never exposed.
+
+State machine (live-task shape = `in_progress` + `block_kind IS NULL`):
+
+| state | meaning |
+|---|---|
+| `newly_started` | fresh heartbeat; no current-session receipt; session start < 5m old |
+| `recent_progress` | fresh heartbeat; latest current-session receipt < 5m old |
+| `stale_no_receipt` | fresh heartbeat; no receipt; session start ≥ 5m old |
+| `stale_old_receipt` | fresh heartbeat; latest receipt ≥ 5m old |
+| `heartbeat_stale` | live shape but heartbeat ≥ 60s old (existing zombie-reaper freshness semantics) |
+| `heartbeat_unavailable` | live shape, no heartbeat observed |
+| `unavailable` | cannot derive (missing session_start, unassigned, malformed historic data) |
+| `not_applicable` | terminal / pending / escalated / in_progress parked-on-block (`reason` discriminates) |
+
+Policies: `STALE_PROGRESS_AFTER_SECONDS = 300` (5-minute display/derivation
+policy — it never reaps or acts); heartbeat freshness reuses the existing
+60-second semantics (`2 × HEARTBEAT_INTERVAL_SECONDS`). The current-session
+lower boundary is the latest assigned-agent `session_start`; a prior
+session's `progress` receipts must never satisfy the new session. Labels say
+what is observed — a fresh heartbeat is never presented as substantive
+progress, and absent/malformed data is surfaced as unavailable, never
+fabricated. Both `happyranch details` and the Tasks UI render this summary;
+`protocol/skills/start-task/SKILL.md` §5 makes the corresponding worker
+checkpoint policy concrete.
+
+### Post-deploy operational measurement (not a shipping gate)
+
+The per-task states above make **individual** tasks observable; they do not,
+by themselves, measure the population metric this change is meant to move.
+That metric is the **share of COMPLETED tasks whose wall-clock duration is
+strictly greater than 15 minutes**, measured by the read-only per-org SQL
+procedure below — never from `progress` audit rows. `progress` receipts /
+`work_status` are a diagnostic companion measure only (see "What this
+contract does and does not make observable" below).
+
+**Pre-deploy baseline (authoritative).** Immediately before this change
+shipped, **277 of 600 completed tasks (46.2%)** exceeded a 15-minute
+wall-clock duration. **46.2% — never 55%** — is the baseline this deployment
+is measured against. The post-deploy operational/release target is **<20%**
+of completed tasks exceeding 15 minutes, evaluated inside the explicitly
+defined post-deploy observation window below. That target is an
+**operational post-deploy goal only**: it is NOT a PR shipping, approval,
+merge, or CI gate, and no CI or merge check enforces it.
+
+**Observation procedure (read-only SQL, per org).** Each org is measured
+independently against its own database — the org boundary is the per-org
+SQLite file `<runtime>/orgs/<slug>/happyranch.db` (the daemon's
+`OrgPaths.db_path`, `runtime/orchestrator/_paths.py`). Orgs are never
+pooled: the evaluator must substitute each org's actual storage scope and
+timestamps. The window is **half-open** `[window_start, window_end)` and
+uses the task **completion time** (`tasks.completed_at`) for membership; the
+numerator applies the same bounds and additionally requires a wall-clock
+duration **strictly greater than 15 minutes (900 seconds)**. Wall-clock
+duration is the difference between the persisted completion and creation
+timestamps (`tasks.completed_at` − `tasks.created_at` — both columns are
+non-null on every `completed` row and store ISO-8601 UTC text, so
+`julianday(...)` arithmetic applies directly; this is the full lifecycle
+wall clock from task creation to completion, an upper bound on active work
+time). Run the query once per org DB file:
+
+```sql
+-- Per-org read-only observation: completed-task wall-clock > 15 min share.
+-- Open the org's DB read-only:  sqlite3 "file:<runtime>/orgs/<slug>/happyranch.db?mode=ro"
+-- Bind the evaluator's actual values (sqlite3 CLI: .parameter init, then
+-- .parameter set :window_start '<utc-iso>'; .parameter set :window_end '<utc-iso>'):
+--   :window_start  post-deploy observation window start, inclusive (UTC ISO)
+--   :window_end    post-deploy observation window end,   exclusive (UTC ISO)
+WITH windowed AS (
+  SELECT (julianday(t.completed_at) - julianday(t.created_at)) * 86400 AS dur_seconds
+  FROM tasks AS t
+  WHERE t.status = 'completed'
+    AND t.completed_at >= :window_start
+    AND t.completed_at <  :window_end
+)
+SELECT
+  COUNT(*)                                           AS denominator,
+  SUM(CASE WHEN dur_seconds > 900 THEN 1 ELSE 0 END) AS numerator,
+  CASE
+    WHEN COUNT(*) = 0 THEN NULL  -- zero denominator => N/A, never 0%
+    ELSE ROUND(
+      100.0 * SUM(CASE WHEN dur_seconds > 900 THEN 1 ELSE 0 END) / COUNT(*),
+      1
+    )
+  END                                                AS pct_over_15_min
+FROM windowed;
+```
+
+Procedure notes:
+
+- **Per-org, never pooled.** Re-run the query against each org's own DB file
+  and report each org's `denominator` / `numerator` / `pct_over_15_min`
+  separately. Do not aggregate orgs into one denominator.
+- **Strict inequality.** The numerator counts `dur_seconds > 900`; a task
+  whose duration equals exactly 15:00.000 does not count.
+- **Half-open window.** Membership is `completed_at >= :window_start` AND
+  `completed_at < :window_end`; a task completing exactly at `:window_end`
+  belongs to the next window.
+- **Zero denominator.** An org/window with no completed tasks yields
+  `denominator = 0` and the percentage is **N/A** (the `CASE` yields NULL) —
+  never 0%, which would falsely claim the target was met.
+- **Read-only.** The query contains no writes; open the DB in read-only mode
+  (`?mode=ro`) or run it against a snapshot/copy.
+
+**Post-deploy observation window.** The operator defines a fixed half-open
+window at deployment time — for example the 30 days following the deploy
+timestamp — and evaluates the same query with `:window_start` = deploy
+timestamp and `:window_end` = window end. The pre-deploy baseline 277/600
+was measured with the same definition over the pre-deploy completed-task
+population.
+
+**What this contract does and does not make observable.** `action=progress`
+remains optional and is the only persisted agent-written substantive receipt
+in the current contract. When it is absent, the server-derived `work_status`
+explicitly reports `newly_started` (session under 5 minutes) or
+`stale_no_receipt` ("no substantive update recorded") for a live session —
+heartbeat is liveness evidence only and is never substantive work. That
+absence classification makes silence observable for operational follow-up
+(a live-but-silent task is visibly distinguishable from one with recent
+substantive progress). However, a progress-only audit query cannot prove the
+implementation moved the >15-minute completion-duration metric: receipts are
+optional and the population metric is defined over completed-task wall-clock
+durations, not receipts. The primary metric is therefore measured from
+completed-task wall-clock durations by the per-org query above;
+`progress` / `work_status` may be used only as a diagnostic companion
+measure.
 
 ## Manager Decision Contract
 
@@ -107,12 +256,16 @@ Contract (founder-approved in THR-028, refined in THR-078):
    FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
    lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
    the ceiling. Retry of a COMPLETED predecessor does not count toward the
-   ceiling.
+   ceiling, and a later COMPLETED or SUPERSEDED descendant in the same lineage
+   retires earlier FAILED ancestors for ceiling evaluation (THR-183).
 
 3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
    (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`; a non-root parent fails and recurses upward (THR-033
-   root-only escalation). The parent does NOT cascade-fail.
+   `try_escalate()`, carrying the causal terminal event — the current
+   unresolved FAILED leaf of the slice's lineage — in the escalation reason;
+   a completed-child wake cannot select a stale sibling reason. A non-root
+   parent fails and recurses upward (THR-033 root-only escalation). The parent
+   does NOT cascade-fail.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its
@@ -130,11 +283,13 @@ Traps:
 
 - Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
   child's `revisit_of_task_id` chain; only a FAILED predecessor under the
-  same parent triggers escalation. COMPLETED predecessors do not count.
+  same parent triggers escalation. COMPLETED/SUPERSEDED predecessors retire
+  earlier FAILED ancestors for ceiling evaluation (THR-183).
 - Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
   first failure).
 - The exhaustion escalation uses `try_escalate` (atomic CAS under Database
-  RLock) for roots; non-root parents fail and hand upward.
+  RLock) for roots and names the current unresolved FAILED leaf, not a stale
+  sibling reason; non-root parents fail and hand upward.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed

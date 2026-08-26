@@ -109,7 +109,11 @@ retroactively fired.
 ### Stable anchor and edit semantics
 
 `anchor_date` is server-computed from the local date of the first calculated
-occurrence at creation and cannot be caller-supplied. It never drifts as a Todo
+occurrence at creation and cannot be caller-supplied. An agent may optionally
+request a canonical local `start_date` phase when creating a native recurring
+Todo, and a founder may request it in an allowed edit; the daemon validates the
+selected rule/DST phase, derives the first fire, and stores only `anchor_date`.
+It never drifts as a Todo
 fires or re-arms. It is immutable for a given rule version, which prevents an
 “every two weeks” or “every two years” cadence from being re-phased by `now` or
 by the last successful run.
@@ -120,6 +124,15 @@ by the last successful run.
   creates a new rule version and resets `anchor_date` to that version’s newly
   calculated next local occurrence date. The edit must be atomically validated
   and audit before/after rules including the anchor.
+- An ARMED or PAUSED founder edit may intentionally rephase with `start_date`.
+  It atomically derives `fire_at`, retains lifecycle/counters, and audits the
+  requested phase with before/after recurrence and fire timing; it never fires.
+- The full recurring editor explicitly sends `null` for inactive `byday`,
+  `bymonthday`, and `ordinal` selectors. After its PATCH merge, the server
+  removes those explicit clears before validation and persistence, so stored
+  rules contain no stale or null selector residue. This does not broaden the
+  grammar: DAILY/YEARLY still have no selector, and MONTHLY still has exactly
+  one bounded selector.
 - Edits calculate only an occurrence strictly after the edit; they never create
   a retroactive occurrence. An `ARMED` or `PAUSED` Todo may be edited. A Todo
   already claimed as `FIRING`, or terminal, rejects the edit with
@@ -206,13 +219,20 @@ a bare “Fired” label.
 Creation and edit validate the whole candidate rule atomically. The API returns
 stable, actionable error codes rather than only a generic create failure:
 
+For a native recurring edit that changes the recurrence and/or top-level
+timezone, the founder UI omits `fire_at`; the daemon derives and persists the
+next eligible instant from the merged validated rule. A supplied `fire_at`
+remains a strict exact-match assertion. This keeps recurrence and DST authority
+on the server and does not alter one-shot or legacy weekly edit behavior.
+
 - `invalid_interval`, `invalid_time`, `invalid_timezone`, `invalid_until`,
   `invalid_count`, and `end_condition_conflict`;
 - `invalid_freq_fields` and `invalid_byday`;
 - `monthly_selector_missing` or `monthly_selector_conflict` when monthly does
   not contain exactly one valid selector; and
 - `anchor_date_not_settable` when a caller attempts to set the server-owned
-  anchor, plus `state_conflict` for a disallowed lifecycle action.
+  anchor; `invalid_start_date` for a malformed, past, non-selected, or DST-gap
+  requested phase; plus `state_conflict` for a disallowed lifecycle action.
 
 The bounded monthly grammar accepts exactly one positive `month_day` from 1–31
 **or** exactly one weekday paired with a named ordinal (`first`, `second`,

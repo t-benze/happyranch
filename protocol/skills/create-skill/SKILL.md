@@ -3,10 +3,8 @@ name: create-skill
 description: >
   Verified-agent custom-skill authoring from an active task session.
   Creates a standard_operational custom skill with server-verified
-  task/session/agent/org provenance. This is an ADDITIONAL verified-agent
-  authoring path; the skill enters PROPOSED status and is hidden by default.
-  B2 eligibility, human web editor, effective visibility, migration/cutover,
-  and proposal-review resurrection are explicitly deferred.
+  task/session/agent/org provenance. The B2 record is created immediately
+  and hidden by default until founder-configured eligibility makes it visible.
 ---
 
 # create-skill
@@ -29,9 +27,12 @@ injected only for TASK sessions with repo access.
 - On success, the server records an immutable version with a canonical
   content hash, validator version, findings, task/session/agent/org provenance,
   and a nonempty task-brief digest.
-- The created skill enters PROPOSED status and is **hidden by default**.
-  No agent sees it and no materialization occurs until a founder configures
-  eligibility (deferred to B2).
+- The created skill is a default-hidden B2 custom-skill record. The response
+  includes `skill_id`, `version_id`, `content_hash`, `validation_state`, and
+  `hidden_reason` (`no_eligibility_policy`).
+- It becomes visible to the assignee only after a founder configures
+  eligibility through the B2 web UI or API. Creation has no separate
+  lifecycle step after the record is saved.
 
 ## What create-skill does NOT do
 
@@ -40,7 +41,7 @@ This skill grants no additional authority. It does not:
 - Grant tools, credentials, network access, filesystem scope, sandbox changes,
   allow rules, executor configuration, or command authority.
 - Change permissions, auth, or the agent execution model.
-- Set eligibility, publish, assign, or make the skill visible to any agent.
+- Set eligibility, assign, or make the skill visible to any agent.
 - Edit system contracts, first-party shipped skills, or release-managed skills.
 - Override developer, system, or user instructions.
 - Support `high_impact_policy`, `system_contract`, executable hooks, plugin
@@ -90,7 +91,7 @@ persistence.
 ### Optional fields
 
 - `version` — defaults to `"0.1.0"`.
-- `policy_class` — must be `"standard_operational"` (only supported class in B1).
+- `policy_class` — must be `"standard_operational"` (the only supported class).
 - `description` — one-line summary.
 - `references` — map of filename → content for reference files.
 - `assets` — map of filename → content for asset files.
@@ -136,12 +137,12 @@ the entire transaction rolls back with zero residue.
 - Validation failure → HTTP 422 with structured error codes.
 - Server error → HTTP 500 with detail.
 
-## Deferred to B2 and later
+## Visibility after creation
 
-- Eligibility configuration (org/team/agent scope, additive inheritance,
-  explicit deny).
-- Human web editor for custom skills.
-- Effective visibility / materialization of custom skills.
-- Migration/cutover from legacy proposal workflow.
-- `high_impact_policy` custom skills.
-- Proposal-review queue resurrection.
+Creation saves the B2 custom-skill record immediately, but the default
+`hidden_reason` is `no_eligibility_policy`. A founder must configure an
+eligibility rule for the intended assignee through the B2 web UI or API before
+the skill can be materialized for that agent. This authoring path does not set
+that rule and does not change permissions, tools, credentials, or auth.
+
+`high_impact_policy` custom skills remain unsupported.

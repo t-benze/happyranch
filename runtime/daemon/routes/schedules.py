@@ -12,6 +12,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -23,7 +24,11 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import (
+    next_recurring_occurrence,
+    next_weekly_occurrence,
+    recurrence_until_exhausted,
+)
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
 router = APIRouter(dependencies=[require_token()])
@@ -49,6 +54,7 @@ def _schedule_to_dict(record) -> dict:
         "spawned_task_ids": record.spawned_task_ids,
         "last_fired_at": record.last_fired_at.isoformat() if record.last_fired_at else None,
         "fire_count": record.fire_count,
+        "error": record.error,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
     }
@@ -71,13 +77,54 @@ class ScheduleCreateBody(BaseModel):
     agent: str = Field(min_length=1)
     source_instruction: str = Field(min_length=1)
     normalized_brief: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    fire_at: str = Field(min_length=1)
+    kind: str = Field(
+        min_length=1,
+        description='Schedule kind: "one_shot", "weekly", or "recurring".',
+    )
+    fire_at: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "ISO-8601 next fire. Required except a native recurring create with "
+            "start_date, where the server derives the first occurrence."
+        ),
+    )
     recurrence: dict | SkipJsonSchema[None] = Field(None)
     timezone: str = Field(default="UTC")
+    start_date: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "Optional canonical YYYY-MM-DD local phase for native recurring schedules. "
+            "The server validates the selected recurrence and DST, derives fire_at, "
+            "and stores only its managed anchor_date."
+        ),
+    )
 
 
-@router.post("/schedules")
+class RecurringValidationErrorDetail(BaseModel):
+    code: Literal[
+        "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
+        "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
+        "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
+        "invalid_timezone", "invalid_start_date",
+    ]
+
+
+class RecurringValidationErrorResponse(BaseModel):
+    detail: RecurringValidationErrorDetail
+
+
+_RECURRING_VALIDATION_CODES = frozenset({
+    "invalid_freq_fields", "invalid_byday", "monthly_selector_missing",
+    "monthly_selector_conflict", "invalid_interval", "anchor_date_not_settable",
+    "invalid_until", "invalid_count", "end_condition_conflict", "invalid_time",
+    "invalid_timezone", "invalid_start_date",
+})
+
+
+@router.post(
+    "/schedules",
+    responses={422: {"model": RecurringValidationErrorResponse, "description": "Named recurring-rule validation failure."}},
+)
 def create_schedule(
     slug: str,
     body: ScheduleCreateBody,
@@ -137,27 +184,27 @@ def create_schedule(
                 "valid": [k.value for k in ScheduleKind],
             },
         )
+    if body.start_date is not None and kind != ScheduleKind.RECURRING:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_start_date", "message": "start_date is only valid for recurring schedules"},
+        )
 
-    # ── parse fire_at ──
-    try:
-        fire_at = datetime.fromisoformat(body.fire_at)
-    except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_fire_at", "got": body.fire_at},
-        )
-    if fire_at.tzinfo is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_fire_at",
-                "got": body.fire_at,
-                "message": (
-                    "fire_at must include a timezone offset "
-                    "(e.g., +00:00, +08:00, Z)"
-                ),
-            },
-        )
+    if any(getattr(body, field) is None for field in body.model_fields_set & {"fire_at", "start_date"}):
+        raise HTTPException(status_code=422, detail={"code": "explicit_null"})
+    if body.fire_at is None and not (kind == ScheduleKind.RECURRING and body.start_date is not None):
+        raise HTTPException(status_code=422, detail={"code": "invalid_fire_at", "message": "fire_at is required"})
+    fire_at = None
+    if body.fire_at is not None:
+        try:
+            fire_at = datetime.fromisoformat(body.fire_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "invalid_fire_at", "got": body.fire_at})
+        if fire_at.tzinfo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_fire_at", "got": body.fire_at, "message": "fire_at must include a timezone offset (e.g., +00:00, +08:00, Z)"},
+            )
 
     # ── call service ──
     svc = ScheduleService(org.db)
@@ -171,8 +218,11 @@ def create_schedule(
             timezone=body.timezone,
             normalized_brief=body.normalized_brief,
             source_instruction=body.source_instruction,
+            start_date=body.start_date,
         )
     except ScheduleServiceError as exc:
+        if kind == ScheduleKind.RECURRING and str(exc) in _RECURRING_VALIDATION_CODES:
+            raise HTTPException(status_code=422, detail={"code": str(exc)})
         raise HTTPException(
             status_code=409,
             detail={"code": "create_failed", "message": str(exc)},
@@ -258,19 +308,67 @@ def cancel_schedule(
     return _schedule_to_dict(record)
 
 
+# ── renew ───────────────────────────────────────────────────────────────
+
+class ScheduleRenewBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    indefinite: bool = False
+
+
+@router.post(
+    "/schedules/{schedule_id}/renew",
+    responses={409: {"description": "Schedule cannot be renewed from its current state."}},
+)
+def renew_schedule(
+    slug: str,
+    schedule_id: str,
+    org: OrgDep,
+    request: Request,
+    body: ScheduleRenewBody = ScheduleRenewBody(),
+) -> dict:
+    """Renew a Todo review window without changing its cadence."""
+    svc = ScheduleService(org.db)
+    acting_agent = f"operator@{slug}"
+    try:
+        record = svc.renew(schedule_id, agent_name=acting_agent, indefinite=body.indefinite)
+    except ScheduleServiceError as exc:
+        raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
+    return _schedule_to_dict(record)
+
+
 # ── edit ────────────────────────────────────────────────────────────────
 
 class ScheduleEditBody(BaseModel):
     model_config = {"extra": "forbid"}
 
     fire_at: str | SkipJsonSchema[None] = Field(
-        None, description="ISO-8601 datetime for the next fire"
+        None,
+        description=(
+            "ISO-8601 datetime for the next fire. For a native recurring "
+            "recurrence/timezone edit, omit this field and the server derives "
+            "the next eligible occurrence; when supplied it must exactly match "
+            "the server-computed occurrence."
+        ),
     )
     recurrence: dict | SkipJsonSchema[None] = Field(
-        None, description="Weekly recurrence dict"
+        None,
+        description=(
+            "Weekly or native recurring rule patch. A recurring editor may set "
+            "inactive byday, bymonthday, and ordinal selectors to null; the "
+            "server removes those explicit clears after merge before validation "
+            "and persistence."
+        ),
     )
     timezone: str | SkipJsonSchema[None] = Field(
         None, description="IANA timezone string"
+    )
+    start_date: str | SkipJsonSchema[None] = Field(
+        None,
+        description=(
+            "Optional canonical YYYY-MM-DD native recurring rephase. The server "
+            "derives the first fire; supplied fire_at is assertion-only."
+        ),
     )
 
 
@@ -278,7 +376,14 @@ class ScheduleEditBody(BaseModel):
 def edit_schedule(
     slug: str, schedule_id: str, body: ScheduleEditBody, org: OrgDep, request: Request,
 ) -> dict:
-    """Edit mutable fields of a Todo (fire_at, recurrence, timezone)."""
+    """Edit mutable Todo fields.
+
+    Native recurring recurrence/timezone/start_date edits may omit ``fire_at``: the
+    server validates the merged rule and persists its own next occurrence.
+    A supplied ``fire_at`` remains a strict exact-match assertion.
+    An editor may explicitly null inactive recurrence selectors; they are
+    canonicalized away after merge before validation and persistence.
+    """
     svc = ScheduleService(org.db)
     acting_agent = f"operator@{slug}"
 
@@ -314,10 +419,14 @@ def edit_schedule(
         kwargs["recurrence"] = body.recurrence
     if body.timezone is not None:
         kwargs["timezone"] = body.timezone
+    if body.start_date is not None:
+        kwargs["start_date"] = body.start_date
 
     try:
         record = svc.edit(schedule_id, acting_agent, **kwargs)
     except ScheduleServiceError as exc:
+        if str(exc) in _RECURRING_VALIDATION_CODES:
+            raise HTTPException(status_code=422, detail={"code": str(exc)})
         raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
     return _schedule_to_dict(record)
 
@@ -447,22 +556,124 @@ async def spawn_schedule(
                 schedule_id,
                 status=ScheduleStatus.FIRED,
                 active=0,
+                end_reason="one_shot_completed",
                 spawned_task_ids=spawned_task_ids,
                 last_fired_at=now,
                 fire_count=fire_count,
                 session_id=None,
+                error=None,
                 transcript_path=str(transcript_path),
                 updated_at=now,
             )
+            org.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=agent,
+                action="schedule_fired",
+                payload={"end_reason": "one_shot_completed"},
+            )
+        elif schedule.kind == ScheduleKind.RECURRING:
+            # RECURRING has explicit ordered terminal causes.  Keep these
+            # branches separate: a date end is not a review expiry, and a
+            # defensive no-candidate fault is not either.
+            recurrence = schedule.recurrence
+            if recurrence is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={"code": "recurring_no_recurrence", "schedule_id": schedule_id},
+                )
+
+            # (a) Successful dispatch count is evaluated only after task
+            # creation and incrementing the persisted successful-fire count.
+            if recurrence.get("count") is not None and fire_count >= recurrence["count"]:
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                )
+                org.db.schedules.update(
+                    schedule_id, status=ScheduleStatus.FIRED, active=0,
+                    end_reason="count_exhausted", spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now, fire_count=fire_count, session_id=None,
+                    error=None,
+                    transcript_path=str(transcript_path), updated_at=now,
+                )
+                org.db.insert_audit_log(
+                    task_id=schedule_id, agent=agent, action="schedule_fired",
+                    payload={"end_reason": "count_exhausted"},
+                )
+            else:
+                next_fire = next_recurring_occurrence(recurrence, after=now)
+                # (b) A rule with an explicit inclusive until date ended.
+                if next_fire is None and recurrence_until_exhausted(recurrence):
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.FIRED, active=0,
+                        end_reason="date_ended", spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count, session_id=None,
+                        error=None,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_fired",
+                        payload={"end_reason": "date_ended"},
+                    )
+                # (c) Review expiry only applies when an actual next candidate exists.
+                elif (
+                    next_fire is not None and schedule.expires_at is not None
+                    and schedule.indefinite != 1 and next_fire > schedule.expires_at
+                ):
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                        status="expired",
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.EXPIRED, active=0,
+                        spawned_task_ids=spawned_task_ids, last_fired_at=now,
+                        fire_count=fire_count, transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_expired",
+                        payload={"reason": "past_expires_at"},
+                    )
+                    return_status = "expired"
+                # (d) A valid stored rule should never reach this defensive path.
+                elif next_fire is None:
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                        status="failed",
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.FAILED, active=0,
+                        error="recurrence_no_candidate", spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+                    org.db.insert_audit_log(
+                        task_id=schedule_id, agent=agent, action="schedule_failed",
+                        payload={"reason": "recurrence_no_candidate"},
+                    )
+                    return_status = "failed"
+                # (e) Continue the series.
+                else:
+                    transcript_path = _write_schedule_transcript(
+                        org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    )
+                    org.db.schedules.update(
+                        schedule_id, status=ScheduleStatus.ARMED, active=1,
+                        fire_at=next_fire, spawned_task_ids=spawned_task_ids,
+                        last_fired_at=now, fire_count=fire_count, session_id=None,
+                        error=None,
+                        transcript_path=str(transcript_path), updated_at=now,
+                    )
+
         else:
-            # Weekly: compute next occurrence, re-arm or expire.
+            # Existing WEEKLY behavior remains structurally unchanged.
             recurrence = schedule.recurrence
             if recurrence is None:
                 raise HTTPException(
                     status_code=500,
                     detail={"code": "weekly_no_recurrence", "schedule_id": schedule_id},
                 )
-
             next_fire = next_weekly_occurrence(
                 recurrence["day"],
                 recurrence["time"],
@@ -535,6 +746,7 @@ async def spawn_schedule(
                     last_fired_at=now,
                     fire_count=fire_count,
                     session_id=None,
+                    error=None,
                     transcript_path=str(transcript_path),
                     updated_at=now,
                 )

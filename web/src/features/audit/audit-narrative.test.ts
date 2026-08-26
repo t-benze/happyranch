@@ -58,6 +58,16 @@ const KNOWN_ACTIONS: string[] = [
   'thread_archived',
   'thread_resumed',
   'thread_invocation_failed',
+  'thread_renamed',
+  'thread_pinned',
+  'thread_unpinned',
+  'thread_mention_routing_changed',
+  'thread_reply_wake_created',
+  'thread_reply_wake_coalesced',
+  'thread_reply_wake_claimed',
+  'thread_reply_wake_settled',
+  'thread_reply_wake_cancelled',
+  'thread_reply_wake_recovered',
   'job_submitted',
   'job_rejected',
   'job_run_started',
@@ -290,5 +300,170 @@ describe('describeAuditEntry — headline narratives', () => {
     );
     expect(narrativeText(n)).toBe('scheduler completed a dream.');
     expect(n.detail).toBe('3 learnings · 2 KB candidates');
+  });
+});
+
+describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
+  it('thread_reply_wake_created', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_created',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'dev_agent',
+          from_seq: 2,
+          through_seq: 4,
+          token_prefix: 'abc12345',
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent queued a reply wake in THR-9.');
+    expect(n.detail).toBe('messages 2–4');
+    expect(n.segments).toContainEqual({
+      kind: 'ref',
+      ref: { type: 'thread', id: 'THR-9', label: 'THR-9' },
+    });
+  });
+
+  it('thread_reply_wake_coalesced', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_coalesced',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: { agent_name: 'dev_agent', from_seq: 2, through_seq: 5 },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent coalesced a reply wake in THR-9.');
+    expect(n.detail).toBe('messages 2–5');
+  });
+
+  it('thread_reply_wake_claimed', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_claimed',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'dev_agent',
+          from_seq: 1,
+          through_seq: 3,
+          token_prefix: 'abc12345',
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent claimed a reply wake in THR-9.');
+    expect(n.detail).toBe('messages 1–3');
+  });
+
+  it('thread_reply_wake_settled with follow-on', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_settled',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'dev_agent',
+          outcome: 'reply',
+          acknowledged_through_seq: 3,
+          required_through_seq: 4,
+          retry_required: false,
+          follow_on_token_prefix: 'def45678',
+          decline_reason: null,
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent settled a reply wake in THR-9.');
+    expect(n.detail).toBe('reply · acknowledged through 3 · required through 4 · follow-on minted');
+  });
+
+  it('thread_reply_wake_settled failure surfaces retry required', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_settled',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'dev_agent',
+          outcome: 'failed',
+          acknowledged_through_seq: 1,
+          required_through_seq: 4,
+          retry_required: true,
+          follow_on_token_prefix: null,
+          decline_reason: 'timeout',
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent settled a reply wake in THR-9.');
+    expect(n.detail).toBe('failed · acknowledged through 1 · required through 4 · retry required');
+  });
+
+  it('thread_reply_wake_cancelled', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_cancelled',
+        agent: 'qa_engineer',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'qa_engineer',
+          boundary_seq: 4,
+          reason: 'founder_aborted',
+          swept_count: 2,
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('qa_engineer cancelled a reply wake in THR-9.');
+    expect(n.detail).toBe('founder_aborted · discarded through 4 · 2 receipt(s) retired');
+  });
+
+  it('thread_reply_wake_recovered', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_recovered',
+        agent: 'dev_agent',
+        task_id: 'THR-9',
+        payload: {
+          agent_name: 'dev_agent',
+          kind: 'replacement_queued',
+          from_seq: 1,
+          through_seq: 3,
+          token_prefix: 'abc12345',
+        },
+      }),
+    );
+    expect(narrativeText(n)).toBe('dev_agent recovered a reply wake in THR-9.');
+    expect(n.detail).toBe('replacement_queued · messages 1–3');
+  });
+});
+
+describe('thread mention routing (THR-198 Slice B)', () => {
+  it('thread_mention_routing_changed carries the new state in detail', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_mention_routing_changed',
+        agent: 'founder',
+        task_id: 'THR-9',
+        payload: { mention_routing_enabled: false },
+      }),
+    );
+    expect(narrativeText(n)).toBe('founder changed mention routing on THR-9.');
+    expect(n.detail).toBe('disabled');
+    expect(n.segments).toContainEqual({
+      kind: 'ref',
+      ref: { type: 'thread', id: 'THR-9', label: 'THR-9' },
+    });
+  });
+
+  it('thread_mention_routing_changed enabled detail', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_mention_routing_changed',
+        agent: 'founder',
+        task_id: 'THR-9',
+        payload: { mention_routing_enabled: true },
+      }),
+    );
+    expect(n.detail).toBe('enabled');
   });
 });

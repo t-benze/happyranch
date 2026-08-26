@@ -53,6 +53,14 @@ Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
 Then single-line:
 happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
+`body_markdown` renders as Markdown. Use **actual newline characters** and
+valid Markdown (blank lines, list items, hard breaks) for visual line breaks —
+never a literal `\n` (backslash-n) two-character sequence as a line-break
+substitute; that renders as the text `\n`, not a line break. In the JSON
+payload file, `\n` escapes inside a string are transport encoding only: they
+decode to real newlines. The decoded `body_markdown` value must contain real
+newlines, never literal backslash-n text.
+
 Reply when:
 - You have material to add that others haven't covered (correction, missing
   context, substantive input). See the invocation prompt's "Decline-by-Default"
@@ -131,6 +139,8 @@ Decline when:
 - Another participant has already covered what you'd say — restating wastes
   founder attention.
 - You don't have relevant expertise on the topic.
+- You already answered the request in a later message of your own — this
+  wake re-delivers something you've covered; nothing further is owed.
 - See the invocation prompt's "Decline-by-Default" section for the full rule.
 
 Keep the reason short and substantive ("payment_agt covered the constraint",
@@ -210,10 +220,12 @@ knows), decline.
 
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
-reason) and the prompt-header asks you to restate the ask in-thread. In that turn:
-state concisely what you need from the founder and why — do NOT try to resolve the
-escalation yourself, and do NOT dispatch a new task. Decline if the Feishu escalation
-already covers it and a thread restatement adds nothing.
+reason). First evaluate the existing THR-166 policy against the server-recorded causal
+terminal result; if it is eligible, submit the structured continuation request.
+Otherwise post the precise founder decision needed. Do not dispatch repair work from
+this turn. Acceptance only resumes this SAME root's ordinary lifecycle, which must
+delegate repair, review, and reverify before returning to the original protected gate;
+this follow-up never authorizes that gate.
 
 **What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
 dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a
@@ -328,7 +340,14 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
   invocation. One terminal outcome per turn. Dispatch is the only non-terminal
   extra.
-- Do NOT parse `@text` in message bodies as routing. Every message broadcasts
-  to all participants; body @-mentions are visual only.
+- Do NOT treat `@text` in message bodies as a routing *instruction to yourself*
+  beyond the server's decision: the daemon routes every message at write time
+  (Phase-2 mention routing, THR-198) — with the thread's mention-routing
+  setting enabled (default), a body that mentions one or more valid current
+  participants wakes exactly that set (minus the speaker); with the setting
+  disabled, or zero valid participant mentions (none, `@founder`/typos,
+  self-only), every participant minus the speaker is woken. You only ever
+  receive a wake the daemon selected; @-mentions in bodies are no longer
+  purely visual. TASK_FOLLOWUP and BOOTSTRAP wakes are never mention-routed.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.

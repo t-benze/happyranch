@@ -17,12 +17,15 @@ from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot
 from runtime.daemon.schedule_queue import ScheduleJob
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleStatus
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import (
+    next_schedule_occurrence,
+    recurrence_until_exhausted,
+)
 
 logger = logging.getLogger(__name__)
 
 
-_WEEKLY_STALE_TOLERANCE = timedelta(seconds=120)
+_RECURRENCE_STALE_TOLERANCE = timedelta(seconds=120)
 
 
 def schedule_due_schedules(
@@ -69,37 +72,27 @@ def schedule_due_schedules(
     for record in due_records:
         # Weekly no-replay/backfill: if fire_at is stale (missed during
         # daemon downtime), advance to the next occurrence without firing.
-        if record.kind == ScheduleKind.WEEKLY and record.fire_at < now - _WEEKLY_STALE_TOLERANCE:
+        if (
+            record.kind in (ScheduleKind.WEEKLY, ScheduleKind.RECURRING)
+            and record.fire_at < now - _RECURRENCE_STALE_TOLERANCE
+        ):
             recurrence = record.recurrence
-            if recurrence is not None:
-                next_fire = next_weekly_occurrence(
-                    recurrence["day"], recurrence["time"], recurrence["tz"],
-                    after=now,
+            next_fire = next_schedule_occurrence(record.kind.value, recurrence, after=now)
+            if next_fire is None and recurrence_until_exhausted(recurrence):
+                store.update(
+                    record.id, status=ScheduleStatus.FIRED, active=0,
+                    end_reason="date_ended",
                 )
-                if next_fire is None or (
-                    record.expires_at is not None
-                    and record.indefinite != 1
-                    and next_fire > record.expires_at
-                ):
-                    org.db.insert_audit_log(
-                        task_id=record.id,
-                        agent=record.agent_name,
-                        action="schedule_expired",
-                        payload={"kind": record.kind.value},
-                    )
-                    store.update(
-                        record.id,
-                        status=ScheduleStatus.EXPIRED,
-                        active=0,
-                    )
-                else:
-                    store.update(
-                        record.id,
-                        fire_at=next_fire,
-                        status=ScheduleStatus.ARMED,
-                        active=1,
-                    )
-            else:
+                org.db.insert_audit_log(
+                    task_id=record.id, agent=record.agent_name,
+                    action="schedule_fired", payload={"end_reason": "date_ended"},
+                )
+            elif (
+                next_fire is not None
+                and record.expires_at is not None
+                and record.indefinite != 1
+                and next_fire > record.expires_at
+            ):
                 org.db.insert_audit_log(
                     task_id=record.id,
                     agent=record.agent_name,
@@ -111,18 +104,41 @@ def schedule_due_schedules(
                     status=ScheduleStatus.EXPIRED,
                     active=0,
                 )
+            elif next_fire is None:
+                store.update(
+                    record.id, status=ScheduleStatus.FAILED, active=0,
+                    error="recurrence_no_candidate",
+                )
+                org.db.insert_audit_log(
+                    task_id=record.id, agent=record.agent_name,
+                    action="schedule_failed", payload={"reason": "recurrence_no_candidate"},
+                )
+            else:
+                store.update(
+                    record.id, fire_at=next_fire, status=ScheduleStatus.ARMED, active=1,
+                )
+                org.db.insert_audit_log(
+                    task_id=record.id, agent=record.agent_name,
+                    action="occurrence_missed", payload={"kind": record.kind.value},
+                )
             continue
 
-        # Claim the row: armed → firing. If the update fails (row already
-        # claimed by a concurrent tick), skip it. The list_due query only
-        # returns armed rows, so a race would mean it's no longer armed.
+        # Claim the row: armed → firing. A concurrent winner changes the
+        # status first, so this caller skips the row without side effects.
         try:
-            store.update(record.id, status=ScheduleStatus.FIRING)
+            if not store.claim_firing(record.id):
+                continue
         except Exception:
             logger.exception(
                 "schedule_due_schedules: failed to claim %s", record.id,
             )
             continue
+        org.db.insert_audit_log(
+            task_id=record.id,
+            agent=record.agent_name,
+            action="schedule_claimed",
+            payload={"kind": record.kind.value, "fire_at": record.fire_at.isoformat()},
+        )
 
         # Enqueue for the runner/worker loop.
         try:

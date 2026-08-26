@@ -1,3 +1,5 @@
+import json
+from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -749,22 +751,62 @@ def test_cmd_learning_unknown_session_friendly_message(capsys):
     assert "dev_agent" in out
 
 
-def test_cmd_init_agent_surfaces_error_detail(capsys):
-    """Daemon-emitted error frames must show the `detail` so users see what broke."""
+def test_cmd_init_agent_surfaces_error_detail_and_exits_nonzero(capsys):
+    """Daemon-emitted error frames must show the `detail` so users see what broke,
+    and the stream ending without all_done must exit nonzero (GH-709 Slice C:
+    init-agent never reports success when a per-agent error occurred)."""
     from cli.main import cmd_init_agent
 
     fake = MagicMock()
     fake.stream.return_value = iter([
         '{"agent": "dev_agent", "phase": "starting"}',
-        '{"agent": "dev_agent", "phase": "error", "detail": "repo clone failed: fatal"}',
+        '{"agent": "dev_agent", "phase": "error", "detail": "readiness marker missing"}',
+    ])
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, agent="dev_agent")
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_init_agent(args)
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "[dev_agent] starting" in out
+    assert "[dev_agent] error: readiness marker missing" in out
+
+
+def test_cmd_init_agent_success_prints_done(capsys):
+    """A stream that reaches all_done prints Done. and exits 0 (no SystemExit)."""
+    from cli.main import cmd_init_agent
+
+    fake = MagicMock()
+    fake.stream.return_value = iter([
+        '{"agent": "dev_agent", "phase": "starting"}',
+        '{"agent": "dev_agent", "phase": "done"}',
+        '{"phase": "all_done"}',
     ])
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent="dev_agent")
         cmd_init_agent(args)
-    out = capsys.readouterr().out
-    assert "[dev_agent] starting" in out
-    assert "[dev_agent] error: repo clone failed: fatal" in out
+    assert "Done." in capsys.readouterr().out
+
+
+def test_cmd_init_agent_stream_end_without_all_done_exits_nonzero(capsys):
+    """GH-709 Slice C: if the SSE stream ends without all_done (per-agent error
+    or abrupt close), the CLI must not report success — exit nonzero."""
+    from cli.main import cmd_init_agent
+
+    fake = MagicMock()
+    fake.stream.return_value = iter([
+        '{"agent": "dev_agent", "phase": "starting"}',
+    ])
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, agent="dev_agent")
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_init_agent(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "did not complete" in captured.err
 
 
 def test_audit_subcommand_defaults():
@@ -2430,6 +2472,49 @@ def test_todos_cancel_parses_to_cmd_schedules_cancel():
     assert args.func is cmd_schedules_cancel
 
 
+def test_todos_renew_parses_to_cmd_schedules_renew():
+    from cli.commands.schedules import cmd_schedules_renew
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "renew", "SCHEDULE-001", "--indefinite"])
+    assert args.command == "todos"
+    assert args.todos_command == "renew"
+    assert args.schedule_id == "SCHEDULE-001"
+    assert args.indefinite is True
+    assert args.func is cmd_schedules_renew
+
+
+def test_recurring_display_and_needs_attention():
+    from cli.commands.schedules import _recurring_display, _needs_attention
+
+    assert _recurring_display({
+        "freq": "WEEKLY", "interval": 2, "byday": ["MO", "WE"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 10,
+    }) == "every 2 weeks on Mon, Wed · 09:00 Asia/Shanghai · ends after 10"
+    assert _needs_attention({"kind": "recurring", "status": "armed", "error": "timed_out"})
+    assert not _needs_attention({"kind": "recurring", "status": "armed", "error": None})
+
+
+def test_cmd_schedules_renew_posts_indefinite_body(capsys):
+    from cli.commands.schedules import cmd_schedules_renew
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"schedule_id": "SCHEDULE-001", "indefinite": 1, "status": "paused"}
+    client = MagicMock()
+    client.post.return_value = response
+    args = MagicMock(indefinite=True, schedule_id="SCHEDULE-001")
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        cmd_schedules_renew(args)
+
+    client.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001/renew",
+        json={"indefinite": True},
+    )
+    assert "indefinite" in capsys.readouterr().out
+
+
 def test_todos_edit_parses_to_cmd_schedules_edit():
     """happyranch todos edit still parses."""
     from cli.commands.schedules import cmd_schedules_edit
@@ -2442,6 +2527,67 @@ def test_todos_edit_parses_to_cmd_schedules_edit():
     assert args.command == "todos"
     assert args.todos_command == "edit"
     assert args.func is cmd_schedules_edit
+
+
+def test_cmd_schedules_edit_patches_payload_and_prints_response(tmp_path, capsys):
+    from cli.commands.schedules import cmd_schedules_edit
+
+    payload = {"fire_at": "2026-08-16T09:00:00+08:00"}
+    payload_path = tmp_path / "edit.json"
+    payload_path.write_text(json.dumps(payload))
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"schedule_id": "SCHEDULE-001", "status": "armed"}
+    client = MagicMock()
+    client.patch.return_value = response
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        cmd_schedules_edit(Namespace(schedule_id="SCHEDULE-001", from_file=str(payload_path)))
+
+    client.patch.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001", json=payload,
+    )
+    assert capsys.readouterr().out == "ok: SCHEDULE-001 edited (status=armed)\n"
+
+
+def test_cmd_schedules_edit_preserves_ok_error_handling(tmp_path, capsys):
+    from cli.commands.schedules import cmd_schedules_edit
+
+    payload_path = tmp_path / "edit.json"
+    payload_path.write_text(json.dumps({"timezone": "Asia/Shanghai"}))
+    response = MagicMock(status_code=409, text="conflict")
+    response.json.return_value = {"detail": {"code": "no_active_runtime"}}
+    client = MagicMock()
+    client.patch.return_value = response
+
+    with patch("cli.commands.schedules._client_and_org", return_value=(client, "alpha")):
+        with pytest.raises(SystemExit):
+            cmd_schedules_edit(Namespace(schedule_id="SCHEDULE-001", from_file=str(payload_path)))
+
+    client.patch.assert_called_once_with(
+        "/api/v1/orgs/alpha/schedules/SCHEDULE-001",
+        json={"timezone": "Asia/Shanghai"},
+    )
+    assert "No active runtime" in capsys.readouterr().out
+
+
+def test_opc_client_patch_delegates_to_authenticated_http_client():
+    from cli.client.client import OpcClient
+
+    with patch("cli.client.client.httpx.Client") as http_client_cls:
+        internal_client = http_client_cls.return_value
+        response = MagicMock()
+        internal_client.patch.return_value = response
+        client = OpcClient(base_url="http://daemon", token="secret")
+
+        assert client.patch("/path", json={"key": "value"}) is response
+
+    http_client_cls.assert_called_once_with(
+        base_url="http://daemon",
+        headers={"Authorization": "Bearer secret", "X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    )
+    internal_client.patch.assert_called_once_with("/path", json={"key": "value"})
 
 
 def test_schedules_spawn_not_under_todos():
@@ -2489,6 +2635,67 @@ def test_schedules_create_parses_to_cmd_schedules_create():
     assert args.org == "test-org"
     assert args.from_file == "/tmp/create.json"
     assert args.func is cmd_schedules_create
+
+
+def test_schedules_create_forwards_recurring_from_file_payload_unchanged(tmp_path):
+    """The agent callback passes the documented recurring rule to its route seam."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    recurrence = {
+        "freq": "WEEKLY", "interval": 2, "byday": ["TU", "TH"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+    }
+    payload = {
+        "task_id": "TASK-4317", "session_id": "sess-abc123", "agent": "dev_agent",
+        "source_instruction": "Send the report every other Tuesday and Thursday.",
+        "normalized_brief": "Send the project report to the founder.",
+        "kind": "recurring", "fire_at": "2026-08-18T01:00:00+00:00",
+        "recurrence": recurrence, "timezone": "Asia/Shanghai",
+    }
+    payload_path = tmp_path / "recurring.json"
+    payload_path.write_text(json.dumps(payload))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {
+        "schedule_id": "SCHEDULE-001", "kind": "recurring", "status": "armed",
+        "agent_name": "dev_agent",
+    }
+
+    with patch("cli.commands.schedules.OpcClient.from_env", return_value=client):
+        cmd_schedules_create(Namespace(org="alpha", from_file=str(payload_path)))
+
+    client.post.assert_called_once_with("/api/v1/orgs/alpha/schedules", json=payload)
+
+
+def test_schedules_create_forwards_start_date_recurring_payload_unchanged(tmp_path):
+    """The start-date form leaves daemon-owned fire_at absent at the CLI seam."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    payload = {
+        "task_id": "TASK-5190", "session_id": "sess-abc123", "agent": "dev_agent",
+        "source_instruction": "Send the monthly report on the second Monday.",
+        "normalized_brief": "Send the monthly report to the founder.",
+        "kind": "recurring", "start_date": "2026-09-14",
+        "recurrence": {
+            "freq": "MONTHLY", "interval": 1, "ordinal": "second", "byday": ["MO"],
+            "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+        },
+        "timezone": "Asia/Shanghai",
+    }
+    payload_path = tmp_path / "recurring-start-date.json"
+    payload_path.write_text(json.dumps(payload))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {
+        "schedule_id": "SCHEDULE-001", "kind": "recurring", "status": "armed",
+        "agent_name": "dev_agent",
+    }
+
+    with patch("cli.commands.schedules.OpcClient.from_env", return_value=client):
+        cmd_schedules_create(Namespace(org="alpha", from_file=str(payload_path)))
+
+    assert "fire_at" not in payload
+    client.post.assert_called_once_with("/api/v1/orgs/alpha/schedules", json=payload)
 
 
 def test_schedules_create_not_under_todos():
@@ -2630,3 +2837,188 @@ def test_attach_upload_sends_multipart(capsys):
         assert "storage_key: mockup_png-abc123" in out
     finally:
         Path(fixture_path).unlink(missing_ok=True)
+
+
+# ── TASK-5522: derived work-status summary in `happyranch details` ──────────
+#
+# The summary must be human-readable, must distinguish heartbeat/liveness
+# from actual agent-written updates, and must never claim a substantive
+# update where only a heartbeat was observed.
+
+
+def _details_output(client, capsys, *, task_id="T-1"):
+    """Run cmd_details against a stubbed client and return captured stdout."""
+    from cli.main import cmd_details
+    with patch("cli.main.OpcClient.from_env", return_value=client), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_details(Namespace(org=None, task_id=task_id, full=False))
+    return capsys.readouterr().out
+
+
+def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    base_task = {
+        "task_id": "T-1", "team": "engineering", "status": "in_progress",
+        "assigned_agent": "dev_agent", "brief": "b",
+        "created_at": "2026-08-23T10:00:00+00:00",
+        "updated_at": "2026-08-23T10:00:00+00:00",
+        "last_heartbeat": "2026-08-23T10:29:00+00:00",
+    }
+    base_task.update(task or {})
+    response.json.return_value = {
+        "task": base_task, "results": [], "audit_log": [],
+        "work_status": ws,
+    }
+    client.get.return_value = response
+    return client
+
+
+def test_cmd_details_shows_newly_started_with_no_update(capsys):
+    """(a) newly-started: start + fresh heartbeat, no receipt yet — the CLI
+    must say 'No substantive update recorded', never imply one."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "newly_started",
+        "label": "Newly started — awaiting first update",
+        "reason": None,
+        "session_start_ts": "2026-08-23T10:05:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    assert "Work status: Newly started — awaiting first update" in out
+    assert "Start:      " in out and "2026-08-23" in out
+    assert "Heartbeat:" in out and "(fresh)" in out
+    assert "No substantive update recorded" in out
+
+
+def test_cmd_details_shows_recent_progress_message(capsys):
+    """(b) recent progress: time + concise agent-written content."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "recent_progress",
+        "label": "Recent update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T10:05:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": {
+            "timestamp": "2026-08-23T10:28:30+00:00",
+            "message": "Phase 3 of 6: tests passing",
+            "agent": "dev_agent",
+        },
+    })
+    out = _details_output(client, capsys)
+    assert "Work status: Recent update recorded" in out
+    assert "Phase 3 of 6: tests passing" in out
+    assert "Update:" in out
+
+
+def test_cmd_details_stale_but_alive_no_receipt(capsys):
+    """(c) stale-but-alive without any receipt: explicit actionable label."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_no_receipt",
+        "label": "Stale-but-alive — no substantive update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    assert "Stale-but-alive — no substantive update recorded" in out
+    assert "No substantive update recorded" in out
+
+
+def test_cmd_details_stale_but_alive_old_receipt(capsys):
+    """(d) stale-but-alive with an old receipt: shows the old content + label."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_old_receipt",
+        "label": "Stale-but-alive — last update older than 5 minutes",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": {
+            "timestamp": "2026-08-23T10:00:00+00:00",
+            "message": "old milestone",
+            "agent": "dev_agent",
+        },
+    })
+    out = _details_output(client, capsys)
+    assert "Stale-but-alive — last update older than 5 minutes" in out
+    assert "old milestone" in out
+
+
+def test_cmd_details_heartbeat_never_renders_as_progress(capsys):
+    """Honesty fence: a fresh heartbeat with NO progress receipt must produce
+    the explicit no-substantive-update line — never an 'Update' line built
+    from the heartbeat."""
+    client = _stub_detail_response({
+        "applicable": True,
+        "state": "stale_no_receipt",
+        "label": "Stale-but-alive — no substantive update recorded",
+        "reason": None,
+        "session_start_ts": "2026-08-23T09:40:00+00:00",
+        "heartbeat": {"timestamp": "2026-08-23T10:29:00+00:00", "freshness": "fresh"},
+        "latest_progress": None,
+    })
+    out = _details_output(client, capsys)
+    # The heartbeat IS shown as liveness…
+    assert "Heartbeat:" in out
+    # …and the Update line is the explicit observed truth — never a message
+    # invented from the heartbeat.
+    assert "Update:     No substantive update recorded" in out
+    assert "Phase" not in out
+    # Line-separation honesty fence (timezone-independent): the heartbeat's
+    # own timestamp/freshness may appear on the Heartbeat line, while the
+    # Update line must be the explicit no-substantive-update truth and must
+    # never reuse heartbeat content as progress.
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    hb_line = next(ln for ln in lines if ln.startswith("Heartbeat:"))
+    assert "(fresh)" in hb_line  # heartbeat line carries its own freshness
+    update_line = next(ln for ln in lines if ln.startswith("Update:"))
+    assert update_line == "Update:     No substantive update recorded", update_line
+    assert not any(c.isdigit() for c in update_line)  # no hb timestamp as progress
+
+
+def test_cmd_details_terminal_shows_not_applicable_without_liveness(capsys):
+    """Terminal task: explicit not-applicable; no heartbeat implying liveness."""
+    client = _stub_detail_response({
+        "applicable": False,
+        "state": "not_applicable",
+        "label": "Not applicable",
+        "reason": "terminal",
+        "session_start_ts": None,
+        "heartbeat": {"timestamp": None, "freshness": "unavailable"},
+        "latest_progress": None,
+    }, task={"status": "completed", "last_heartbeat": None})
+    out = _details_output(client, capsys)
+    assert "Work status: Not applicable" in out
+    assert "Reason:     terminal" in out
+    assert "Heartbeat:" not in out
+    assert "No substantive update recorded" not in out
+
+
+def test_cmd_details_legacy_daemon_falls_back_to_heartbeat_line(capsys):
+    """Old daemon/test fixture without work_status: legacy heartbeat line
+    still renders for in_progress tasks (no regression)."""
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "task": {
+            "task_id": "T-1", "team": "engineering", "status": "in_progress",
+            "assigned_agent": "dev_agent", "brief": "b",
+            "created_at": "2026-08-23T10:00:00+00:00",
+            "updated_at": "2026-08-23T10:00:00+00:00",
+            "last_heartbeat": "2026-08-23T10:29:00+00:00",
+        },
+        "results": [],
+        "audit_log": [],
+    }
+    client.get.return_value = response
+    out = _details_output(client, capsys)
+    assert "Heartbeat:" in out
+    assert "Work status:" not in out

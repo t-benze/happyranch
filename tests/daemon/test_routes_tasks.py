@@ -1287,6 +1287,9 @@ def test_resolve_escalation_continue_resumes_task(client_with_runtime):
     # Self re-enqueued so the manager picks it up next; queue carries
     # (slug, task_id) tuples in the multi-org layout.
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-1", None)
+    audit = state.db.get_audit_logs("T-1")[-1]
+    assert audit["action"] == "escalation_resolved"
+    assert audit["payload"]["resolution_path"] == "manual_break_glass"
 
 
 def test_resolve_escalation_continue_target_is_root(client_with_runtime):

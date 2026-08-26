@@ -139,7 +139,7 @@ describe('skills-detail — rollup + edit route', () => {
     });
   });
 
-  test('editRoutePath targets the Slice-4 edit screen', () => {
-    expect(editRoutePath('alpha', 'sk-x')).toBe('/orgs/alpha/skills/sk-x/edit');
+  test('editRoutePath targets the B2 custom-skill edit surface', () => {
+    expect(editRoutePath('alpha', 'sk-x')).toBe('/orgs/alpha/skills/custom/sk-x');
   });
 });

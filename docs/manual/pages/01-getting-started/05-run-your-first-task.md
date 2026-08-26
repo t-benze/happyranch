@@ -57,6 +57,14 @@ Web:
 Tasks show execution status and results. Threads show conversation and
 coordination.
 
+`happyranch details TASK-001` (and the Tasks task-detail page's **Execution
+status** card) summarize observed work activity: the current-session start
+time, the last heartbeat with an explicit freshness label, and the latest
+agent-written progress update when one exists. A live task with no
+substantive update is called out explicitly (e.g. `Stale-but-alive — no
+substantive update recorded`) rather than implying progress from heartbeats,
+so a task whose session is alive but silent is immediately visible.
+
 ## What Happens Behind the Scenes
 
 1. The daemon creates the task.

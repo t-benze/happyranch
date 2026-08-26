@@ -80,12 +80,67 @@ happyranch assistant
 `happyranch assistant init` and `happyranch assistant register` manage the
 assistant. It does not take `--org`.
 
+### Task work-status summary (TASK-5522)
+
+`happyranch details <task_id>` prints a compact **Work status** block derived
+server-side from the task record + audit rows (`runtime/daemon/work_status.py`)
+and served on the existing task-detail envelope — no extra endpoint:
+
+```
+Work status: Stale-but-alive — no substantive update recorded
+  Start:      2026-08-23 21:06:02
+  Heartbeat:  2026-08-23 21:39:30 (fresh)
+  Update:     No substantive update recorded
+```
+
+- The **Start** line is the current-session `session_start` audit timestamp
+  (latest assigned-agent session; a prior session's receipts never count).
+- The **Heartbeat** line is the last heartbeat with an explicit freshness
+  suffix using the existing 60-second semantics (`fresh`/`stale`/
+  `unavailable`) — it never claims execution progress.
+- The **Update** line comes ONLY from a real `progress` audit receipt
+  (timestamp + concise agent-written milestone). When none is in scope it
+  prints the explicit `No substantive update recorded`; a live session whose
+  start or last receipt is ≥ 5 minutes old renders `Stale-but-alive …`
+  (policy `STALE_PROGRESS_AFTER_SECONDS = 300`).
+- Terminal / pending / escalated / parked-on-block tasks print `Not
+  applicable` with a reason — never an implied live agent.
+
+The full audit log (including inline `progress` messages) is unchanged.
+
 The founder-facing web surface is the **A-mode Cmd-K dock** (structured chat
 docked in the AppShell, toggled via the TopBar / Cmd-K shortcut). Assistant
 configuration (status / init / register / repair) is served over four HTTP routes
 (in `INCLUDED_PATHS` with TS mirrors in `web/src/lib/api/assistant.ts`).
 There is no standalone `/assistant` web page, no xterm terminal, and no
 "Open full session" escape hatch — the dock is the sole assistant surface.
+
+### Org portability (Slice A)
+
+CLI-only, relocation-only safety surfaces (no UI / TS client / browser
+contract). Slice A is preflight + reconciliation only — it creates no archive
+and performs no export/import.
+
+```bash
+# Read-only: classify every direct org-root child + report quiescence blockers
+happyranch orgs portability-preflight <slug>
+
+# Founder/master-bearer-only: reconcile exactly one confirmed zombie
+happyranch orgs reconcile-portability <slug> --from-file /tmp/reconcile.json
+```
+
+`reconcile-portability` request JSON names one candidate plus evidence and a
+disposition (`cancel` or `consume_result`):
+
+```json
+{"candidate_task_id": "TASK-123", "disposition": "cancel", "evidence": {"reason": "dead pid + stale heartbeat"}}
+```
+
+The `--from-file` path must be absolute. See `docs/agent-guides/features-and-invariants.md`
+(Org Portability) and `protocol/05c-orchestrator.md` (Organization portability)
+for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
+reporting, the conservative schedule policy (any armed or firing schedule
+refuses, with existing-control remedies only), and reconciliation limits.
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
@@ -108,6 +163,14 @@ python -m runtime.daemon.pr_ci_merge \
 ```
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
+The review/QA evidence extraction follows the **Merge-evidence contract** in
+`protocol/00-completion-contract.md`: the canonical vocabulary
+`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`, NON-NULL structured
+`verdict` primary (canonical token only), serialized `null` (the durable
+recall producer's representation of legacy/no-structured rows) using the
+strict annotated prose (`Verdict: PASS — rationale`) fallback, and fail-closed
+rejection of missing/contradictory/malformed/ambiguous evidence and unusable
+non-null structured values.
 The poll job runs with `review_required=false` through the existing jobs path; agents never
 get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
 merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and

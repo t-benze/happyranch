@@ -486,12 +486,25 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             return
 
         # Validate each child's workspace exists (reuse _validate_one_leg).
+        reviewer_agents = _reviewer_agents_for(orch)
         for i, child in enumerate(decision.children):
             child_err = _validate_one_leg(
                 orch, agent=child.agent, where=f"fanout child {i + 1}",
             )
             if child_err is not None:
                 note = f"invalid fanout: {child_err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
+            # THR-175: a pipeline-carrier first leg that is a configured
+            # reviewer must declare expect_verdict=APPROVE (only when the child
+            # actually carries a downstream ``then`` chain).
+            if child.then and child.agent in reviewer_agents and child.expect_verdict is None:
+                note = f"invalid fanout: {_reviewer_omitted_expectation_error(child.agent)}"
                 _fail(orch, task_id, note=note)
                 _enqueue_parent_if_waiting(orch, task_id)
                 _maybe_post_thread_followup(
@@ -507,6 +520,15 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 )
                 if leg_err is not None:
                     note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+                if leg.agent in reviewer_agents and leg.expect_verdict is None:
+                    note = f"invalid fanout: {_reviewer_omitted_expectation_error(leg.agent)}"
                     _fail(orch, task_id, note=note)
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
@@ -815,6 +837,35 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
     )
 
 
+def _reviewer_agents_for(orch: "Orchestrator") -> frozenset[str]:
+    """The org's configured reviewer identities as a frozenset (THR-175).
+
+    Resolved from the DB-backed ``reviewer_agents`` org setting (code default
+    ``code_reviewer``) at the real Database seam, validated against the live
+    active-agent roster — an unknown persisted name resolves fail-closed to
+    the code default so ``code_reviewer`` is never silently demoted.
+    """
+    from runtime.orchestrator.org_config import (
+        resolve_known_agent_names,
+        resolve_org_setting_reviewer_agents,
+    )
+    return frozenset(resolve_org_setting_reviewer_agents(
+        orch._db, known_agents=resolve_known_agent_names(orch._paths),
+    ))
+
+
+def _reviewer_omitted_expectation_error(agent: str) -> str:
+    """HARD-REJECT message for a configured reviewer leg that omits
+    ``expect_verdict``.  Remediation: set ``expect_verdict: "APPROVE"`` on
+    every configured reviewer leg."""
+    return (
+        f"reviewer leg {agent!r} omits expect_verdict — HARD REJECT. "
+        f"A configured reviewer leg ({agent!r}) must declare "
+        f'expect_verdict: "APPROVE" so downstream QA/work only auto-advances '
+        f"on an explicit approval."
+    )
+
+
 def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) -> str | None:
     """Validate a single delegation leg (agent present + workspace exists).
     Returns None on success, a human-readable error string on failure.
@@ -939,14 +990,25 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     """Return a human-readable error string if the delegate decision is
     unusable, or None if it's good to spawn. Validates the first leg and
     every entry in ``decision.then`` (chain legs), returning on the first
-    failure encountered."""
+    failure encountered.
+
+    THR-175: any configured reviewer leg (first leg or a ``then`` leg) that
+    omits ``expect_verdict`` is a HARD REJECT before any child is spawned."""
+    reviewer_agents = _reviewer_agents_for(orch)
     err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
     if err is not None:
         return err
+    # A reviewer FIRST leg only matters when it gates a downstream chain
+    # (``then`` non-empty). A bare single-leg reviewer delegate (no ``then``,
+    # no ``expect_verdict``) is not a chain and is not rejected.
+    if decision.then and decision.agent in reviewer_agents and decision.expect_verdict is None:
+        return _reviewer_omitted_expectation_error(decision.agent)
     for i, leg in enumerate(decision.then or []):
         err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
         if err is not None:
             return err
+        if leg.agent in reviewer_agents and leg.expect_verdict is None:
+            return _reviewer_omitted_expectation_error(leg.agent)
     return None
 
 
@@ -1073,7 +1135,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     """
     from runtime.orchestrator.capabilities import build_capabilities_prompt
     if task.task_type != "task":
-        return ""   # leaf sub-task: per-task instruction is the brief
+        # Leaf subtask instruction is the brief, except a resumed job-block
+        # needs its outcome pointer to avoid resubmitting the same job (THR-161).
+        return _blocked_jobs_resume_header_if_applicable(orch, task.id) or ""
     from runtime.orchestrator import prompt_loader
     is_mgr = orch.teams.is_team_manager(agent)
     agents_for_prompt: list[dict] = []
@@ -1099,6 +1163,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         prior_steps=prior_steps,
         manager_name=agent,
         self_only=not is_mgr,
+        reviewer_agents=sorted(_reviewer_agents_for(orch)),
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
@@ -1622,12 +1687,18 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
-    """Emit the implicit review_verdict audit row for a delegated subtask.
+    """Emit the review_verdict audit row for a delegated subtask.
 
-    The parent task owner is the implicit reviewer of every delegated subtask:
-    a COMPLETED subtask is an "approved" delegation, a FAILED subtask is
-    "rejected". Audit rows are how the founder reviews which agents need
-    attention; they are the canonical record of delegation outcomes.
+    The parent task owner is the implicit reviewer of every delegated subtask.
+    The audit row's verdict is a DISTINCT fact from the subtask's completion
+    status: when the subtask reported an explicit structured
+    ``CompletionReport.verdict`` (APPROVE / PASS / REQUEST_CHANGES / ...), that
+    reported workflow verdict is preserved verbatim. Only when no structured
+    verdict is present do we fall back to the legacy implicit mapping
+    (COMPLETED -> "approved", FAILED -> "rejected").
+
+    Audit rows are how the founder reviews which agents need attention; they
+    are the canonical record of delegation outcomes.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -1644,10 +1715,27 @@ def _log_verdict_if_delegated(
     orch._audit.log_review_verdict(
         task_id=task_id,
         reviewer=reviewer,
-        verdict="approved" if success else "rejected",
+        verdict=_verdict_for_delegated(orch, task_id, success=success),
         feedback=task.note,
         reviewed_agent=agent,
     )
+
+
+def _verdict_for_delegated(
+    orch: "Orchestrator", task_id: str, *, success: bool,
+) -> str:
+    """Resolve the review_verdict string for a delegated subtask.
+
+    An explicit structured ``CompletionReport.verdict`` is the worker's own
+    workflow verdict and is preserved verbatim — including an explicitly blank
+    value (readers treat blank/unknown as "unknown", never as approved). Only
+    when no structured verdict is present does the caller's completion-status
+    mapping apply (``success`` -> "approved", otherwise "rejected").
+    """
+    report = orch._db.get_latest_completion_report(task_id)
+    if report is not None and report.verdict is not None:
+        return report.verdict
+    return "approved" if success else "rejected"
 
 
 def _advance_chain_for_completed_child(
@@ -1683,7 +1771,14 @@ def _advance_chain_for_completed_child(
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    action = compute_advance_action(chain=chain, report=report)
+    completed_child = orch._db.get_task(child_task_id)
+    completed_agent = completed_child.assigned_agent if completed_child is not None else None
+    action = compute_advance_action(
+        chain=chain,
+        report=report,
+        completed_agent=completed_agent,
+        reviewer_agents=_reviewer_agents_for(orch),
+    )
     if action.kind == "wake":
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
@@ -1780,21 +1875,41 @@ def _carrier_fail_on_verdict_mismatch(
         return False
     if not _is_carrier(orch, parent):
         return False
-    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.chain import ChainState, compute_advance_action
     chain = ChainState.deserialize(chain_snapshot)
-    expected = chain.current_expect_verdict()
-    if expected is None:
-        return False  # no verdict expectation → chain_complete, not a mismatch
     report = orch._db.get_latest_completion_report(child_task_id)
-    actual = report.verdict if report else None
-    if actual == expected:
-        return False  # chain_complete, not a mismatch
-    # Carrier verdict mismatch: fail the whole carrier.
-    _fail(orch, parent.id,
-           note=f"carrier verdict mismatch: expected {expected!r}, got {actual!r}")
-    # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
-    return True
+    if report is None:
+        # No report for the completed child — fail-closed only when a verdict
+        # expectation exists (pre-existing semantics).
+        expected = chain.current_expect_verdict()
+        if expected is None:
+            return False
+        _fail(
+            orch, parent.id,
+            note=f"carrier verdict mismatch: expected {expected!r}, got None",
+        )
+        # Feed carrier failure into the fan-out parent's barrier.  Returning
+        # True without these side effects strands both carrier and parent.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
+    completed_child = orch._db.get_task(child_task_id)
+    completed_agent = completed_child.assigned_agent if completed_child is not None else None
+    action = compute_advance_action(
+        chain=chain,
+        report=report,
+        completed_agent=completed_agent,
+        reviewer_agents=_reviewer_agents_for(orch),
+    )
+    # A verdict mismatch OR a THR-175 reviewer non-approve (omitted-expectation
+    # reviewer leg) must fail the whole carrier — never chain-complete it as a
+    # false success.
+    if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
+        _fail(orch, parent.id,
+               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}")
+        # Feed carrier failure into the fan-out parent's barrier.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
+    return False
 
 
 def _carrier_fail_immediate(
@@ -1853,12 +1968,12 @@ def _is_slice_retry_exhausted(
     previously COMPLETED (successful) slice must NOT escalate on its first
     failure — the ceiling only fires after a predecessor FAILED.
 
-    Derivation: follow the child's ``revisit_of_task_id`` chain.  If any
-    FAILED ancestor in that chain (excluding the child itself) has
-    ``parent_task_id == parent.id``, the child is a retry — the ancestor was
-    the original FAILED slice, and we are now looking at its 2nd failure.
-    This uses ONLY the existing ``revisit_of_task_id`` column on TaskRecord
-    (no schema migration).
+    Derivation: follow the child's ``revisit_of_task_id`` chain.  A FAILED
+    ancestor under the same parent counts toward the ceiling, but a COMPLETED
+    or SUPERSEDED ancestor retires earlier failures in that lineage (THR-183),
+    so the scan stops at the nearest COMPLETED/SUPERSEDED ancestor.  This uses
+    ONLY the existing ``revisit_of_task_id`` column on TaskRecord (no schema
+    migration).
     """
     if child.revisit_of_task_id is None:
         return False
@@ -1871,13 +1986,100 @@ def _is_slice_retry_exhausted(
     except LineageTooDeep:
         chain = []
     # Skip the first entry (the child itself); check each ancestor for
-    # same-parent membership AND FAILED status.  Only a FAILED predecessor
-    # counts toward the ceiling — a retry of a COMPLETED slice is a fresh
-    # dispatch, not an escalation trigger.
+    # same-parent membership.  A FAILED predecessor counts toward the ceiling;
+    # a COMPLETED/SUPERSEDED predecessor resets the lineage (retires earlier
+    # failures); anything else is ignored.
     for ancestor in chain[1:]:
-        if ancestor.parent_task_id == parent.id and ancestor.status == TaskStatus.FAILED:
+        if ancestor.parent_task_id != parent.id:
+            continue
+        if ancestor.status in (TaskStatus.COMPLETED, TaskStatus.SUPERSEDED):
+            return False
+        if ancestor.status == TaskStatus.FAILED:
             return True
     return False
+
+
+def _current_unresolved_failed_leaves(
+    orch: "Orchestrator",
+    failed_siblings: list["TaskRecord"],
+    parent: "TaskRecord",
+) -> list["TaskRecord"]:
+    """Return the current unresolved FAILED leaf of each logical retry lineage.
+
+    A FAILED child that has a later COMPLETED or SUPERSEDED descendant in the
+    same ``revisit_of_task_id`` lineage is retired and must not contribute to
+    ceiling evaluation.  A FAILED child with a later FAILED descendant is not
+    the leaf — the descendant is.  Only terminal FAILED leaves of non-retired
+    lineages are returned.
+    """
+    # Map every sibling by id so we can follow revisit links forward.
+    all_siblings = [
+        orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)
+    ]
+    sibling_by_id = {s.id: s for s in all_siblings if s is not None}
+
+    predecessor_to_successors: dict[str, list["TaskRecord"]] = {}
+    for s in sibling_by_id.values():
+        pred = s.revisit_of_task_id
+        if pred is not None and pred in sibling_by_id:
+            predecessor_to_successors.setdefault(pred, []).append(s)
+
+    leaves: list["TaskRecord"] = []
+    seen: set[str] = set()
+
+    def _is_retired(task_id: str, visited: set[str]) -> bool:
+        """True if any descendant in the same lineage is COMPLETED/SUPERSEDED."""
+        for succ in predecessor_to_successors.get(task_id, []):
+            if succ.id in visited:
+                continue
+            visited.add(succ.id)
+            if succ.status in (TaskStatus.COMPLETED, TaskStatus.SUPERSEDED):
+                return True
+            if _is_retired(succ.id, visited):
+                return True
+        return False
+
+    def _collect_leaf(task_id: str, visited: set[str]) -> "TaskRecord" | None:
+        """Return the terminal FAILED leaf reachable forward, if any."""
+        successors = predecessor_to_successors.get(task_id, [])
+        if not successors:
+            task = sibling_by_id.get(task_id)
+            if task is not None and task.status == TaskStatus.FAILED:
+                return task
+            return None
+        for succ in successors:
+            if succ.id in visited:
+                continue
+            visited.add(succ.id)
+            leaf = _collect_leaf(succ.id, visited)
+            if leaf is not None:
+                return leaf
+        return None
+
+    for failed in failed_siblings:
+        if failed.id in seen:
+            continue
+        if _is_retired(failed.id, {failed.id}):
+            continue
+        leaf = _collect_leaf(failed.id, {failed.id})
+        if leaf is not None and leaf.id not in seen:
+            seen.add(leaf.id)
+            leaves.append(leaf)
+    return leaves
+
+
+def _format_slice_retry_exhausted_reason(
+    orch: "Orchestrator", leaf: "TaskRecord",
+) -> str:
+    """Build an escalation reason that names the causal terminal event."""
+    results = orch._db.get_task_results(leaf.id)
+    latest = results[-1] if results else {}
+    verdict = latest.get("verdict") or "n/a"
+    return (
+        f"per-slice retry ceiling ({_SLICE_RETRY_CEILING}) exhausted: "
+        f"causal terminal event {leaf.id} status={leaf.status.value} "
+        f"verdict={verdict}: {leaf.note or '(no note)'}"
+    )
 
 
 def _enqueue_parent_if_waiting(
@@ -1900,9 +2102,11 @@ def _enqueue_parent_if_waiting(
       - a subtask FAILED and its per-slice retry ceiling is exhausted
         (this slice was already retried once — its ``revisit_of_task_id``
         ancestor is a FAILED child of this same parent) → escalate a root
-        parent to ``escalated`` via ``try_escalate``, carrying the last
-        failure reason; or, for a non-root parent, fail it and recurse
-        upward (THR-033 root-only escalation). The parent does NOT
+        parent to ``escalated`` via ``try_escalate``, using the causal
+        terminal event: the current unresolved FAILED leaf of the logical
+        retry lineage, naming its task id, terminal status, verdict, and
+        note; or, for a non-root parent, fail it and recurse upward
+        (THR-033 root-only escalation). The parent does NOT
         cascade-fail — the founder or upstream manager resolves the
         termination per existing routes. The ceiling is
         ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's
@@ -1963,12 +2167,15 @@ def _enqueue_parent_if_waiting(
                 return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Non-carrier: fall through to sibling-check + parent-wake path below.
         else:
-            # FAILED chain leg: clear the chain so the parent's next decision
-            # step doesn't see a stale chain. Carrier: fail-closed.
-            orch._db.update_task_active_chain(parent.id, None)
-            if _carrier_fail_immediate(orch, parent, task_id):
-                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-            # fall through to sibling-check + bounded-wake below.
+            # FAILED chain leg: do NOT clear active_chain here. A recovery or
+            # startup-style caller may invoke this on a historical FAILED
+            # ancestor whose retry lineage was later retired by a COMPLETED or
+            # SUPERSEDED descendant. Clearing the chain before the retired-
+            # lineage check would mutate parent state for no reason. The chain
+            # is cleared only after the sibling evaluation below proves there
+            # is a genuine unresolved failure (or a carrier fail-closed case).
+            # Carrier fail-closed is applied at that point, not here.
+            pass
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
@@ -1977,47 +2184,59 @@ def _enqueue_parent_if_waiting(
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
         # THR-078: per-slice retry ceiling (replaces old count-based
-        # _FAILURE_ROUND_BOUND).  Each failed child is checked for
-        # revisit lineage within the same parent — a child whose
-        # revisit_of_task_id ancestor lived under this parent is a
-        # retry.  If ANY child has exhausted the ceiling (_SLICE_RETRY_CEILING
-        # = 1, i.e. this is its 2nd failure), escalate.  Otherwise,
-        # wake the root owner to adjudicate (pack per-slice terminal
-        # context via _inject_fanout_join_context on fan-out parents).
+        # _FAILURE_ROUND_BOUND).  THR-183: ceiling evaluation MUST use the
+        # current unresolved FAILED leaf of each logical retry lineage, not
+        # every historical FAILED sibling.  A later COMPLETED/SUPERSEDED
+        # descendant retires earlier failures in the same lineage, so a normal
+        # parent wake initiated by a completed child cannot select a stale
+        # failed sibling.
 
-        # Per-slice ceiling check: escalate if any failed child is a retry.
-        for s in failed:
-            if _is_slice_retry_exhausted(orch, s, parent):
-                reason = (
-                    f"per-slice retry ceiling ({_SLICE_RETRY_CEILING}) exhausted: "
-                    f"slice {s.id} (revisit of {s.revisit_of_task_id}) "
-                    f"failed: {s.note or '(no note)'}"
-                )
-                if parent.active_chain is not None:
-                    orch._db.update_task_active_chain(parent.id, None)
-                if parent.active_fanout is not None:
-                    orch._db.update_task_active_fanout(parent.id, None)
-                if is_root(parent):
-                    if orch._db.try_escalate(parent.id, reason=reason):
-                        orch._audit.log_escalation(parent.id, "orchestrator", reason)
-                        _maybe_post_thread_escalation(
-                            orch, parent.id, reason=reason,
-                        )
-                else:
-                    # THR-033 Change A lock-in: a non-root parent never
-                    # escalates directly.  Fail it and recurse upward.
-                    _fail(orch, parent.id, note=reason)
-                    _enqueue_parent_if_waiting(orch, parent.id)
-                return
+        unresolved_leaves = _current_unresolved_failed_leaves(orch, failed, parent)
+        if unresolved_leaves:
+            # Genuine unresolved failure: clear active_chain now. For a carrier
+            # (its own parent has active_fanout), fail the whole carrier
+            # immediately — no partial-chain completion.
+            if parent.active_chain is not None:
+                orch._db.update_task_active_chain(parent.id, None)
+            if _is_carrier(orch, parent):
+                _carrier_fail_immediate(orch, parent, task_id)
+                return  # carrier failure feeds the fan-out parent's barrier
 
-        # No per-slice ceiling hit: clear chain, enqueue parent for a fresh
-        # manager decision step.  Do NOT cascade-fail.
-        # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
-        # it to inject structured join context (child verdict, confidence,
-        # output_dir, failure note) via _inject_fanout_join_context.  The
-        # CAS-winner clears active_fanout after injecting join context.
-        if parent.active_chain is not None:
-            orch._db.update_task_active_chain(parent.id, None)
+            # Per-slice ceiling check: escalate if any unresolved leaf has
+            # exhausted its retry ceiling.
+            for leaf in unresolved_leaves:
+                if _is_slice_retry_exhausted(orch, leaf, parent):
+                    reason = _format_slice_retry_exhausted_reason(orch, leaf)
+                    if parent.active_fanout is not None:
+                        orch._db.update_task_active_fanout(parent.id, None)
+                    if is_root(parent):
+                        if orch._db.try_escalate(parent.id, reason=reason):
+                            orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                            _maybe_post_thread_escalation(
+                                orch, parent.id, reason=reason,
+                            )
+                    else:
+                        # THR-033 Change A lock-in: a non-root parent never
+                        # escalates directly.  Fail it and recurse upward.
+                        _fail(orch, parent.id, note=reason)
+                        _enqueue_parent_if_waiting(orch, parent.id)
+                    return
+
+            # No per-slice ceiling hit: enqueue parent for a fresh manager
+            # decision step.  Do NOT cascade-fail.
+            # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
+            # it to inject structured join context (child verdict, confidence,
+            # output_dir, failure note) via _inject_fanout_join_context.  The
+            # CAS-winner clears active_fanout after injecting join context.
+            queue = getattr(orch, "_queue", None)
+            if queue is not None:
+                queue.put_nowait(orch._slug, parent.id)
+            return
+
+        # All failures are retired (lineage has a later COMPLETED/SUPERSEDED
+        # descendant). Treat this as a normal bounded parent wake: queue the
+        # parent once, leaving active_chain, active_fanout, status, block_kind,
+        # and note completely untouched. No escalation, no audit side effect.
         queue = getattr(orch, "_queue", None)
         if queue is not None:
             queue.put_nowait(orch._slug, parent.id)
@@ -2284,6 +2503,26 @@ def _maybe_post_thread_escalation(
     # `root_task_id` is the ancestor root of the escalating task. These are
     # equal for a root escalation but differ when a child escalates inside a
     # revisited chain — both are emitted for the dispatcher's downstream use.
+    # The result was persisted by the ordinary completion callback before this
+    # escalation path ran. Snapshot that exact durable row into the causal
+    # message; the continuation route re-reads and compares it, so the caller
+    # cannot substitute later repair descendants or prose as authority.
+    results = db.get_task_results(task_id)
+    latest_result = results[-1] if results else None
+    causal_terminal_result = None
+    if latest_result is not None:
+        causal_terminal_result = {
+            "task_id": task_id,
+            "result_id": latest_result["id"],
+            "terminal_status": latest_result.get("status"),
+            "verdict": latest_result.get("verdict"),
+            "output_summary": latest_result.get("output_summary"),
+            "created_at": latest_result.get("created_at"),
+        }
+    escalation_rows = [
+        row for row in db.get_audit_logs(task_id) if row["action"] == "escalation"
+    ]
+    causal_escalation_audit_id = escalation_rows[-1]["id"] if escalation_rows else None
     system_payload = {
         "kind_tag": "task_escalated",
         "task_id": task_id,
@@ -2293,6 +2532,10 @@ def _maybe_post_thread_escalation(
         "reason": reason,
         "revisit_chain_length": len(chain) if chain else 1,
     }
+    if causal_terminal_result is not None:
+        system_payload["causal_terminal_result"] = causal_terminal_result
+    if causal_escalation_audit_id is not None:
+        system_payload["causal_escalation_audit_id"] = causal_escalation_audit_id
     _append_followup_system_and_reinvoke(
         orch,
         thread_id=thread_id,

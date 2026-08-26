@@ -520,6 +520,26 @@ def test_recent_activity_extracts_verdict(db: Database) -> None:
     assert by_kind["review_verdict"].verdict == "fail"
 
 
+def test_verdict_from_payload_normalizes_spellings() -> None:
+    """review_verdict payloads normalize case/separator-insensitively at the
+    recent-activity read boundary; unknown/blank yields no tone."""
+    from runtime.orchestrator.dashboard_summary import _verdict_from_payload
+
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":"APPROVE"}') == "ok"
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":"request changes"}') == "fail"
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":"pass"}') == "ok"
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":"REVISE"}') == "fail"
+    # Blank / unknown free-string verdict → no tone (not ok, not fail).
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":""}') is None
+    assert _verdict_from_payload(
+        "review_verdict", '{"verdict":"MAYBE"}') is None
+
+
 def test_recent_activity_serializes_dream_id_for_dream_thread(db: Database) -> None:
     """ActivityRow serializes _thread_dream_id ONLY for dream-originated threads."""
     base = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -898,6 +918,7 @@ def test_active_by_team_counts_parked_delegated_parent(db: Database) -> None:
 
 from runtime.orchestrator.dashboard_summary import (
     compute_org_pulse_7d, compose_dashboard_summary,
+    normalize_review_verdict,
 )
 
 
@@ -956,6 +977,54 @@ def test_org_pulse_acceptance_pct(db: Database, mock_teams_one: _MockTeamsRegist
     assert rows[0].members == 1   # one worker (manager not counted as member)
     assert rows[0].lead == "engineering_head"
     assert len(rows[0].sparkline) == 12
+
+
+def test_org_pulse_acceptance_normalizes_verdict_spellings(
+    db: Database, mock_teams_one: _MockTeamsRegistry,
+) -> None:
+    """Approval spellings count as accepted case-/separator-insensitively;
+    non-approval and unknown verdicts never count as accepted."""
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    week_start = now - timedelta(days=7)
+    # 5 rows: APPROVE, accept, request changes, MAYBE, "" (blank) → 2 approved / 5.
+    for i, verdict in enumerate(["APPROVE", " accept ", "request changes", "MAYBE", ""]):
+        ts = week_start + timedelta(days=i)
+        tid = f"TASK-{i}"
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+            "VALUES (?, 'b', 'eng_worker', 'engineering', 'completed', ?, ?)",
+            (tid, ts.isoformat(), ts.isoformat()),
+        )
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, 'engineering_head', 'review_verdict', ?)",
+            (ts.isoformat(), tid, f'{{"verdict":"{verdict}"}}'),
+        )
+    db._conn.commit()
+    rows = compute_org_pulse_7d(db, now=now, teams=mock_teams_one)
+    assert len(rows) == 1
+    assert rows[0].acceptance_pct == 40   # 2 of 5
+
+
+@pytest.mark.parametrize("raw", [
+    "APPROVE", "approved", "approve", "ACCEPT", "accept", "OK", "ok",
+    "PASS", "pass", " approve ",
+])
+def test_normalize_review_verdict_approval_family(raw: str) -> None:
+    assert normalize_review_verdict(raw) == "approve"
+
+
+@pytest.mark.parametrize("raw", [
+    "REQUEST_CHANGES", "request changes", "request-changes", "request_changes",
+    "REVISE", "revise", "REJECT", "reject", "rejected", "FAIL", "fail",
+])
+def test_normalize_review_verdict_non_approval_family(raw: str) -> None:
+    assert normalize_review_verdict(raw) == "reject"
+
+
+@pytest.mark.parametrize("raw", [None, "", "   ", "maybe", "UNKNOWN-VERDICT"])
+def test_normalize_review_verdict_unknown(raw) -> None:
+    assert normalize_review_verdict(raw) == "unknown"
 
 
 def test_compose_returns_full_shape(

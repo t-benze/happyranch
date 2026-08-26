@@ -7,16 +7,21 @@ This is the non-route foundation.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import (
+    _RECURRING_EXPIRY_DAYS,
     default_expires_at,
+    next_recurring_occurrence,
     next_weekly_occurrence,
     validate_caps,
     validate_one_shot_horizon,
+    validate_recurring_rule,
+    validate_start_date_phase,
     validate_weekly_recurrence,
 )
 
@@ -36,8 +41,9 @@ def _now() -> datetime:
 # afterward.  Lifecycle fields, expiry/indefinite are NOT editable
 # through this service.
 _ALLOWED_EDIT_FIELDS = frozenset({
-    "fire_at", "recurrence", "timezone",
+    "fire_at", "recurrence", "timezone", "start_date",
 })
+_RECURRENCE_SELECTOR_FIELDS = frozenset({"byday", "bymonthday", "ordinal"})
 
 
 class ScheduleService:
@@ -59,11 +65,12 @@ class ScheduleService:
         agent_name: str,
         team: str,
         kind: ScheduleKind,
-        fire_at: datetime,
+        fire_at: datetime | None,
         recurrence: dict | None,
         timezone: str,
         normalized_brief: str,
         source_instruction: str,
+        start_date: str | None = None,
         indefinite: bool = False,
     ) -> ScheduleRecord:
         """Validate the request against the v1 envelope, persist, and audit.
@@ -122,10 +129,44 @@ class ScheduleService:
                     f"{recurrence['tz']!r} for weekly schedules"
                 )
             timezone = recurrence["tz"]
+        elif kind == ScheduleKind.RECURRING:
+            err = validate_recurring_rule(recurrence, context="create", now=_now())
+            if err:
+                raise ScheduleServiceError(err.code)
+            now = _now()
+            if start_date is not None:
+                normalized_start, expected = validate_start_date_phase(
+                    recurrence, start_date, now=now,
+                )
+                if expected is None:
+                    raise ScheduleServiceError(normalized_start)
+                recurrence = {**recurrence, "anchor_date": normalized_start}
+            else:
+                candidate_rule = dict(recurrence)
+                candidate_rule["anchor_date"] = now.astimezone(ZoneInfo(recurrence["tz"])).date().isoformat()
+                expected = next_recurring_occurrence(candidate_rule, after=now)
+                if expected is not None:
+                    recurrence = dict(recurrence)
+                    recurrence["anchor_date"] = expected.astimezone(ZoneInfo(recurrence["tz"])).date().isoformat()
+            if expected is None:
+                raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            if fire_at is None and start_date is None:
+                raise ScheduleServiceError("fire_at is required unless recurring start_date is supplied")
+            if fire_at is not None and fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next recurring occurrence; "
+                    f"expected {expected.isoformat()}, got {fire_at.isoformat()}"
+                )
+            if timezone and timezone != recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {timezone!r} must match recurrence tz "
+                    f"{recurrence['tz']!r} for recurring schedules"
+                )
+            timezone = recurrence["tz"]
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {kind.value}. "
-                "v1 supports one_shot and weekly only."
+                "supports one_shot, weekly, and recurring schedules."
             )
 
         # --- caps ---
@@ -146,7 +187,7 @@ class ScheduleService:
             agent_name=agent_name,
             team=team,
             kind=kind,
-            fire_at=fire_at,
+            fire_at=fire_at if fire_at is not None else expected,
             recurrence=recurrence,
             timezone=timezone or "UTC",
             normalized_brief=normalized_brief.strip(),
@@ -252,6 +293,49 @@ class ScheduleService:
         )
         return self._db.schedules.get(schedule_id)
 
+    # ── renew ─────────────────────────────────────────────────────────
+
+    def renew(
+        self,
+        schedule_id: str,
+        agent_name: str,
+        *,
+        indefinite: bool = False,
+    ) -> ScheduleRecord:
+        """Renew review authority for an active or paused schedule."""
+        record = self._db.schedules.get(schedule_id)
+        if record is None:
+            raise ScheduleServiceError(f"schedule {schedule_id} not found")
+        if record.status not in (ScheduleStatus.ARMED, ScheduleStatus.PAUSED):
+            raise ScheduleServiceError(
+                f"cannot renew {schedule_id}: status {record.status.value} "
+                "is not armed or paused"
+            )
+
+        before_expires_at = record.expires_at
+        fields: dict[str, object] = {"indefinite": 1} if indefinite else {
+            "expires_at": _now() + timedelta(days=_RECURRING_EXPIRY_DAYS),
+            "indefinite": 0,
+        }
+        self._db.schedules.update(schedule_id, **fields)
+        renewed = self._db.schedules.get(schedule_id)
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_renewed",
+            payload={
+                "before": {
+                    "expires_at": before_expires_at.isoformat() if before_expires_at else None,
+                },
+                "after": {
+                    "expires_at": renewed.expires_at.isoformat() if renewed.expires_at else None,
+                },
+                "indefinite": indefinite,
+                "acting_agent": agent_name,
+            },
+        )
+        return renewed
+
     # ── edit ──────────────────────────────────────────────────────────
 
     def edit(
@@ -297,6 +381,8 @@ class ScheduleService:
         fire_at = fields.get("fire_at", record.fire_at)
 
         if record.kind == ScheduleKind.ONE_SHOT:
+            if "start_date" in fields:
+                raise ScheduleServiceError("start_date is only valid for recurring schedules")
             if "recurrence" in fields and fields["recurrence"] is not None:
                 raise ScheduleServiceError(
                     "one-shot schedules must not have recurrence; "
@@ -306,6 +392,8 @@ class ScheduleService:
             if err:
                 raise ScheduleServiceError(err)
         elif record.kind == ScheduleKind.WEEKLY:
+            if "start_date" in fields:
+                raise ScheduleServiceError("start_date is only valid for recurring schedules")
             # Build merged candidate from fields + stored record,
             # then validate atomically before applying any change.
             merged_recurrence = fields.get("recurrence", record.recurrence)
@@ -322,13 +410,11 @@ class ScheduleService:
                     f"timezone {merged_timezone!r} must match recurrence tz "
                     f"{merged_recurrence['tz']!r} for weekly schedules"
                 )
-
             # fire_at must be the next occurrence of the merged recurrence.
             now = _now()
             expected = next_weekly_occurrence(
                 merged_recurrence["day"], merged_recurrence["time"],
-                merged_recurrence["tz"],
-                after=now,
+                merged_recurrence["tz"], after=now,
             )
             if expected is None:
                 raise ScheduleServiceError(
@@ -341,17 +427,119 @@ class ScheduleService:
                     f"{merged_recurrence['tz']}); "
                     f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
                 )
+        elif record.kind == ScheduleKind.RECURRING:
+            supplied_recurrence = fields.get("recurrence")
+            if isinstance(supplied_recurrence, dict) and "anchor_date" in supplied_recurrence:
+                raise ScheduleServiceError("anchor_date is server-managed for recurring schedules")
+            merged_recurrence = dict(record.recurrence or {})
+            if "recurrence" in fields:
+                merged_recurrence.update(fields["recurrence"])
+                # The full-form editor explicitly clears inactive selectors so
+                # a PATCH merge cannot retain a selector from the prior shape.
+                # Canonical stored rules omit inactive selectors rather than
+                # preserving null residue.
+                for selector in _RECURRENCE_SELECTOR_FIELDS:
+                    if (
+                        selector in fields["recurrence"]
+                        and fields["recurrence"][selector] is None
+                    ):
+                        merged_recurrence.pop(selector, None)
+            # A native recurring PATCH has one persisted timezone.  A
+            # timezone-only patch updates the fully merged rule before rule
+            # validation and server-owned candidate derivation.  A recurrence
+            # patch may instead provide its own rule timezone, which likewise
+            # becomes the matching top-level value.
+            if "timezone" in fields:
+                if (
+                    isinstance(supplied_recurrence, dict)
+                    and "tz" in supplied_recurrence
+                    and supplied_recurrence["tz"] != fields["timezone"]
+                ):
+                    raise ScheduleServiceError(
+                        f"timezone {fields['timezone']!r} must match recurrence tz "
+                        f"{supplied_recurrence['tz']!r} for recurring schedules"
+                    )
+                merged_timezone = fields["timezone"]
+                merged_recurrence["tz"] = merged_timezone
+            else:
+                merged_timezone = merged_recurrence.get("tz", record.timezone)
+                if isinstance(supplied_recurrence, dict) and "tz" in supplied_recurrence:
+                    fields["timezone"] = merged_timezone
+            requested_start_date = fields.get("start_date")
+            supplied_fire_at = "fire_at" in fields
+            merged_fire_at = fields.get("fire_at", record.fire_at)
+            shape_fields = {"freq", "interval", "byday", "bymonthday", "ordinal"}
+            old_recurrence = record.recurrence or {}
+            shape_changed = any(
+                merged_recurrence.get(field) != old_recurrence.get(field)
+                for field in shape_fields
+            )
+            # Validate the complete merged rule before candidate computation.
+            # This keeps invalid shape edits atomic and avoids evaluating an
+            # invalid RRULE while determining a replacement anchor.
+            err = validate_recurring_rule(merged_recurrence, now=_now())
+            if err:
+                raise ScheduleServiceError(err.code)
+            if requested_start_date is not None:
+                normalized_start, expected = validate_start_date_phase(
+                    merged_recurrence, requested_start_date, now=_now(),
+                )
+                if expected is None:
+                    raise ScheduleServiceError(normalized_start)
+                merged_recurrence["anchor_date"] = normalized_start
+            elif shape_changed:
+                # First compute against the existing cadence anchor, then make
+                # the newly selected next local date the new immutable anchor.
+                provisional = next_recurring_occurrence(merged_recurrence, after=_now())
+                if provisional is not None:
+                    merged_recurrence["anchor_date"] = provisional.astimezone(
+                        ZoneInfo(merged_recurrence["tz"])
+                    ).date().isoformat()
+            if merged_timezone != merged_recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {merged_timezone!r} must match recurrence tz "
+                    f"{merged_recurrence['tz']!r} for recurring schedules"
+                )
+            expected = expected if requested_start_date is not None else next_recurring_occurrence(merged_recurrence, after=_now())
+            if expected is None:
+                raise ScheduleServiceError("could not compute next occurrence for recurring schedule")
+            # Native recurring PATCHes intentionally omit fire_at when changing
+            # recurrence or timezone. The server owns cadence and DST resolution.
+            if not supplied_fire_at and ("recurrence" in fields or "timezone" in fields or requested_start_date is not None):
+                merged_fire_at = expected
+                fields["fire_at"] = expected
+            if merged_fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next recurring occurrence; "
+                    f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
+                )
+            fields["recurrence"] = merged_recurrence
+
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {record.kind.value}. "
-                "v1 supports one_shot and weekly only."
+                "supports one_shot, weekly, and recurring schedules."
             )
 
+        audit_start_date = fields.pop("start_date", None)
         self._db.schedules.update(schedule_id, **fields)
         self._db.insert_audit_log(
             task_id=schedule_id,
             agent=agent_name,
             action="schedule_edited",
-            payload={"fields": sorted(fields.keys())},
+            payload={
+                "fields": sorted(fields.keys()),
+                **({
+                    "before": {
+                        "recurrence": record.recurrence,
+                        **({"fire_at": record.fire_at.isoformat()} if audit_start_date is not None else {}),
+                    },
+                    "after": {
+                        "recurrence": fields["recurrence"],
+                        **({"fire_at": fields.get("fire_at", record.fire_at).isoformat()} if audit_start_date is not None else {}),
+                    },
+                    **({"start_date": audit_start_date} if audit_start_date is not None else {}),
+                } if record.kind == ScheduleKind.RECURRING else {}),
+            },
         )
         return self._db.schedules.get(schedule_id)

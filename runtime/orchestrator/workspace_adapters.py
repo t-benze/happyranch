@@ -294,7 +294,7 @@ def materialize_workspace_skills(
     """Serialize the complete pre-spawn skill materialization transaction.
 
     All three materialization steps — system-contract injection,
-    managed-skill injection, and lifecycle-ledger injection — run under a
+    managed-skill injection, and B2 custom-skill injection — run under a
     process-local lock keyed by the canonical workspace path so concurrent
     task/thread/wake/dream/schedule/bootstrap callers targeting the same
     workspace serialize their complete transaction.
@@ -315,7 +315,7 @@ def materialize_workspace_skills(
     **Unknown-context no-op:** an unrecognised context string (one that is
     not a valid ``SessionContext`` value) returns immediately without
     creating, building, preflighting, or reconciling any system, managed, or
-    lifecycle links, and must not withdraw or mutate an existing valid
+    custom-skill links, and must not withdraw or mutate an existing valid
     workspace state.
 
     Args:
@@ -329,7 +329,7 @@ def materialize_workspace_skills(
         agent_name: agent to resolve eligibility for
         team: agent's team name
         skills_root: directory containing managed-catalog skill packages
-        org_root: per-org root (optional; for lifecycle ledger resolution)
+        org_root: per-org root (optional; for custom-skill resolution)
         db: optional DB handle for recording materialization events
     """
     from runtime.skills.system_contracts import SessionContext
@@ -378,7 +378,7 @@ def materialize_workspace_skills_union(
     ``materialize_workspace_skills`` preserves the ordinary-context
     system-contract union on every regular launch; this function supports
     the executor-switch path with an explicit context list.  In both cases,
-    release-managed and lifecycle links remain policy-reconciled and
+    release-managed and custom-skill links remain policy-reconciled and
     withdrawable — only system contracts are union-preserved.
 
     This is the correct executor-switch materialization: the switched
@@ -563,16 +563,8 @@ def _materialize_context_union(
                         version=es.skill.version,
                     )
 
-    # ── 3. Lifecycle-ledger custom skills (once) ───────────────────
+    # ── 3. B2 custom skills ─────────────────────────────────────────
     if db is not None and org_root is not None:
-        lifecycle_specs = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name=agent_name,
-            slug=slug,
-        )
-        expected_specs.extend(lifecycle_specs)
         custom_specs = _build_custom_skill_canonical_specs(
             store=store, org_root=org_root, db=db, slug=slug,
             agent_name=agent_name, team=team, task_id=None,
@@ -608,7 +600,7 @@ def _materialize_unified_canonical(
 
     Unified expected set = system contracts (union across ALL ordinary
     session contexts) + release-managed catalog + PUBLISHED/active
-    lifecycle-ledger skills. This single set is reconciled via
+    B2 custom skills. This single set is reconciled via
     repair_workspace_skills ONCE.
 
     System contracts are unioned across all six ordinary SessionContext
@@ -746,16 +738,8 @@ def _materialize_unified_canonical(
                         version=es.skill.version,
                     )
 
-    # 3. Lifecycle-ledger custom skills (PUBLISHED + actively assigned)
+    # 3. B2 custom skills
     if db is not None and org_root is not None:
-        lifecycle_specs = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name=agent_name,
-            slug=slug,
-        )
-        expected_specs.extend(lifecycle_specs)
         custom_specs = _build_custom_skill_canonical_specs(
             store=store, org_root=org_root, db=db, slug=slug,
             agent_name=agent_name, team=team, task_id=task_id,
@@ -765,7 +749,7 @@ def _materialize_unified_canonical(
 
     # ── Reconcile ONCE with unified expected set ────────────────────
     # Both provider roots get the same full set so system contracts
-    # remain while managed/lifecycle links are created/withdrawn.
+    # remain while managed/custom-skill links are created/withdrawn.
     for subdir in (".claude/skills", ".agents/skills"):
         materializer.repair_workspace_skills(
             expected_specs, workspace, subdir,
@@ -790,7 +774,7 @@ def _build_custom_skill_canonical_specs(
 
     Each visible skill is independent: an artifact/build fault is persisted as
     a failed materialization for an identified task session and does not block
-    system, managed, lifecycle, or sibling custom skills.
+    system, managed, or sibling custom skills.
     """
     import hashlib
     import tempfile
@@ -885,317 +869,24 @@ def _build_custom_skill_canonical_specs(
     return specs
 
 
-def _build_lifecycle_canonical_specs(
-    *,
-    store: CanonicalSkillStore,
-    org_root: Path,
-    db,
-    agent_name: str,
-    slug: str,
-) -> list[dict]:
-    """Resolve lifecycle-ledger skills and build into canonical store.
-
-    Returns list of {slug, version, content_hash} specs for the materializer.
-    Only PUBLISHED skills with active assignments are resolved.
-    Fail-closed: any error raises LifecycleMaterializationError.
-    """
-    from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
-    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
-    from runtime.orchestrator._paths import OrgPaths
-    from runtime.skills.canonical_store import CanonicalStoreError
-
-    service = SkillLifecycleService()
-    pkgs = service.get_effective_skills(db, agent_name)
-    if not pkgs:
-        return []
-
-    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-    specs: list[dict] = []
-
-    for pkg in pkgs:
-        skill_slug = pkg.slug
-
-        if not pkg.content_artifact_key:
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason="No content_artifact_key — legacy paths not supported",
-            )
-
-        # Load manifest artifact
-        try:
-            manifest_bytes = artifact_store.read(pkg.content_artifact_key)
-        except ArtifactNotFound:
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=f"Artifact not found: {pkg.content_artifact_key}",
-            )
-
-        # Validate manifest hash against ledger content_hash
-        import hashlib
-        actual_hash = hashlib.sha256(manifest_bytes).hexdigest()
-        if actual_hash != pkg.content_hash:
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=f"Manifest hash mismatch: expected {pkg.content_hash[:16]}..., got {actual_hash[:16]}...",
-            )
-
-        # Parse manifest
-        import json
-        manifest = None
-        try:
-            manifest = json.loads(manifest_bytes.decode("utf-8"))
-        except Exception:
-            # Legacy single-SKILL.md artifact — treat as source dir
-            pass
-
-        # ── Compute expected tree hash BEFORE building ─────────────
-        # This validates every member's artifact bytes against the
-        # immutable ledger-declared SHA-256.  If a member-artifact
-        # mismatch exists (ArtifactStore vs ledger), this fails closed
-        # BEFORE the canonical package build and BEFORE any session
-        # launch that might proceed unvalidated.
-        #
-        # Finding 1 fix: if this fails, emit a durable integrity/
-        # audit/operations failure event BEFORE propagating the error.
-        # If the event persistence itself fails, refuse the build.
-        if isinstance(manifest, dict) and "members" in manifest:
-            try:
-                expected_tree_hash = _compute_manifest_tree_hash(
-                    manifest, artifact_store,
-                    skill_slug=skill_slug,
-                )
-            except LifecycleMaterializationError:
-                # ── Emit durable failure event (Finding 1) ──────────
-                if db is not None:
-                    try:
-                        db.insert_skill_validation_event(
-                            skill_id=pkg.skill_id,
-                            slug=skill_slug,
-                            agent=agent_name,
-                            source="integrity_check",
-                            severity="error",
-                            ok=False,
-                            version=pkg.version,
-                            findings=[
-                                f"Lifecycle manifest member-artifact hash mismatch "
-                                f"for {skill_slug}@{pkg.version} — "
-                                f"ArtifactStore bytes do not match ledger-declared "
-                                f"member hashes."
-                            ],
-                            reason_codes=["member_hash_mismatch"],
-                        )
-                    except Exception as audit_exc:
-                        # Event persistence failed — fail closed.
-                        # Do NOT re-raise the original error (which
-                        # would mask the audit failure).
-                        raise LifecycleMaterializationError(
-                            skill_slug=skill_slug,
-                            agent_name=agent_name,
-                            reason=(
-                                f"Integrity event persistence failed during "
-                                f"member-hash validation for {skill_slug}@{pkg.version}: "
-                                f"{audit_exc}"
-                            ),
-                        ) from audit_exc
-                raise  # Re-raise original error after audit write
-
-            # Manifest-based: build via artifact store
-            try:
-                store.build_from_manifest(
-                    skill_slug, pkg.version, pkg.content_hash,
-                    manifest, artifact_store,
-                )
-            except CanonicalStoreError as build_exc:
-                # build_from_manifest detected existing corrupted package —
-                # emit durable event and refuse. No automatic repair.
-                if db is not None:
-                    try:
-                        db.insert_skill_validation_event(
-                            skill_id=pkg.skill_id,
-                            slug=skill_slug,
-                            agent=agent_name,
-                            source="integrity_check",
-                            severity="error",
-                            ok=False,
-                            version=pkg.version,
-                            findings=[
-                                f"Canonical package {skill_slug}@{pkg.version} "
-                                f"content corruption detected: {build_exc}. "
-                                f"No automatic repair from same-UID local source."
-                            ],
-                            reason_codes=["content_corruption"],
-                        )
-                    except Exception as audit_exc:
-                        raise LifecycleMaterializationError(
-                            skill_slug=skill_slug,
-                            agent_name=agent_name,
-                            reason=(
-                                f"Integrity event persistence failed during "
-                                f"content-corruption handling for {skill_slug}@{pkg.version}: "
-                                f"{audit_exc}"
-                            ),
-                        ) from audit_exc
-                raise LifecycleMaterializationError(
-                    skill_slug=skill_slug,
-                    agent_name=agent_name,
-                    reason=str(build_exc),
-                ) from build_exc
-        else:
-            # Legacy: single SKILL.md artifact
-            expected_tree_hash = _compute_legacy_tree_hash(manifest_bytes)
-            # Build a temp source dir with just the SKILL.md.
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmpd:
-                tmp_path = Path(tmpd)
-                (tmp_path / "SKILL.md").write_bytes(manifest_bytes)
-                source_hash = _compute_dir_hash(tmp_path)
-                try:
-                    store.build_from_source(
-                        skill_slug, pkg.version, pkg.content_hash, tmp_path,
-                        verify_source_hash=source_hash,
-                    )
-                except CanonicalStoreError as build_exc:
-                    if db is not None:
-                        try:
-                            db.insert_skill_validation_event(
-                                skill_id=pkg.skill_id,
-                                slug=skill_slug,
-                                agent=agent_name,
-                                source="integrity_check",
-                                severity="error",
-                                ok=False,
-                                version=pkg.version,
-                                findings=[
-                                    f"Canonical package {skill_slug}@{pkg.version} "
-                                    f"content corruption detected: {build_exc}. "
-                                    f"No automatic repair from same-UID local source."
-                                ],
-                                reason_codes=["content_corruption"],
-                            )
-                        except Exception as audit_exc:
-                            raise LifecycleMaterializationError(
-                                skill_slug=skill_slug,
-                                agent_name=agent_name,
-                                reason=(
-                                    f"Integrity event persistence failed during "
-                                    f"content-corruption handling for {skill_slug}@{pkg.version}: "
-                                    f"{audit_exc}"
-                                ),
-                            ) from audit_exc
-                    raise LifecycleMaterializationError(
-                        skill_slug=skill_slug,
-                        agent_name=agent_name,
-                        reason=str(build_exc),
-                    ) from build_exc
-
-        specs.append({
-            "slug": skill_slug,
-            "version": pkg.version,
-            "content_hash": pkg.content_hash,
-            "tree_hash": expected_tree_hash,
-        })
-
-        # Record successful materialization — audit persistence is mandatory.
-        # A ledger write failure here means the materialization cannot proceed
-        # unrecorded to a launch-capable successful return.
-        try:
-            service.record_materialization(
-                db=db,
-                skill_id=pkg.skill_id,
-                agent_name=agent_name,
-                version_id=pkg.id,
-                version=pkg.version,
-                content_hash=pkg.content_hash,
-                success=True,
-                session_context="session_spawn",
-            )
-        except LifecycleError:
-            raise
-        except Exception as exc:
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=f"Audit persistence failed for successful materialization: {exc}",
-            ) from exc
-
-    return specs
-
-
 def _compute_dir_hash(src_dir: Path) -> str:
-    """Compute SHA-256 of a directory tree (for content-addressing).
-
-    Sorted by relative path, hashes each file's content.
-    """
+    """Compute a deterministic SHA-256 for a source tree."""
     import hashlib
-    h = hashlib.sha256()
-    for fpath in sorted(src_dir.rglob("*")):
-        if fpath.is_file():
-            rel = str(fpath.relative_to(src_dir))
-            h.update(rel.encode())
-            h.update(b"\x00")
-            h.update(fpath.read_bytes())
-            h.update(b"\x00")
-    return h.hexdigest()
 
-
-def _compute_manifest_tree_hash(
-    manifest: dict,
-    artifact_store,
-    *,
-    skill_slug: str,
-) -> str:
-    """Compute the expected canonical tree hash from the AUTHORITATIVE
-    manifest members, validating each member's artifact bytes against
-    its immutable ledger-declared SHA-256 BEFORE hashing.
-
-    Delegates to the canonical-store-level helper
-    ``_compute_tree_hash_from_manifest_members`` which performs the
-    identical validation.  Wraps ``CanonicalStoreError`` as
-    ``LifecycleMaterializationError`` for the caller's error domain.
-
-    This prevents lifecycle-ledger packages from self-ratifying:
-    see ``_compute_tree_hash_from_manifest_members`` for details.
-    """
-    from runtime.skills.canonical_store import (
-        _compute_tree_hash_from_manifest_members,
-        CanonicalStoreError,
-    )
-
-    try:
-        return _compute_tree_hash_from_manifest_members(
-            manifest, artifact_store,
-            skill_slug=skill_slug,
-        )
-    except CanonicalStoreError as exc:
-        raise LifecycleMaterializationError(
-            skill_slug=skill_slug,
-            agent_name="materializer",
-            reason=f"{exc.code}: {exc.detail}",
-        ) from exc
-
-
-def _compute_legacy_tree_hash(manifest_bytes: bytes) -> str:
-    """Compute expected tree hash for legacy single-SKILL.md artifacts.
-
-    These packages have one member: SKILL.md, whose content IS the
-    manifest_bytes (the raw artifact content).
-    """
-    import hashlib
-    h = hashlib.sha256()
-    h.update(b"SKILL.md")
-    h.update(b"\x00")
-    h.update(manifest_bytes)
-    h.update(b"\x00")
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(src_dir)).encode())
+            digest.update(b"\x00")
+            digest.update(path.read_bytes())
+            digest.update(b"\x00")
+    return digest.hexdigest()
 
 
 # ── Pre-launch integrity validation ────────────────────────────────
 # Before every executor launch, validate that workspace skill links
 # resolve to the expected canonical packages and that canonical package
-# integrity (tree hashes, member hashes for lifecycle packages) is
+# integrity (tree hashes and B2 custom-skill artifact hashes) is
 # intact. The executor and daemon share the same OS identity — a
 # same-UID process can mutate canonical targets between checks.
 # Detection-only: no automatic repair from same-UID local sources.
@@ -1251,7 +942,7 @@ def validate_workspace_skills_integrity(
     For EVERY expected spec, validates:
     - The canonical package exists and is non-empty
     - The canonical tree hash matches the expected value computed from
-      ledger-declared member hashes (lifecycle) or the source tree hash
+      B2-declared member hashes or the source tree hash
       (system contracts)
     - Workspace symlinks at BOTH ``.claude/skills`` and ``.agents/skills``
       point to the correct canonical target
@@ -1448,7 +1139,7 @@ def validate_workspace_skills_integrity(
     # - Corrupted canonical bytes (hash mismatch, tampered content) →
     #   set-executor CANNOT recover bytes — it only repairs links.
     #   Recovery is manual, operator-invoked: `happyranch skills
-    #   recover <slug> <version> <content_hash>`. Validates ledger
+    #   recover <slug> <version> <content_hash>`. Validates B2 provenance
     #   provenance and member hashes before deletion; refuses already-
     #   valid targets. Next materialization rebuilds from ArtifactStore.
     #   There is NO automatic same-UID local source repair and
@@ -1514,7 +1205,7 @@ def inject_managed_skills(
 ) -> None:
     """CUTOVER: Forwards to canonical store for compatibility.
 
-    Managed-catalog and lifecycle skills are now resolved via
+    Managed-catalog and B2 custom skills are now resolved via
     materialize_workspace_skills / _materialize_unified_canonical.
     """
     materialize_workspace_skills(
@@ -1528,352 +1219,6 @@ def inject_managed_skills(
         org_root=org_root,
         db=db,
     )
-
-
-def _materialize_lifecycle_skills(
-    *,
-    workspace: Path,
-    org_root: Path,
-    db,
-    agent_name: str,
-    slug: str,
-) -> None:
-    """Resolve and materialize lifecycle-ledger custom skills for an agent.
-
-    Only PUBLISHED skills with an active assignment are materialized.
-    Proposed/draft/validated/approved-but-unpublished/quarantined skills
-    are invisible here.
-
-    Content resolution is ArtifactStore-backed only: the ledger's
-    ``content_artifact_key`` points to immutable ArtifactStore bytes.
-    Legacy filesystem paths (org_root/skills/) are NEVER resolved — the
-    lifecycle ledger is the sole runtime source.
-
-    CRITICAL: fail-closed. Missing/corrupt/hash-mismatched artifact, write
-    error, or any provenance inconsistency → clean workspace residue and
-    RAISE so the session launch cannot silently proceed without an
-    assigned skill. Validate and record the exact bytes actually written;
-    do NOT substitute after hash validation.
-    """
-    import hashlib
-    import logging
-    import shutil
-
-    from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
-    from runtime.skills.lifecycle.models import LifecycleStatus
-    from runtime.skills.lifecycle import stores
-
-    logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
-    service = SkillLifecycleService()
-
-    # Get active assignments for this agent from the lifecycle ledger
-    pkgs = service.get_effective_skills(db, agent_name)
-    if not pkgs:
-        return
-
-    # Resolve ArtifactStore for artifact-backed content
-    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
-    from runtime.orchestrator._paths import OrgPaths
-    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-
-    for pkg in pkgs:
-        skill_slug = pkg.slug
-        dest_claude = workspace / ".claude" / "skills" / skill_slug
-        dest_agents = workspace / ".agents" / "skills" / skill_slug
-
-        # ── Preflight: reject materialization of terminally REJECTED
-        #    packages BEFORE any filesystem bytes are written.
-        #    This guard must fire before creating directories or
-        #    writing content — rejected attempts fail closed with
-        #    no workspace residue.
-        fresh_pkg = stores.get_package_version(db, pkg.id)
-        if fresh_pkg is not None and fresh_pkg.status == LifecycleStatus.REJECTED:
-            error_msg = (
-                f"Package version {pkg.id} is terminally REJECTED. "
-                f"Materialization is blocked."
-            )
-            try:
-                service.record_materialization(
-                    db=db,
-                    skill_id=pkg.skill_id,
-                    agent_name=agent_name,
-                    version_id=pkg.id,
-                    version=pkg.version,
-                    content_hash=pkg.content_hash,
-                    success=False,
-                    error_message=error_msg,
-                    session_context="session_spawn",
-                )
-            except Exception:
-                pass
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            )
-
-        # ArtifactStore-backed content is the ONLY valid source.
-        if not pkg.content_artifact_key:
-            error_msg = "No content_artifact_key — legacy paths not supported"
-            _record_and_cleanup(
-                service, db, pkg, agent_name, dest_claude, dest_agents,
-                error_msg,
-            )
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            )
-
-        # Load and validate the manifest artifact.
-        # The manifest hash IS the package content_hash (binds full provenance).
-        manifest_bytes: bytes
-        try:
-            manifest_bytes = artifact_store.read(pkg.content_artifact_key)
-        except ArtifactNotFound:
-            error_msg = f"Artifact not found: {pkg.content_artifact_key}"
-            _record_and_cleanup(
-                service, db, pkg, agent_name, dest_claude, dest_agents,
-                error_msg,
-            )
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            )
-        except Exception as exc:
-            error_msg = f"Artifact load error: {exc}"
-            _record_and_cleanup(
-                service, db, pkg, agent_name, dest_claude, dest_agents,
-                error_msg,
-            )
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            ) from exc
-
-        # Validate manifest hash against ledger content_hash
-        actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
-        if actual_manifest_hash != pkg.content_hash:
-            error_msg = (
-                f"Manifest hash mismatch: expected {pkg.content_hash}, "
-                f"got {actual_manifest_hash}"
-            )
-            _record_and_cleanup(
-                service, db, pkg, agent_name, dest_claude, dest_agents,
-                error_msg,
-            )
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            )
-
-        # Parse manifest — if the artifact content is valid JSON with
-        # a "members" field, it's a manifest-based package. Otherwise
-        # fall back to legacy single-SKILL.md artifact for backward compat.
-        import json
-        manifest: dict | None = None
-        try:
-            parsed = json.loads(manifest_bytes.decode("utf-8"))
-            if isinstance(parsed, dict) and "members" in parsed:
-                manifest = parsed
-        except Exception:
-            pass  # Not a manifest — treat as legacy raw SKILL.md
-
-        if manifest is not None:
-            # ── Manifest-based full-package materialization ──────
-            members = manifest["members"]
-            if not members:
-                error_msg = "Manifest has no members"
-                _record_and_cleanup(
-                    service, db, pkg, agent_name, dest_claude, dest_agents,
-                    error_msg,
-                )
-                raise LifecycleMaterializationError(
-                    skill_slug=skill_slug,
-                    agent_name=agent_name,
-                    reason=error_msg,
-                )
-
-            # Materialize every member from the manifest.
-            try:
-                dest_claude.mkdir(parents=True, exist_ok=True)
-                dest_agents.mkdir(parents=True, exist_ok=True)
-
-                for member in members:
-                    member_path = member["path"]
-                    member_hash = member["hash"]  # e.g. "sha256:abc123..."
-                    member_artifact_key = member["artifact_key"]
-
-                    # Load member content from ArtifactStore
-                    try:
-                        member_bytes = artifact_store.read(member_artifact_key)
-                    except ArtifactNotFound:
-                        error_msg = (
-                            f"Member artifact not found: {member_artifact_key} "
-                            f"(path={member_path})"
-                        )
-                        _record_and_cleanup(
-                            service, db, pkg, agent_name, dest_claude, dest_agents,
-                            error_msg,
-                        )
-                        raise LifecycleMaterializationError(
-                            skill_slug=skill_slug,
-                            agent_name=agent_name,
-                            reason=error_msg,
-                        )
-
-                    # Validate member hash against stored bytes
-                    # Must be strict sha256:<64 lowercase hex> — no bare digests,
-                    # no arbitrary prefixes, no uppercase hex.
-                    expected_hash_hex = parse_strict_sha256_hash(member_hash)
-                    actual_member_hash = hashlib.sha256(member_bytes).hexdigest()
-                    if actual_member_hash != expected_hash_hex:
-                        error_msg = (
-                            f"Member hash mismatch for {member_path}: "
-                            f"expected {expected_hash_hex[:16]}..., got {actual_member_hash[:16]}..."
-                        )
-                        _record_and_cleanup(
-                            service, db, pkg, agent_name, dest_claude, dest_agents,
-                            error_msg,
-                        )
-                        raise LifecycleMaterializationError(
-                            skill_slug=skill_slug,
-                            agent_name=agent_name,
-                            reason=error_msg,
-                        )
-
-                    # Write exact retained bytes to both target directories.
-                    # The immutable-artifact content is the workspace content —
-                    # no post-verification substitution (the hash was validated
-                    # against the original bytes; mutating them would break the
-                    # exact-byte provenance guarantee).
-                    dest_path = member_path
-                    for target_base in (dest_claude, dest_agents):
-                        target_file = target_base / dest_path
-                        target_file.parent.mkdir(parents=True, exist_ok=True)
-                        target_file.write_bytes(member_bytes)
-
-            except LifecycleMaterializationError:
-                raise
-            except Exception as exc:
-                error_msg = f"Write error: {exc}"
-                _record_and_cleanup(
-                    service, db, pkg, agent_name, dest_claude, dest_agents,
-                    error_msg,
-                )
-                raise LifecycleMaterializationError(
-                    skill_slug=skill_slug,
-                    agent_name=agent_name,
-                    reason=error_msg,
-                ) from exc
-
-        else:
-            # ── Legacy single-SKILL.md artifact ─────────────────
-            # Backward compatibility: content_artifact_key points to
-            # a raw SKILL.md file (no manifest). Treat the artifact
-            # content directly as the SKILL.md to materialize.
-            # Write exact retained bytes — no post-verification substitution.
-            content_bytes = manifest_bytes
-
-            try:
-                dest_claude.mkdir(parents=True, exist_ok=True)
-                dest_agents.mkdir(parents=True, exist_ok=True)
-                (dest_claude / "SKILL.md").write_bytes(content_bytes)
-                (dest_agents / "SKILL.md").write_bytes(content_bytes)
-            except Exception as exc:
-                error_msg = f"Write error: {exc}"
-                _record_and_cleanup(
-                    service, db, pkg, agent_name, dest_claude, dest_agents,
-                    error_msg,
-                )
-                raise LifecycleMaterializationError(
-                    skill_slug=skill_slug,
-                    agent_name=agent_name,
-                    reason=error_msg,
-                ) from exc
-
-        # Record successful materialization.
-        # The preflight above guards against a REJECTED version BEFORE
-        # filesystem writes, but an adversarial interleaving can flip
-        # PUBLISHED→REJECTED between preflight and success recording.
-        # record_materialization's own rejected_terminal gate catches
-        # this at the success boundary — we must NOT broadly swallow it.
-        try:
-            service.record_materialization(
-                db=db,
-                skill_id=pkg.skill_id,
-                agent_name=agent_name,
-                version_id=pkg.id,
-                version=pkg.version,
-                content_hash=pkg.content_hash,
-                success=True,
-                session_context="session_spawn",
-            )
-        except LifecycleError as e:
-            if e.code == "rejected_terminal":
-                # Adversarial interleaving: package flipped to REJECTED
-                # after bytes landed on disk. Clean both destination
-                # trees and raise so NO session spawns with rejected
-                # content — fail-closed, zero materialized-success events.
-                for d in (dest_claude, dest_agents):
-                    if d.exists():
-                        shutil.rmtree(d, ignore_errors=True)
-                raise LifecycleMaterializationError(
-                    skill_slug=skill_slug,
-                    agent_name=agent_name,
-                    reason=(
-                        f"Package version {pkg.id} became REJECTED during "
-                        f"materialization — terminal lifecycle gate blocked "
-                        f"at success-recording seam"
-                    ),
-                ) from e
-            # Non-rejected LifecycleError: best-effort pass.
-        except Exception:
-            pass
-
-
-class LifecycleMaterializationError(Exception):
-    """Raised when lifecycle skill materialization fails.
-
-    The session spawner catches this and treats it as a fatal workspace-prep
-    error — no session is launched without an assigned custom skill.
-    """
-    def __init__(self, skill_slug: str, agent_name: str, reason: str):
-        self.skill_slug = skill_slug
-        self.agent_name = agent_name
-        self.reason = reason
-        super().__init__(
-            f"Lifecycle materialization failed for {skill_slug}/{agent_name}: {reason}"
-        )
-
-
-def _record_and_cleanup(
-    service, db, pkg, agent_name, dest_claude, dest_agents, error_message,
-) -> None:
-    """Best-effort materialization failure recording + workspace residue cleanup."""
-    import shutil
-    # Clean workspace residue
-    for d in (dest_claude, dest_agents):
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-    # Record failure
-    try:
-        service.record_materialization(
-            db=db,
-            skill_id=pkg.skill_id,
-            agent_name=agent_name,
-            version_id=pkg.id,
-            version=pkg.version,
-            content_hash=pkg.content_hash,
-            success=False,
-            error_message=error_message,
-            session_context="session_spawn",
-        )
-    except Exception:
-        pass
 
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
@@ -2000,13 +1345,13 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     ]
 
 
-def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
+def _skills_directory_readonly_section(skills_dir: str, agent_name: str) -> list[str]:
     """System-injected operational guidance: do not edit managed skill links.
 
     Skill entries under BOTH ``.claude/skills`` and ``.agents/skills`` are
     daemon-materialized from the canonical skill store. This section
-    directs agents NOT to edit these managed links and to use the
-    lifecycle/proposal workflow instead.
+    directs agents NOT to edit these managed links and to use the B2
+    custom-skill workflow instead.
 
     **IMPORTANT:** This is operational guidance, NOT enforcement. The
     executor and daemon share the same OS identity — there is NO OS-level
@@ -2020,7 +1365,7 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
     claim write/chmod/ACL denial, OS-enforced isolation, or automatic
     same-UID repair.
     """
-    return [
+    lines = [
         "## Skills Directory (do not edit)\n",
         "`.claude/skills/` and `.agents/skills/` are materialized by the ",
         "daemon from the canonical skill store under BOTH managed roots. ",
@@ -2039,12 +1384,18 @@ def _skills_directory_readonly_section(skills_dir: str) -> list[str]:
         "sources are not automatically repaired or trusted. Do not "
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",
-        "If a skill's content is wrong or a new skill is needed, propose the",
-        "change through the skill lifecycle instead of editing files directly:",
-        "```",
-        "happyranch skills propose --from-file <path> --session-id <your-session-id>",
-        "```\n",
     ]
+    lines.extend([
+        "If a new custom skill is needed, every verified agent can use the B2 ",
+        "create-skill workflow directly; there is no pilot roster or slug restriction. ",
+        "It remains bound to this session. The response includes the editable custom ",
+        "skill, immutable version, default-hidden reason, and verified agent/task/session ",
+        "provenance:\n",
+        "```",
+        "happyranch skills create --from-file <path> --session-id <your-session-id>",
+        "```\n",
+    ])
+    return lines
 
 
 def _non_stop_command_warning_section() -> list[str]:
@@ -2485,7 +1836,7 @@ class ClaudeWorkspaceAdapter:
             callback_note + "\n",
             *_shared_artifacts_section(),
             *_thread_talk_dispatch_doctrine_section(),
-            *_skills_directory_readonly_section(skills_dir),
+            *_skills_directory_readonly_section(skills_dir, agent_name),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
             "## Task Recall\n",

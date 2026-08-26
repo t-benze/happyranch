@@ -7,24 +7,24 @@
 | Date | 2026-08-05 |
 | Source Links | THR-055 seq. 187–190; PR #555 `2026-08-04-skills-governance-prd.md`; TASK-3380; TASK-3436 / PR #507; TASK-3509 / PR #511; THR-092 Skill Management web-module brief |
 | Commitment Boundary | Implementation contract — this is an authoritative product contract; implementation proceeds under THR-055 seq 187, 200, and 205 without requiring further Founder decisions. |
-| Founder Decisions | All required decisions for v1 are closed below (Section 12). Ruled: (a) humans who create, edit, validate, version, and retire custom skills and write eligibility are Founder-only via the pre-existing bearer-authenticated path; no named org/team administrators exist in v1; (b) agents create and update only their originated custom skills using verified active task/session identity; (c) default eligibility is hidden; (d) v1 is standard_operational only; (e) migration preserves useful legacy provenance/history while atomically retiring obsolete proposal-only/direct mutation routes and returning stable compatibility errors for those old writers. No implementation is blocked on further Founder rulings. |
+| Founder Decisions | All required decisions for v1 are closed below (Section 12). Ruled: (a) humans who create, edit, validate, version, and retire custom skills and write eligibility are Founder-only via the pre-existing bearer-authenticated path; no named org/team administrators exist in v1; (b) agents create and update only their originated custom skills using verified active task/session identity; (c) default eligibility is hidden; (d) v1 is standard_operational only; (e) B2 retains its version, provenance, validation, and materialization evidence while legacy proposal UI, content, records, history, routes, adapters, and compatibility are deleted. No implementation is blocked on further Founder rulings. |
 
 ## Implementation contract
 
 Make **custom-skill creation** the primary Skills workflow. A custom skill may originate in either of two ways:
 
-1. An agent uses an injected, proposal-safe `create-skill` skill to author and submit a validated custom-skill record from a task.
+1. An agent uses an injected, session-bound `create-skill` skill to author and submit a validated custom-skill record from a task.
 2. A human creates or edits the same kind of custom-skill record directly in the Skills web console.
 
 Creation produces reusable, editable guidance; it does **not** expose that guidance to any agent. A separate Eligibility surface then determines visibility by organization, team, or individual agent, with an effective-skills explanation and impact preview. This is the intentional activation step.
 
-This replaces the current proposal-review workflow as the normal path for custom skills. Preserve its useful safeguards—provenance, deterministic validation, immutable version history, audit, rollback, and next-session materialization—but remove Founder claim/review/publish as a required ceremony for ordinary `standard_operational` custom skills. The previously designed Founder Proposals queue/detail is therefore not the next implementation target.
+This is the current B2 path for custom skills. It retains provenance, deterministic validation, immutable version history, audit, rollback, and next-session materialization. Legacy proposal UI, content, records, history, routes, adapters, and compatibility are deleted.
 
 The trade-off is deliberate: ordinary authoring becomes fast enough to capture useful workflow knowledge, while control of who sees it remains explicit and auditable. We give up universal pre-publication review; we do **not** give up validation, history, eligibility control, or the firewall between guidance and permissions.
 
 ## Problem and outcome
 
-The present lifecycle treats an agent-authored skill as an exceptional proposal that must wait for a Founder review/publish sequence before it can become a usable custom skill. That is misaligned with the need: teams need a practical way to author reusable guidance, whether the initial author is an agent that discovered a repeatable workflow or a human who already knows the needed practice.
+The B2 model gives teams a practical way to author reusable guidance, whether the initial author is an agent that discovered a repeatable workflow or a human who already knows the needed practice.
 
 At the same time, letting creation automatically expose guidance would recreate the behavioral-governance risk that Skills was intended to manage. A skill can shape decisions and use of already-granted tools even though it cannot grant permissions.
 
@@ -74,7 +74,7 @@ The human authority model is closed for v1: the pre-existing bearer-authenticate
 - No executable hooks, plugin installation, dependency installation, background jobs, secret input, or code-execution surface inside a custom skill package.
 - No change to the daemon's existing permission, authentication, sandbox, credential, allow-rule, executor-selection, or system-contract model without a separate Founder-approved proposal.
 - No generic organization-wide propagation based on similarity, role title, or AI inference; every eligibility effect must follow an explicit policy rule.
-- No requirement to implement the previously approved Founder-only Proposals queue/detail as the normal custom-skill workflow. It may be repurposed later as history/audit evidence only after a separately scoped design decision.
+- No Proposals queue, proposal history, legacy route, or compatibility layer for custom skills.
 
 ## Product model and workflow
 
@@ -121,7 +121,7 @@ Eligibility is therefore the sole runtime visibility gate for a valid custom ski
 9. **FR-9 — Next-session effect.** Saving content or eligibility never changes a running session. The UI must state whether a change is available to future sessions, and materialization evidence determines actual effect.
 10. **FR-10 — Audit and provenance.** Append-only product audit records cover creation source, agent task/session provenance, human edits, validation, version changes, eligibility rule changes, retirement/restoration, preview/request outcome, and materialization. An edit or unassignment never erases prior evidence.
 11. **FR-11 — Protection boundaries.** API and UI must deny agent eligibility/config writes and all custom edits to system or first-party shipped skills. No custom package can shadow an existing protected slug; no save may change permissions.
-12. **FR-12 — Migration.** Existing proposal/immutable records, current custom skills, validation events, and materialization history are preserved and mapped into the new custom-skill/version history. Existing direct write endpoints and proposal-only transitions must not remain competing, hidden paths after cutover; Engineering must present an explicit compatibility/cutover plan.
+12. **FR-12 — B2 cutover.** B2 custom-skill versions, provenance, validation events, and materialization history are retained. Legacy proposal and direct-write paths must be deleted rather than preserved as competing or compatibility paths.
 
 ## Data and provenance requirements
 
@@ -163,7 +163,7 @@ This PRD does not prescribe endpoint names, but it requires separate server-auth
 - deterministic validation run/result by immutable package hash;
 - custom-skill eligibility policy read/write, dry-run impact preview, and explain;
 - catalog/detail/effective-skills/materialization/audit read projections; and
-- migration/cutover from current proposal-only and retired legacy custom-skill routes.
+- B2 cutover confirmation that legacy proposal and direct-write routes are deleted.
 
 Engineering must validate the source-of-truth split before build: release-owned first-party catalog versus runtime-writable organization custom-skill content and eligibility configuration. The custom package store and eligibility store need atomic writes, rollback-safe history, and server-side scope checks. No new human identity/RBAC model, delegated administration, or expansion of agent mutation authority is authorized; the human path remains the existing bearer-authenticated Founder channel. Database schema changes and migration/cutover plans require normal Engineering design review.
 
@@ -190,14 +190,13 @@ Initial measures:
 - Protected slug/source enforcement and deterministic package validation.
 - Per-custom-skill eligibility editor at organization, team, and agent scope; additive inheritance plus explicit deny; Founder-only atomic save; impact preview and effective-skills explanation.
 - Source/task/session provenance, validation/version history, policy audit, next-session-only messaging, and materialization evidence.
-- A migration/cutover that makes this the only supported custom-skill authoring path and preserves existing evidence.
+- B2 as the only supported custom-skill authoring path, retaining B2 version/provenance/validation/materialization evidence.
 
 ### Later
 
 - Custom `high_impact_policy` skills and any separate human review/admission requirement for that class.
 - Marketplace, cross-org sharing, skill templates/gallery, collaborative editing, comments, ratings, AI-generated eligibility recommendations, bulk matrix editor, import/export, customer self-service, or public distribution.
 - Automatically generated authoring tasks, automatic assignment, automatic retirement, or any permission integration.
-- A repurposed proposal-review queue, if later needed as an audit/inbox experience rather than a universal publication gate.
 
 ## Acceptance criteria
 
@@ -207,10 +206,10 @@ Initial measures:
 4. An agent cannot create/edit a system or first-party skill, shadow a protected slug, write eligibility, assign a skill, alter a permission, or spoof task/agent/org provenance; direct attempts receive server denials and leave no partial policy/config mutation.
 5. A valid custom skill can be allowed at organization scope, restricted at team scope, and explicitly denied at agent scope; deny wins, resolver provenance names the winning rule, and a preview accurately lists the changed agents.
 6. An authorized eligibility change is atomic, audit-recorded, and takes effect only for new sessions. Existing sessions retain their already materialized version/hash.
-7. Agent Effective Skills truthfully distinguishes valid-but-hidden, visible-but-not-yet-materialized, and successfully materialized, with version/hash and policy explanation.
+7. Agent Effective Skills truthfully distinguishes valid-but-hidden, visible-but-not-yet-materialized, and successfully materialized, with version/hash and policy explanation. The `happyranch skills effective` diagnostic consumes the authenticated effective-skills projection for B2 custom output rather than a second CLI resolver; it retains release-managed local output and explicitly labels B2 status unavailable when the daemon cannot be read.
 8. Invalid or retired custom versions cannot become newly visible or materialize; validation failures remain actionable and recorded against the exact hash/validator version.
 9. The console presents loading, empty, populated, validation failure, conflict/stale-action, server error/retry, and forbidden states accessibly across editor and eligibility workflows.
-10. Existing proposal, validation, version, assignment/eligibility, and materialization evidence is preserved through the migration, and no old proposal-only or legacy direct-write route remains a parallel mutation path.
+10. B2 version, validation, eligibility, provenance, and materialization evidence is retained, and no legacy proposal or direct-write route remains.
 
 ## Closed decisions (v1 authority ruled)
 
@@ -220,14 +219,14 @@ All Founder decisions for v1 are closed by THR-055 seq 187, 200, and 205:
 2. **Agent update authority.** Agents may create and update only their own originated custom skills using verified active task/session identity. Agents cannot update skills originated by other agents or humans.
 3. **Default eligibility.** Default hidden (no eligibility rules). The Founder must make an explicit policy change to expose a custom skill.
 4. **v1 content class.** `standard_operational` only. Custom high-impact doctrine requires a separate governance decision and is out of scope for v1.
-5. **Migration disposition.** Migrate existing proposal content/history into custom-skill records preserving useful provenance, default hidden; atomically retire the proposal-only workflow and legacy direct mutation routes; return stable compatibility errors for those old writers.
+5. **B2 cutover disposition.** Keep B2 custom-skill version/provenance/validation/materialization evidence and default hidden eligibility; delete the legacy proposal workflow and direct mutation routes without compatibility behavior.
 
 ### Risks and mitigations
 
 - **Behavioral drift from rapid authoring:** require validation, default-hidden eligibility, durable provenance, version history, and clear owner/action audit. Evaluate usefulness weekly, not catalog volume.
 - **Eligibility becomes shadow permission control:** UI/API copy and tests must state and prove it controls guidance visibility only. Keep all permission systems outside this module.
 - **Scope conflict between content and policy:** separate content editing from eligibility writes and make each server-authorized/audited. An agent cannot perform the policy half.
-- **Migration leaves two write paths:** require one explicit cutover plan and compatibility behavior; do not keep proposal-only and direct legacy writes as undocumented alternatives.
+- **Cutover leaves a legacy writer:** delete it; do not keep proposal-only or direct legacy writes as undocumented alternatives.
 - **Overbroad org rules:** require impact preview and explicit confirmation for organization scope; show deny precedence and affected-agent count before save.
 - **False runtime claims:** show materialization evidence, not merely an assignment/policy save, before claiming a version is effective.
 

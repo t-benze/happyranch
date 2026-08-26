@@ -1674,6 +1674,141 @@ class TestRuntimeProfilesListRoute:
 class TestRuntimeProfileDeleteRoute:
     """DELETE /api/v1/executors/runtime/profiles/{name}"""
 
+    def test_delete_unbound_direct_connect_adapter_removes_and_audits_it(self, client, tmp_home):
+        """A direct-connect adapter is owned by its removed profile."""
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+        adapter = AdapterEntry(
+            id="direct-profile-adapter",
+            name="direct-profile",
+            executable="/tmp/direct-profile-adapter",
+            executable_hash="direct-hash",
+            version="1.0.0",
+            workspace_adapter="codex",
+            status="approved",
+            registered_at="2026-08-13T00:00:00Z",
+            registered_by="direct-connect",
+            approved_at="2026-08-13T00:00:00Z",
+            approved_by="direct-connect",
+            intended_profile_name="direct-profile",
+        )
+        save_adapter(adapter)
+        profile = _entry()
+        profile["command_adapter_id"] = "custom-adapter:direct-profile-adapter"
+        save_runtime_profile("direct-profile", profile)
+
+        response = client.delete("/api/v1/executors/runtime/profiles/direct-profile")
+
+        assert response.status_code == 200
+        assert get_adapter(adapter.id) is None
+        audit_db = Database(tmp_home / "runtime-audit.db")
+        try:
+            rows = audit_db.get_audit_logs("adapter:direct-profile-adapter")
+            assert len(rows) == 1
+            assert rows[0]["action"] == "adapter_removed"
+            assert rows[0]["payload"]["executable_hash"] == "direct-hash"
+        finally:
+            audit_db.close()
+
+    def test_delete_restores_direct_connect_adapter_when_nested_audit_fails(
+        self, client, monkeypatch,
+    ):
+        """Nested cleanup keeps a restorable adapter if its audit write fails."""
+        from runtime.daemon.routes import adapters as adapters_routes
+        from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+        adapter = AdapterEntry(
+            id="audit-failure-direct-adapter",
+            name="audit-failure-direct",
+            executable="/tmp/audit-failure-direct-adapter",
+            executable_hash="audit-failure-hash",
+            version="1.0.0",
+            workspace_adapter="codex",
+            status="approved",
+            registered_at="2026-08-13T00:00:00Z",
+            registered_by="direct-connect",
+            approved_at="2026-08-13T00:00:00Z",
+            approved_by="direct-connect",
+            intended_profile_name="audit-failure-direct",
+        )
+        original_snapshot = adapter.to_dict()
+        save_adapter(adapter)
+        profile = _entry()
+        profile["command_adapter_id"] = f"custom-adapter:{adapter.id}"
+        save_runtime_profile("audit-failure-direct", profile)
+
+        monkeypatch.setattr(
+            adapters_routes,
+            "_audit_adapter_remove",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("injected audit failure")),
+        )
+
+        response = client.delete("/api/v1/executors/runtime/profiles/audit-failure-direct")
+
+        # Profile removal is durable before this best-effort nested cleanup,
+        # so a 500 would falsely claim the profile still exists.
+        assert response.status_code == 200, response.json()
+        restored = get_adapter(adapter.id)
+        assert restored is not None
+        assert restored.to_dict() == original_snapshot
+
+    def test_delete_keeps_manual_submission_adapter(self, client):
+        """Manual-submission adapters may be intentionally rebound later."""
+        from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+        adapter = AdapterEntry(
+            id="manual-profile-adapter",
+            name="manual-profile",
+            executable="/tmp/manual-profile-adapter",
+            executable_hash="manual-hash",
+            version="1.0.0",
+            workspace_adapter="codex",
+            status="approved",
+            registered_at="2026-08-13T00:00:00Z",
+            registered_by="adapter-submission:manual-profile",
+            approved_at="2026-08-13T00:00:00Z",
+            approved_by="founder",
+            intended_profile_name="manual-profile",
+        )
+        save_adapter(adapter)
+        profile = _entry()
+        profile["command_adapter_id"] = "custom-adapter:manual-profile-adapter"
+        save_runtime_profile("manual-profile", profile)
+
+        response = client.delete("/api/v1/executors/runtime/profiles/manual-profile")
+
+        assert response.status_code == 200
+        assert get_adapter(adapter.id) is not None
+
+    def test_delete_keeps_direct_connect_adapter_bound_by_another_profile(self, client):
+        from runtime.orchestrator.adapter_store import AdapterEntry, get_adapter, save_adapter
+
+        adapter = AdapterEntry(
+            id="shared-direct-adapter",
+            name="first-profile",
+            executable="/tmp/shared-direct-adapter",
+            executable_hash="shared-hash",
+            version="1.0.0",
+            workspace_adapter="codex",
+            status="approved",
+            registered_at="2026-08-13T00:00:00Z",
+            registered_by="direct-connect",
+            approved_at="2026-08-13T00:00:00Z",
+            approved_by="direct-connect",
+            intended_profile_name="first-profile",
+        )
+        save_adapter(adapter)
+        for name in ("first-profile", "second-profile"):
+            profile = _entry()
+            profile["command_adapter_id"] = "custom-adapter:shared-direct-adapter"
+            save_runtime_profile(name, profile)
+
+        response = client.delete("/api/v1/executors/runtime/profiles/first-profile")
+
+        assert response.status_code == 200
+        assert get_adapter(adapter.id) is not None
+
     def test_delete_present_removes_from_store(self, client, tmp_home):
         save_runtime_profile("doomed", _entry())
 

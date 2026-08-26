@@ -50,3 +50,8 @@ You do not have to prescribe the internal chain for routine work.
 - Threads routes: `/orgs/:slug/threads`, `/orgs/:slug/threads/:thread_id`.
 - Task CLI verbs include `run`, `tasks`, `details`, and `tail`.
 - Thread CLI verbs live under `happyranch threads ...`.
+- Task detail surfaces (`happyranch details` and the Tasks task-detail page)
+  show a derived work-status summary: session start, heartbeat freshness
+  (existing 60-second semantics), and the latest agent-written progress
+  receipt — with an explicit stale/no-substantive-update state when a live
+  session is silent, never implying progress from heartbeats.

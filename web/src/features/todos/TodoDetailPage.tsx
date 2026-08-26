@@ -13,6 +13,7 @@ import { StatusPill } from './components/StatusPill'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { EditDialog } from './components/EditDialog'
 import { formatFireAtInTz } from './timezone'
+import { formatRecurringRule } from './recurrence'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
 
 interface TodoDetailPageProps {
@@ -58,6 +59,8 @@ function describeSchedule(s: ScheduleRecord): string {
     }
     return 'One-shot schedule'
   }
+
+  if (s.kind === 'recurring') return formatRecurringRule(s.recurrence, tz)
 
   const day = s.recurrence?.day ?? '?'
   const time = s.recurrence?.time ?? '?'
@@ -245,7 +248,7 @@ export function TodoDetailPage({
               Recurrence
             </span>
             <span className="text-sm font-semibold">
-              {schedule.kind === 'weekly' ? 'Weekly' : 'One-shot'}
+              {schedule.kind === 'recurring' ? 'Recurring' : schedule.kind === 'weekly' ? 'Weekly' : 'One-shot'}
             </span>
           </div>
         </div>
@@ -266,7 +269,7 @@ export function TodoDetailPage({
                   Recurrence
                 </span>
                 <span className="text-fg text-sm font-medium">
-                  {schedule.kind === 'weekly' ? 'Weekly' : 'One-shot'}
+                  {schedule.kind === 'recurring' ? 'Recurring' : schedule.kind === 'weekly' ? 'Weekly' : 'One-shot'}
                 </span>
               </div>
               <div>

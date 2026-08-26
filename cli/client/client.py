@@ -51,6 +51,9 @@ class OpcClient:
     def post(self, path: str, **kwargs) -> httpx.Response:
         return self._client.post(path, **kwargs)
 
+    def patch(self, path: str, **kwargs) -> httpx.Response:
+        return self._client.patch(path, **kwargs)
+
     def request(self, method: str, path: str, **kwargs) -> httpx.Response:
         return self._client.request(method, path, **kwargs)
 

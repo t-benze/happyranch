@@ -11,6 +11,7 @@ import type { ScheduleRecord } from '@/lib/api/types'
 import { StatusPill } from './StatusPill'
 import { TODO_STRINGS } from '../strings'
 import { formatFireAtInTz } from '../timezone'
+import { formatRecurringRule } from '../recurrence'
 import { cn } from '@/lib/utils'
 
 interface TodoRowProps {
@@ -31,6 +32,8 @@ function scheduleLine(s: ScheduleRecord): string {
     }
     return 'One-shot'
   }
+
+  if (s.kind === 'recurring') return formatRecurringRule(s.recurrence, tz)
 
   const day = s.recurrence?.day ?? ''
   const time = s.recurrence?.time ?? ''

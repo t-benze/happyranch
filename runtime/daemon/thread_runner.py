@@ -21,6 +21,7 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    ThreadReplyClaim,
 )
 from runtime.orchestrator.executors import (
     GenericCliExecutor,
@@ -157,13 +158,15 @@ def _purpose_note(
             return (
                 f"Task {task_id} that you dispatched from this thread has "
                 f"ESCALATED to the founder{reason_clause}. The task is blocked "
-                f"awaiting a founder decision. Post a concise reply in this "
-                f"thread that states what you need from the founder and why, so "
-                f"she sees it in context (pull details via `happyranch details "
-                f"{task_id}`). Do not attempt to resolve the escalation "
-                f"yourself; do not dispatch a new task from this turn. Decline "
-                f"if the escalation already says everything and a thread "
-                f"restatement adds nothing."
+                f"awaiting a bounded-continuation assessment. First evaluate the "
+                f"existing THR-166 policy against the server-recorded causal "
+                f"terminal result; if it is eligible, submit the structured "
+                f"continuation request. Otherwise post the precise founder decision "
+                f"needed (pull details via `happyranch details {task_id}`). Do not "
+                f"dispatch repair work from this turn. Acceptance only resumes this "
+                f"SAME root's ordinary lifecycle, which must delegate repair, review, "
+                f"and reverify before returning to the original protected gate; this "
+                f"follow-up never authorizes that gate."
             )
         return (
             f"Task {task_id} that you dispatched from this thread reached "
@@ -177,7 +180,7 @@ def _purpose_note(
     return f"Message {triggering_seq} was posted to this thread"
 
 
-def _continue_cli_example(task_id: str, invoked_agent: str) -> str:
+def _manual_break_glass_cli_example(task_id: str, invoked_agent: str) -> str:
     return (
         f'  `happyranch resolve-escalation --task-id {task_id} '
         f'--decision continue --as-agent {invoked_agent} '
@@ -199,11 +202,11 @@ def _maybe_unresolved_escalations_note(
     """Guardrail: when a manager receives a REPLY/BOOTSTRAP invocation in a
     thread that carries unresolved ``task_escalated`` system messages whose live
     task rows are still supersedable, surface the concrete task ids and the
-    resolution options available for each: ``continue`` (resume the SAME task
-    in place — only valid when the predecessor's block kind is
-    ``"escalated"``) and ``resolves`` (dispatch a new task naming the
-    predecessor — valid for both ``"escalated"`` and ``"delegated"`` block
-    kinds).
+    resolution options available for each: the named manual break-glass
+    ``continue`` route (only for a founder-directed manual action on an
+    ``"escalated"`` predecessor) and ``resolves`` (dispatch a new task naming
+    the predecessor — valid for both ``"escalated"`` and ``"delegated"``
+    block kinds).
 
     Derived from thread messages + task status, never from brief prose.
     """
@@ -246,11 +249,11 @@ def _maybe_unresolved_escalations_note(
                 f"Task **{tid}** escalated in this thread and is still "
                 f"awaiting a founder-authorized resolution. Pick the option "
                 f"that matches the founder's reply:\n\n"
-                f"- If the founder's reply resolves this escalation with no "
-                f"new task-shaped work needed, resume the SAME task in "
-                f"place — original brief untouched, the reply is appended "
-                f"as an audited note:\n"
-                f"{_continue_cli_example(tid, invoked_agent)}\n\n"
+                f"- Do not self-authorize a continue from the reply or its "
+                f"prose. The direct route is a named manual break-glass "
+                f"exception under the shared-bearer model; use it only for "
+                f"a founder-directed manual action:\n"
+                f"{_manual_break_glass_cli_example(tid, invoked_agent)}\n\n"
                 f"- If the founder's reply requires new delegated work, "
                 f"your next self-dispatched task MUST include the explicit "
                 f"linkage:\n"
@@ -283,10 +286,9 @@ def _maybe_unresolved_escalations_note(
     for tid, block_kind in escalated:
         if block_kind == "escalated":
             per_task_lines.append(
-                f"**{tid}** — if the founder's reply resolves this "
-                f"escalation with no new task-shaped work needed, resume "
-                f"it in place:\n"
-                f"{_continue_cli_example(tid, invoked_agent)}\n"
+                f"**{tid}** — do not self-authorize from a reply. The direct "
+                f"continue route is manual break-glass only:\n"
+                f"{_manual_break_glass_cli_example(tid, invoked_agent)}\n"
                 f"  Otherwise, if new delegated work is needed:\n"
                 f"{_resolves_json_example(tid)}"
             )
@@ -325,7 +327,24 @@ def _decline_by_default_doctrine() -> str:
         "- You have substantive content to add — not acknowledgment, not\n"
         "  \"I agree\", not \"noted\".\n"
         "- No other participant has already covered the same ground in a\n"
-        "  recent reply.\n\n"
+        "  recent reply.\n"
+        "- You have not already substantively answered that question, request,\n"
+        "  or hand-off in a later message of your own.\n\n"
+        "Before replying, read the full conversation supplied in this\n"
+        "invocation — every message in the history, not just the newest\n"
+        "messages in this wake's delivery range — and check whether this wake\n"
+        "re-delivers a request you already answered. (In a resumed session, the\n"
+        "earlier transcript is already in your context; read it too.) If your\n"
+        "own later message already substantively answered the request, decline\n"
+        "silently — nothing further is owed. Coverage is a question of\n"
+        "substance, never of sequence or position alone: a later message from\n"
+        "you that merely acknowledges, restates, or agrees does not count as\n"
+        "an answer.\n\n"
+        "Exception: if the newest message in this wake's delivery range\n"
+        "contains a distinct request you have not yet answered — for example a\n"
+        "genuine follow-up question — reply as you normally would. Do not use\n"
+        "the \"already answered\" rule to suppress legitimate follow-up\n"
+        "questions.\n\n"
         "The founder is a participant; she reads the full thread in the web UI.\n"
         "You do not need to \"keep her informed\" by replying.\n\n"
         "If you are unsure: decline. The thread can always be re-engaged by\n"
@@ -522,6 +541,39 @@ def _persist_thread_token_usage(
         )
 
 
+def _settle_or_fail_reply(
+    org_state,
+    *,
+    invocation_token: str,
+    claim,
+    status: ThreadInvocationStatus,
+    decline_reason: str,
+) -> bool:
+    """Central settlement seam for a conversational REPLY terminal path.
+
+    A claimed REPLY routes through ``settle_conversational_reply`` (which
+    advances acknowledgement conditionally and never hot-loops); a non-REPLY
+    invocation (or a REPLY whose claim was not taken) keeps the legacy
+    ``fail_invocation`` transition. Maps DECLINED→decline, TIMEOUT→timeout,
+    everything else→failed.
+    """
+    if claim is not None:
+        if status is ThreadInvocationStatus.TIMEOUT:
+            outcome = "timeout"
+        elif status is ThreadInvocationStatus.DECLINED:
+            outcome = "decline"
+        else:
+            outcome = "failed"
+        return org_state.db.settle_conversational_reply(
+            token=invocation_token,
+            outcome=outcome,
+            decline_reason=decline_reason,
+        ) is not None
+    return org_state.db.fail_invocation(
+        invocation_token, status=status, decline_reason=decline_reason,
+    )
+
+
 async def run_invocation(
     *,
     org_state,
@@ -538,10 +590,24 @@ async def run_invocation(
         logger.info("run_invocation: token %s already non-pending", invocation_token[:8])
         return
 
+    # GitHub #688 Slice B: a conversational REPLY must pass the durable
+    # queued→running CAS before any prompt/subprocess work. A stale/duplicate
+    # queue notification no-ops here. BOOTSTRAP/TASK_FOLLOWUP keep the legacy
+    # direct path (no delivery-state row).
+    claim: "ThreadReplyClaim | None" = None
+    if inv.purpose is ThreadInvocationPurpose.REPLY:
+        claim = org_state.db.claim_conversational_reply(invocation_token)
+        if claim is None:
+            logger.info(
+                "run_invocation: token %s stale/duplicate REPLY (claim CAS miss)",
+                invocation_token[:8],
+            )
+            return
+
     thread = org_state.db.get_thread(inv.thread_id)
     if thread is None:
-        org_state.db.fail_invocation(
-            invocation_token,
+        _settle_or_fail_reply(
+            org_state, invocation_token=invocation_token, claim=claim,
             status=ThreadInvocationStatus.FAILED,
             decline_reason="thread_missing",
         )
@@ -560,18 +626,39 @@ async def run_invocation(
         paths = None
 
     # THR-095: read executor from org/agents/<name>.md (single source of truth).
+    # FAIL-CLOSED: terminated or missing agents must never fall back to
+    # ``claude`` and must never reach executor construction.
     try:
-        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
         agent_def = load_agent(paths, inv.agent_name) if paths else None
-        executor_name = (agent_def.executor if agent_def else "claude").lower()
     except Exception:
         agent_def = None
-        executor_name = "claude"
+
+    if agent_def is None:
+        reason = "agent_unavailable"
+        if paths and is_terminated(paths, inv.agent_name):
+            reason = "agent_terminated"
+        _settle_or_fail_reply(
+            org_state, invocation_token=invocation_token, claim=claim,
+            status=ThreadInvocationStatus.DECLINED,
+            decline_reason=reason,
+        )
+        AuditLogger(org_state.db).log_thread_invocation_failed(
+            inv.thread_id,
+            agent=inv.agent_name,
+            token=invocation_token,
+            purpose=inv.purpose.value,
+            reason=reason,
+            kind="thread_invocation_failed",
+        )
+        return
+
+    executor_name = agent_def.executor.lower()
     if not _is_registered_executor(executor_name):
         executor_name = "claude"
 
     # Issue #568: forward AgentDef.model to executor.run for thread invocations.
-    model_name: str | None = agent_def.model if agent_def else None
+    model_name: str | None = agent_def.model
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
@@ -653,8 +740,8 @@ async def run_invocation(
         decline_reason = str(e)
         if not isinstance(e, SystemContractMaterializationError):
             decline_reason = f"materialization_failed: {e}"
-        org_state.db.fail_invocation(
-            invocation_token,
+        _settle_or_fail_reply(
+            org_state, invocation_token=invocation_token, claim=claim,
             status=ThreadInvocationStatus.FAILED,
             decline_reason=decline_reason,
         )
@@ -696,7 +783,33 @@ async def run_invocation(
             if is_claude else (None, 0)
         )
         resume_sid: str | None = None
-        if is_claude and stored_sid:
+        # GitHub #688 Slice B: a claimed conversational REPLY must explicitly
+        # state its inclusive delivery range so the agent knows exactly which
+        # messages this wake covers (a coalesced wake batches several). The
+        # transcript renders them in order; the note makes the range explicit
+        # and forbids skipping. Session resume below is allowed only as an
+        # optimization that cannot omit any sequence in this range.
+        range_note = ""
+        if claim is not None:
+            range_note = (
+                f"\n## Delivery range (GH-688 Phase 1)\n"
+                f"You are asked to respond to messages "
+                f"{claim.running_from_seq} through {claim.running_through_seq} "
+                f"(inclusive), in order. Consider every message in that range; "
+                f"do not skip any of them.\n"
+            )
+        # GitHub #688 Slice B: a resumed Claude session may use a delta only
+        # when it cannot omit a required sequence. For a claimed REPLY the
+        # session watermark must stay strictly below the claim's
+        # running_from_seq; otherwise ``last_resumed_seq`` would silently
+        # control (and drop) required delivery, so we fall back to the full
+        # prompt. Non-REPLY invocations keep the legacy resume behavior.
+        can_resume = (
+            is_claude
+            and stored_sid
+            and (claim is None or last_seq < claim.running_from_seq)
+        )
+        if can_resume:
             new_messages = [m for m in messages if m.seq > last_seq]
             triggering = next((m for m in messages if m.seq == inv.triggering_seq), None)
             prompt = build_thread_delta_prompt(
@@ -730,6 +843,7 @@ async def run_invocation(
         )
         if escalation_note:
             prompt += "\n" + escalation_note
+        prompt += range_note
 
         org_state.db.stamp_invocation_started(invocation_token, session_id=session_id)
         await _publish_invocation_event(
@@ -797,13 +911,14 @@ async def run_invocation(
                 )
                 if escalation_note2:
                     full_prompt += "\n" + escalation_note2
+                full_prompt += range_note
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 fallback_executed = True
                 result = await loop.run_in_executor(None, lambda: _invoke(full_prompt, None))
         except Exception as exc:
-            org_state.db.fail_invocation(
-                invocation_token,
+            _settle_or_fail_reply(
+                org_state, invocation_token=invocation_token, claim=claim,
                 status=ThreadInvocationStatus.FAILED,
                 decline_reason=f"runner_crash: {exc}",
             )
@@ -936,6 +1051,7 @@ async def run_invocation(
                     )
                     + "\n"
                     + (escalation_note + "\n" if escalation_note else "")
+                    + range_note
                     + nudge_prompt
                 )
                 retry_resume_sid = None
@@ -1041,8 +1157,8 @@ async def run_invocation(
                         reason = f"{reason} — {detail}"
                     status = ThreadInvocationStatus.FAILED
 
-            org_state.db.fail_invocation(
-                invocation_token,
+            _settle_or_fail_reply(
+                org_state, invocation_token=invocation_token, claim=claim,
                 status=status,
                 decline_reason=reason,
             )
@@ -1073,8 +1189,9 @@ async def run_invocation(
                 reason = f"{reason} — {detail}"
             status = ThreadInvocationStatus.FAILED
 
-        org_state.db.fail_invocation(
-            invocation_token, status=status, decline_reason=reason,
+        _settle_or_fail_reply(
+            org_state, invocation_token=invocation_token, claim=claim,
+            status=status, decline_reason=reason,
         )
         # Spec §6: silent decline — no thread_messages row, no turns_used increment.
         # The invocation row status (timeout/failed) and decline_reason are the record.

@@ -20,6 +20,9 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 
 ## Requirements
 
+- macOS or Linux. Both use the same same-owner canonical skill-store model;
+  Windows and unknown platforms fail closed before agent materialization or
+  launch.
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - At least one supported agent CLI installed and authenticated:
@@ -379,6 +382,10 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
+
+> **Offline org relocation:** for the founder-operated manual procedure to move
+> an org between runtimes, see
+> [`docs/operations/offline-organization-relocation.md`](docs/operations/offline-organization-relocation.md).
 
 ## Configuration
 

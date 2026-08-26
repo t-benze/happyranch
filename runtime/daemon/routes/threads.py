@@ -4,7 +4,9 @@ from __future__ import annotations
 import json as _json
 import mimetypes
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Annotated, Literal, Mapping
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -23,6 +25,7 @@ from runtime.infrastructure.thread_store import render_transcript_body
 from runtime.models import (
     ResponderStatusEntry,
     TaskRecord,
+    TaskStatus,
     ThreadAttachment,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
@@ -32,7 +35,11 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    load_org_config,
+    resolve_org_setting_threads,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -125,11 +132,12 @@ def _create_agent_thread_locked(
             continue
         org.db.add_thread_participant(thread_id, name, added_by=composer)
 
-    seq = org.db.append_thread_message(
+    seq, arrivals = org.db.record_conversational_arrival(
         thread_id=thread_id, speaker=composer,
         kind=ThreadMessageKind.MESSAGE,
         body_markdown=body_text,
         attachments=attachments or [],
+        recipients=addressed_agents,
     )
     org.db.increment_thread_turns_used(thread_id, by=1)
     AuditLogger(org.db).log_thread_started(
@@ -145,14 +153,12 @@ def _create_agent_thread_locked(
         thread_id, seq=seq, speaker=composer, kind="message",
         attachment_names=[a.artifact_name for a in (attachments or [])],
     )
-    tokens_to_enqueue: list[str] = []
-    for name in addressed_agents:
-        inv = org.db.mint_thread_invocation(
-            thread_id=thread_id, agent_name=name,
-            triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-        )
-        tokens_to_enqueue.append(inv.invocation_token)
-    return thread_id, seq, tokens_to_enqueue, addressed_agents
+    tokens_to_enqueue: list[str] = [
+        a.invocation_token for a in arrivals if a.invocation_token is not None
+    ]
+    # Slice B: report the ACTUAL wake set (mention-narrowed when the thread
+    # setting is enabled and valid mentions exist), not the broadcast set.
+    return thread_id, seq, tokens_to_enqueue, [a.agent_name for a in arrivals]
 
 
 class AttachmentRefBody(BaseModel):
@@ -515,11 +521,12 @@ async def _compose_thread_multipart(
 
         all_attachments = shared_attachments + thread_attachments
         body_text = _normalize_message_body(body.body_markdown, all_attachments)
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=all_attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -535,13 +542,9 @@ async def _compose_thread_multipart(
                 for a in all_attachments
             ],
         )
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(
@@ -559,7 +562,7 @@ async def _compose_thread_multipart(
     return {
         "thread_id": thread_id,
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -641,11 +644,12 @@ async def compose_thread(
         ))
         for name in body.recipients:
             org.db.add_thread_participant(thread_id, name, added_by="founder")
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -658,15 +662,12 @@ async def compose_thread(
             thread_id, seq=seq, speaker="founder", kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        # Broadcast: mint REPLY for every recipient (participant). The founder
-        # is the speaker and is not in recipients, so she is never minted.
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        # Broadcast: the store raises required/coalesces for every recipient
+        # (participant). The founder is the speaker and is not in recipients,
+        # so she is never woken.
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -682,7 +683,7 @@ async def compose_thread(
     return {
         "thread_id": thread_id,
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -868,11 +869,12 @@ async def _compose_agent_thread_multipart(
         all_attachments = shared_attachments + thread_attachments
         body_text = _normalize_message_body(body.body_markdown, all_attachments)
 
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=body.composer,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=all_attachments,
+            recipients=addressed_agents,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -891,13 +893,9 @@ async def _compose_agent_thread_multipart(
             ],
         )
 
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue: list[str] = [
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        ]
 
     for tok in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
@@ -915,7 +913,7 @@ async def _compose_agent_thread_multipart(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "composed_by": body.composer,
         "composed_from_task_id": body.task_id,
-        "pending_replies": addressed_agents,
+        "pending_replies": [a.agent_name for a in arrivals],
     }
 
 
@@ -1010,7 +1008,7 @@ async def compose_thread_as_agent(
     composed_from_task_id = body.task_id
 
     async with org.db_lock:
-        thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
+        thread_id, seq, tokens_to_enqueue, wake_recipients = _create_agent_thread_locked(
             org,
             composer=body.composer,
             subject=subject,
@@ -1037,7 +1035,7 @@ async def compose_thread_as_agent(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "composed_by": body.composer,
         "composed_from_task_id": composed_from_task_id,
-        "pending_replies": addressed_agents,
+        "pending_replies": wake_recipients,
     }
 
 
@@ -1080,6 +1078,10 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "composed_from_task_id": t.composed_from_task_id,
         "composed_from_dream_id": t.composed_from_dream_id,
         "last_speaker": t.last_speaker,
+        "pinned": t.pinned_at is not None,
+        "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
+        "mention_routing_enabled": t.mention_routing_enabled,
+        "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
     }
 
 
@@ -1133,7 +1135,10 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
 
     Splits the DB `pending` state into `queued` (no subprocess yet) vs
     `working` (subprocess started — `started_at` set). Terminal states go
-    through `_wire_status` (consumed→replied, timeout→failed).
+    through `_wire_status` (consumed→replied, timeout→failed). The invocation's
+    authoritative ``purpose`` is passed through unchanged so the web selector
+    classifies/dedups by purpose (never by triggering-row kind — a REPLY range
+    can anchor on a system row).
     """
     db_status = e["status"]
     if db_status == "pending":
@@ -1142,6 +1147,7 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
         wire = _wire_status(db_status)
     return ResponderStatusEntry(
         agent_name=e["agent_name"],
+        purpose=e["purpose"],
         status=wire,
         responded_at=e["consumed_at"],
         started_at=e.get("started_at"),
@@ -1250,14 +1256,19 @@ async def get_thread_endpoint(
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
-    # Pass responders unconditionally: the grouped query returns reply
-    # invocations (which hang off MESSAGE rows) and task_followup invocations
-    # (which hang off the SYSTEM row that wakes a dispatched agent). The two are
-    # disjoint by triggering-row kind, so a blanket lookup surfaces the followup
-    # in-flight strip on its system row without contaminating message rows.
+    # Pass responders unconditionally: the grouped query returns reply and
+    # task_followup invocations keyed by their OWN triggering_seq (every
+    # invocation carries its authoritative purpose on the wire — TASK-5553 —
+    # so a REPLY wake anchored on a SYSTEM row is still classified as a
+    # REPLY). The blanket lookup surfaces the followup in-flight strip on its
+    # system row without contaminating message rows.
     d["messages"] = [
         _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
         for m in msgs
+    ]
+    d["reply_delivery"] = [
+        p.model_dump(mode="json")
+        for p in org.db.list_reply_delivery_projections(thread_id)
     ]
     return d
 
@@ -1281,9 +1292,9 @@ async def list_thread_messages_endpoint(
         msgs = msgs[:effective_limit]
     next_since_seq = msgs[-1].seq if msgs else since_seq
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
-    # Unconditional responders lookup — see get_thread_endpoint: reply and
-    # task_followup invocations are disjoint by triggering-row kind, so the
-    # blanket lookup surfaces the followup in-flight strip on its system row.
+    # Unconditional responders lookup — see get_thread_endpoint: entries are
+    # keyed by their own triggering_seq and carry the authoritative purpose on
+    # the wire (TASK-5553), so a REPLY anchored on a system row stays a REPLY.
     return {
         "messages": [
             _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
@@ -1291,6 +1302,10 @@ async def list_thread_messages_endpoint(
         ],
         "has_more": has_more,
         "next_since_seq": next_since_seq,
+        "reply_delivery": [
+            p.model_dump(mode="json")
+            for p in org.db.list_reply_delivery_projections(thread_id)
+        ],
     }
 
 
@@ -1397,26 +1412,24 @@ async def reply_thread_endpoint(
         inv = org.db.get_pending_invocation(body.invocation_token)
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.speaker,
-            kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
+        seq, settlement, arrivals = org.db.reply_conversational(
+            thread_id=thread_id,
+            speaker=body.speaker,
+            body_markdown=body_text,
             attachments=attachments,
+            token=body.invocation_token,
+            token_purpose=inv.purpose,
         )
-        org.db.consume_invocation(body.invocation_token)
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.speaker, kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        # Broadcast: mint REPLY for every participant except the speaker.
-        for p in org.db.list_thread_participants(thread_id):
-            if p.agent_name == body.speaker:
-                continue
-            new_inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=p.agent_name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(new_inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
+        if settlement is not None and settlement.follow_on_token is not None:
+            tokens_to_enqueue.append(settlement.follow_on_token)
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -1469,18 +1482,38 @@ async def decline_thread_endpoint(
     # any message as long as they hold a valid invocation token.
 
     reason = body.reason.strip() if body.reason else None
+    tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        if org.db.get_pending_invocation(body.invocation_token) is None:
+        inv = org.db.get_pending_invocation(body.invocation_token)
+        if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        ok = org.db.mark_invocation_declined(
-            body.invocation_token, decline_reason=reason,
-        )
+        if inv.purpose is ThreadInvocationPurpose.REPLY:
+            settlement = org.db.settle_conversational_reply(
+                token=body.invocation_token,
+                outcome="decline",
+                decline_reason=reason,
+            )
+            if settlement is None:
+                # Legacy/stale pending REPLY not owned by delivery state.
+                ok = org.db.mark_invocation_declined(
+                    body.invocation_token, decline_reason=reason,
+                )
+            else:
+                ok = True
+                if settlement.follow_on_token is not None:
+                    tokens_to_enqueue.append(settlement.follow_on_token)
+        else:
+            ok = org.db.mark_invocation_declined(
+                body.invocation_token, decline_reason=reason,
+            )
         if not ok:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
         AuditLogger(org.db).log_thread_decline_consumed(
             thread_id, agent_name=body.speaker, reason=reason,
         )
         # No thread_messages row, no turns_used increment (spec §6: silent decline).
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=None, speaker=body.speaker,
@@ -1687,6 +1720,250 @@ class ThreadResolveEscalationBody(BaseModel):
     # invocation token is being presented.
     invocation_token: str = ""
     dispatcher: str = ""
+    # Required only for the THR-166 autonomous continue path.  These are
+    # deliberately structured: neither a manager brief nor a prose rationale
+    # is an authorization boundary.
+    policy_id: str = ""
+    policy_version: str = ""
+    policy_provenance: str = ""
+    continuation_class: str = ""
+    attestation_checks: list[str] = Field(default_factory=list)
+    evidence: list["TerminalEvidence"] = Field(default_factory=list)
+
+
+class TerminalEvidence(BaseModel):
+    """Caller comparison input for the causal terminal result."""
+    task_id: str
+    terminal_status: Literal["completed", "failed", "superseded", "cancelled"]
+    verdict: str | None = None
+    output_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class ContinuationEvidence:
+    """Caller-presented evidence, compared only with canonical snapshots."""
+
+    task_id: str
+    terminal_status: str
+    verdict: str | None
+    output_summary: str | None
+
+
+@dataclass(frozen=True)
+class ContinuationPresentation:
+    """The non-authoritative continuation fields presented by a caller."""
+
+    policy_id: str
+    policy_version: str
+    policy_provenance: str
+    continuation_class: str
+    attestation_checks: frozenset[str]
+    attestation_count: int
+    evidence: tuple[ContinuationEvidence, ...]
+
+    @classmethod
+    def from_body(cls, body: ThreadResolveEscalationBody) -> "ContinuationPresentation":
+        return cls(
+            policy_id=body.policy_id,
+            policy_version=body.policy_version,
+            policy_provenance=body.policy_provenance,
+            continuation_class=body.continuation_class,
+            attestation_checks=frozenset(body.attestation_checks),
+            attestation_count=len(body.attestation_checks),
+            evidence=tuple(
+                ContinuationEvidence(
+                    task_id=entry.task_id,
+                    terminal_status=entry.terminal_status,
+                    verdict=entry.verdict,
+                    output_summary=entry.output_summary,
+                )
+                for entry in body.evidence
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CanonicalTerminalEvidence:
+    """One server-derived terminal evidence snapshot."""
+
+    task_id: str
+    result_id: int
+    terminal_status: str | None
+    created_at: str | None
+    verdict: str | None
+    output_summary: str | None
+
+
+@dataclass(frozen=True)
+class ContinuationFacts:
+    """Durable facts supplied to the pure bounded-continuation evaluator."""
+
+    escalated_at: str | None
+    causal_evidence: CanonicalTerminalEvidence | None
+
+
+@dataclass(frozen=True)
+class BoundedContinuationPolicy:
+    """An immutable server-owned compatibility profile, never caller authority."""
+
+    id: str
+    version: str
+    provenance: str
+    continuation_class: str
+    required_checks: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ContinuationEvaluation:
+    """Pure acceptance/rejection result with canonical audit snapshots."""
+
+    rejection_code: str | None
+    snapshots: tuple[dict, ...] = ()
+
+
+# This is the immutable, server-owned founder authority for THR-166.  Body
+# fields must match it exactly; callers cannot supply a manager-authored brief,
+# a KB quote, or a free-form rationale as an alternative authority source.
+THR166_POLICY = BoundedContinuationPolicy(
+    id="THR-166-genuine-human-blocker",
+    version="1",
+    provenance="founder:THR-166:seq-29",
+    continuation_class="repair_review_reverify_reevaluate_original_gate",
+    required_checks=frozenset({
+        "no_schema_or_overloaded_column_change",
+        "no_permission_sandbox_or_allow_rule_change",
+        "no_auth_credentials_security_privacy_or_data_access_change",
+        "no_spend_or_budget_change",
+        "no_destructive_or_irreversible_action",
+        "no_external_contract_or_product_commitment",
+        "no_genuine_ambiguity_or_novel_situation",
+        "evidence_terminal_fresh_and_consistent",
+        "original_protected_gate_not_authorized",
+    }),
+)
+
+
+def evaluate_bounded_continuation(
+    profile: BoundedContinuationPolicy,
+    *,
+    presentation: ContinuationPresentation,
+    facts: ContinuationFacts | None = None,
+) -> ContinuationEvaluation:
+    """Evaluate one bounded continuation from a profile and durable facts.
+
+    The profile is server-owned and facts are supplied by the route only after
+    durable reads.  Caller text is comparison input, never policy authority.
+    ``facts=None`` performs the exact early policy/attestation gate before
+    any evidence reads, preserving the deployed fail-closed ordering.
+    """
+    if (
+        presentation.policy_id != profile.id
+        or presentation.policy_version != profile.version
+        or presentation.policy_provenance != profile.provenance
+        or presentation.continuation_class != profile.continuation_class
+        or presentation.attestation_checks != profile.required_checks
+        or presentation.attestation_count != len(profile.required_checks)
+    ):
+        return ContinuationEvaluation("policy_or_attestation_mismatch")
+    if facts is None:
+        return ContinuationEvaluation(None)
+
+    if len(presentation.evidence) != 1 or facts.causal_evidence is None:
+        return ContinuationEvaluation("evidence_lineage_mismatch")
+    if facts.escalated_at is None:
+        return ContinuationEvaluation("escalation_provenance_missing")
+
+    entry = presentation.evidence[0]
+    canonical = facts.causal_evidence
+    if canonical.task_id != entry.task_id:
+        return ContinuationEvaluation("evidence_lineage_mismatch")
+    if canonical.terminal_status != entry.terminal_status:
+        return ContinuationEvaluation("evidence_terminal_mismatch")
+    # This result is the durable record that caused the bound escalation, so
+    # it must predate its escalation audit rather than be a later descendant.
+    if canonical.created_at is None or canonical.created_at > facts.escalated_at:
+        return ContinuationEvaluation("evidence_stale")
+    if (
+        entry.verdict != canonical.verdict
+        or entry.output_summary != canonical.output_summary
+    ):
+        return ContinuationEvaluation("evidence_result_mismatch")
+    return ContinuationEvaluation(None, ({
+        "task_id": canonical.task_id,
+        "result_id": canonical.result_id,
+        "terminal_status": canonical.terminal_status,
+        "verdict": canonical.verdict,
+        "output_summary": canonical.output_summary,
+        "created_at": canonical.created_at,
+    },))
+
+
+def _continuation_reject(org, task_id: str, actor: str, code: str, **context: object) -> None:
+    """Audit a fail-closed autonomous attempt without changing task state."""
+    AuditLogger(org.db).log_escalation_continuation_rejected(
+        task_id, actor=actor,
+        payload={"policy_id": THR166_POLICY.id, "reason": code, **context},
+    )
+    detail: dict[str, object] = {"code": code}
+    if code == "cannot_continue_live_children":
+        detail["remedy"] = "Wait for children to become terminal or use supersede."
+    raise HTTPException(status_code=409, detail=detail)
+
+
+def _validate_th166_evidence(
+    org, *, task, body: ThreadResolveEscalationBody, causal_payload: Mapping[str, object],
+) -> list[dict]:
+    """Return canonical evidence or fail closed on any stale/conflicting row."""
+    presentation = ContinuationPresentation.from_body(body)
+    early = evaluate_bounded_continuation(THR166_POLICY, presentation=presentation)
+    if early.rejection_code is not None:
+        raise ValueError(early.rejection_code)
+
+    logs = org.db.get_audit_logs(task.id)
+    escalations = [row for row in logs if row["action"] == "escalation"]
+    escalated_at = escalations[-1]["timestamp"] if escalations else None
+    snapshot = causal_payload.get("causal_terminal_result")
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("causal_result_missing")
+    result_id = snapshot.get("result_id")
+    if not isinstance(result_id, int) or snapshot.get("task_id") != task.id:
+        raise ValueError("causal_result_malformed")
+    result = next(
+        (row for row in org.db.get_task_results(task.id) if row.get("id") == result_id),
+        None,
+    )
+    if result is None:
+        raise ValueError("causal_result_missing")
+    canonical = CanonicalTerminalEvidence(
+        task_id=task.id,
+        result_id=result_id,
+        terminal_status=result.get("status"),
+        created_at=result.get("created_at"),
+        verdict=result.get("verdict"),
+        output_summary=result.get("output_summary"),
+    )
+    if canonical.terminal_status not in {"completed", "failed", "superseded", "cancelled"}:
+        raise ValueError("evidence_terminal_mismatch")
+    if snapshot != {
+        "task_id": canonical.task_id,
+        "result_id": canonical.result_id,
+        "terminal_status": canonical.terminal_status,
+        "verdict": canonical.verdict,
+        "output_summary": canonical.output_summary,
+        "created_at": canonical.created_at,
+    }:
+        raise ValueError("causal_result_conflict")
+    evaluation = evaluate_bounded_continuation(
+        THR166_POLICY,
+        presentation=presentation,
+        facts=ContinuationFacts(
+            escalated_at=escalated_at,
+            causal_evidence=canonical,
+        ),
+    )
+    if evaluation.rejection_code is not None:
+        raise ValueError(evaluation.rejection_code)
+    return list(evaluation.snapshots)
 
 
 @router.post("/threads/{thread_id}/resolve-escalation")
@@ -1723,12 +2000,20 @@ async def resolve_escalation_from_thread(
             status_code=422,
             detail={"code": "missing_invocation_token"},
         )
-    _validate_invocation_token(
+    # Supersede retains the established manager/founder thread resolution
+    # behavior.  Autonomous continue is the deliberately narrower THR-166
+    # path: the one causal TASK_FOLLOWUP minted for this exact escalation.
+    required_purposes = (
+        [ThreadInvocationPurpose.TASK_FOLLOWUP]
+        if body.decision == "continue"
+        else [ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP]
+    )
+    invocation = _validate_invocation_token(
         org,
         token=body.invocation_token,
         expected_agent=body.dispatcher,
         expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        require_purposes=required_purposes,
     )
     if not org.db.is_thread_participant(thread_id, body.dispatcher):
         raise HTTPException(
@@ -1776,6 +2061,97 @@ async def resolve_escalation_from_thread(
             },
         )
 
+    if body.decision == "continue":
+        # Same-owner is derived from the stored task assignment, never from
+        # a caller actor field.  Autonomous continuation is root-only: a
+        # descendant must finish through its ordinary parent lifecycle.
+        if task.assigned_agent != dispatcher:
+            _continuation_reject(
+                org, task.id, dispatcher, "continuation_wrong_owner",
+                assigned_agent=task.assigned_agent,
+            )
+        if task.parent_task_id is not None:
+            _continuation_reject(org, task.id, dispatcher, "continuation_not_root")
+        if task.status is not TaskStatus.ESCALATED or task.cancelled_at is not None:
+            _continuation_reject(org, task.id, dispatcher, "continuation_not_live_escalation")
+        if _has_live_children_for_continuation(org, task.id):
+            _continuation_reject(org, task.id, dispatcher, "cannot_continue_live_children")
+
+        causal_message = org.db.get_thread_message_by_seq(
+            thread_id, invocation.triggering_seq,
+        )
+        causal_payload = causal_message.system_payload if causal_message else None
+        if (
+            causal_message is None
+            or causal_payload is None
+            or causal_payload.get("kind_tag") != "task_escalated"
+            or causal_payload.get("task_id") != task.id
+            or causal_payload.get("root_task_id") != task.id
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
+        escalation_rows = [
+            row for row in org.db.get_audit_logs(task.id)
+            if row["action"] == "escalation"
+        ]
+        if (
+            not escalation_rows
+            or causal_payload.get("causal_escalation_audit_id") != escalation_rows[-1]["id"]
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
+        max_steps = org.orchestrator._settings.max_orchestration_steps
+        max_revise_rounds = load_org_config(
+            org.orchestrator._paths,
+        ).max_revise_rounds
+        if org.db.autonomous_continuation_budget_exhausted(
+            task.id,
+            max_steps=max_steps,
+            max_revise_rounds=max_revise_rounds,
+        ):
+            _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
+        try:
+            snapshots = _validate_th166_evidence(
+                org, task=task, body=body, causal_payload=causal_payload,
+            )
+        except ValueError as exc:
+            _continuation_reject(org, task.id, dispatcher, str(exc))
+        audit_payload = {
+            "policy_id": THR166_POLICY.id,
+            "policy_version": THR166_POLICY.version,
+            "policy_provenance": THR166_POLICY.provenance,
+            "continuation_class": THR166_POLICY.continuation_class,
+            "attestation_checks": sorted(THR166_POLICY.required_checks),
+            "evidence": snapshots,
+            "actor": dispatcher,
+            "thread_id": thread_id,
+            "invocation_token": body.invocation_token,
+            "causal_escalation_seq": invocation.triggering_seq,
+            "prior_status": TaskStatus.ESCALATED.value,
+            "new_status": TaskStatus.PENDING.value,
+            "queue_intent": {"task_id": task.id, "claimed": False},
+        }
+        note = f"{dispatcher} autonomous bounded continuation (THR-166)"
+        async with org.db_lock:
+            committed = org.db.continue_escalation_from_followup(
+                task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
+                invocation_token=body.invocation_token, max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
+                note=note, audit_payload=audit_payload,
+            )
+        if not committed:
+            if org.db.autonomous_continuation_budget_exhausted(
+                task.id,
+                max_steps=max_steps,
+                max_revise_rounds=max_revise_rounds,
+            ):
+                _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
+            _continuation_reject(org, task.id, dispatcher, "continuation_state_changed")
+        # This is intentionally after the durable queue intent.  If process
+        # delivery fails, a recovery delivery is safe because run_step's CAS
+        # admits at most one manager session; cancellation wins its own CAS.
+        if state.queue is not None:
+            state.queue.put_nowait(org.slug, task.id)
+        return {"ok": True, "task_id": task.id, "new_status": "pending"}
+
     new_status = await resolve_escalation_in_process(
         org, state,
         task_id=body.task_id,
@@ -1784,12 +2160,21 @@ async def resolve_escalation_from_thread(
         brief=body.brief,
         actor=actor,
         thread_id=thread_id,
+        resolution_path="thread_manual_supersede",
     )
     # Consume the invocation token to prevent replay — mirrors the reply
     # route's token lifecycle. A single invocation can perform at most one
     # state-changing resolution.
     org.db.consume_invocation(body.invocation_token)
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}
+
+
+def _has_live_children_for_continuation(org, task_id: str) -> bool:
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    return any(
+        child is None or child.status not in TERMINAL_STATES
+        for child in (org.db.get_task(cid) for cid in org.db.get_children(task_id))
+    )
 
 
 def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
@@ -1937,24 +2322,22 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=normalized_attachments,
             sent_from_task_id=sent_from_task_id,
+            recipients=addressed,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=speaker, kind="message",
             attachment_names=[a.artifact_name for a in normalized_attachments],
         )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -1967,7 +2350,7 @@ async def _send_thread_message_inprocess(
         status="open",
     )
 
-    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": [a.agent_name for a in arrivals]}
 
 
 async def _post_agent_message(
@@ -1990,24 +2373,22 @@ async def _post_agent_message(
     """
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        seq = org.db.append_thread_message(
+        seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=attachments,
             sent_from_task_id=task_id,
+            recipients=addressed,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=speaker, kind="message",
             attachment_names=[a.artifact_name for a in attachments],
         )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
+        tokens_to_enqueue.extend(
+            a.invocation_token for a in arrivals if a.invocation_token is not None
+        )
 
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
@@ -2020,7 +2401,7 @@ async def _post_agent_message(
         status="open",
     )
 
-    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": [a.agent_name for a in arrivals]}
 
 
 @router.post("/threads/{thread_id}/send")
@@ -2201,7 +2582,14 @@ async def remove_thread_participant_endpoint(
         if not removed:
             raise HTTPException(status_code=409, detail={"code": "not_participant"})
 
-        # Decline any pending invocations for this agent in this thread.
+        # Discard the pair's owned reply delivery state (explicit boundary) and
+        # decline any remaining special-purpose invocations (BOOTSTRAP/
+        # TASK_FOLLOWUP) for this agent in this thread.
+        org.db.discard_reply_delivery(
+            thread_id, agent_name=body.agent_name,
+            decline_reason="participant_removed",
+            status=ThreadInvocationStatus.DECLINED,
+        )
         org.db.decline_pending_invocations_for_agent(
             thread_id, body.agent_name,
             decline_reason="participant_removed",
@@ -2297,9 +2685,12 @@ async def archive_thread_endpoint(
 
     archived_at = datetime.now(timezone.utc)
     async with org.db_lock:
+        org.db.discard_reply_delivery(
+            thread_id, decline_reason="archive_started",
+        )
         org.db.reap_pending_invocations(
             thread_id,
-            purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+            purposes=[ThreadInvocationPurpose.BOOTSTRAP],
             decline_reason="archive_started",
         )
         org.db.set_thread_status(
@@ -2369,6 +2760,9 @@ async def resume_thread_endpoint(
     )
     async with org.db_lock:
         org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
+        # Re-activate per-pair reply delivery state (idempotent no-op for pairs
+        # already cut over; seeds any pair still missing a row).
+        org.db.cutover_thread_reply_delivery_state(thread_id)
         sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
@@ -2385,6 +2779,129 @@ async def resume_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "status": "open"}
+
+
+# ---------------------------------------------------------------------------
+# THR-209 — founder-only rename + pin/unpin (Phase 1)
+#
+# Both mutations are presentation/organization controls: they never create a
+# thread message, never send a notification, never touch participants or
+# unread state, and never change activity timestamps. They write only the
+# ``subject`` / ``pinned_at`` column plus an audit row (existing thread-scope
+# ``audit_log.task_id`` = THR-* convention). Identity (id), URL, participants,
+# routing, unread, and lifecycle are immutable under rename/pin.
+# ---------------------------------------------------------------------------
+
+
+MAX_THREAD_SUBJECT_CHARS = 120
+
+
+class RenameThreadBody(BaseModel):
+    subject: str
+
+
+class SetThreadPinBody(BaseModel):
+    # Strict bool: pin state is a boolean contract — "yes"/1/etc. must not
+    # silently coerce into a pin/unpin (THR-209).
+    pinned: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/{thread_id}/rename")
+async def rename_thread_endpoint(
+    slug: str, thread_id: str, body: RenameThreadBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    if len(subject) > MAX_THREAD_SUBJECT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "subject_too_long", "max": MAX_THREAD_SUBJECT_CHARS},
+        )
+    async with org.db_lock:
+        # Atomic (TASK-5644): authoritative subject read + idempotence
+        # decision + subject UPDATE + ``thread_renamed`` audit row happen in
+        # ONE rollback-safe transaction under this lock. The old value is read
+        # INSIDE the transaction, so concurrent renames record a truthful
+        # sequential old→new chain (last successful save wins) and an audit
+        # failure rolls back the rename — no durable unaudited mutation.
+        transitioned = org.db.rename_thread_with_audit(
+            thread_id, subject=subject,
+        )
+        if not transitioned:
+            # No-op rename (already the saved title): nothing to write, nothing
+            # to audit. Last successful save wins — an identical save succeeds.
+            return {
+                "thread_id": thread_id, "subject": subject, "idempotent": True,
+            }
+    return {"thread_id": thread_id, "subject": subject}
+
+
+@router.post("/threads/{thread_id}/pin")
+async def set_thread_pin_endpoint(
+    slug: str, thread_id: str, body: SetThreadPinBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    async with org.db_lock:
+        # Atomic (TASK-5644): authoritative ``pinned_at`` read + idempotence
+        # decision + pin state UPDATE + ``thread_pinned``/``thread_unpinned``
+        # audit row happen in ONE rollback-safe transaction under this lock.
+        # Concurrent same/opposite requests re-read durable state inside their
+        # transaction (never a stale pre-lock snapshot), so no transition is
+        # misclassified and an audit failure rolls back the pin — no durable
+        # unaudited transition.
+        transitioned = org.db.set_thread_pinned_with_audit(
+            thread_id, pinned=body.pinned,
+        )
+        if not transitioned:
+            # Same-state no-op: nothing to write, nothing to audit.
+            return {
+                "thread_id": thread_id, "pinned": body.pinned, "idempotent": True,
+            }
+    return {"thread_id": thread_id, "pinned": body.pinned}
+
+
+class SetThreadMentionRoutingBody(BaseModel):
+    # Strict bool: mention routing is a boolean contract — "yes"/1/etc. must
+    # not silently coerce into an enable/disable (THR-198, mirrors /pin).
+    mention_routing_enabled: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/{thread_id}/mention-routing")
+async def set_thread_mention_routing_endpoint(
+    slug: str, thread_id: str, body: SetThreadMentionRoutingBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    async with org.db_lock:
+        # Atomic (THR-198 Slice B): authoritative ``mention_routing_enabled``
+        # read + idempotence decision + state UPDATE + ``
+        # thread_mention_routing_changed`` audit row happen in ONE
+        # rollback-safe transaction under this lock. Concurrent same/opposite
+        # requests re-read durable state inside their transaction (never a
+        # stale pre-lock snapshot), so no transition is misclassified and an
+        # audit failure rolls back the toggle — no durable unaudited
+        # transition.
+        transitioned = org.db.set_thread_mention_routing_with_audit(
+            thread_id, enabled=body.mention_routing_enabled,
+        )
+        if not transitioned:
+            # Same-state no-op: nothing to write, nothing to audit.
+            return {
+                "thread_id": thread_id,
+                "mention_routing_enabled": body.mention_routing_enabled,
+                "idempotent": True,
+            }
+    return {
+        "thread_id": thread_id,
+        "mention_routing_enabled": body.mention_routing_enabled,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2418,10 +2935,12 @@ async def abort_replies_endpoint(
 
     aborted_count = 0
     async with org.db_lock:
-        aborted_count = org.db.reap_pending_invocations(
+        aborted_count = org.db.discard_reply_delivery(
+            thread_id, decline_reason="founder_aborted",
+        )
+        aborted_count += org.db.reap_pending_invocations(
             thread_id,
             purposes=[
-                ThreadInvocationPurpose.REPLY,
                 ThreadInvocationPurpose.BOOTSTRAP,
                 ThreadInvocationPurpose.TASK_FOLLOWUP,
             ],

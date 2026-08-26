@@ -58,6 +58,7 @@ async def schedule_worker_loop(state, settings: Settings) -> None:
                     org_state=org,
                     schedule_id=job.schedule_id,
                     settings=settings,
+                    host_supervisor=state.host_supervisor,
                 )
             except Exception:
                 logger.exception(

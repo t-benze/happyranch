@@ -13,8 +13,8 @@
 > share the same OS identity — integrity is enforced by synchronous pre-launch
 > hash detection against ledger-declared member hashes with DETECTION-ONLY,
 > FAIL-CLOSED refusal (no automatic repair from same-UID local source).
-> **macOS (darwin) only**; Linux and Windows fail closed. The legacy sections
-> below are preserved for historical reference.
+> **macOS (darwin) and Linux**; Windows and unknown platforms fail closed. The
+> legacy sections below are preserved for historical reference.
 
 The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 
@@ -60,7 +60,7 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Team with feedback or escalates after max rounds.
 
-**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes an implicit `review_verdict` audit row (`approved` for COMPLETED, `rejected` for FAILED). The founder reviews these via `happyranch audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
+**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes a `review_verdict` audit row. The audit verdict is a **distinct fact** from the child's completion status: when the child reported an explicit structured `verdict` (a free-string workflow value such as `APPROVE`, `PASS`, or `REQUEST_CHANGES`), that reported verdict is preserved verbatim. Only when no structured verdict is present does the orchestrator fall back to the legacy implicit mapping (`approved` for COMPLETED, `rejected` for FAILED/no-report). Dashboard readers normalize the free-string spellings case-insensitively and with benign whitespace/separator variation; an explicitly blank or unknown verdict is treated as unknown (no approval tone/count), never as approved. The founder reviews these via `happyranch audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
 
 **6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
@@ -130,9 +130,51 @@ proves this across the ordinary-task and thread/wake/dream/schedule call
 shapes. A daemon-owned periodic projection sweep also invokes that coordinator
 for every receipt without a projection row, so browser closure cannot strand a
 connection; see `protocol/05b-agent-runtime.md` for the normative detail.
-The normal Settings/onboarding UI now drives Connect → Connected in one flow;
-the PENDING/approve/reject/bind-profile routes remain as
-operator-only disposition tooling, no longer wired into the normal UI.
+Each direct projection runs one bounded behavioral conformance probe before
+any adapter/profile persistence: the wrapper forwards the entire normal v1
+``AdapterInput.prompt`` through one real provider invocation, obtains a genuine
+terminal provider response, and returns the wrapper-owned ``AdapterOutput``.
+The provider does not construct that envelope; a fabricated/static success is
+not proof. The fresh opaque canary must appear complete in ``result.text``;
+the probe accepts only a successful, returncode-consistent terminal output with
+the matching HappyRanch invocation ID and canonical adapter ID. The short probe
+guides no optional tool use or workspace exploration, but does not enforce or
+collect telemetry about those provider-internal actions; normal task behavior is unchanged. Provider
+``agent_session_id`` is optional and resume-only; when a provider returns one,
+the adapter must preserve it faithfully, but it cannot substitute for the
+HappyRanch invocation-identity proof. Candidate-controlled stdout/stderr/error text and the canary
+are never persisted or returned on failure; the projection records only a
+bounded category. ``/connect`` remains receipt-only and starts zero
+subprocesses. This direct-only behavioral gate does not require a registered
+adapter or bound executor profile and does not make legacy/operator
+registration stricter. Token usage remains optional here: it is required only
+when a candidate declares the established ``token_metering`` capability and
+supplies trustworthy canonical ``token_usage``; direct candidates are not
+rejected merely for omitting optional usage fields.
+For a first conformance-probe failure the canonical ledger state is
+``failed_retryable`` with ``retry_eligible: true``. The normal flow retry is a
+same-token corrected-artifact retry: the founder modifies the wrapper/child
+artifacts and reruns the existing generated prompt before the original
+30-minute expiry. ``/connect`` admits exactly one genuinely changed candidate;
+unchanged or merely reordered artifacts receive an indefinite, non-consuming
+``409 Duplicate``. A second terminal failure closes the lifecycle as
+``exhausted``; expiry closes it as ``expired``; both are nonretryable. The
+separate master-bearer ``POST .../{operation_id}/retry`` lifecycle is the
+historical immutable-snapshot validation path: it revalidates the exact
+persisted wrapper/child path-and-hash snapshot before its bounded probe, but
+only for terminal ``failed`` projections and never as a corrected-artifact
+retry. It neither replays a registration token nor starts a fresh registration,
+and it never rewrites the original failed projection or its append-only
+evidence. Its separate attempt/event facts may establish a live bound profile;
+status then reports that live connection while exposing the retained historical
+failure. Cleanup via `POST .../{operation_id}/forget` removes only the
+permitted derived artifacts, failed projection row, and any retry-attempt row
+for that operation; the parent authority, accepted candidates, identity
+history, receipts, operations, and events remain append-only and retained for
+the authority lifetime. The normal Settings/onboarding UI now drives
+Connect → Connected in one flow; the PENDING/approve/reject/bind-profile
+routes remain as operator-only disposition tooling, no longer wired into the
+normal UI.
 
 **Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**
 The Slice 1A paragraph above describes `workspace_adapter_id` as a
@@ -207,9 +249,12 @@ The orchestrator is a Python application that:
 ## 2. ~~Performance Tier Impact on Team Configuration~~ (REMOVED)
 
 The performance-tier feature was removed on 2026-05-27. The audit log
-(implicit `review_verdict` rows after every delegation, plus completion /
-failure events) is sufficient for the founder to identify which agents
-need attention via `happyranch audit`. Tier classification on top of the
+(`review_verdict` rows after every delegation, plus completion / failure
+events) is sufficient for the founder to identify which agents need
+attention via `happyranch audit`. The audit verdict is separate from the
+child's completion status — a completed child that reported
+`REQUEST_CHANGES` carries `REQUEST_CHANGES` as its audit verdict, not an
+inferred `approved`. Tier classification on top of the
 verdicts added no behavioral enforcement in code, and the per-agent tier
 prose in agent `.md` files was not actionable (workers never saw their
 own tier; managers saw worker tiers but the tier didn't gate delegation).
@@ -261,7 +306,40 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder or the escalating manager resolves via `happyranch resolve-escalation --decision supersede|continue` (an agent may self-attribute with `--as-agent <name>`; the CLI defaults to founder). Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Continue re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
+**Resolution**: The direct `POST /tasks/{id}/resolve-escalation` / CLI route remains a named **manual break-glass** exception under the shared-bearer trust model. It is auditable as `resolution_path=manual_break_glass`, but is not the autonomous-continuation path. Supersede mints a successor task from the provided brief and closes the escalation as `superseded`. Cancelling an escalated task uses the normal `POST /tasks/{id}/cancel` route, which terminates the task in `cancelled` (cancelled_at set) with no resume/context injection.
+
+### THR-166 bounded autonomous continuation
+
+The sole autonomous edge is `POST /threads/{thread_id}/resolve-escalation`
+with `decision=continue`, exercised by the task's **same assigned manager**
+using the pending `TASK_FOLLOWUP` causally minted from that root's own
+`task_escalated` system message. REPLY, BOOTSTRAP, another manager, another
+thread, a replayed token, or a noncausal follow-up fail closed.
+
+The server accepts only immutable founder policy
+`THR-166-genuine-human-blocker@1` (`founder:THR-166:seq-29`) and the exact
+class `repair_review_reverify_reevaluate_original_gate`. It never authorizes
+the original protected/destructive action. A structured attestation and the
+single exact terminal result that caused the bound escalation are audited. The
+causal `TASK_FOLLOWUP` records that result's task, result id, terminal status,
+verdict, output snapshot, and timestamp; the route re-derives and compares the
+same record, root, owner, thread, invocation, escalation, lineage, and
+freshness server-side. Later descendants, unrelated terminal records, prose,
+brief text, KB text, and quotes are audit context only, never authority.
+
+Absolute human blockers remain escalated: schema/migration or overloaded
+meaning; permission/sandbox/allow-rule changes; auth, credentials, security,
+privacy, or data access; spend/budget; destructive/irreversible action;
+external contract/product commitment; genuine ambiguity/novel situations;
+cancellation; live children; exhausted orchestration-step, revise-round, or
+per-slice retry budget; and absent, stale, unrelated,
+nonterminal, malformed, or conflicting evidence. Unknown conditions fail
+closed. The same server-derived budget predicate is checked both before the
+user-visible response and in the final atomic transition. A successful transition atomically consumes the follow-up, records a
+distinct audit event, consumes notification intent, and moves `escalated` to
+`pending`; post-commit queue delivery is recoverable because run-step's claim
+CAS remains at-most-once. Cancellation wins if it commits first and prevents a
+late delivery from resurrecting execution.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.
@@ -335,13 +413,18 @@ cascade-failed. Instead:
    omits this field is HARD-REJECTED (feedback, no child spawned), even on
    the first retry.  Only FAILED ancestors count toward the ceiling; a retry
    of a COMPLETED predecessor does not trigger escalation on its first failure.
+   A later COMPLETED or SUPERSEDED descendant in the same `revisit_of_task_id`
+   lineage retires earlier FAILED ancestors for ceiling evaluation (THR-183).
 
 4. **Exhaustion escalation.** When the per-slice ceiling is exhausted (a slice's
    2nd failure), the parent transitions to `escalated` via
-   `db.try_escalate()`, carrying the last failure reason. The parent does NOT
-   cascade-fail — the founder can resolve the escalation per existing routes.
-   non-root tasks never escalate directly — they fail and hand back to their
-   parent; only the (root) parent escalates on exhaustion.
+   `db.try_escalate()`, carrying the causal terminal event — the current
+   unresolved FAILED leaf of the slice's lineage — in the escalation reason.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED siblings
+   so a completed-child wake cannot select a stale failure reason. The parent
+   does NOT cascade-fail — the founder can resolve the escalation per existing
+   routes. non-root tasks never escalate directly — they fail and hand back to
+   their parent; only the (root) parent escalates on exhaustion.
 
 5. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
    COMPLETED), the chain does NOT cascade-fail the parent. Instead, the
@@ -356,7 +439,7 @@ cascade-failed. Instead:
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
 in parallel (2 ≤ N ≤ 8). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`).
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`; a configured reviewer leg additionally MUST declare `expect_verdict: "APPROVE"` — omitted is a HARD REJECT, THR-175).
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
    JSON metadata column). For pipeline carriers, the child's inline chain is
@@ -378,7 +461,7 @@ in parallel (2 ≤ N ≤ 8). The orchestrator:
 pure machine-resource limit — children are spawned immediately at any width
 2–8. The former `pending_review` status and `review_required` job gate are
 removed. The real control over what code lands is the per-PR merge gate:
-every mutating child opens its own PR requiring `code_reviewer` APPROVE +
+every mutating child opens its own PR requiring reviewer APPROVE +
 `qa_engineer` PASS + CI + founder/EM merge. The founder cannot add useful
 judgment to "6 vs 8 children" — it is a resource question for the runtime.
 
@@ -571,6 +654,68 @@ TEXT`` (NULL default). No new ``TaskStatus``, ``block_kind``, or overload of
 any existing column — all founder-gated. Flagged via ``zombie_flagged_at``;
 cancel = the existing ``cancelled`` transition.
 
+#### Organization portability — preflight & reconciliation (THR-187 Slice A)
+
+**Slice A is preflight/reconciliation only.** It adds a read-only CLI
+``happyranch orgs portability-preflight <slug>`` and a distinct founder-only
+``happyranch orgs reconcile-portability <slug> --from-file <request.json>``.
+There is **no** archive, export, import, staging, transfer fence, source
+retirement, cancellation-of-live-work, or other transfer side effect in this
+slice. Export/import/rebind are later, separately authorized slices.
+
+**Exhaustive root classification.** The preflight classifies every direct
+child of a source org root exactly once as `include`, a *named* `exclude`
+(generated marker, derived projection, SQLite sidecar, cache, zero-byte legacy
+residue, non-memory workspace data, task output), or `reject` (unknown root,
+nonregular/unsafe entry, nonzero legacy-residue DB, invalid legacy skill).
+The allow-list is `happyranch.db`, `org`, `artifacts`, `kb`, `threads`,
+`task-attachments`, `jobs`, `dreams`, `work_hours`, `schedules`, `talks`,
+conditional valid legacy `skills`, and only `workspaces/<agent>/memory/**`.
+There is no fall-through/default copy: an unclassified present root rejects.
+
+**Quiescence & zombie reporting.** Preflight refuses any pending/in_progress/
+escalated task (including live, delegated, and job-parked forms), any active
+session binding/PID or queued item, any pending thread invocation, pending/
+running job, pending/running dream/work-hour, or any armed/firing schedule. It
+*reports* possible zombies (in_progress, no block_kind, stale heartbeat, dead
+pid) but never resolves them.
+
+**Conservative schedule policy (founder, THR-187).** Preflight refuses when
+**any** schedule is **armed or firing** — both are live source-readiness
+hazards, so a relocation-specific disarm command or export fence is never
+built. The preflight response reports only *existing* controls as the exact
+actionable remedies:
+
+* an **armed** schedule → `happyranch todos pause --org <slug> <schedule_id>`
+  or `happyranch todos cancel --org <slug> <schedule_id>` (both are permitted
+  by the existing schedule state machine);
+* a **firing** schedule → no pause/cancel is permitted under the existing
+  state machine; the correct non-mutating remedy is to wait for it to reach a
+  terminal state, then re-run the preflight. No new control is added;
+* live nonterminal tasks / active jobs → the existing
+  `happyranch cancel <task_id> --org <slug>` and
+  `happyranch jobs stop <job_id> --org <slug>` lifecycle controls;
+* active sessions, queued items, pending thread invocations, dreams, and
+  work-hours have no founder cancel control — the remedy is the non-mutating
+  wait/resolve condition; and
+* a confirmed zombie → the separately audited, founder-only
+  `happyranch orgs reconcile-portability <slug> --from-file <absolute-json>`
+  path.
+
+Preflight itself is read-only: it never invokes any of these controls, never
+calls reconciliation, and performs no export/import/archive action.
+
+**Reconciliation limits.** ``reconcile-portability`` is founder/master-bearer
+only (reuses the existing human-authority dependency unchanged). It names
+exactly one candidate plus evidence/disposition; revalidates a true zombie
+under the org DB lock; and invokes the shared result/terminalization seam
+(``_consume_completion_report`` for an orphaned result, or the reaper's
+``cancelled`` transition). It audits actor, SHA-256 request hash, evidence,
+disposition, and before/after state under the ordinary ``task_id`` scope. A
+delegated/job-blocked task is never a zombie merely because it is old.
+Preflight never calls reconciliation; reconciliation offers no export
+cancellation path. CLI-private only — no UI, TS client, or browser contract.
+
 #### Transitions
 
 ```
@@ -606,6 +751,44 @@ The orchestrator does not gain new task states for external systems. External wa
 
 Example: a PR CI / guarded merge helper is a bounded job that polls an external CI system and wakes the task through `blocked_on_job_ids`. The engineering-domain specifics live in the jobs skill and agent guides.
 
+### Global host admission and backpressure (THR-207 / TASK-5584)
+
+One daemon-wide admission controller (``runtime/orchestrator/host_supervisor.py``
+``AdmissionController``) covers every top-level agent invocation across orgs,
+producers, providers, and profiles. Governing spec:
+``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``.
+
+- **Admission is backpressure, not task failure.** Requests queue FIFO with
+  aging (original enqueue time preserved across 429 retry re-entry); a
+  request stalled by a pressure gate stays queued with a ``stall_reason`` and
+  its age.
+- **Queued cancellation removes the request without launch** — no lease, no
+  handle, no subprocess. A 429 retry fully finishes the attempt (containment
+  + receipt), releases the lease, sleeps without capacity, then re-enters
+  admission with the original age and a fresh containment handle.
+- **Effective cap is capability-derived, never OS-name-derived**: the minimum
+  of the configured cap and binding capability caps. With enforcement
+  guaranteed, the Linux `<=11` ceiling is a non-binding shadow input over the
+  11-slot producer envelope; without enforcement (macOS-style), the binding
+  cap (4) applies — missing enforcement tightens admission.
+- **Cancellation routes through the opaque containment handle**, idempotent
+  with the executor's own finish; the PID remains a diagnostic only.
+- **Ownership transfers atomically at admission grant**: the controller
+  creates the ownership record under its lock and keeps it in its registry
+  until lease release; the durable first-wins terminal reason lives on that
+  record from grant; the daemon drain iterates the same registry, so a
+  shutdown that fires when or immediately after admission is granted is
+  durably observed by the attempt's next gate (no launch, or exactly-once
+  containment before release).
+
+Slice A wires **exactly one** narrow production producer per the
+founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires
+(`runtime/daemon/schedule_runner.py`) run through the supervisor with the
+honest no-enforcement ``PassthroughBackend``, and the daemon drain calls
+``supervisor.shutdown()`` in the app lifespan finally. The remaining
+producers (task, thread, dream, wake) stay structurally unchanged; later
+serial slices attach them to the same contract.
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:
@@ -627,12 +810,21 @@ Permissions aren't static. As the system matures:
 
 ### Reviewer/QA verdict discipline
 
-Review and QA leg tasks (code_reviewer, qa_engineer) MUST complete their leg
-with a verdict (APPROVE / REVISE / PASS / FAIL) and MUST NOT self-block. A
-completion report with `status=blocked` and an EMPTY `waiting_on_job_ids` is a
-MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
-manager decision step (not cascade-failed). Self-blocked reviews that omit a
-verdict waste the delegation and burn a re-spawn round.
+Review and QA leg tasks MUST complete their leg with a verdict
+(APPROVE / REVISE / PASS / FAIL) and MUST NOT self-block. A completion report
+with `status=blocked` and an EMPTY `waiting_on_job_ids` is a MALFORMED report
+— the leg is treated as FAILED, and the parent wakes for a manager decision
+step (not cascade-failed). Self-blocked reviews that omit a verdict waste the
+delegation and burn a re-spawn round.
+
+Reviewer identities are configured per-org in the DB-backed `reviewer_agents`
+setting (default `["code_reviewer"]`, THR-175) — never hardcoded in the
+transition logic. A configured reviewer leg MUST declare
+`expect_verdict: "APPROVE"`; omission is a HARD REJECT at authoring. At the
+execution seam a configured reviewer leg with a downstream leg only
+auto-advances on an explicit `APPROVE` — a missing verdict or any non-approve
+verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` / equivalent) clears the chain
+and wakes the manager, so QA/downstream is never spawned after a failed review.
 
 ---
 
@@ -643,11 +835,11 @@ scheduled tasks described in ``05b-agent-runtime.md`` Mode 2). Every Schedule
 row represents one agent-owned recurring or one-shot work item.
 
 **Schedule lifecycle.** Schedules are created via the schedule service
-(``runtime/services/schedule_service.py``, Phase 1-2), which validates the
-v1 envelope (one-shot 90-day horizon, single-weekday weekly recurrence,
-agent/org caps). A new Schedule enters in ARMED status with a computed
-``fire_at``. The service does NOT enqueue or execute anything — it is a
-pure lifecycle-management surface.
+(``runtime/orchestrator/schedule_service.py``), which validates the one-shot,
+legacy weekly, and bounded recurring envelopes (including the one-shot 90-day
+horizon, recurring grammar, and agent/org caps). A new Schedule enters in
+ARMED status with a computed ``fire_at``. The service does NOT enqueue or
+execute anything — it is a pure lifecycle-management surface.
 
 **Arming (creating) schedules.** Agents create schedules autonomously via
 the ``POST /schedules`` callback route (``runtime/daemon/routes/schedules.py``).
@@ -668,20 +860,30 @@ and optionally ``recurrence`` and ``timezone``.  Server-side enforcement:
 - **Mandatory normalization:** both ``source_instruction`` and
   ``normalized_brief`` must be non-blank; NL-only arming is refused.
 - **Envelope validation** (one-shot horizon, weekly shape, caps, expiry
-  default) is enforced by ``ScheduleService.create()``.
+  default, and the recurring RRULE-subset grammar) is enforced by
+  ``ScheduleService.create()``. A recurring callback uses only the documented
+  ``freq``/``interval``/selector/``time``/``tz``/end-condition shape; its
+  ``anchor_date`` is server-owned, and unsupported instructions must be
+  clarified rather than approximated.
 
 Arming emits a ``schedule_created`` audit row with
 ``task_id=<SCHEDULE-NNN>``.
 
 **Scheduler loop (Phase 3).** A 60-second daemon loop
 (``schedule_scheduler_loop`` in ``runtime/daemon/schedule_scheduler.py``)
-scans every org for ARMED rows whose ``fire_at <= now`` (one-shot) or
-``fire_at`` is within a 120-second tolerance window of ``now`` (weekly). For
-weekly schedules whose ``fire_at`` is stale (missed during daemon downtime),
-the scheduler advances ``fire_at`` to the next weekly occurrence via
-``next_weekly_occurrence`` or expires the schedule — **no replay/backfill**.
-Eligible rows are claimed: ARMED → FIRING, then enqueued as a ``ScheduleJob``
-into the org's ``ScheduleQueue``.
+scans every org for due ARMED rows. One-shots are due at ``fire_at <= now``;
+weekly and bounded recurring rows are claimed only when their due instant is
+within the 120-second recurrence tolerance. For a stale weekly or recurring
+occurrence (missed during daemon downtime), the scheduler does not replay or
+backfill it. It records ``occurrence_missed`` and re-arms the row only when a
+future next occurrence exists within any finite review expiry. The terminal
+alternatives do not emit ``occurrence_missed``: a recurring rule exhausted by
+its inclusive ``until`` date becomes FIRED with ``end_reason=date_ended`` and
+``schedule_fired``; a future candidate beyond the review expiry becomes
+EXPIRED with ``schedule_expired``; and an otherwise unexplained missing
+candidate becomes FAILED with ``error=recurrence_no_candidate`` and
+``schedule_failed``. Eligible rows are claimed: ARMED → FIRING, then enqueued
+as a ``ScheduleJob`` into the org's ``ScheduleQueue``.
 
 **Runner + worker loop.** A dedicated ``schedule_worker_loop`` drains the
 ``ScheduleQueue`` and invokes ``run_schedule`` (``schedule_runner.py``) for
@@ -707,6 +909,11 @@ fire endpoint:
   - **Weekly** → re-armed (ARMED, ``active=1``) with the next ``fire_at``
     computed via ``next_weekly_occurrence``, OR expired (EXPIRED, ``active=0``)
     when the next occurrence exceeds ``expires_at`` and ``indefinite=0``.
+  - **Recurring** → after a successful dispatch, reaches FIRED with
+    ``end_reason=count_exhausted`` when its successful-dispatch ``count`` is
+    reached; otherwise it reaches FIRED with ``end_reason=date_ended`` when
+    its inclusive ``until`` is exhausted, EXPIRED when a real next occurrence
+    is beyond review expiry, or re-arms with the next recurring ``fire_at``.
 - Writes ``schedule_spawned``, ``schedule_completed``, and (when applicable)
   ``schedule_expired`` audit log rows.
 - Enqueues the spawned task via ``enqueue_task``.
@@ -717,12 +924,14 @@ in ``session_token_usage`` with ``scope_type="schedule"`` and
 ``scope_id=<schedule_id>``.
 
 **Runner resolution.** After the executor returns, ``run_schedule`` checks the
-row's updated status. If the spawn callback drove it to FIRED (one-shot),
-ARMED (weekly re-arm), or EXPIRED (weekly past-expiry, terminal), the runner
-exits — the callback already handled terminal resolution. If the session
-returned successfully without calling spawn, the runner marks the row FAILED
-with error ``no_callback``. On executor failure or timeout, the row is marked
-FAILED or TIMEOUT respectively.
+row's updated status. If the spawn callback drove it to FIRED (natural completion),
+ARMED (weekly or recurring re-arm), or EXPIRED (review-expiry terminal), the
+runner exits — the callback already handled resolution. If a weekly or
+recurring session returns without spawning, fails, or times out, the runner
+records the failure/timeout and advances to the next eligible occurrence
+without retrying the claimed instant or incrementing ``fire_count``; it
+re-arms unless the same ``until``/review-expiry/no-candidate terminal rules
+apply. One-shots retain terminal FAILED/TIMEOUT behavior for those cases.
 
 **No hidden schedules.** Every Schedule is visible to the CLI ``list`` command
 and to the owning agent in the schedule-fire prompt. There is no mechanism for
@@ -804,276 +1013,27 @@ inputs. Skills omitted by policy do not appear. Global CLI skills are untouched.
 
 ### 4.4 Admin Surface (CLI-first)
 
-V1 provides CLI commands that read the file/YAML-backed registry + resolver +
-exposure directly from disk (no daemon round-trip):
+V1 provides CLI commands for release-managed catalog diagnostics from the
+file/YAML-backed registry + resolver + exposure. `skills effective` also reads
+the existing authenticated daemon effective-skills projection when available,
+because B2 custom-skill eligibility and materialization evidence are
+database-backed and must not be re-resolved by the CLI:
 
 - `happyranch skills catalog list` — list all registered skills.
 - `happyranch skills catalog validate` — validate registry entries and
   eligibility policy; surfaces unknown-id warnings and malformed skill.yaml
   entries.
-- `happyranch skills effective --agent <name>` — show effective skills for an
-  agent, with provenance (which scope+rule admitted/denied each skill).
+- `happyranch skills effective --agent <name>` — show release-managed skills
+  from local files and B2 custom skills from the daemon projection. Custom
+  output distinguishes hidden/no-policy, visible-next-session, and successful
+  current-version materialization with rule provenance, version, and hash.
+  JSON reports custom-projection availability; text labels an unavailable
+  daemon and retains the local managed-catalog output. `--offline` explicitly
+  selects that managed-catalog-only fallback.
 - `happyranch skills policy explain <skill_id> --agent <name>` — explain why
-  a skill is or isn't available, including both gate results and
-  eligibility provenance.
-
-### 4.5 THR-055 Lifecycle-Ledger Custom Skills (Internal Pilot)
-
-#### THR-055 B2 additive custom-skill schema (dark)
-
-The runtime has additive, presently unwired B2 persistence tables:
-`custom_skills`, immutable `custom_skill_versions`,
-`custom_skill_eligibility_rules`, `custom_skill_eligibility_events`,
-`custom_skill_materializations`, and `custom_skill_events`. They store B2
-identity/version provenance, visibility-policy audit, and session evidence.
-Slice A2 now provides a unit-tested pure visibility resolver with zero callers;
-Slice A3 alone will add route, writer, and materializer behavior.
-
-User-authored custom skills are governed by an immutable lifecycle ledger,
-replacing the legacy per-org filesystem store (`<org_root>/skills/`).
-
-**Lifecycle states:** `proposed → draft → validated → in_review → approved
-→ published → assigned`. `rolled_back` and `retired` are terminal re-assignment
-states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
-
-**Agent authority.** Agents may submit proposals and create skills through
-two dedicated agent-only routes. The legacy dual-auth path is human/founder-only:
-
-1. **B1 create-skill session CLI (THR-055 B1).** The agent invokes
-   ``happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]``.
-   This is an **additional verified-agent authoring route** at
-   ``POST /api/v1/orgs/{slug}/skills/agent``. It is bearer-free and derives
-   identity only from the verified SessionTracker context. A created skill is
-   ``proposed`` and hidden by default; it is neither published nor effective.
-   B2 eligibility, human web editing, publishing/effective visibility,
-   migration/cutover, and proposal review remain deferred.
-
-2. **Separate legacy agent-proposal route.** The agent commands
-   ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
-   The proposal file contains only
-   package metadata/content accepted by ``ProposalRequest`` (slug, name,
-   description, skill_md, version, policy_class, references, assets, purpose,
-   target_agent_suggestion). It must NOT contain any client-controlled
-   trusted identity/authority field: ``org``, ``org_slug``, ``agent``,
-   ``agent_name``, ``task_id``, ``session_id``, ``proposer_agent``,
-   ``actor``, ``eligibility``, ``permission``, or ``permissions``.
-   The CLI builds a
-   token-free transport (no bearer token read or sent) using only the daemon
-   port. It resolves org via the established ``resolve_org_slug(args_org=,
-   available=)`` convention. The opaque session ID is sent to
-   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
-   accept the master bearer token. The server independently derives all four
-   identity dimensions (org_slug, task_id, agent_name, active session_id) from
-   the SessionTracker's additive context index — never from body, query,
-   environment, task lookup by agent, team membership, or client-asserted
-   identity. The server rejects the **presence** of every client-controlled
-   trusted identity/authority field in the direct HTTP body — ``task_id``,
-   ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
-   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
-   ``permissions`` — before request-model parsing, session lookup, policy
-   checks, or any persistence. Presence includes empty values. Rejection
-   returns exact HTTP 403 with error code ``body_identity_rejected``; no
-   lifecycle package, event, materialization, or ArtifactStore residue is
-   produced. Path-selected org is cross-checked against the session's
-   org; cross-org and mismatched contexts are denied.
-
-3. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
-   is restricted to bearer-authenticated human/founder callers. Non-bearer
-   (agent) callers receive 403 directing them to the dedicated
-   ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
-
-**Agent-id × canonical-slug pilot policy.** The agent-only route enforces a fixed
-server-side policy BEFORE any artifact creation or ledger/event write:
-
-| Agent | Allowed slug |
-| --- | --- |
-| ``frontend_engineer`` | ``frontend-development`` |
-| ``product_lead`` | ``product-manager-prd`` (lowercase; canonical spelling from "product-manager-PRD") |
-
-Every other agent is denied (403). Either permitted agent with the wrong slug
-is denied (403). This fixed map does NOT inspect team membership, prompts, org
-config/YAML eligibility, request metadata, or body identity claims.
-
-All other lifecycle mutations (claim, draft edit/fork/edit, validate,
-submit-review, review, publish, assign, retire, rollback, and any eligibility/
-permission/config mutation surface reachable from this API) return server-side
-403 for agent invocations. No agent route may gain an alternate mutation method.
-Human/founder lifecycle authority remains as merged.
-
-**Proposal submission CLI (corrected — two agent paths).** The two
-agent submission workflows are described in §4.5 "Agent authority" above.
-The shipping CLI forms are::
-
-    happyranch skills propose --from-file <proposal.json> \
-      --session-id <session-id> [--org <slug>]
-
-    happyranch skills create --from-file <path> \
-      --session-id <session-id> [--org <slug>]
-
-The B1 ``skills create`` path (THR-055 B1) is an ADDITIONAL verified-agent
-authoring route at ``POST /api/v1/orgs/{slug}/skills/agent`` that shares
-the same SessionTracker identity derivation, body-key rejection, and
-binding-lease pattern as the proposal route. The created skill enters
-``proposed`` status, is hidden by default, and carries B1-specific
-provenance (task-brief digest, validator version, findings) committed
-atomically. **B2 eligibility, human editor, effective visibility,
-migration/cutover, and proposal-review resurrection are explicitly deferred.**
-
-There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
-or mechanisms. Identity is derived server-side exclusively from the verified
-SessionTracker context — never from CLI flags, query fields, body claims,
-namespace inspection, or client-asserted identity. The transport is
-bearer-free: the CLI reads only the daemon port and builds a plain
-``httpx.Client`` with NO ``Authorization`` header. Callers cannot supply
-trusted identity; body identity claims (presence of all eleven
-prohibited trusted keys, including empty values) are rejected with exact
-HTTP 403 ``body_identity_rejected`` before any persistence — see §4.5
-Agent authority.
-
-Malformed JSON, missing ``--from-file`` or ``--session-id`` flags, and body
-identity-key attacks fail locally with exit code 1 or 2. Lifecycle validation
-errors (4xx/422) from the daemon are rendered as ``error (<HTTP-status>): <detail>``
-and exit with code 1, where ``<HTTP-status>`` is the HTTP response status code
-and ``<detail>`` is the ``detail`` field from the daemon's JSON error response body.
-The CLI unconditionally reads the response as JSON — non-JSON responses raise
-before the renderer. On success the CLI prints status, skill_id, version_id,
-version, and content_hash.
-
-After submission, the proposal enters the lifecycle at ``proposed`` status. All
-subsequent actions remain founder-only (§4.5). Pilot constraints are unchanged:
-maximum two concurrently published custom skills, ``standard_operational``
-policy class only, two internal use cases (frontend-development,
-product-manager-prd). Proposals are immutable and task/session-provenanced with
-content excluded from catalog/effective resolution/materialization until
-founder publication.
-
-**Artifact retention.** All package members (SKILL.md, each
-reference file, each asset) are stored as independent content-addressed
-artifacts in the org ArtifactStore. A canonical JSON manifest
-lists every member with its normalized relative path, SHA-256 hash, artifact
-key, and size. The ``content_hash`` in the ledger is the SHA-256 of the
-manifest (binding full-package provenance, distinct from individual member
-hashes). The ``content_artifact_key`` points to the manifest artifact.
-
-Ledger tables store only immutable metadata (hash, version, provenance); the
-artifact store holds the sole canonical copy of every package byte. All
-ledger writes (package row + event insert) execute inside an explicit
-``BEGIN IMMEDIATE``/``COMMIT`` transaction so both rows commit or roll back
-together. On ledger failure, newly created artifacts are cleaned up via
-compensation; pre-existing artifacts from content-addressed deduplication
-are never deleted. Materialization loads the manifest, validates each
-member hash, and writes the complete directory tree (SKILL.md + references/
-+ assets/) fail-closed into the workspace. Legacy single-SKILL.md artifacts
-are still supported by the materializer for backward compatibility.
-
-**Legacy migration/quarantine.** On startup, existing `<org_root>/skills/`
-content is quarantined into the ledger with status `LEGACY_QUARANTINED`. Content
-is copied to the ArtifactStore under `skill-lifecycle/legacy/<slug>/<hash>/SKILL.md`
-for immutable retention. Quarantined skills are never materialized — only
-published+assigned lifecycle skills reach the workspace. Migration is idempotent
-and handles malformed/unsafe filesystem and YAML fixtures.
-
-**Atomic rollback (version-pinned, assignment-level only).**
-`POST /skill-lifecycle/rollback` and the v2
-`POST /skill-lifecycle/proposals/{version_id}/rollback` deactivate
-assignments only — never mutate package decision status. Package
-lifecycle ends at ``published`` or terminal ``rejected``;
-assignment/unassignment is a separate append-only projection. For v2
-exact-version rollback, only assignments to the addressed
-``package_version_id`` are deactivated; if that exact version is
-REJECTED the operation returns ``rejected_terminal`` (409) with no
-assignment/event mutation. Legacy rollback (skill_id only) inspects
-every active assignment and rejects the request before any mutation if
-any assignment points to a REJECTED package version. All rollback
-mutations execute inside ``BEGIN IMMEDIATE``/``COMMIT``. Workspace
-residue is cleaned up on the next spawn by fail-closed materialization.
-
-**Terminal REJECTED.** ``in_review → rejected`` is a terminal decision
-status. After rejection, every later claim, validation, review/approval,
-publish, assign, materialization, rollback, retire, or recovery attempt
-on that proposal/version is blocked with error code ``rejected_terminal``
-(HTTP 409). Rejection retains immutable package, all evidence,
-actor/time/rationale, and append-only history. A future change is a new
-proposal/version only.
-
-**Immutable proposer vs optional claimant.** ``PackageVersion.created_by``
-/ ``proposer_agent`` is immutable proposer identity derived from verified
-server-side session context. A founder claim is a SEPARATE optional
-``claimed_by`` / ``claimed_at`` — never a rewrite of the author identity.
-Existing agent-authored rows remain readable with compatible derivation.
-New additive nullable columns preserve legacy rows with NULL.
-
-**Reproducible validation.** Validation events record: immutable
-``content_hash``, mandatory non-blank ``validator_version`` (e.g.
-``"THR-055/1.0.0"`` or legacy ``"LEGACY/1.0.0"``), deterministic
-``validator_key`` (derived from version when not explicit), and distinct
-per-invocation run/event id. Re-runs append distinct events; never
-overwrite history. Missing/blank ``validator_version`` is rejected (400).
-
-**Founder-only proposal review endpoints.** All v2 proposal-scoped routes
-are under ``/skill-lifecycle/proposals/{version_id}/...`` and require
-bearer authentication (``_require_human``). Concurrency-protected with
-``expected_event_id`` marker: check + mutation execute inside a single
-``BEGIN IMMEDIATE``/``COMMIT``. Stale marker returns 409 with
-``stale_concurrency`` code and authoritative refresh state:
-- ``POST /proposals/{version_id}/claim`` — claim with concurrency
-- ``POST /proposals/{version_id}/validate`` — validate with deterministic metadata
-- ``POST /proposals/{version_id}/submit-review`` — VALIDATED → IN_REVIEW
-- ``POST /proposals/{version_id}/review`` — approve/reject with concurrency
-- ``POST /proposals/{version_id}/publish`` — publish with approval event id
-- ``POST /proposals/{version_id}/assign`` — assign to agent
-- ``POST /proposals/{version_id}/rollback`` — version-pinned rollback
-- ``GET /proposals/queue`` — paginated/filterable queue
-- ``GET /proposals/{version_id}`` — full detail with concurrency marker
-
-**Decision vs assignment separation.** Package decision lifecycle ends at
-``published`` or terminal ``rejected``. Assignment/unassignment/
-materialization are append-only version-pinned projections. ``rollback``
-and ``retire`` deactivate assignments only — they do NOT set package
-status to ``ROLLED_BACK`` or ``RETIRED``. Historical legacy rows retain
-their status for backward compatibility; new flows never generate
-``ROLLED_BACK`` or ``RETIRED`` as package decision status.
-
-**Materialization preflight.** Before writing any filesystem bytes,
-materialization checks that the target package version is not terminally
-REJECTED. A rejected version immediately raises ``LifecycleMaterializationError``
-with no workspace residue produced.
-
-**Migration.** This THR-055 implementation is additive: two new nullable
-columns ``claimed_by`` / ``claimed_at`` via ``ALTER TABLE ADD COLUMN``.
-No column drops, no semantic changes to existing columns, no overloaded-column
-semantic migration. All legacy rows remain readable.
-
-**Legacy route cutover.** `POST /skills`, `PATCH /skills/{id}`,
-`POST /skills/{id}/validate`, and `POST /agents/{agent}/skills/{skill}/assign`
-return 410 Gone with migration guidance. The lifecycle routes are the sole
-runtime source for governed custom skills.
-
-Registry and eligibility mutations emit audit rows under the `config:skills`
-scope prefix (matching the established `config:<section>` convention from
-THR-035).
-
-### 4.5 Fenced Non-Goals
-
-The following are **explicitly out of scope** for the runtime-managed skill
-policy:
-
-- Skills **do not** grant tools, credentials, network access, filesystem
-  access, sandbox policy, permission maps, allow-rule, or auth changes.
-- System/contract skills are **not toggleable** — they are outside the catalog.
-- **No destructive SQLite migration** — two additive nullable columns
-  (``claimed_by`` / ``claimed_at``) were added via ``ALTER TABLE ADD COLUMN``.
-  No column drops, no semantic changes to existing columns, and no
-  overloaded-column semantic migration. All legacy rows remain readable
-  with NULL for new columns. This is the sole additive migration surface
-  and is distinct from the prohibited destructive/overloaded-column
-  class.
-- **No web Settings UI** or marketplace in v1.
-- **No executable/permission-bearing package surface** — v1 packages include
-  `SKILL.md`, `skill.yaml`, and optional `references/` and `assets/`
-  directories only.
-- **No auth or permission-model change** — the existing executor-native
-  sandboxing + system prompt guardrails remain the sole capability gate.
+  a release-managed skill is or isn't available, including both gate results
+  and eligibility provenance; it remains catalog-only rather than inventing a
+  second B2 custom-policy resolver.
 
 ### 4.6 Session-Time Skill Freshness & Protocol Doc Injection (THR-070)
 
@@ -1124,7 +1084,7 @@ removed; no ``_WHOLESALE_DUMP_ENABLED`` flag remains.
 
 **Process-local workspace serialization (Issue #536).** All pre-spawn skill
 materialization for a given agent workspace — system-contract injection +
-on-disk verification, managed-skill injection, and lifecycle-ledger injection
+on-disk verification, managed-skill injection, and B2 custom-skill injection
 — runs inside a single unified transaction (``materialize_workspace_skills``)
 protected by a process-local ``threading.RLock`` keyed by the canonical
 (resolved) workspace path. The legacy wholesale copy and its former
@@ -1141,7 +1101,7 @@ one. The lock serializes writers only; it does NOT block readers.
 
 Named fail-closed behavior: a materialization failure produces a named
 actionable error (``SystemContractMaterializationError``,
-``LifecycleMaterializationError``, ``PermissionError``, or ``OSError``) — never
+``PermissionError``, or ``OSError``) — never
 a bare ``FileNotFoundError``. The caller persists the terminal failure and no
 agent subprocess is launched.
 
@@ -1239,8 +1199,11 @@ involvement.
 
 **Debug visibility.** ``happyranch skills effective --agent <name>`` displays
 a distinct "System Contracts (runtime-injected)" section separate from managed
-catalog skills. The optional ``--context`` flag filters the display by session
-context; ``--workspace`` enables the repo check.
+catalog skills, plus a distinct daemon-backed custom-skills section when the
+projection is available. The optional ``--context`` flag filters the display by
+session context; ``--workspace`` enables the repo check. B2 eligibility changes
+guidance visibility only, never permissions; a session-effect claim requires a
+successful materialization of the current version/hash.
 
 **Fences.** System-contract injection does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)
@@ -1443,7 +1406,7 @@ single-context launch never withdraws a valid system-contract link
 belonging to another context.  An unrecognised context string is a no-op:
 the function returns immediately without creating, building, preflighting,
 or reconciling any links, and must not withdraw or mutate an existing
-valid workspace state.  Release-managed and lifecycle links remain
+valid workspace state.  Release-managed and B2 custom-skill links remain
 policy-reconciled and are withdrawn when the agent becomes ineligible or
 unassigned.
 

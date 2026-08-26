@@ -1036,7 +1036,8 @@ def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
     assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)
 
 
-def test_purpose_note_escalated_uses_escalation_wording():
+def test_escalated_task_followup_prompt_matches_governing_skill_contract():
+    """The live escalation prompt and governing skill must keep THR-166 aligned."""
     from runtime.daemon.thread_runner import _purpose_note
     from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
@@ -1056,7 +1057,29 @@ def test_purpose_note_escalated_uses_escalation_wording():
     assert "ESCALATED" in note
     assert "TASK-893" in note
     assert "needs founder CDN authorize" in note
-    assert "resolve the escalation yourself" in note
+    contract = (
+        "First evaluate the existing THR-166 policy against the server-recorded causal "
+        "terminal result",
+        "if it is eligible, submit the structured continuation request",
+        "Otherwise post the precise founder decision needed",
+        "Do not dispatch repair work from this turn",
+        "SAME root's ordinary lifecycle, which must delegate repair, review, and "
+        "reverify before returning to the original protected gate",
+        "follow-up never authorizes that gate",
+    )
+    skill = " ".join(
+        (Path(__file__).resolve().parents[1] / "protocol/skills/thread/SKILL.md")
+        .read_text()
+        .split()
+    )
+    for instruction in contract:
+        assert instruction in note
+        assert instruction in skill
+
+    # The authoritative ordinary-lifecycle instruction cannot regress to the
+    # former founder-only guidance.
+    assert "do NOT try to resolve the escalation yourself" not in note
+    assert "do NOT try to resolve the escalation yourself" not in skill
 
 
 def test_thread_store_renders_task_escalated():
@@ -1381,3 +1404,62 @@ def test_thread_forward_renders_no_further_revisits():
     assert "no further revisits" in out
     assert "after" not in out
     assert "2 revisits" not in out
+
+
+# ---------------------------------------------------------------------------
+# GitHub #688 Phase 1 Slice B — TASK_FOLLOWUP isolation regression
+# ---------------------------------------------------------------------------
+
+
+def test_followup_never_coalesces_into_reply_backlog_and_touches_no_delivery_state(orch_with_db):
+    """A task-completed followup is a causal one-shot direct mint: even with a
+    live reply-delivery backlog on the same pair it mints its own TASK_FOLLOWUP
+    row (never coalesced into the queued REPLY wake, never routed through the
+    delivery-state claim/settle surface) and creates no delivery-state row."""
+    orch = orch_with_db
+    _seed_dispatched_root(orch, thread_id="THR-1", task_id="TASK-1", dispatcher="alice")
+    # A conversational reply backlog exists for the pair: a queued REPLY wake.
+    db = orch._db
+    seq = db.append_thread_message(
+        thread_id="THR-1", speaker="founder", kind=ThreadMessageKind.MESSAGE,
+        body_markdown="m1",
+    )
+    reply_inv = db.mint_thread_invocation(
+        thread_id="THR-1", agent_name="alice",
+        triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-1", "alice", 0, seq, reply_inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    from runtime.orchestrator.run_step import _complete, _maybe_post_thread_followup
+    _complete(orch, "TASK-1", note="done", output_dir=None)
+    _maybe_post_thread_followup(
+        orch, "TASK-1",
+        status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+    )
+
+    invs = db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP]
+    # The followup fired as its own direct mint (causal one-shot turn).
+    assert len(followups) == 1
+    assert followups[0].status is ThreadInvocationStatus.PENDING
+    # The reply backlog was NOT coalesced away and NOT consumed: the pair's
+    # queued REPLY wake still owns the same token.
+    st = db.get_reply_delivery_state("THR-1", "alice")
+    assert st is not None
+    assert st.queued_invocation_token == reply_inv.invocation_token
+    assert st.required_through_seq == seq
+    # No second delivery-state row and no claim/settle of the followup token.
+    assert len(db.list_reply_delivery_states()) == 1
+    assert db.claim_conversational_reply(followups[0].invocation_token) is None
+    assert (
+        db.settle_conversational_reply(
+            token=followups[0].invocation_token, outcome="decline",
+        ) is None
+    )

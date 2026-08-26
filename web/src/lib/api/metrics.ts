@@ -27,7 +27,10 @@ export interface LoopStats {
 }
 
 /** The full /metrics payload: registry snapshot + live pull-gauges.
- *  `http` includes a stable aggregate bucket keyed `"__all__"`. */
+ *  `http` includes a stable aggregate bucket keyed `"__all__"`.
+ *  `format_version` is the snapshot-payload format marker: `2` = route-template
+ *  labels (`METHOD <matched FastAPI template>`). It is ABSENT on legacy rows
+ *  (raw-URL-path labels), so it is optional to keep both shapes parseable. */
 export interface MetricsSnapshot {
   uptime_seconds: number;
   loops: Record<string, LoopStats>;
@@ -36,6 +39,7 @@ export interface MetricsSnapshot {
   jobs_in_flight: number;
   executor_sessions_active: number;
   run_step_queue_depth: number;
+  format_version?: number;
 }
 
 /** One persisted history row. `snapshot_json` is a JSON-encoded

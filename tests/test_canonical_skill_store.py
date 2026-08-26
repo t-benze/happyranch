@@ -6,7 +6,7 @@ Covers:
 2. Symlink materializer: create, repair (stale, broken, wrong-target, ordinary-dir),
    safe withdrawal, batch materialization, fail-closed behavior
 3. Platform isolation: identity probes, ownership verification, symlink validation
-4. Integration: store → materializer → workspace link lifecycle
+4. Integration: store → materializer → workspace link flow
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,13 +24,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from runtime.orchestrator.workspace_adapters import (
-    _build_lifecycle_canonical_specs,
     _compute_dir_hash,
 )
 from runtime.platform.isolation import (
+    _LinuxPlatformIsolation,
     PlatformIsolation,
     PlatformIsolationError,
     _MacOSPlatformIsolation,
+    detect_platform_isolation as _production_detect,
 )
 # Use module-attribute access so the conftest monkeypatch on
 # runtime.platform.isolation.detect_platform_isolation takes effect
@@ -47,6 +49,21 @@ from runtime.skills.symlink_materializer import (
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _seed_active_agent_for_canonical_store_tests(tmp_path):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agent used by the runner-path dual-failure tests.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(
+        OrgPaths(root=tmp_path / "runtime-dir" / "orgs" / "test-org"),
+        ("dev_agent",),
+    )
 
 
 @pytest.fixture
@@ -104,6 +121,68 @@ class TestPlatformDetection:
         iso = isolation.detect_platform_isolation()
         assert isinstance(iso, PlatformIsolation)
 
+    def test_production_detector_supports_linux(self):
+        """Linux selects the explicit production Linux implementation."""
+        with patch.object(isolation.sys, "platform", "linux"):
+            assert isinstance(_production_detect(), _LinuxPlatformIsolation)
+
+    def test_production_detector_supports_darwin(self):
+        """macOS continues to select its explicit implementation."""
+        with patch.object(isolation.sys, "platform", "darwin"):
+            assert isinstance(_production_detect(), _MacOSPlatformIsolation)
+
+    def test_production_detector_rejects_unknown_platform(self):
+        """Unknown platforms fail closed without a POSIX fallback."""
+        with patch.object(isolation.sys, "platform", "win32"):
+            with pytest.raises(PlatformIsolationError) as exc_info:
+                _production_detect()
+        assert exc_info.value.code == "unsupported_platform"
+
+
+class TestLinuxPlatformOperations:
+    """Evidence against the real Linux same-owner adapter."""
+
+    def test_relative_link_validation_rejects_external_substitution(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        canonical_root = tmp_path / "canonical"
+        expected = canonical_root / "pkg"
+        expected.mkdir(parents=True)
+        external = tmp_path / "external"
+        external.mkdir()
+        link = tmp_path / "workspace" / "skill"
+        link.parent.mkdir()
+
+        iso.create_relative_symlink(
+            Path(os.path.relpath(expected, link.parent)), link,
+            workspace_root=tmp_path / "workspace",
+        )
+        assert iso.verify_workspace_link(link, expected, canonical_root)
+
+        link.unlink()
+        os.symlink(os.path.relpath(external, link.parent), link)
+        assert not iso.verify_workspace_link(link, expected, canonical_root)
+
+    def test_launches_directly_with_merged_environment(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        proc = iso.launch_executor(
+            [sys.executable, "-c", "import os; print(os.environ['HR_TEST_MARKER'])"],
+            cwd=tmp_path,
+            env={"HR_TEST_MARKER": "linux-launch-ok"},
+        )
+        stdout, stderr = proc.communicate(timeout=10)
+        assert proc.returncode == 0, stderr
+        assert stdout.strip() == "linux-launch-ok"
+
+    def test_launch_error_is_named_and_fail_closed(self, tmp_path):
+        iso = _LinuxPlatformIsolation()
+        with pytest.raises(PlatformIsolationError) as exc_info:
+            iso.launch_executor(
+                [str(tmp_path / "missing-executor")],
+                cwd=tmp_path,
+                env={},
+            )
+        assert exc_info.value.code == "executor_launch_failed"
+
 
 class TestSymlinkOperations:
     """Symlink creation and validation."""
@@ -117,7 +196,7 @@ class TestSymlinkOperations:
 
         link = tmp_path / "link"
         rel_target = Path("target")
-        iso.create_relative_symlink(rel_target, link)
+        iso.create_relative_symlink(rel_target, link, workspace_root=tmp_path)
         assert link.is_symlink()
         assert (link / "file.txt").read_text() == "hello"
 
@@ -126,7 +205,7 @@ class TestSymlinkOperations:
         iso = isolation.detect_platform_isolation()
         link = tmp_path / "link"
         with pytest.raises(PlatformIsolationError, match="absolute"):
-            iso.create_relative_symlink(Path("/etc/passwd"), link)
+            iso.create_relative_symlink(Path("/etc/passwd"), link, workspace_root=tmp_path)
 
     def test_verify_workspace_link_valid(self, tmp_path):
         """verify_workspace_link returns True for valid links."""
@@ -239,7 +318,7 @@ class TestCanonicalStoreBasic:
         """Manifest members with ../ in paths are rejected."""
         art_dir = tmp_path / "artifacts"
         art_dir.mkdir()
-        key = "skill-lifecycle/evil/abc/SKILL.md"
+        key = "custom-skills/evil/abc/SKILL.md"
         (art_dir / key).parent.mkdir(parents=True)
         (art_dir / key).write_bytes(b"content")
 
@@ -294,8 +373,8 @@ class TestCanonicalStoreBasic:
         skill_hash = hashlib.sha256(skill_content).hexdigest()
         ref_hash = hashlib.sha256(ref_content).hexdigest()
 
-        skill_key = "skill-lifecycle/test-manifest/deadbeef/SKILL.md"
-        ref_key = "skill-lifecycle/test-manifest/deadbeef/references/helper.md"
+        skill_key = "custom-skills/test-manifest/deadbeef/SKILL.md"
+        ref_key = "custom-skills/test-manifest/deadbeef/references/helper.md"
         (art_dir / skill_key).parent.mkdir(parents=True)
         (art_dir / ref_key).parent.mkdir(parents=True)
         (art_dir / skill_key).write_bytes(skill_content)
@@ -337,7 +416,7 @@ class TestCanonicalStoreBasic:
         art_dir = tmp_path / "artifacts"
         art_dir.mkdir()
 
-        skill_key = "skill-lifecycle/bad/abc/SKILL.md"
+        skill_key = "custom-skills/bad/abc/SKILL.md"
         (art_dir / skill_key).parent.mkdir(parents=True)
         (art_dir / skill_key).write_bytes(b"actual content")
 
@@ -634,8 +713,8 @@ class TestWriteViaLinkIsolation:
 class TestStoreMaterializerIntegration:
     """End-to-end: store → materialize → verify → withdraw."""
 
-    def test_full_lifecycle(self, store, materializer, skill_source_dir, workspace_dir):
-        """Full lifecycle: build, materialize (Claude + Agents), verify, withdraw."""
+    def test_full_canonical_flow(self, store, materializer, skill_source_dir, workspace_dir):
+        """Full canonical flow: build, materialize, verify, withdraw."""
         content_hash = "deadbeef12345678"
         store.build_from_source("test-skill", "1.0.0", content_hash, skill_source_dir)
 
@@ -788,13 +867,13 @@ class TestImportSeamCoverage:
         # path through canonical_store → detect_platform_isolation used
         # the scoped double and did NOT raise PlatformIsolationError.
 
-    def test_real_detector_still_rejects_non_darwin(self):
-        """The real detect_platform_isolation rejects non-darwin platforms.
+    def test_real_detector_supports_only_explicit_platforms(self):
+        """The detector supports darwin/linux and rejects everything else.
 
         Even though the conftest monkeypatches detect_platform_isolation
         in every runtime.* module, the original function (captured as
         _real_detect in conftest before patching) must still reject
-        non-darwin with the named error.  We verify this by auditing
+        unknown platforms with the named error. We verify this by auditing
         the production source code for the invariant checks.
 
         This is a code-audit test, not a runtime test — the real function
@@ -811,10 +890,12 @@ class TestImportSeamCoverage:
             "'unsupported_platform' error code — has someone removed it?"
         )
 
-        # 2. The production code must check sys.platform == darwin
+        # 2. The production code must check both supported platforms explicitly.
         assert 'sys.platform == "darwin"' in src, (
-            "Production isolation module must check sys.platform == darwin "
-            "— has someone added a Linux fallback?"
+            "Production isolation module must check sys.platform == darwin"
+        )
+        assert 'sys.platform == "linux"' in src, (
+            "Production isolation module must check sys.platform == linux"
         )
 
         # 3. The production code must raise PlatformIsolationError on
@@ -2718,444 +2799,3 @@ class TestSameOwnerAdversarialLimits:
         # Ordinary directory must still exist with its content intact
         assert ordinary_dir.is_dir()
         assert (ordinary_dir / "real-work.txt").read_text() == "real user work"
-
-    def test_legacy_lifecycle_branch_tamper_detect_and_refuse(
-        self, store, tmp_path, db,
-    ):
-        """Through the real _build_lifecycle_canonical_specs production
-        branch: same-owner canonical target mutation is detected and
-        REFUSED — no automatic repair from same-UID local source.
-
-        Sets up a real ArtifactStore-backed lifecycle artifact.  The
-        raw artifact SHA (content_hash) USED to differ from the
-        derived source-tree hash — this proves that wiring
-        verify_source_hash to the wrong value would silently accept
-        tampered content.
-
-        Honest adversarial proposition: same-owner CAN modify the
-        symlinked canonical target.  Detection refuses the session
-        and leaves canonical bytes corrupted.
-        """
-        from runtime.infrastructure.artifact_store import ArtifactStore
-        from runtime.orchestrator._paths import OrgPaths
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        from runtime.skills.lifecycle.models import LifecycleStatus
-        import datetime
-
-        # ── 1. Artifact identity: raw bytes SHA ≠ derived tree hash ──
-        skill_md_bytes = b"# Test Legacy Skill\n\nOriginal content.\n"
-        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
-
-        # Write artifact bytes into a temp dir to compute the *derived*
-        # source-tree hash (the one _build_lifecycle_canonical_specs
-        # passes as verify_source_hash).
-        src_dir = tmp_path / "probe-src"
-        src_dir.mkdir()
-        (src_dir / "SKILL.md").write_bytes(skill_md_bytes)
-        derived_tree_hash = _compute_dir_hash(src_dir)
-
-        # Proven: raw artifact SHA differs from derived tree hash.
-        assert raw_artifact_sha != derived_tree_hash, (
-            f"Raw artifact SHA {raw_artifact_sha[:16]}... must differ "
-            f"from derived tree hash {derived_tree_hash[:16]}... — "
-            f"_compute_dir_hash includes relative-path prefix bytes "
-            f"that raw SHA-256 does not"
-        )
-
-        # ── 2. Seed the lifecycle ledger ──
-        org_root = tmp_path / "org"
-        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-        artifact_key = "skill-lifecycle/test-legacy/1.0.0/SKILL.md"
-        artifact_store.put(artifact_key, skill_md_bytes)
-
-        pkg = lifecycle_stores.PackageVersion(
-            skill_id="hr:test-legacy",
-            slug="test-legacy",
-            name="Test Legacy Skill",
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            policy_class="standard_operational",
-            description="A test legacy skill",
-            skill_md=skill_md_bytes.decode("utf-8"),
-            content_artifact_key=artifact_key,
-            status=LifecycleStatus.PUBLISHED,
-            created_by="founder",
-            publisher="founder",
-        )
-        version_id = lifecycle_stores.insert_package_version(db, pkg)
-        assign = lifecycle_stores.AssignmentRecord(
-            skill_id="hr:test-legacy",
-            agent_name="test-agent",
-            package_version_id=version_id,
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            assigned_by="founder",
-            assigned_at=datetime.datetime.now(datetime.timezone.utc),
-            active=True,
-        )
-        lifecycle_stores.insert_assignment(db, assign)
-
-        # ── 3. Build through the real production branch ──
-        specs = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
-        )
-        assert len(specs) == 1
-        assert specs[0]["slug"] == "test-legacy"
-        assert specs[0]["version"] == "1.0.0"
-        assert specs[0]["content_hash"] == raw_artifact_sha
-
-        pkg_path = store.canonical_path("test-legacy", "1.0.0", raw_artifact_sha)
-        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
-
-        # ── 4. Same-owner tampers with canonical target ──
-        skill_file = pkg_path / "SKILL.md"
-        os.chmod(skill_file, 0o644)
-        skill_file.write_text("# TAMPERED BY SAME OWNER")
-        os.chmod(skill_file, 0o444)
-
-        assert "TAMPERED" in (pkg_path / "SKILL.md").read_text(), (
-            "Same-owner CAN alter the symlinked canonical target — "
-            "this is the honest limit, not a security boundary"
-        )
-
-        # ── 5. Detect tamper, REFUSE to rebuild ──
-        # The second _build_lifecycle_canonical_specs call must detect
-        # content corruption and raise LifecycleMaterializationError.
-        # No automatic repair from same-UID local source.
-        from runtime.orchestrator.workspace_adapters import (
-            LifecycleMaterializationError,
-        )
-        with pytest.raises(LifecycleMaterializationError) as exc:
-            _build_lifecycle_canonical_specs(
-                store=store,
-                org_root=org_root,
-                db=db,
-                agent_name="test-agent",
-                slug="test-org",
-            )
-        assert "content_corruption" in str(exc.value).lower()
-        # Canonical bytes must remain corrupted — no auto-repair
-        still_tampered = (pkg_path / "SKILL.md").read_text()
-        assert "TAMPERED" in still_tampered, (
-            "Integrity verification must refuse auto-repair — "
-            "canonical bytes stay corrupted; got: {!r}".format(still_tampered)
-        )
-
-    def test_legacy_lifecycle_branch_absent_artifact_fails_closed(
-        self, store, tmp_path, db,
-    ):
-        """Through the real _build_lifecycle_canonical_specs production
-        branch: when the trusted artifact is withdrawn/unavailable,
-        the function raises the documented named actionable failure
-        (LifecycleMaterializationError) and never blesses altered
-        canonical content.
-
-        If ArtifactNotFound were silently accepted, the tampered bytes
-        would persist unchallenged.
-        """
-        from runtime.infrastructure.artifact_store import ArtifactStore
-        from runtime.orchestrator._paths import OrgPaths
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        from runtime.skills.lifecycle.models import LifecycleStatus
-        from runtime.orchestrator.workspace_adapters import (
-            LifecycleMaterializationError,
-        )
-        import datetime
-
-        # ── 1. Seed artifact + lifecycle package ──
-        skill_md_bytes = b"# Valid Legacy Skill\n\nWill be withdrawn.\n"
-        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
-
-        org_root = tmp_path / "org"
-        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-        artifact_key = "skill-lifecycle/test-absent/1.0.0/SKILL.md"
-        artifact_store.put(artifact_key, skill_md_bytes)
-
-        pkg = lifecycle_stores.PackageVersion(
-            skill_id="hr:test-absent",
-            slug="test-absent",
-            name="Test Absent Skill",
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            policy_class="standard_operational",
-            description="Skill that will be withdrawn",
-            skill_md=skill_md_bytes.decode("utf-8"),
-            content_artifact_key=artifact_key,
-            status=LifecycleStatus.PUBLISHED,
-            created_by="founder",
-            publisher="founder",
-        )
-        version_id = lifecycle_stores.insert_package_version(db, pkg)
-        assign = lifecycle_stores.AssignmentRecord(
-            skill_id="hr:test-absent",
-            agent_name="test-agent",
-            package_version_id=version_id,
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            assigned_by="founder",
-            assigned_at=datetime.datetime.now(datetime.timezone.utc),
-            active=True,
-        )
-        lifecycle_stores.insert_assignment(db, assign)
-
-        # ── 2. First build succeeds ──
-        specs = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
-        )
-        assert len(specs) == 1
-        pkg_path = store.canonical_path("test-absent", "1.0.0", raw_artifact_sha)
-        assert "Valid Legacy" in (pkg_path / "SKILL.md").read_text()
-
-        # ── 3. Withdraw the artifact (mirrors ArtifactNotFound) ──
-        artifact_store.delete(artifact_key)
-
-        # ── 4. Tamper with canonical target (same-owner CAN do this) ──
-        skill_file = pkg_path / "SKILL.md"
-        os.chmod(skill_file, 0o644)
-        skill_file.write_text("# TAMPERED AFTER WITHDRAWAL")
-        os.chmod(skill_file, 0o444)
-
-        # ── 5. Rebuild fails closed with named actionable error ──
-        with pytest.raises(LifecycleMaterializationError, match="Artifact not found"):
-            _build_lifecycle_canonical_specs(
-                store=store,
-                org_root=org_root,
-                db=db,
-                agent_name="test-agent",
-                slug="test-org",
-            )
-
-        # ── 6. Tampered bytes are never silently blessed ──
-        actual = (pkg_path / "SKILL.md").read_text()
-        assert "TAMPERED" in actual, (
-            "Tampered content persists in canonical store since "
-            "rebuild failed — fail closed, never silently accept"
-        )
-        assert "Valid Legacy" not in actual, (
-            "Content was unexpectedly restored from a withdrawn artifact"
-        )
-
-    def test_legacy_lifecycle_branch_valid_no_spurious_rebuild(
-        self, store, tmp_path, db,
-    ):
-        """Through the real _build_lifecycle_canonical_specs production
-        branch: an intact valid artifact/canonical-store is reused
-        without spurious rebuild.
-
-        The second call passes the same verified source hash and the
-        canonical package content still matches — build_from_source
-        must return the existing path without entering the rebuild
-        code path.  We intercept _apply_readonly_hardening, which is
-        only invoked during rebuild (after os.replace publishes the
-        package).  If it is called during the second materialization
-        the implementation is needlessly deleting/rebuilding the
-        content-addressed package.
-        """
-        from runtime.infrastructure.artifact_store import ArtifactStore
-        from runtime.orchestrator._paths import OrgPaths
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        from runtime.skills.lifecycle.models import LifecycleStatus
-        import datetime
-
-        # ── 1. Seed artifact + lifecycle package ──
-        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
-        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
-
-        org_root = tmp_path / "org"
-        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-        artifact_key = "skill-lifecycle/test-valid/1.0.0/SKILL.md"
-        artifact_store.put(artifact_key, skill_md_bytes)
-
-        pkg = lifecycle_stores.PackageVersion(
-            skill_id="hr:test-valid",
-            slug="test-valid",
-            name="Test Valid Skill",
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            policy_class="standard_operational",
-            description="A stable valid skill",
-            skill_md=skill_md_bytes.decode("utf-8"),
-            content_artifact_key=artifact_key,
-            status=LifecycleStatus.PUBLISHED,
-            created_by="founder",
-            publisher="founder",
-        )
-        version_id = lifecycle_stores.insert_package_version(db, pkg)
-        assign = lifecycle_stores.AssignmentRecord(
-            skill_id="hr:test-valid",
-            agent_name="test-agent",
-            package_version_id=version_id,
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            assigned_by="founder",
-            assigned_at=datetime.datetime.now(datetime.timezone.utc),
-            active=True,
-        )
-        lifecycle_stores.insert_assignment(db, assign)
-
-        # ── 2. First build through real production branch ──
-        specs1 = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
-        )
-        assert len(specs1) == 1
-        pkg_path = store.canonical_path("test-valid", "1.0.0", raw_artifact_sha)
-        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
-
-        # ── 3. Intercept the rebuild primitive and call again ──
-        # _apply_readonly_hardening is invoked exclusively during rebuild
-        # (after os.replace publishes the package).  If the second
-        # materialization reuses the existing package, this primitive
-        # must never be reached.
-        import runtime.skills.canonical_store as cs_mod
-
-        # Capture the original before patching — the tracker must invoke
-        # the saved callable, not the module attribute that is about to
-        # be replaced by the mock.
-        _original_hardening = cs_mod._apply_readonly_hardening
-
-        rebuild_calls: list[str] = []
-
-        def _track_rebuild(isolation, pkg_path_arg):
-            rebuild_calls.append(str(pkg_path_arg))
-            # Call the saved original so the test exercises the full
-            # rebuild path. Using cs_mod._apply_readonly_hardening here
-            # would recurse because that name is already mocked.
-            return _original_hardening(isolation, pkg_path_arg)
-
-        with patch.object(
-            cs_mod, "_apply_readonly_hardening", side_effect=_track_rebuild,
-        ):
-            specs2 = _build_lifecycle_canonical_specs(
-                store=store,
-                org_root=org_root,
-                db=db,
-                agent_name="test-agent",
-                slug="test-org",
-            )
-
-        # ── 4. Assert no rebuild occurred ──
-        assert len(rebuild_calls) == 0, (
-            f"_apply_readonly_hardening invoked {len(rebuild_calls)} time(s) "
-            f"on second materialization — rebuild detected when none should "
-            f"occur (paths: {rebuild_calls}). A spurious rebuild means the "
-            f"implementation is needlessly deleting and reconstructing the "
-            f"content-addressed canonical package."
-        )
-        assert len(specs2) == 1
-        assert specs2[0] == specs1[0], (
-            "Legacy lifecycle branch must not spuriously rebuild "
-            "when artifact content matches source hash"
-        )
-        assert store.is_built("test-valid", "1.0.0", raw_artifact_sha), (
-            "is_built must return True for intact package after valid reuse"
-        )
-
-    def test_legacy_lifecycle_branch_controlled_rebuild_positive(
-        self, store, tmp_path, db,
-    ):
-        """Red-side control: a deliberately corrupted canonical package
-        triggers a REFUSAL (NOT a rebuild), proving the detection-only
-        contract. Corrupted canonical bytes remain corrupted after refusal.
-
-        This test corrupts the canonical SKILL.md after the first
-        build, then verifies that the second lifecycle materialization
-        detects the mismatch, REFUSES (raises LifecycleMaterializationError),
-        and leaves canonical bytes unchanged (no auto-repair).
-        """
-        from runtime.infrastructure.artifact_store import ArtifactStore
-        from runtime.orchestrator._paths import OrgPaths
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        from runtime.skills.lifecycle.models import LifecycleStatus
-        from runtime.orchestrator.workspace_adapters import LifecycleMaterializationError
-        import datetime
-
-        # ── 1. Seed artifact + lifecycle package ──
-        skill_md_bytes = b"# Valid Stable Skill\n\nStable content.\n"
-        raw_artifact_sha = hashlib.sha256(skill_md_bytes).hexdigest()
-
-        org_root = tmp_path / "org"
-        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-        artifact_key = "skill-lifecycle/test-corrupt/1.0.0/SKILL.md"
-        artifact_store.put(artifact_key, skill_md_bytes)
-
-        pkg = lifecycle_stores.PackageVersion(
-            skill_id="hr:test-corrupt",
-            slug="test-corrupt",
-            name="Test Corrupt Skill",
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            policy_class="standard_operational",
-            description="A skill to test refusal on corruption",
-            skill_md=skill_md_bytes.decode("utf-8"),
-            content_artifact_key=artifact_key,
-            status=LifecycleStatus.PUBLISHED,
-            created_by="founder",
-            publisher="founder",
-        )
-        version_id = lifecycle_stores.insert_package_version(db, pkg)
-        assign = lifecycle_stores.AssignmentRecord(
-            skill_id="hr:test-corrupt",
-            agent_name="test-agent",
-            package_version_id=version_id,
-            version="1.0.0",
-            content_hash=raw_artifact_sha,
-            assigned_by="founder",
-            assigned_at=datetime.datetime.now(datetime.timezone.utc),
-            active=True,
-        )
-        lifecycle_stores.insert_assignment(db, assign)
-
-        # ── 2. First build through real production branch ──
-        specs1 = _build_lifecycle_canonical_specs(
-            store=store,
-            org_root=org_root,
-            db=db,
-            agent_name="test-agent",
-            slug="test-org",
-        )
-        assert len(specs1) == 1
-        pkg_path = store.canonical_path("test-corrupt", "1.0.0", raw_artifact_sha)
-        assert (pkg_path / "SKILL.md").read_text() == skill_md_bytes.decode("utf-8")
-
-        # ── 3. Corrupt the canonical package in place ──
-        # Same-owner can write through symlinks; this simulates an
-        # accidental or adversarial mutation.
-        corrupted = b"# Corrupted Content\n\nThis should trigger refusal.\n"
-        pkg_path.chmod(0o755)
-        (pkg_path / "SKILL.md").chmod(0o644)
-        (pkg_path / "SKILL.md").write_bytes(corrupted)
-        (pkg_path / "SKILL.md").chmod(0o444)
-        pkg_path.chmod(0o555)
-        assert (pkg_path / "SKILL.md").read_bytes() == corrupted, (
-            "Corruption must be in place before second materialization"
-        )
-
-        # ── 4. Second materialization must REFUSE (no rebuild) ──
-        import runtime.skills.canonical_store as cs_mod
-
-        with pytest.raises(LifecycleMaterializationError) as exc:
-            _build_lifecycle_canonical_specs(
-                store=store,
-                org_root=org_root,
-                db=db,
-                agent_name="test-agent",
-                slug="test-org",
-            )
-        assert "content_corruption" in str(exc.value).lower()
-
-        # ── 5. Canonical bytes must remain corrupted ──
-        assert (pkg_path / "SKILL.md").read_bytes() == corrupted, (
-            "Canonical SKILL.md must remain corrupted — no auto-repair"
-        )

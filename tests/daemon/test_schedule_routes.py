@@ -11,7 +11,7 @@ import pytest
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
-from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+from runtime.orchestrator.schedule_rules import next_recurring_occurrence, next_weekly_occurrence
 
 
 _FROZEN_NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
@@ -102,6 +102,113 @@ def test_rejects_already_fired_schedule(tmp_home, app, org_state, auth_headers):
     sid = _insert_schedule(org_state, status=ScheduleStatus.FIRED, active=0)
     status, detail = _spawn(client, sid, auth_headers)
     assert status == 409
+
+
+def test_recurring_count_exhaustion_is_terminal_only_after_successful_spawn(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state, status=ScheduleStatus.FIRING, kind=ScheduleKind.RECURRING,
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": 1,
+        },
+    )
+    status, body = _spawn(client, sid, auth_headers)
+    assert status == 200
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FIRED
+    assert record.fire_count == 1
+    assert record.end_reason == "count_exhausted"
+    # The occurrence key cannot be claimed/dispatched twice after its FIRING
+    # claim has resolved to a terminal row.
+    status, detail = _spawn(client, sid, auth_headers)
+    assert status == 409
+    assert detail["code"] == "schedule_not_firing"
+
+
+def test_recurring_spawn_until_exhaustion_is_date_ended_not_expired(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        expires_at=_FROZEN_NOW - timedelta(days=1),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": "2026-07-22", "count": None,
+        },
+    )
+
+    status, _ = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FIRED
+    assert record.end_reason == "date_ended"
+    assert record.fire_count == 1
+
+
+def test_recurring_spawn_expires_only_when_a_next_candidate_exists(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        expires_at=_FROZEN_NOW + timedelta(hours=1),
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+
+    status, body = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    assert body["status"] == "expired"
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.EXPIRED
+    assert record.end_reason is None
+    assert record.fire_count == 1
+
+
+def test_recurring_spawn_defensive_no_candidate_fails(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "runtime.daemon.routes.schedules.next_recurring_occurrence", lambda *_args, **_kwargs: None,
+    )
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.RECURRING,
+        recurrence={
+            "freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01",
+            "time": "09:00", "tz": "UTC", "until": None, "count": None,
+        },
+    )
+
+    status, body = _spawn(client, sid, auth_headers)
+
+    assert status == 200
+    assert body["status"] == "failed"
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.FAILED
+    assert record.error == "recurrence_no_candidate"
+    assert record.fire_count == 1
+    failed = org_state.db.get_audit_logs_by_action("schedule_failed")
+    assert any(row["task_id"] == sid for row in failed)
 
 
 # ── successful spawn: one-shot ──────────────────────────────────────────
@@ -223,6 +330,7 @@ def test_weekly_spawn_rearms_with_next_occurrence(tmp_home, app, org_state, auth
         fire_at=now - timedelta(hours=1),
         expires_at=None,
         indefinite=1,
+        error="timed_out",
     )
     status, body = _spawn(client, sid, auth_headers)
     assert status == 200
@@ -232,6 +340,7 @@ def test_weekly_spawn_rearms_with_next_occurrence(tmp_home, app, org_state, auth
     assert record.active == 1
     assert record.fire_count == 1
     assert record.last_fired_at is not None
+    assert record.error is None
 
 
 def test_weekly_spawn_expires_when_past_expires_at(tmp_home, app, org_state, auth_headers, monkeypatch):
@@ -645,6 +754,287 @@ def test_create_rejects_weekly_multi_day(tmp_home, app, org_state, auth_headers)
     )
     status, detail = _post_create(client, payload, auth_headers)
     assert status == 409
+
+
+# ── recurring named validation errors ──────────────────────────────────
+
+def test_create_recurring_returns_named_validation_code(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    _register_session(org_state)
+    client = TestClient(app)
+    payload = _create_payload(
+        kind="recurring",
+        recurrence={"freq": "DAILY", "interval": 0, "time": "09:00", "tz": "UTC"},
+        fire_at="2026-07-23T09:00:00+00:00",
+    )
+
+    status, detail = _post_create(client, payload, auth_headers)
+
+    assert status == 422
+    assert detail["code"] == "invalid_interval"
+
+
+def test_create_recurring_preserves_agent_rule_at_the_service_create_seam(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A documented recurring callback reaches the shipped create seam intact."""
+    from fastapi.testclient import TestClient
+
+    _register_session(org_state)
+    client = TestClient(app)
+    recurrence = {
+        "freq": "WEEKLY", "interval": 2, "byday": ["TU", "TH"],
+        "time": "09:00", "tz": "Asia/Shanghai", "count": 6,
+    }
+    local_tz = timezone(timedelta(hours=8))
+    expected = next_recurring_occurrence(
+        {**recurrence, "anchor_date": _FROZEN_NOW.astimezone(local_tz).date().isoformat()},
+        _FROZEN_NOW,
+    )
+    assert expected is not None
+    payload = _create_payload(
+        kind="recurring", recurrence=recurrence, timezone="Asia/Shanghai",
+        fire_at=expected.isoformat(),
+    )
+
+    status, body = _post_create(client, payload, auth_headers)
+
+    assert status == 200
+    record = org_state.db.schedules.get(body["schedule_id"])
+    assert record is not None
+    assert record.kind == ScheduleKind.RECURRING
+    assert record.recurrence == {
+        **recurrence,
+        "anchor_date": expected.astimezone(local_tz).date().isoformat(),
+    }
+
+
+def test_create_recurring_start_date_derives_fire_at_without_agent_calculation(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    _register_session(org_state)
+    payload = _create_payload(
+        kind="recurring", fire_at=None, timezone="UTC", start_date="2026-08-21",
+        recurrence={"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+    )
+    payload.pop("fire_at")
+    status, body = _post_create(TestClient(app), payload, auth_headers)
+
+    assert status == 200
+    assert body["recurrence"]["anchor_date"] == "2026-08-21"
+    assert body["fire_at"] == "2026-08-21T09:00:00+00:00"
+
+
+def test_patch_recurring_without_fire_at_derives_server_occurrence(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00",
+        "tz": "UTC", "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"byday": ["TH"]}, "timezone": "UTC"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fire_at"] == next_recurring_occurrence(
+        body["recurrence"], _FROZEN_NOW,
+    ).isoformat()
+
+
+def test_patch_recurring_start_date_rephases_without_caller_fire_at(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {"freq": "WEEKLY", "interval": 2, "byday": ["FR"], "time": "09:00", "tz": "UTC", "until": None, "count": None, "anchor_date": "2026-07-24"}
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC",
+        fire_at=datetime(2026, 7, 24, 9, tzinfo=timezone.utc),
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}", json={"start_date": "2026-08-21"}, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recurrence"]["anchor_date"] == "2026-08-21"
+    assert response.json()["fire_at"] == "2026-08-21T09:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("stored_rule", "editor_rule", "cleared_selectors"),
+    [
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "bymonthday": None, "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"bymonthday"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "byday": ["MO"], "ordinal": "second", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "MONTHLY", "interval": 1, "byday": None, "bymonthday": 15, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "ordinal"},
+        ),
+        (
+            {"freq": "WEEKLY", "interval": 1, "byday": ["TU"], "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "DAILY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+        (
+            {"freq": "MONTHLY", "interval": 1, "bymonthday": 15, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"freq": "YEARLY", "interval": 1, "byday": None, "bymonthday": None, "ordinal": None, "time": "09:00", "tz": "UTC", "until": None, "count": None},
+            {"byday", "bymonthday", "ordinal"},
+        ),
+    ],
+    ids=["monthly-date-to-ordinal", "monthly-ordinal-to-date", "weekly-to-daily", "monthly-to-yearly"],
+)
+def test_patch_recurring_editor_selector_clears_are_persisted_canonically(
+    tmp_home, app, org_state, auth_headers, stored_rule, editor_rule, cleared_selectors,
+):
+    """Bearer PATCH reaches the merge seam and removes inactive selectors."""
+    from fastapi.testclient import TestClient
+
+    stored = {**stored_rule, "anchor_date": "2026-07-22"}
+    fire_at = next_recurring_occurrence(stored, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=stored, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": editor_rule, "timezone": "UTC"}, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "UTC"
+    assert persisted.timezone == persisted.recurrence["tz"] == "UTC"
+    assert all(selector not in body["recurrence"] for selector in cleared_selectors)
+    assert persisted.recurrence == body["recurrence"]
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+
+
+def test_patch_recurring_timezone_without_fire_at_derives_server_occurrence(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"timezone": "Asia/Shanghai"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["timezone"] == body["recurrence"]["tz"] == "Asia/Shanghai"
+    assert body["recurrence"]["anchor_date"] == rule["anchor_date"]
+    assert body["fire_at"] == next_recurring_occurrence(
+        body["recurrence"], _FROZEN_NOW,
+    ).isoformat()
+
+
+@pytest.mark.parametrize("include_timezone", [False, True])
+def test_patch_recurring_rule_timezone_without_fire_at_persists_authoritative_timezone(
+    tmp_home, app, org_state, auth_headers, include_timezone,
+):
+    """Bearer edits keep returned and persisted recurring timezones identical."""
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    payload = {"recurrence": {"tz": "Asia/Shanghai"}}
+    if include_timezone:
+        payload["timezone"] = "Asia/Shanghai"
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}", json=payload, headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    persisted = org_state.db.schedules.get(sid)
+    assert body["timezone"] == body["recurrence"]["tz"] == "Asia/Shanghai"
+    assert persisted.timezone == persisted.recurrence["tz"] == "Asia/Shanghai"
+    assert body["fire_at"] == next_recurring_occurrence(body["recurrence"], _FROZEN_NOW).isoformat()
+    assert body["recurrence"]["anchor_date"] == rule["anchor_date"]
+
+
+def test_patch_recurring_supplied_mismatching_fire_at_still_rejects(
+    tmp_home, app, org_state, auth_headers,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"time": "10:00"}, "fire_at": fire_at.isoformat()},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_conflict"
+
+
+@pytest.mark.parametrize("anchor_date", ["2026-07-22", "2026-07-23"])
+def test_patch_recurring_rejects_caller_supplied_anchor_key(
+    tmp_home, app, org_state, auth_headers, anchor_date,
+):
+    from fastapi.testclient import TestClient
+
+    rule = {
+        "freq": "DAILY", "interval": 1, "time": "09:00", "tz": "UTC",
+        "until": None, "count": None, "anchor_date": "2026-07-22",
+    }
+    fire_at = next_recurring_occurrence(rule, _FROZEN_NOW)
+    sid = _insert_schedule(
+        org_state, kind=ScheduleKind.RECURRING, recurrence=rule, timezone="UTC", fire_at=fire_at,
+    )
+
+    response = TestClient(app).patch(
+        f"/api/v1/orgs/alpha/schedules/{sid}",
+        json={"recurrence": {"anchor_date": anchor_date}},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_conflict"
 
 
 # ── successful create ──────────────────────────────────────────────────

@@ -39,6 +39,21 @@ from runtime.models import (
 from runtime.config import Settings
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_system_contract_production_paths(org_state):
+    """Task/thread/wake/dream launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only workspaces. Seed active frontmatter for the
+    agents used in this module so launch guards admit them.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+    seed_test_agents(
+        OrgPaths(root=org_state.root),
+        ("engineering_head", "content_manager", "dev_agent"),
+    )
+
+
 # ── Thread production path ────────────────────────────────────────────
 
 
@@ -63,6 +78,16 @@ async def test_thread_spawn_stops_on_materialization_error(org_state, tmp_path, 
         thread_id="THR-001", agent_name="dev_agent",
         triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
     )
+    # GitHub #688 Slice B: seed the delivery-state queued slot so the runner's
+    # queued→running CAS succeeds (mirrors a queued coalesced wake).
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-001", "dev_agent", 0, 1, inv.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
     # Workspace setup: agent.yaml + repos so executor resolution works.
     ws = org_state.root / "workspaces" / "dev_agent"
@@ -406,6 +431,11 @@ async def test_wake_spawn_stops_on_materialization_error(org_state, tmp_path, mo
 
 
 @pytest.mark.asyncio
+def _make_host_supervisor():
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    return build_default_host_supervisor()
+
+
 async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path, monkeypatch):
     """run_schedule must fail BEFORE spawning the executor when
     materialization of workspace skills raises.
@@ -495,6 +525,7 @@ async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path
         org_state=org_state,
         schedule_id="SCHEDULE-001",
         settings=settings,
+        host_supervisor=_make_host_supervisor(),
     )
 
     # Executor was NOT spawned (fail-closed pre-spawn)

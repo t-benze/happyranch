@@ -8,9 +8,8 @@ from difflib import unified_diff
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Header, Query, Request, status
-from runtime.daemon.auth import _check_optional_token, require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.daemon.routes.skill_lifecycle import _AGENT_PILOT_SLUG_MAP, _require_human
 from runtime.skills.custom import service
 from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
 
@@ -53,8 +52,8 @@ def _preview(org, row, rules):
         (visible if after and not before else hidden if before and not after else unchanged).append(recipient.agent_name)
     return {"newly_visible": visible, "newly_hidden": hidden, "unchanged": unchanged, "revision": row["version_id"]}
 
-@agent_custom_skills_router.post("/agent-create", status_code=201)
-def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body: dict = Body(...)):
+def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: Request, body: dict) -> dict:
+    """Create an editable B2 custom skill from verified session provenance."""
     if "authorization" in request.headers: _error("bearer_not_accepted", 401)
     if next((key for key in _FORBIDDEN_IDENTITY if key in body), None) is not None: _error("body_identity_rejected", 403)
     context = org.sessions.get_context_by_session(session_id)
@@ -73,8 +72,10 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
             _error("protected_slug", 409)
         conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
         if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
-        if _AGENT_PILOT_SLUG_MAP.get(agent) != skill_slug: _error("slug_not_allowed_for_agent", 403)
-        key = _store_content(org, skill_slug, skill_md); brief = org.db.get_task(task_id).brief
+        task = org.db.get_task(task_id)
+        if task is None: _error("task_not_found", 422)
+        key = _store_content(org, skill_slug, skill_md)
+        brief = task.brief
         digest = hashlib.sha256(brief.encode()).hexdigest() if brief else None
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -87,12 +88,36 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
                 conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version, skill_id)); service.append_event(conn, skill_id, "created", agent, version, task_id=task_id, session_id=session_id)
             service.append_event(conn, skill_id, "validated", agent, version, task_id=task_id, session_id=session_id); conn.commit()
         except Exception: conn.rollback(); raise
-    return {"skill_id": skill_id, "version_id": version, "content_hash": digest_hash, "validation_state": validation, "hidden_reason": "no_eligibility_policy"}
+    version_row = conn.execute("SELECT * FROM custom_skill_versions WHERE id=?", (version,)).fetchone()
+    skill_row = service.current(conn, skill_id)
+    return {
+        "skill": dict(skill_row),
+        "version": dict(version_row),
+        "hidden_reason": "no_eligibility_policy",
+        "provenance": {
+            "verified_org": verified_org,
+            "task_id": task_id,
+            "agent_name": agent,
+            "session_id": session_id,
+            "task_brief_digest": digest,
+        },
+    }
+
+
+@agent_custom_skills_router.post("/agent-create", status_code=201)
+def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body: dict = Body(...)):
+    return create_agent_custom_skill(slug, session_id, org, request, body)
 
 @router.get("/catalog")
 def catalog(slug: str, org: OrgDep, filter: str | None = None):
-    rows = getattr(org.db, "_conn", org.db).execute("SELECT s.*,v.content_hash,v.validation_state FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.org_slug=? ORDER BY s.name", (slug,)).fetchall()
-    return {"skills": [dict(row) for row in rows]}
+    conn = getattr(org.db, "_conn", org.db)
+    rows = conn.execute("SELECT s.*,v.content_hash,v.validation_state FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.org_slug=? ORDER BY s.name", (slug,)).fetchall()
+    skills = []
+    for row in rows:
+        skill = dict(row)
+        skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(conn, row["id"]) else None
+        skills.append(skill)
+    return {"skills": skills}
 
 @router.post("", status_code=201)
 def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
@@ -117,7 +142,9 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
 def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
-    return dict(row)
+    skill = dict(row)
+    skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(org.db, skill_id) else None
+    return skill
 
 @router.patch("/{skill_id}")
 def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):

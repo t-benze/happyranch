@@ -150,7 +150,57 @@ export interface TaskDetailResponse {
   /** DERIVE from escalation_superseded audit: successor task_id when this
    *  task was auto-resolved to SUPERSEDED. Null otherwise. */
   superseded_by_task_id: string | null;
+  /** TASK-5522: read-only derived work-status summary. Present on every
+   *  envelope; the server always derives it from the task record + audit
+   *  rows (session_start / progress). Absent only from legacy-daemon or
+   *  stubbed fixtures. */
+  work_status: WorkStatusResponse | null;
   [extra: string]: unknown;
+}
+
+/** Machine state of the derived work-status summary (TASK-5522).
+ *
+ * (a)-(d) apply only to the live-task shape (in_progress, no block_kind)
+ * with a FRESH observed heartbeat; every other shape is explicitly
+ * not_applicable, and stale/absent heartbeat liveness is its own honest
+ * state rather than being papered over with a progress label.
+ */
+export type WorkStatusState =
+  | 'newly_started'          // (a) no receipt yet, session start < 5m
+  | 'recent_progress'        // (b) latest current-session receipt < 5m
+  | 'stale_no_receipt'       // (c) no receipt, session start >= 5m
+  | 'stale_old_receipt'      // (d) latest current-session receipt >= 5m
+  | 'heartbeat_stale'        // live shape but heartbeat >= 60s old
+  | 'heartbeat_unavailable'  // live shape, no heartbeat observed
+  | 'unavailable'            // cannot derive (absent/malformed audit data)
+  | 'not_applicable';        // terminal / pending / escalated / parked-on-block
+
+/** Read-only derived work-status summary for the task-detail envelope. */
+export interface WorkStatusResponse {
+  applicable: boolean;
+  state: WorkStatusState;
+  /** Human phrase — says what is OBSERVED; never claims execution progress
+   *  from a heartbeat and never claims a receipt when only liveness exists. */
+  label: string;
+  /** not_applicable / unavailable discriminator: terminal | pending |
+   *  escalated | blocked | no_session_start | unassigned. Null otherwise. */
+  reason: string | null;
+  /** Latest assigned-agent session_start timestamp (current-session lower
+   *  boundary). Null when not derivable. */
+  session_start_ts: string | null;
+  heartbeat: {
+    timestamp: string | null;
+    /** Existing 60-second heartbeat freshness semantics (2 missed 30s
+     *  intervals) — never a new monitor/reaper threshold. */
+    freshness: 'fresh' | 'stale' | 'unavailable';
+  };
+  /** Latest current-session progress receipt; `message` is null when the
+   *  stored content is absent/malformed (unavailable, never fabricated). */
+  latest_progress: {
+    timestamp: string;
+    message: string | null;
+    agent: string;
+  } | null;
 }
 
 /** Audit-log entry shape (mirror of `audit_log` table rows). */
@@ -198,11 +248,54 @@ export interface ThreadRecord {
   transcript_path: string | null;
   composed_from_dream_id: string | null;
   last_speaker: string | null;
+  /** Founder-workspace pin state (THR-209). Wire is derived from the durable
+   *  ``pinned_at`` column: false when never pinned, true while pinned. */
+  pinned: boolean;
+  pinned_at: string | null;
+  /** Per-thread mention-routing switch (THR-198). Mirrors the durable
+   *  ``threads.mention_routing_enabled`` column; the daemon wire is a real
+   *  boolean (never a string). */
+  mention_routing_enabled: boolean;
+  /** Most recent message created_at (derived server-side). Feeds the
+   *  pinned-section activity ranking (THR-209). */
+  last_activity_at: string | null;
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
   participants: string[];
   messages: ThreadMessage[];
+  /** Pair-level reply-delivery projection (GH-688 Phase 1, Slice B wire).
+   *  Present on both GET /threads/{id} and GET /threads/{id}/messages.
+   *  Empty when every pair is fully settled — no live obligation exists. */
+  reply_delivery: ReplyDeliveryEntry[];
+}
+
+export type ReplyDeliveryState =
+  | 'queued'
+  | 'running'
+  | 'retry_required';
+
+/** Pair-level reply-delivery projection (GH-688 Phase 1).
+ *
+ *  Mirrors runtime/models.py ReplyDeliveryProjection. Derived from the
+ *  durable ``thread_reply_delivery_state`` table — never fabricated from
+ *  per-message invocation rows. ``state`` is truthful about the live
+ *  obligation: queued = one unstarted coalesced wake (NO subprocess), running
+ *  = one claimed in-flight reply (started_at set), retry_required = an
+ *  unacknowledged range with no active wake (diagnostic; the next
+ *  conversational arrival mints the single covering retry).
+ *  ``coalesced_message_count`` is the number of transcript rows the wake's
+ *  inclusive range covers (computed in the store, not inferred from
+ *  seq subtraction). */
+export interface ReplyDeliveryEntry {
+  agent_name: string;
+  state: ReplyDeliveryState;
+  from_seq: number;
+  through_seq: number;
+  coalesced_message_count: number;
+  started_at: string | null;
+  updated_at: string | null;
+  last_terminal_reason: string | null;
 }
 
 export type ResponderStatus =
@@ -214,6 +307,11 @@ export type ResponderStatus =
 
 export interface ResponderStatusEntry {
   agent_name: string;
+  /** Authoritative wake purpose from thread_invocations (TASK-5553).
+   *  Classification/dedup uses THIS, never the triggering row's kind — a
+   *  coalesced conversational REPLY range can anchor on a SYSTEM row, and a
+   *  same-agent TASK_FOLLOWUP can coexist on the same transcript. */
+  purpose: 'reply' | 'bootstrap' | 'task_followup';
   status: ResponderStatus;
   responded_at: string | null;
   started_at: string | null;
@@ -260,6 +358,9 @@ export interface ThreadMessagesPage {
   messages: ThreadMessage[];
   has_more: boolean;
   next_since_seq: number;
+  /** Pair-level reply-delivery projection — same shape as the thread-detail
+   *  response so both surfaces stay in lockstep (GH-688 Phase 1 Slice B). */
+  reply_delivery: ReplyDeliveryEntry[];
 }
 
 export interface ThreadInboxEvent {
@@ -782,7 +883,14 @@ export interface WorkHourStatusResponse {
 // Schedules (Agent Todos) — THR-105 Phase 3
 // ---------------------------------------------------------------------------
 
-export type ScheduleKind = 'one_shot' | 'weekly';
+export type ScheduleKind = 'one_shot' | 'weekly' | 'recurring';
+
+export interface ScheduleRecurrence {
+  day?: string;
+  time?: string;
+  tz?: string;
+  [key: string]: string | number | string[] | null | undefined;
+}
 
 export type ScheduleStatus =
   | 'armed'
@@ -800,7 +908,7 @@ export interface ScheduleRecord {
   team: string;
   kind: ScheduleKind;
   fire_at: string;
-  recurrence: Record<string, string> | null;
+  recurrence: ScheduleRecurrence | null;
   timezone: string;
   normalized_brief: string;
   source_instruction: string;
@@ -811,6 +919,7 @@ export interface ScheduleRecord {
   spawned_task_ids: string[];
   last_fired_at: string | null;
   fire_count: number;
+  error?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -821,6 +930,12 @@ export interface ScheduleListResponse {
 
 export interface ScheduleEditFields {
   fire_at?: string;
-  recurrence?: Record<string, string>;
+  recurrence?: ScheduleRecurrence;
   timezone?: string;
+  /** Optional local YYYY-MM-DD native-recurring phase; server derives fire_at. */
+  start_date?: string;
+}
+
+export interface ScheduleRenewBody {
+  indefinite?: boolean;
 }

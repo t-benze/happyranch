@@ -32,6 +32,17 @@ def _ensure_protocol_skills(test_settings):
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
 
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_orchestrator_current_time(test_runtime):
+    """Task launch is fail-closed: an active AgentDef is required.
+
+    Legacy tests created only a workspace. Seed active frontmatter for the
+    agents used in this module so the launch guard admits them.
+    """
+    from tests.conftest import seed_test_agents
+    seed_test_agents(test_runtime, ("dev_agent",))
+
+
 @pytest.fixture
 def orch(test_settings, test_runtime):
     test_runtime.root.mkdir(parents=True, exist_ok=True)

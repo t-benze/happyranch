@@ -14,7 +14,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { ThreadDetailResponse, ThreadMessage, ThreadMessagesPage, ThreadRecord } from '@/lib/api/types';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
-import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
+import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_REPLY_DELIVERY, MOCK_THREADS } from '@/mocks';
 import type {
   ArchiveArgs,
   ArchiveResult,
@@ -27,10 +27,16 @@ import type {
   QueryLike,
   RemoveParticipantArgs,
   RemoveParticipantResult,
+  RenameThreadArgs,
+  RenameThreadResult,
   ResumeArgs,
   ResumeResult,
   SendFollowUpArgs,
   SendFollowUpResult,
+  SetThreadMentionRoutingArgs,
+  SetThreadMentionRoutingResult,
+  SetThreadPinArgs,
+  SetThreadPinResult,
   ThreadsApi,
 } from './DataContext';
 
@@ -129,6 +135,9 @@ function useThread(threadId: string | undefined): QueryLike<ThreadDetailResponse
         ...rec,
         participants: store.participants[id] ?? [],
         messages: store.messages[id] ?? [],
+        // GH-688 Phase 1 — pair-level reply-delivery projection mirroring the
+        // server contract; empty when no live obligation exists.
+        reply_delivery: MOCK_REPLY_DELIVERY[id] ?? [],
       };
     },
   });
@@ -155,6 +164,7 @@ function useThreadMessages(
         messages: msgs,
         has_more: false,
         next_since_seq: msgs.length > 0 ? msgs[msgs.length - 1].seq : 0,
+        reply_delivery: MOCK_REPLY_DELIVERY[id] ?? [],
       } as ThreadMessagesPage;
     },
   });
@@ -251,6 +261,10 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         transcript_path: null,
         composed_from_dream_id: null,
         last_speaker: 'founder',
+        pinned: false,
+        pinned_at: null,
+        mention_routing_enabled: true,
+        last_activity_at: startedAt,
       };
       store.threads = [rec, ...store.threads];
       store.participants[newId] = ['founder', ...body.recipients];
@@ -469,6 +483,69 @@ function useAbortReplies(threadId: string): MutationLike<void, { thread_id: stri
   });
 }
 
+function useRenameThread(threadId: string): MutationLike<RenameThreadArgs, RenameThreadResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: RenameThreadArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = { ...store.threads[idx], subject: body.subject };
+      }
+      return { thread_id: threadId, subject: body.subject };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
+function useSetThreadPinned(threadId: string): MutationLike<SetThreadPinArgs, SetThreadPinResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: SetThreadPinArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = {
+          ...store.threads[idx],
+          pinned: body.pinned,
+          pinned_at: body.pinned ? '2026-06-02T12:00:00Z' : null,
+        };
+      }
+      return { thread_id: threadId, pinned: body.pinned };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
+function useSetThreadMentionRouting(
+  threadId: string,
+): MutationLike<SetThreadMentionRoutingArgs, SetThreadMentionRoutingResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: SetThreadMentionRoutingArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = {
+          ...store.threads[idx],
+          mention_routing_enabled: body.mention_routing_enabled,
+        };
+      }
+      return { thread_id: threadId, mention_routing_enabled: body.mention_routing_enabled };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -487,6 +564,9 @@ export const mockThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useAbortReplies,
+  useRenameThread,
+  useSetThreadPinned,
+  useSetThreadMentionRouting,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */

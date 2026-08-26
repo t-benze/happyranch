@@ -20,9 +20,11 @@ def _paths(org_state) -> OrgPaths:
 
 
 def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> None:
-    # Create at least one workspace so list_agents finds it
+    # The active roster is driven by org/agents/*.md, not by workspace
+    # directories. Seed an active AgentDef and its workspace.
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
+    _seed_active_agent(org_state, "engineering_head", role="manager")
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
@@ -783,12 +785,19 @@ def test_manage_agent_enroll_invalid_name_returns_422(
     assert r.status_code == 422
 
 
-def _seed_active_agent(org_state, name: str, team: str = "engineering", executor: str = "claude", system_prompt: str = "prompt\n") -> None:
+def _seed_active_agent(
+    org_state,
+    name: str,
+    team: str = "engineering",
+    role: str = "worker",
+    executor: str = "claude",
+    system_prompt: str = "prompt\n",
+) -> None:
     """Write an active agent file for testing update/terminate endpoints."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     agent = AgentDef(
-        name=name, team=team, role="worker", executor=executor,
+        name=name, team=team, role=role, executor=executor,
         allow_rules=(), repos={}, enrolled_by="engineering_head",
         enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
         system_prompt=system_prompt,
@@ -1365,22 +1374,169 @@ def test_manage_agent_body_allow_rules_none_is_valid() -> None:
     assert body.allow_rules is None
 
 
-def test_init_agents_targets_include_content_team(
-    org_state,
+def _stream_init_bulk_events(app, auth_headers) -> list[dict]:
+    """Drain the bulk (agent=None) init SSE stream into parsed events."""
+    import json as _json
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": None}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def _seed_pending_and_terminated(paths: OrgPaths, pending: str, terminated: str) -> None:
+    """Seed adversarial enrollment/archive records plus reserved workspace dirs."""
+    paths.pending_agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.pending_agents_dir / f"{pending}.md").write_text(f"pending agent {pending}\n")
+    (paths.agents_dir / "_terminated").mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "_terminated" / f"{terminated}.md").write_text(
+        f"terminated agent {terminated}\n"
+    )
+
+
+def test_init_bulk_targets_active_roster_only(
+    tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """init_agents target enumeration includes Content Team agents from TeamsRegistry."""
-    # The conftest seeds engineering and content teams.
-    assert org_state.teams is not None
-    agents = org_state.teams.all_agents()
-    assert "content_manager" in agents
-    assert "content_writer" in agents
-    assert "content_qa" in agents
+    """GH-709 Slice B: bulk init-agent derives targets from the canonical active
+    AgentDef roster only.
+
+    Adversarial fixture: active AgentDefs plus a pending enrollment, a terminated
+    archive, reserved workspace directories, a stray workspace, and team-only
+    members without an AgentDef. Only the active AgentDefs may be initialized;
+    every inactive/archive/stray byte must remain untouched.
+    """
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+    paths = _paths(org_state)
+    _seed_pending_and_terminated(paths, pending="seo_agent", terminated="legacy_agent")
+
+    # Reserved + stray workspace directories (must never be bootstrap targets).
+    reserved_markers = {
+        "workspaces/_pending/.keep": b"pending workspace marker\n",
+        "workspaces/_terminated/legacy_agent/keep.txt": b"archived workspace marker\n",
+        "workspaces/stray_dir/keep.txt": b"stray workspace marker\n",
+        "workspaces/content_manager/keep.txt": b"team-only member marker\n",
+    }
+    for rel, data in reserved_markers.items():
+        (org_state.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (org_state.root / rel).write_bytes(data)
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent", "qa_engineer"], f"unexpected targets: {targeted}"
+    assert any(e.get("phase") == "all_done" for e in events)
+
+    # Active targets got bootstrapped workspaces (claude adapter writes CLAUDE.md).
+    assert (org_state.root / "workspaces/dev_agent/CLAUDE.md").is_file()
+    assert (org_state.root / "workspaces/qa_engineer/CLAUDE.md").is_file()
+
+    # No workspace was created for excluded names (content_manager's dir was
+    # deliberately pre-created as a fixture — it must remain un-bootstrapped).
+    for excluded in ("seo_agent", "legacy_agent", "engineering_head",
+                     "product_manager", "payment_agent", "content_writer",
+                     "content_qa"):
+        assert not (org_state.root / "workspaces" / excluded).exists(), (
+            f"bulk init created a workspace for excluded target {excluded!r}"
+        )
+
+    # Inactive/archive/stray bytes are unchanged and no bootstrap material landed.
+    for rel, data in reserved_markers.items():
+        p = org_state.root / rel
+        assert p.read_bytes() == data, f"{rel} changed by bulk init"
+        assert not (p.parent / "AGENTS.md").exists(), (
+            f"bootstrap material written into excluded dir {p.parent}"
+        )
+        assert not (p.parent / "CLAUDE.md").exists(), (
+            f"bootstrap material written into excluded dir {p.parent}"
+        )
+    assert (paths.pending_agents_dir / "seo_agent.md").read_text() == "pending agent seo_agent\n"
+    assert (paths.agents_dir / "_terminated/legacy_agent.md").read_text() == "terminated agent legacy_agent\n"
+
+
+def test_init_bulk_targets_roster_when_teams_none(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """org.teams=None is safe and bulk init still targets the active roster only."""
+    _seed_active_agent(org_state, "dev_agent")
+    stray = org_state.root / "workspaces/stray_dir"
+    stray.mkdir(parents=True, exist_ok=True)
+    (stray / "keep.txt").write_bytes(b"stray marker\n")
+
+    org_state.teams = None  # type: ignore[assignment]
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent"]
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert not (stray / "AGENTS.md").exists(), "stray workspace was bootstrapped"
+    assert not (stray / "CLAUDE.md").exists(), "stray workspace was bootstrapped"
+
+
+def test_init_bulk_empty_roster_emits_all_done(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """An empty active roster targets nothing: no per-agent events, stream ends
+    with all_done, and stray/reserved workspace bytes stay untouched."""
+    stray = org_state.root / "workspaces/stray_dir"
+    stray.mkdir(parents=True, exist_ok=True)
+    (stray / "keep.txt").write_bytes(b"stray marker\n")
+    (org_state.root / "workspaces/_terminated/legacy_agent/keep.txt").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (org_state.root / "workspaces/_terminated/legacy_agent/keep.txt").write_bytes(
+        b"archived workspace marker\n"
+    )
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    assert [e for e in events if "agent" in e] == []
+    assert events[-1] == {"phase": "all_done"}
+    assert (stray / "keep.txt").read_bytes() == b"stray marker\n"
+    assert not (stray / "AGENTS.md").exists()
+    assert not (stray / "CLAUDE.md").exists()
+    archived = org_state.root / "workspaces/_terminated/legacy_agent/keep.txt"
+    assert archived.read_bytes() == b"archived workspace marker\n"
+
+
+def test_init_bulk_agent_error_stops_stream_without_all_done(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Existing per-agent error aggregation: a failing agent emits an error event
+    and the stream stops (no all_done) — unchanged by the roster-only fix."""
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.create_agent_dirs.return_value = None
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("bootstrap exploded")
+
+        mock_ctx.ensure_workspace_ready.side_effect = _boom
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert "bootstrap exploded" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "all_done" for e in events)
+    assert events[-1] == error_events[0], "stream must stop at the first error"
 
 
 def test_init_agents_targets_include_approved_enrollments(
     org_state,
 ) -> None:
-    """init_agents target enumeration includes approved enrollments from agent files."""
+    """The canonical active roster (prompt_loader.list_agents) includes approved
+    enrollments from active agent files; pending files are excluded."""
     from runtime.orchestrator import prompt_loader
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
@@ -1397,21 +1553,253 @@ def test_init_agents_targets_include_approved_enrollments(
     assert "seo_agent" in names
 
 
-def test_init_agents_targets_none_teams_is_safe(org_state) -> None:
-    """If teams is None the guard prevents a crash; workspace dirs are still used."""
-    org_state.teams = None  # type: ignore[assignment]
-    # No crash — org.teams is None but the guard `if org.teams is not None` handles it.
-    from runtime.orchestrator import prompt_loader
-    paths = _paths(org_state)
-    known: set[str] = set()
-    if org_state.teams is not None:
-        known.update(org_state.teams.all_agents())
-    ws_dir = paths.workspaces_dir
-    if ws_dir.exists():
-        known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-    known.update([a.name for a in prompt_loader.list_agents(paths)])
-    # No exception raised; result is an empty or workspace-only set.
-    assert isinstance(known, set)
+# ---------------------------------------------------------------------------
+# GH-709 Slice C: executor-profile-specific readiness-marker verification
+# ---------------------------------------------------------------------------
+# init-agent may report done only after the selected executor profile's exact
+# expected readiness marker exists as a valid regular file produced by the
+# bootstrap (workspace adapter + skill materialization). Tests exercise the
+# real producer (population outcome) AND the diagnostic (rejection of missing /
+# wrong-profile / non-regular / stale markers, bootstrap failure, unregistered
+# profile). Slice B semantics are preserved: active-roster-only bulk targeting,
+# explicit single-agent behavior, first-error termination, no all_done on error.
+
+
+def _claude_marker(ws) -> Path:
+    """The claude profile readiness marker path inside a workspace."""
+    return ws / ".claude" / "skills" / "start-task" / "SKILL.md"
+
+
+def test_init_slice_c_reports_done_only_with_real_profile_marker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C success: with the REAL producer (workspace adapter +
+    skill materialization), init-agent reports done/all_done only after each
+    selected profile's exact readiness marker exists as a regular file. This
+    proves the population outcome — the bootstrap wrote the marker — not
+    merely that the route inspected the filesystem.
+
+    Covers claude (.claude/skills/start-task/SKILL.md), codex (AGENTS.md) and
+    pi (AGENTS.md) profiles in one bulk run (active-roster-only targeting).
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(org_state, "qa_engineer", executor="codex")
+    _seed_active_agent(org_state, "pi_agent", executor="pi")
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent", "pi_agent", "qa_engineer"]
+    done = {e["agent"] for e in events if e.get("phase") == "done"}
+    assert done == {"dev_agent", "pi_agent", "qa_engineer"}
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert not any(e.get("phase") == "error" for e in events)
+
+    # The exact profile markers exist as regular files produced by bootstrap.
+    claude_ws = org_state.root / "workspaces" / "dev_agent"
+    assert _claude_marker(claude_ws).is_file()
+    assert (claude_ws / "CLAUDE.md").is_file()
+    skills = sorted(p.name for p in (claude_ws / ".claude" / "skills").iterdir())
+    assert "start-task" in skills, f"skill materialization did not run: {skills}"
+    for name in ("qa_engineer", "pi_agent"):
+        ws = org_state.root / "workspaces" / name
+        assert (ws / "AGENTS.md").is_file(), f"{name} AGENTS.md marker missing"
+
+
+def test_init_slice_c_single_agent_explicit_name_without_agentdef(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C preserves explicit single-agent behavior: init-agent
+    with an explicit name and no AgentDef defaults to the claude profile and
+    reports done only after the claude marker exists (real producer)."""
+    events = _stream_init_events(app, auth_headers, "new_custom_agent")
+
+    done = [e for e in events if e.get("phase") == "done"]
+    assert len(done) == 1
+    assert done[0]["agent"] == "new_custom_agent"
+    assert any(e.get("phase") == "all_done" for e in events)
+    ws = org_state.root / "workspaces" / "new_custom_agent"
+    assert _claude_marker(ws).is_file()
+
+
+def test_init_slice_c_error_when_marker_missing(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: a bootstrap that "succeeds" without producing the
+    selected profile's marker must NOT report done — per-agent error, no done,
+    no all_done (first-error termination)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(org_state, "qa_engineer", executor="claude")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []  # no skill materialization => no claude marker
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert "readiness marker" in error_events[0]["detail"]
+    assert "start-task" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+    assert events[-1] == error_events[0], "stream must stop at the first error"
+
+
+def test_init_slice_c_error_when_wrong_profile_marker_exists(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: a marker for a DIFFERENT profile (AGENTS.md on a claude
+    agent) must not satisfy the exact-profile readiness check."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.create_agent_dirs.return_value = None
+
+        def _write_wrong_marker(*_args, **_kwargs):
+            # Simulate a bootstrap that produced only the codex marker.
+            (ws / "AGENTS.md").write_text("stale codex bootstrap\n")
+
+        mock_ctx.ensure_workspace_ready.side_effect = _write_wrong_marker
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    assert (ws / "AGENTS.md").is_file(), "wrong-profile marker exists on disk"
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert ".claude/skills/start-task/SKILL.md" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+
+
+def test_init_slice_c_error_when_marker_is_directory(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: the marker path existing as a DIRECTORY is not a valid
+    regular-file marker — per-agent error, no done."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "AGENTS.md").mkdir()  # directory at the marker path
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "AGENTS.md" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_error_when_profile_unregistered(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: an executor profile that is not registered on this
+    machine cannot be verified — per-agent error with an actionable message,
+    no done (matches the relocation runbook's blocked-agent gate)."""
+    _seed_active_agent(org_state, "dev_agent", executor="no_such_profile")
+
+    with patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "not registered" in error_events[0]["detail"]
+    assert "no_such_profile" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_error_when_bootstrap_fails_despite_stale_marker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C stale case: a pre-existing marker must not yield a done
+    when the CURRENT bootstrap fails — per-agent error, no done (the route
+    does not trust markers it did not freshly produce)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    _claude_marker(ws).parent.mkdir(parents=True, exist_ok=True)
+    _claude_marker(ws).write_text("stale marker from an earlier run\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.side_effect = RuntimeError("bootstrap exploded")
+        mock_ctx.create_agent_dirs.return_value = None
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    assert _claude_marker(ws).is_file(), "stale marker still on disk"
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "bootstrap exploded" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_replaces_stale_marker_with_fresh_bootstrap(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C producer population: a stale pre-existing marker is
+    REGENERATED by the fresh bootstrap (codex adapter rewrites AGENTS.md), and
+    the route reports done — proving the population outcome, not stale-file
+    inspection."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex",
+                       system_prompt="fresh prompt\n")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "AGENTS.md").write_text("STALE\n")
+
+    events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    done = [e for e in events if e.get("phase") == "done"]
+    assert len(done) == 1
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert (ws / "AGENTS.md").is_file()
+    regenerated = (ws / "AGENTS.md").read_text()
+    assert "STALE" not in regenerated
+    assert "fresh prompt" in regenerated
+
+
+def test_init_slice_c_bulk_failure_stops_before_later_agents(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C preserves first-error termination + stream aggregation:
+    the first agent whose marker cannot be verified stops the bulk stream
+    (no all_done) and later agents are never initialized."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    _seed_active_agent(org_state, "qa_engineer", executor="codex")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []  # no skills => no AGENTS.md marker
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+    # qa_engineer was never targeted after the first error.
+    assert not (org_state.root / "workspaces" / "qa_engineer").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -2236,23 +2624,28 @@ def test_set_executor_materialization_failure_fail_closed(
 
 
 def test_set_executor_bootstrap_failure_after_successful_union(
-    tmp_home, app, org_state, auth_headers,
+    tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """Real-union adversarial regression: the six-context union must succeed
-    before any persistent mutation, and post-union bootstrap failure must
-    not change pre-existing workspace state, frontmatter, audit, or launch.
+    """THR-190 bounded-rollback regression: the six-context union must succeed
+    before any persistent mutation, and a post-union bootstrap failure must
+    restore ONLY the declared bootstrap-owned write set — never touching
+    canonical skill links, non-owned workspace content, frontmatter, or
+    audit state.
 
-    Exercises the REAL union (not mocked), seeds pre-existing CLAUDE.md,
-    AGENTS.md, .claude/ .agents/ canonical links, and other bootstrap state,
-    forces ensure_workspace_ready to write then raise, and asserts:
-    - HTTP 400 with named error executor_bootstrap_failed
-    - agent.yaml unchanged (still old executor)
-    - agent .md frontmatter unchanged
-    - Pre-existing file byte contents unchanged (CLAUDE.md, AGENTS.md)
-    - Pre-existing .claude/ and .agents/ symlinks preserved
-    - No new executor bootstrap artifacts survive
-    - No audit row produced"""
-    import os as _os
+    Uses a REAL adapter writer seam (CodexWorkspaceAdapter.write_agents_md)
+    rather than a broad ContextBuilder mock: the real bootstrap writes its
+    owned files (including the legacy recent_tasks.md -> task_history.md
+    rename and memory/_index.md structural creation), the seam writes
+    AGENTS.md then raises, and the bounded rollback journal must:
+    - restore pre-existing declared-file byte contents (AGENTS.md, CLAUDE.md,
+      .claude/settings.json)
+    - reverse the recent_tasks.md -> task_history.md rename losslessly
+    - remove the newly-created memory/_index.md index and memory/ directory
+    - retain canonical .agents/skills/ links materialized by the union
+    - leave agent frontmatter and audit state unchanged
+    - return HTTP 400 executor_bootstrap_failed"""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -2260,76 +2653,47 @@ def test_set_executor_bootstrap_failure_after_successful_union(
     # repos for union to resolve make-worktree contract
     (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
-    # ── Seed pre-existing bootstrap state ──
-    # Regular files with known content
+    # ── Seed pre-existing declared bootstrap-owned state ──
     (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
     (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
-    # .claude/ directory with non-skills content (union only manages skills/)
-    (workspace / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     (workspace / ".claude" / "settings.json").write_text('{"old": true}')
-    # .claude/ symlink outside skills/ (union won't touch)
     link_a = workspace / ".claude" / "old-link-a"
     link_a.symlink_to(workspace / ".claude" / "old-link-a-target")
-    # .agents/ directory with non-skills content
-    (workspace / ".agents" / "config.json").parent.mkdir(parents=True, exist_ok=True)
-    (workspace / ".agents" / "config.json").write_text('{"old": true}')
-    # .agents/ symlink outside skills/ (union won't touch)
+    (workspace / ".agents").mkdir(parents=True, exist_ok=True)
     link_b = workspace / ".agents" / "old-link-b"
     link_b.symlink_to(workspace / ".agents" / "old-link-b-target")
-    # Other bootstrap files
-    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+    # Legacy history file: real bootstrap renames it to task_history.md.
+    (workspace / "recent_tasks.md").write_text("# Legacy task history\n")
+    # memory/ is intentionally ABSENT so the real bootstrap creates it
+    # (removal of newly-created declared state is exercised); no
+    # task_history.md yet (the rename source exists).
 
-    # ── Snapshot pre-request state ──
-    from pathlib import Path as _Path
-    agent_yaml_before = (workspace / "agent.yaml").read_text()
-    agent_md_path = org_state.root / "agents" / "dev_agent.md"
-    frontmatter_before = agent_md_path.read_text() if agent_md_path.exists() else None
+    agent_md_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
 
-    def _snapshot_files() -> dict[str, bytes]:
-        snap: dict[str, bytes] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                rel = str(fp.relative_to(workspace))
-                if fp.is_file() and not fp.is_symlink():
-                    snap[rel] = fp.read_bytes()
-        return snap
+    # ── Force bootstrap failure at a real adapter writer seam ──
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
 
-    def _snapshot_symlinks() -> dict[str, str]:
-        snap: dict[str, str] = {}
-        for root_dir, _dirnames, filenames in _os.walk(str(workspace)):
-            root_path = _Path(root_dir)
-            for name in filenames:
-                fp = root_path / name
-                if fp.is_symlink():
-                    rel = str(fp.relative_to(workspace))
-                    snap[rel] = str(fp.readlink())
-        return snap
-
-    byte_snapshot_before = _snapshot_files()
-    link_snapshot_before = _snapshot_symlinks()
-
-    # ── Execute failing switch ──
-    # Union must NOT be mocked — REAL union runs.
-    # Bootstrap is mocked to write then raise.
-    with patch(
-        "runtime.daemon.routes.agents.ContextBuilder"
-    ) as MockCB:
-        def _failing_bootstrap(ws, agent_name, system_prompt, *, provider):
-            (ws / "AGENTS.md").write_text("# Partial bootstrap — new executor")
-            (ws / ".agents").mkdir(parents=True, exist_ok=True)
-            (ws / ".agents" / "settings.json").write_text('{"new": true}')
-            raise RuntimeError("Bootstrap failed — simulated failure")
-
-        MockCB.return_value.ensure_workspace_ready.side_effect = (
-            _failing_bootstrap
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
         )
-        r = TestClient(app).put(
-            "/api/v1/orgs/alpha/agents/dev_agent/executor",
-            json={"executor": "codex"},
-            headers=auth_headers,
-        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
 
     # ── FAIL-CLOSED assertions ──
     assert r.status_code == 400, (
@@ -2343,43 +2707,1175 @@ def test_set_executor_bootstrap_failure_after_successful_union(
         f"Expected bootstrap error message, got {body['detail']['error']}"
     )
 
-    # ── agent.yaml unchanged ──
-    agent_yaml_after = (workspace / "agent.yaml").read_text()
-    assert agent_yaml_after == agent_yaml_before, (
-        f"agent.yaml mutated: before={agent_yaml_before!r}, after={agent_yaml_after!r}"
+    # ── Owned files restored / unchanged ──
+    assert (workspace / "AGENTS.md").read_bytes() == b"# AGENTS.md: old executor\n", (
+        "Pre-existing AGENTS.md was not restored to original bytes"
+    )
+    assert (workspace / "CLAUDE.md").read_bytes() == b"# CLAUDE.md: old executor\n"
+    assert (workspace / ".claude" / "settings.json").read_text() == '{"old": true}'
+
+    # ── recent_tasks.md -> task_history.md rename reversed losslessly ──
+    assert (workspace / "recent_tasks.md").read_text() == "# Legacy task history\n", (
+        "recent_tasks.md legacy rename source was not restored"
+    )
+    assert not (workspace / "task_history.md").exists(), (
+        "task_history.md (created by the rename) survived rollback"
     )
 
-    # ── Agent frontmatter unchanged ──
-    if frontmatter_before is not None:
-        frontmatter_after = agent_md_path.read_text()
-        assert frontmatter_after == frontmatter_before, (
-            "Agent frontmatter was mutated on bootstrap failure"
+    # ── New owned artifacts removed (new memory/ index tracked reversibly) ──
+    assert not (workspace / "memory").exists(), (
+        "Newly-created memory/ index survived bootstrap failure"
+    )
+
+    # ── Non-owned workspace content and links preserved ──
+    assert link_a.is_symlink(), "Pre-existing .claude link was removed"
+    assert link_b.is_symlink(), "Pre-existing .agents link was removed"
+
+    # ── Canonical skill links materialized by the union survive ──
+    all_contracts: set[str] = set()
+    for ctx in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        all_contracts |= _system_contract_ids_for_context(ctx, workspace)
+    assert len(all_contracts) >= 1, "no system contracts materialized"
+    for sid in all_contracts:
+        marker = workspace / ".agents" / "skills" / sid / "SKILL.md"
+        assert marker.is_file(), (
+            f"Canonical skill link {marker} was removed by rollback"
         )
 
-    # ── Byte contents of pre-existing files unchanged ──
-    byte_snapshot_after = _snapshot_files()
-    for rel, before_bytes in byte_snapshot_before.items():
-        assert rel in byte_snapshot_after, (
-            f"Pre-existing file {rel} was DELETED by bootstrap failure"
-        )
-        assert byte_snapshot_after[rel] == before_bytes, (
-            f"Pre-existing file {rel} byte contents CHANGED"
+    # ── Frontmatter + audit unchanged ──
+    assert agent_md_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on bootstrap failure"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite bootstrap failure: before={audit_before}, "
+        f"after={audit_after}"
+    )
+
+
+def test_set_executor_drift_tripwire_all_provider_shapes(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 drift tripwire: every filesystem write/rename made by the
+    REAL provider adapter bootstrap during an executor switch must land in
+    the declared bootstrap-owned write set (_BOOTSTRAP_OWNED_FILES/DIRS).
+
+    Runs the real route with the real union + real adapter bootstrap for
+    every registered provider shape (claude, codex, opencode, pi) and
+    instruments the filesystem mutation primitives ONLY around the real
+    adapter bootstrap call. Any write/rename outside the declared set fails
+    the test — future adapter evolution cannot silently outrun the journal.
+    No adapter production code is changed."""
+    import os as _os
+    import shutil
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    declared_files = set(agents_mod._BOOTSTRAP_OWNED_FILES)
+    declared_dirs = set(agents_mod._BOOTSTRAP_OWNED_DIRS)
+
+    # Capture the ORIGINAL method once, before any monkeypatch — the patch
+    # below is installed for the whole test, so per-iteration re-capture
+    # would grab the wrapper itself and recurse.
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    for provider in ("claude", "codex", "opencode", "pi"):
+        _seed_active_agent(org_state, "dev_agent", executor="claude")
+        workspace = org_state.root / "workspaces" / "dev_agent"
+        shutil.rmtree(workspace, ignore_errors=True)
+        workspace.mkdir(parents=True)
+        (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+        (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+        # Warm workspace: every declared bootstrap-owned file pre-exists so
+        # only the provider's own declared writes occur.
+        (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md warm\n")
+        (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md warm\n")
+        (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+        (workspace / ".claude" / "settings.json").write_text('{"warm": true}')
+        (workspace / "opencode.json").write_text('{"warm": true}')
+        (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+        (workspace / "memory").mkdir(parents=True, exist_ok=True)
+        (workspace / "memory" / "_index.md").write_text("# Memory Index\n")
+
+        ws_root = str(workspace)
+        allowed = {ws_root}
+        allowed |= {str(workspace / rel) for rel in declared_files}
+        for d in declared_dirs:
+            allowed.add(str(workspace / d))
+
+        violations: list[str] = []
+
+        def _check(p, op):
+            s = str(p)
+            if (s == ws_root or s.startswith(ws_root + _os.sep)) and s not in allowed:
+                violations.append(f"{op} {s}")
+
+        real_write_text = _Path.write_text
+        real_write_bytes = _Path.write_bytes
+        real_rename = _Path.rename
+        real_mkdir = _Path.mkdir
+        real_unlink = _Path.unlink
+        real_rmdir = _Path.rmdir
+        real_replace = _Path.replace
+        real_os_replace = _os.replace
+        real_os_symlink = _os.symlink
+
+        def _spy_write_text(self, *a, **k):
+            _check(self, "write_text")
+            return real_write_text(self, *a, **k)
+
+        def _spy_write_bytes(self, *a, **k):
+            _check(self, "write_bytes")
+            return real_write_bytes(self, *a, **k)
+
+        def _spy_rename(self, *a, **k):
+            _check(self, "rename")
+            return real_rename(self, *a, **k)
+
+        def _spy_mkdir(self, *a, **k):
+            _check(self, "mkdir")
+            return real_mkdir(self, *a, **k)
+
+        def _spy_unlink(self, *a, **k):
+            _check(self, "unlink")
+            return real_unlink(self, *a, **k)
+
+        def _spy_rmdir(self, *a, **k):
+            _check(self, "rmdir")
+            return real_rmdir(self, *a, **k)
+
+        def _spy_replace(self, *a, **k):
+            _check(self, "replace")
+            return real_replace(self, *a, **k)
+
+        def _spy_os_replace(src, dst):
+            _check(_Path(dst), "os.replace")
+            return real_os_replace(src, dst)
+
+        def _spy_os_symlink(src, dst):
+            _check(_Path(dst), "os.symlink")
+            return real_os_symlink(src, dst)
+
+        def _guarded_ensure(self, workspace, agent_name, system_prompt, provider="claude"):
+            with patch.object(_Path, "write_text", _spy_write_text), \
+                 patch.object(_Path, "write_bytes", _spy_write_bytes), \
+                 patch.object(_Path, "rename", _spy_rename), \
+                 patch.object(_Path, "mkdir", _spy_mkdir), \
+                 patch.object(_Path, "unlink", _spy_unlink), \
+                 patch.object(_Path, "rmdir", _spy_rmdir), \
+                 patch.object(_Path, "replace", _spy_replace), \
+                 patch("os.replace", _spy_os_replace), \
+                 patch("os.symlink", _spy_os_symlink):
+                return real_ensure(
+                    self, workspace, agent_name, system_prompt, provider=provider,
+                )
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready", _guarded_ensure,
         )
 
-    # ── Symlinks preserved ──
-    link_snapshot_after = _snapshot_symlinks()
-    for rel, before_target in link_snapshot_before.items():
-        assert rel in link_snapshot_after, (
-            f"Pre-existing symlink {rel} was REMOVED by bootstrap failure"
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": provider},
+            headers=auth_headers,
         )
-        assert link_snapshot_after[rel] == before_target, (
-            f"Pre-existing symlink {rel} target CHANGED"
+        assert r.status_code == 200, (
+            f"provider={provider} switch failed: {r.text}"
+        )
+        assert violations == [], (
+            f"provider={provider} adapter wrote OUTSIDE the declared "
+            f"bootstrap-owned set: {violations}"
         )
 
-    # ── New bootstrap artifacts cleaned up ──
-    new_file = workspace / ".agents" / "settings.json"
-    assert not new_file.exists(), (
-        "New bootstrap file .agents/settings.json survived after failure"
+
+def test_set_executor_no_broad_traversal_success(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 latency: a successful executor switch must NEVER broadly
+    traverse the workspace or workspace/repos — the THR-190 root cause was a
+    full os.walk snapshot of a multi-GB workspace. Guards os.walk / rglob /
+    scandir-style broad enumeration at the route boundary (recursive
+    enumeration anywhere under the workspace, or scandir of the workspace
+    root itself) and seeds sentinel trees whose content any recursive walk
+    would read."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Sentinel trees: deep untracked subtree + large file under repos/ ──
+    deep_sentinel = workspace / "untracked" / "deep" / "nested" / "sentinel.bin"
+    deep_sentinel.parent.mkdir(parents=True)
+    deep_blob = _os.urandom(1024 * 1024)  # 1 MB
+    deep_sentinel.write_bytes(deep_blob)
+
+    repo_sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    repo_blob = _os.urandom(2 * 1024 * 1024)  # 2 MB
+    repo_sentinel.write_bytes(repo_blob)
+
+    sentinel_paths = {
+        _os.path.abspath(_os.fspath(deep_sentinel)),
+        _os.path.abspath(_os.fspath(repo_sentinel)),
+    }
+
+    # ── Traversal guard: flag recursive enumeration under the workspace ──
+    ws_root_abs = _os.path.abspath(str(workspace))
+    violations: list[str] = []
+    real_walk = _os.walk
+    real_rglob = _Path.rglob
+    real_scandir = _os.scandir
+    real_read_bytes = _Path.read_bytes
+    sentinel_reads: list[str] = []
+
+    def _spy_walk(top, *args, **kwargs):
+        top_abs = _os.path.abspath(str(top))
+        if top_abs == ws_root_abs or top_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"os.walk {top_abs}")
+        return real_walk(top, *args, **kwargs)
+
+    def _spy_rglob(self, pattern, *args, **kwargs):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs == ws_root_abs or self_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"rglob {self_abs}")
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    def _spy_scandir(path="."):
+        path_abs = _os.path.abspath(str(path))
+        if path_abs == ws_root_abs:
+            violations.append(f"scandir {path_abs}")
+        return real_scandir(path)
+
+    def _spy_read_bytes(self):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs in sentinel_paths:
+            sentinel_reads.append(self_abs)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_os, "walk", _spy_walk)
+    monkeypatch.setattr(_Path, "rglob", _spy_rglob)
+    monkeypatch.setattr(_os, "scandir", _spy_scandir)
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert violations == [], (
+        f"Broad workspace enumeration during successful switch: {violations}"
+    )
+    assert sentinel_reads == [], (
+        f"Sentinel file(s) read during successful switch: {sentinel_reads}"
+    )
+    assert deep_sentinel.read_bytes() == deep_blob, "deep sentinel changed"
+    assert repo_sentinel.read_bytes() == repo_blob, "repo sentinel changed"
+
+
+def test_set_executor_no_broad_traversal_on_rollback(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 latency: bootstrap-failure rollback (journal capture + restore)
+    must also avoid broad workspace/repos traversal. Same sentinel +
+    traversal guard as the success case, with a real adapter writer that
+    writes then raises; asserts the rollback restores declared state without
+    enumerating the workspace or reading the sentinels."""
+    import os as _os
+    from pathlib import Path as _Path
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "AGENTS.md").write_bytes(b"# AGENTS.md: old executor\n")
+
+    deep_sentinel = workspace / "untracked" / "deep" / "nested" / "sentinel.bin"
+    deep_sentinel.parent.mkdir(parents=True)
+    deep_blob = _os.urandom(512 * 1024)
+    deep_sentinel.write_bytes(deep_blob)
+
+    repo_sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    repo_blob = _os.urandom(1024 * 1024)
+    repo_sentinel.write_bytes(repo_blob)
+
+    sentinel_paths = {
+        _os.path.abspath(_os.fspath(deep_sentinel)),
+        _os.path.abspath(_os.fspath(repo_sentinel)),
+    }
+
+    ws_root_abs = _os.path.abspath(str(workspace))
+    violations: list[str] = []
+    real_walk = _os.walk
+    real_rglob = _Path.rglob
+    real_scandir = _os.scandir
+    real_read_bytes = _Path.read_bytes
+    sentinel_reads: list[str] = []
+
+    def _spy_walk(top, *args, **kwargs):
+        top_abs = _os.path.abspath(str(top))
+        if top_abs == ws_root_abs or top_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"os.walk {top_abs}")
+        return real_walk(top, *args, **kwargs)
+
+    def _spy_rglob(self, pattern, *args, **kwargs):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs == ws_root_abs or self_abs.startswith(ws_root_abs + _os.sep):
+            violations.append(f"rglob {self_abs}")
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    def _spy_scandir(path="."):
+        path_abs = _os.path.abspath(str(path))
+        if path_abs == ws_root_abs:
+            violations.append(f"scandir {path_abs}")
+        return real_scandir(path)
+
+    def _spy_read_bytes(self):
+        self_abs = _os.path.abspath(_os.fspath(self))
+        if self_abs in sentinel_paths:
+            sentinel_reads.append(self_abs)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_os, "walk", _spy_walk)
+    monkeypatch.setattr(_Path, "rglob", _spy_rglob)
+    monkeypatch.setattr(_os, "scandir", _spy_scandir)
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(CodexWorkspaceAdapter, "write_agents_md", _write_then_raise)
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert violations == [], (
+        f"Broad workspace enumeration during capture/rollback: {violations}"
+    )
+    assert sentinel_reads == [], (
+        f"Sentinel file(s) read during capture/rollback: {sentinel_reads}"
+    )
+    assert (workspace / "AGENTS.md").read_bytes() == b"# AGENTS.md: old executor\n"
+    assert deep_sentinel.read_bytes() == deep_blob, "deep sentinel changed"
+    assert repo_sentinel.read_bytes() == repo_blob, "repo sentinel changed"
+
+
+def test_set_executor_legacy_learnings_migration_rejected_before_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190: a workspace holding structured legacy learnings/ state
+    (memory/ absent) would require the unbounded learnings/ -> memory/
+    migration during bootstrap, which the bounded declared-write journal
+    cannot reverse losslessly. The switch must fail closed BEFORE
+    _executor_switch_materialize and BEFORE any adapter writer, with NO
+    materialization/bootstrap/frontmatter/audit mutation."""
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
+
+    # ── Structured legacy learnings/ state (requires migration) ──
+    legacy_dir = workspace / "learnings"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "MEM-001-operational-note.md").write_text(
+        "---\nid: MEM-001\nslug: operational-note\n---\nlegacy body\n"
+    )
+    assert not (workspace / "memory").exists()
+
+    # ── Recording spies: materialization + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(self, workspace, agent_name, system_prompt, provider=provider)
+
+    monkeypatch.setattr(agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy)
+
+    agent_md_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = agent_md_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (
+        f"Expected 400 on legacy learnings rejection, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "learnings" in body["detail"]["error"], (
+        f"Expected legacy-learnings reason, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite legacy-learnings preflight: {materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite legacy-learnings preflight: {bootstrap_calls}"
+    )
+    assert (legacy_dir / "MEM-001-operational-note.md").read_text().startswith("---"), (
+        "legacy learnings/ entry was mutated"
+    )
+    assert not (workspace / "memory").exists(), (
+        "memory/ was created by the rejected switch"
+    )
+    assert (workspace / "task_history.md").read_text() == "# Task History: dev_agent\n"
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on legacy-learnings rejection"
+    )
+    assert agent_md_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on legacy-learnings rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite legacy-learnings rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_bootstrap_preflight_rejects_symlinked_owned_path(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fail-closed: a pre-existing symlink at a bootstrap-owned path
+    (AGENTS.md) cannot be losslessly compensated, so the switch must reject
+    BEFORE bootstrap runs and without following/mutating the symlink target.
+
+    Seeds AGENTS.md as a symlink to a sentinel target, then puts a recording
+    spy on the real CodexWorkspaceAdapter.write_agents_md seam and proves:
+    (1) the writer is NEVER called (bootstrap never runs),
+    (2) the symlink survives with its original target,
+    (3) the sentinel target bytes are unchanged,
+    (4) old executor/frontmatter/audit state is unchanged,
+    (5) the route returns 400 executor_bootstrap_failed."""
+    import os as _os
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── Seed a pre-existing owned symlink: AGENTS.md -> sentinel target ──
+    sentinel_target = workspace / "sentinel-target.md"
+    sentinel_target.write_bytes(b"# sentinel target: must never be mutated\n")
+    agents_md = workspace / "AGENTS.md"
+    agents_md.symlink_to(sentinel_target.name)  # relative link target
+
+    # A normal pre-existing owned file (CLAUDE.md) proves the preflight only
+    # rejects the conflicting path and never disturbs regular-file switching.
+    (workspace / "CLAUDE.md").write_bytes(b"# CLAUDE.md: old executor\n")
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spy at the real adapter writer seam ──
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── The adapter writer was never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert agents_md.is_symlink(), "AGENTS.md symlink was removed/replaced"
+    assert _os.readlink(agents_md) == sentinel_target.name, (
+        f"AGENTS.md target changed: {_os.readlink(agents_md)!r} != "
+        f"{sentinel_target.name!r}"
+    )
+
+    # ── The sentinel target was never followed or mutated ──
+    assert sentinel_target.read_bytes() == b"# sentinel target: must never be mutated\n", (
+        "sentinel target bytes were mutated"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite symlink preflight: before={audit_before}, "
+        f"after={audit_after}"
+    )
+
+
+def test_set_executor_preflight_rejects_uncapturable_owned_file(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704 HIGH): a present regular
+    bootstrap-owned file whose read_bytes() raises OSError is materially
+    distinct from an absent file. The old journal recorded both as None and
+    restore() interpreted None as 'absent before bootstrap' — a bootstrap
+    failure could delete an unreadable present file.
+
+    This test forces read_bytes OSError on a present CLAUDE.md at the real
+    PUT /agents/{agent_name}/executor route and proves the switch fails
+    closed DURING PREFLIGHT, BEFORE _executor_switch_materialize and before
+    every filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes cannot be captured.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == _os.path.abspath(str(target)):
+            raise OSError("forced unreadable present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection ──
+    assert r.status_code == 400, (
+        f"Expected 400 on uncapturable-file preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite uncapturable-file preflight: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite uncapturable-file preflight: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on uncapturable-file rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on uncapturable-file rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite uncapturable-file rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_capture_second_read_fails_closed_before_materialize(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5714 HIGH second-read window): the AUTHORITATIVE
+    rollback capture must fail closed BEFORE the first mutation
+    (_executor_switch_materialize), even when the Step-0 preflight read
+    succeeded.
+
+    Regression scenario: a present regular declared file (CLAUDE.md) whose
+    bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
+    CAN read, but which the authoritative _BootstrapRollbackJournal.capture
+    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    ordering ran capture AFTER materialization, recorded the file as
+    uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
+    overwrite a present file whose original bytes were never captured
+    (uncompensatable data-loss path).
+
+    The deterministic per-file call counter forces read #1 (preflight) to
+    succeed and read #2 (authoritative capture) to raise OSError, then
+    proves the switch fails closed during Step-0 preflight, BEFORE
+    _executor_switch_materialize and before every
+    filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes must be captured BEFORE the
+    # first mutation. Preflight (read #1) succeeds; the authoritative
+    # capture (read #2) fails — the exact TASK-5714 second-read window.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    target_abspath = _os.path.abspath(str(target))
+    read_counts: dict[str, int] = {}
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == target_abspath:
+            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
+            if read_counts["CLAUDE.md"] == 2:
+                # Authoritative capture read fails; preflight read succeeded.
+                raise OSError("forced capture-read failure on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── The authoritative capture observed the file at Step 0 (read #2) ──
+    assert read_counts["CLAUDE.md"] >= 2, (
+        f"expected preflight (read 1) + authoritative capture (read 2) "
+        f"to both run, got {read_counts['CLAUDE.md']} reads"
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
+    assert r.status_code == 400, (
+        f"Expected 400 on capture second-read failure, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite capture second-read failure: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite capture second-read failure: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on capture second-read rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on capture second-read rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite capture second-read rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
+    tmp_home, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
+    keep a present regular file whose read_bytes() raises OSError in a
+    DISTINCT state from an absent file. restore() must never unlink such a
+    file (the old code collapsed both into None and deleted it); it reports
+    a compensation error instead, and the file survives unchanged."""
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    workspace = tmp_home / "ws"
+    workspace.mkdir(parents=True)
+    present = workspace / "CLAUDE.md"
+    original = b"# original bytes must survive\n"
+    present.write_bytes(original)
+    (workspace / "memory").mkdir(parents=True)
+
+    real_read_bytes = _Path.read_bytes
+
+    def _read_bytes(self, *a, **k):
+        if str(self) == str(present):
+            raise OSError("forced OSError on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
+
+    # The present-but-uncapturable file is NEVER recorded as absent: it is
+    # absent from the content map entirely and tracked in the distinct set.
+    assert "CLAUDE.md" not in journal._files, (
+        "uncapturable file must not be recorded in the content map"
+    )
+    assert "CLAUDE.md" in journal._uncapturable, (
+        "uncapturable file must be recorded in the distinct uncapturable set"
+    )
+
+    errors = journal.restore(workspace)
+    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    # The file survives: not deleted, not overwritten, not treated as absent.
+    assert real_read_bytes(present) == original, (
+        "journal restore deleted/modified an uncapturable present file"
+    )
+
+
+def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 CRITICAL: a pre-existing ``workspace/.claude`` symlink to an
+    EXTERNAL directory must be rejected BEFORE the six-context union
+    materialization runs, because ``repair_workspace_skills(..., '.claude/skills')``
+    follows the link and would create/replace/withdraw entries in the external
+    target. Proves, at the real route + adapter/materializer seams:
+
+    (1) 400 executor_bootstrap_failed,
+    (2) materialization is NEVER invoked (the reconciler never runs),
+    (3) the bootstrap writer is NEVER invoked,
+    (4) the ``.claude`` symlink survives with its original target,
+    (5) the external sentinel directory's ``skills/`` subtree is byte/state
+        identical (no creation/replacement/withdrawal),
+    (6) old executor/frontmatter/audit state is unchanged (no launch)."""
+    import os as _os
+    import hashlib
+    from pathlib import Path as _Path
+    from runtime.orchestrator import workspace_adapters as wa
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # ── External sentinel directory OUTSIDE the workspace ──
+    sentinel_dir = org_state.root / "external-sentinel-claude"
+    sentinel_skills = sentinel_dir / "skills"
+    sentinel_skills.mkdir(parents=True)
+    keep_file = sentinel_skills / "keep.txt"
+    keep_file.write_bytes(b"# sentinel keep: never mutated\n")
+    keep_link = sentinel_skills / "keep-link"
+    _os.symlink("keep.txt", keep_link)
+
+    # workspace/.claude -> external sentinel directory (the reviewed vector)
+    claude_link = workspace / ".claude"
+    claude_link.symlink_to(sentinel_dir, target_is_directory=True)
+
+    def _snapshot_sentinel(root: _Path) -> dict:
+        """Recursive (file-bytes, symlink-target, dir) snapshot of the sentinel."""
+        snap: dict = {}
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_symlink():
+                snap[rel] = ("link", _os.readlink(p))
+            elif p.is_file():
+                snap[rel] = ("file", hashlib.sha256(p.read_bytes()).hexdigest())
+            elif p.is_dir():
+                snap[rel] = ("dir",)
+        return snap
+
+    sentinel_before = _snapshot_sentinel(sentinel_dir)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    writer_calls: list[str] = []
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_spy(self, workspace, agent_name, system_prompt, repo_names=None):
+        writer_calls.append(agent_name)
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED assertions ──
+    assert r.status_code == 400, (
+        f"Expected 400 on .claude symlink preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+
+    # ── Materialization NEVER ran (the reconciler never followed .claude) ──
+    assert materialize_calls == [], (
+        f"materialization ran despite .claude symlink preflight: {materialize_calls}"
+    )
+
+    # ── Bootstrap writer never called ──
+    assert writer_calls == [], (
+        f"bootstrap writer ran despite .claude symlink preflight: {writer_calls}"
+    )
+
+    # ── The symlink survives with its original target ──
+    assert claude_link.is_symlink(), ".claude symlink was removed/replaced"
+    assert _os.readlink(claude_link) == str(sentinel_dir), (
+        f".claude target changed: {_os.readlink(claude_link)!r} != "
+        f"{str(sentinel_dir)!r}"
+    )
+
+    # ── External sentinel directory state is byte/state identical ──
+    assert _snapshot_sentinel(sentinel_dir) == sentinel_before, (
+        "external sentinel .claude/skills subtree was mutated"
+    )
+    assert keep_file.read_bytes() == b"# sentinel keep: never mutated\n", (
+        "sentinel keep.txt bytes were mutated"
+    )
+    assert keep_link.is_symlink(), "sentinel keep-link symlink was removed"
+    assert _os.readlink(keep_link) == "keep.txt", "sentinel keep-link target changed"
+    assert sorted(p.name for p in sentinel_skills.iterdir()) == [
+        "keep-link", "keep.txt"
+    ], "sentinel skills/ entry set changed (creation/withdrawal detected)"
+
+    # ── Old executor / frontmatter / audit unchanged (no launch) ──
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on .claude symlink preflight"
+    )
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on .claude symlink preflight"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite .claude symlink preflight: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_set_executor_bootstrap_journal_ignores_repos_sentinel(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190: the bounded rollback journal must never read (or retain) a
+    large regular file under repos/. The prior os.walk snapshot read every
+    file in the workspace; the new journal captures only bootstrap-owned paths.
+
+    Seeds a multi-MB sentinel under repos/, spies on Path.read_bytes for that
+    exact path, forces a bootstrap failure, and asserts the sentinel is never
+    read and remains byte-identical after rollback."""
+    import os as _os
+    from pathlib import Path as _Path
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    sentinel = workspace / "repos" / "test" / "large-sentinel.bin"
+    big_blob = _os.urandom(2 * 1024 * 1024)  # 2 MB
+    sentinel.write_bytes(big_blob)
+    sentinel_abs = _os.path.abspath(_os.fspath(sentinel))
+
+    # Spy on read_bytes for the sentinel path only.
+    real_read_bytes = _Path.read_bytes
+    read_calls: list = []
+
+    def _spy_read_bytes(self):
+        if _os.path.abspath(_os.fspath(self)) == sentinel_abs:
+            read_calls.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", _spy_read_bytes)
+
+    real_write_agents_md = CodexWorkspaceAdapter.write_agents_md
+
+    def _write_then_raise(self, workspace, agent_name, system_prompt, repo_names=None):
+        real_write_agents_md(
+            self, workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+        raise RuntimeError("Bootstrap failed — simulated failure")
+
+    monkeypatch.setattr(
+        CodexWorkspaceAdapter, "write_agents_md", _write_then_raise,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+
+    assert read_calls == [], (
+        f"rollback journal read the repos/ sentinel {len(read_calls)} time(s)"
+    )
+    assert real_read_bytes(sentinel) == big_blob, "sentinel bytes changed"
+
+
+def test_set_executor_materializes_and_validates_before_bootstrap(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 ordering: six-context materialization and integrity validation
+    must both complete before any bootstrap write runs. A bootstrap failure
+    must never skip or reorder the materialize/validate phase."""
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    order: list[str] = []
+
+    def _materialize(*args, **kwargs):
+        order.append("materialize")
+        return []
+
+    def _validate(*args, **kwargs):
+        order.append("validate")
+        return None
+
+    def _bootstrap(*args, **kwargs):
+        order.append("bootstrap")
+        raise RuntimeError("stop after bootstrap")
+
+    # materialize_workspace_skills_union is imported locally inside
+    # _executor_switch_materialize, so patch the adapter module attribute.
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize)
+    # validate_workspace_skills_integrity is imported at agents.py module top,
+    # so patch the agents module binding.
+    monkeypatch.setattr(agents_mod, "validate_workspace_skills_integrity", _validate)
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _bootstrap,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert order == ["materialize", "validate", "bootstrap"], (
+        f"phase order wrong: {order}"
     )
 
 
@@ -2581,3 +4077,873 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     assert len(audit_after) == audit_count_before, (
         f"Audit rows changed: before={audit_count_before}, after={len(audit_after)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Agent termination: archival, quiescence, and fail-closed launch (TASK-5293)
+# ---------------------------------------------------------------------------
+
+
+def test_manage_agent_terminate_archives_worker_preserves_history(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Termination archives the AgentDef and workspace but keeps every historic
+    row (task, audit, token usage, thread participant, memory) readable.
+    """
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus, TokenUsage
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    memory_file = workspace / "memory" / "learning.md"
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text("- remember this\n")
+
+    # Historic task assigned to dev_agent.
+    task = TaskRecord(
+        id="TASK-HIST",
+        team="engineering",
+        brief="old work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.FAILED,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+    org_state.db.insert_audit_log("TASK-HIST", "dev_agent", "did_something", {})
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-HIST",
+        agent="dev_agent",
+        session_id="sess-old",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        scope_type="task",
+        scope_id="TASK-HIST",
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "terminated"
+
+    paths = _paths(org_state)
+    assert prompt_loader.load_agent(paths, "dev_agent") is None
+    assert prompt_loader.load_terminated_agent(paths, "dev_agent") is not None
+    assert not (paths.workspaces_dir / "dev_agent").exists()
+    archived_ws = paths.workspaces_dir / "_terminated" / "dev_agent"
+    assert archived_ws.exists()
+    assert (archived_ws / "memory" / "learning.md").read_text() == "- remember this\n"
+    assert org_state.teams.team_for_agent("dev_agent") is None
+
+    # Historic records still reference the agent name.
+    assert org_state.db.get_task("TASK-HIST").assigned_agent == "dev_agent"
+    audit = org_state.db.query_audit_logs(agent="dev_agent", limit=10)[0]
+    assert any(row["agent"] == "dev_agent" for row in audit)
+
+
+def test_manage_agent_terminate_refuses_manager(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _write_agent_md(_paths(org_state), _make_agent("engineering_head", role="manager"))
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "engineering_head",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "manager_terminate_forbidden"
+
+
+def test_manage_agent_terminate_blocks_active_task(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    task = TaskRecord(
+        id="TASK-LIVE",
+        team="engineering",
+        brief="live work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.PENDING,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    body = r.json()["detail"]
+    assert body["code"] == "agent_not_quiescent"
+    assert any(c["kind"] == "task" and c["id"] == "TASK-LIVE" for c in body["conflicts"])
+
+
+def test_manage_agent_terminate_blocks_started_thread_invocation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import (
+        ThreadRecord,
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    org_state.db.insert_thread(ThreadRecord(id="THR-LIVE", subject="x"))
+    org_state.db.add_thread_participant("THR-LIVE", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-LIVE", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-LIVE", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    org_state.db.stamp_invocation_started(inv.invocation_token, session_id="sess-live")
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "thread_invocation" and c["id"] == inv.invocation_token for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_firing_schedule(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import ScheduleRecord, ScheduleStatus, ScheduleKind
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    fire_at = datetime.now(timezone.utc)
+    record = ScheduleRecord(
+        id="SCHED-LIVE",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=fire_at,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.FIRING,
+        created_at=fire_at,
+        updated_at=fire_at,
+    )
+    org_state.db.schedules.insert(record)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "schedule" and c["id"] == "SCHED-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_work_hour(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import WorkHourRecord, WorkHourStatus, WorkHourMode
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    record = WorkHourRecord(
+        id="WORKHOUR-LIVE",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.RUNNING,
+        started_at=now,
+        created_at=now,
+    )
+    org_state.db.work_hours.insert(record)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "work_hour" and c["id"] == "WORKHOUR-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_dream(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import DreamRecord, DreamStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    dream = DreamRecord(
+        id="DREAM-LIVE",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.RUNNING,
+        started_at=now,
+        created_at=now,
+    )
+    org_state.db.insert_dream(dream)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "dream" and c["id"] == "DREAM-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_blocks_running_job(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import JobRecord, JobStatus
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="JOB-LIVE",
+        task_id="TASK-1",
+        agent_name="dev_agent",
+        title="x",
+        rationale="test",
+        script_text="echo hi",
+        interpreter="bash",
+        status=JobStatus.RUNNING,
+        review_required=False,
+        persistent=False,
+        created_at=now.isoformat(),
+        started_at=now.isoformat(),
+    )
+    org_state.db.insert_job(job)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    conflicts = r.json()["detail"]["conflicts"]
+    assert any(c["kind"] == "job" and c["id"] == "JOB-LIVE" for c in conflicts)
+
+
+def test_manage_agent_terminate_declines_unstarted_invocations(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import (
+        ThreadRecord,
+        ThreadInvocationPurpose,
+        ThreadInvocationStatus,
+        ThreadMessageKind,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    org_state.db.insert_thread(ThreadRecord(id="THR-DECL", subject="x"))
+    org_state.db.add_thread_participant("THR-DECL", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-DECL", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-DECL", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    after = org_state.db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.DECLINED
+    assert after.decline_reason == "agent_terminated"
+
+
+def test_manage_agent_terminate_cancels_armed_schedule_skips_wake_and_dream(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import (
+        DreamRecord,
+        DreamStatus,
+        ScheduleRecord,
+        ScheduleKind,
+        ScheduleStatus,
+        WorkHourRecord,
+        WorkHourMode,
+        WorkHourStatus,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    now = datetime.now(timezone.utc)
+
+    sched = ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    )
+    org_state.db.schedules.insert(sched)
+
+    wh = WorkHourRecord(
+        id="WORKHOUR-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.PENDING,
+        created_at=now,
+    )
+    org_state.db.work_hours.insert(wh)
+
+    dream = DreamRecord(
+        id="DREAM-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.PENDING,
+        created_at=now,
+    )
+    org_state.db.insert_dream(dream)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.CANCELLED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.SKIPPED
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.SKIPPED
+
+
+def test_list_enrollments_terminated(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=terminated",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = r.json()["enrollments"]
+    assert any(e["name"] == "dev_agent" and e["status"] == "terminated" for e in rows)
+
+
+def test_list_agents_excludes_terminated_and_terminated_workspace(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GET /agents must be the active roster: terminated agents and the
+    archived workspace directory must never appear as active rows.
+    """
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    terminate_r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert terminate_r.status_code == 200
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = r.json()["agents"]
+    names = {a["name"] for a in rows}
+    assert "dev_agent" not in names
+    assert "_terminated" not in names
+
+    # The terminated enrollment is still exposed on the dedicated endpoint.
+    enroll_r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=terminated",
+        headers=auth_headers,
+    )
+    assert enroll_r.status_code == 200
+    assert any(
+        e["name"] == "dev_agent" and e["status"] == "terminated"
+        for e in enroll_r.json()["enrollments"]
+    )
+
+
+def test_manage_agent_enroll_rejects_terminated_name(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "sys",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "agent_name_unavailable"
+
+
+def _seed_all_future_work(org_state) -> str:
+    """Seed every future-work kind for terminate failure-path tests: an armed
+    schedule, a pending work-hours wake, a pending dream, and an unstarted
+    thread invocation. Returns the unstarted invocation token."""
+    from datetime import datetime, timezone
+    from runtime.models import (
+        DreamRecord,
+        DreamStatus,
+        ScheduleKind,
+        ScheduleRecord,
+        ScheduleStatus,
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+        ThreadRecord,
+        WorkHourMode,
+        WorkHourRecord,
+        WorkHourStatus,
+    )
+
+    now = datetime.now(timezone.utc)
+
+    org_state.db.schedules.insert(ScheduleRecord(
+        id="SCHED-ARMED",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=now,
+        timezone="UTC",
+        normalized_brief="brief",
+        source_instruction="do it",
+        status=ScheduleStatus.ARMED,
+        active=1,
+        created_at=now,
+        updated_at=now,
+    ))
+
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        slot="morning",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=now,
+        status=WorkHourStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-PEND",
+        agent_name="dev_agent",
+        local_date="2026-08-21",
+        scheduled_for=now,
+        window_end=now,
+        status=DreamStatus.PENDING,
+        created_at=now,
+    ))
+
+    org_state.db.insert_thread(ThreadRecord(id="THR-PEND", subject="x"))
+    org_state.db.add_thread_participant("THR-PEND", "dev_agent", added_by="founder")
+    org_state.db.append_thread_message(
+        thread_id="THR-PEND", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-PEND", agent_name="dev_agent",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    return inv.invocation_token
+
+
+def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If the terminated agent file already exists, terminate returns 409 and
+    leaves the active agent, workspace, and every future-work record (armed
+    schedule, pending wake, pending dream, unstarted invocation) untouched.
+    """
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    # Pre-create a terminated agent file to trigger the archive collision.
+    terminated_agents_dir = paths.agents_dir / "_terminated"
+    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+    (terminated_agents_dir / "dev_agent.md").write_text(
+        prompt_loader.load_agent(paths, "dev_agent").system_prompt or ""
+    )
+
+    inv_token = _seed_all_future_work(org_state)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "archive_collision"
+
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
+    # Active identity, workspace, and team membership remain intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+def test_manage_agent_terminate_workspace_move_failure_rolls_back(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """If workspace archival fails after the agent file was moved, the route
+    rolls back the file and team membership and leaves every future-work record
+    (armed schedule, pending wake, pending dream, unstarted invocation)
+    unchanged.
+    """
+    from unittest.mock import patch
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    with patch("runtime.daemon.routes.agents._move_dir_atomically") as mock_move:
+        mock_move.side_effect = OSError("injected move failure")
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "workspace_archive_failed"
+
+    # Every future-work record is unchanged.
+    assert org_state.db.schedules.get("SCHED-ARMED").status == ScheduleStatus.ARMED
+    assert org_state.db.work_hours.get("WORKHOUR-PEND").status == WorkHourStatus.PENDING
+    assert org_state.db.get_dream("DREAM-PEND").status == DreamStatus.PENDING
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+
+    # Everything must be rolled back to the active state.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A fault injected into the first audit write — AFTER the schedule
+    cancellation has already been persisted in-transaction — must roll back the
+    complete cleanup transaction BEFORE the route's archive compensation runs.
+    AgentDef, workspace, team membership, and all four future-work rows stay
+    exactly as they were, with no cleanup audit residue and no open DB
+    transaction left behind.
+    """
+    from runtime.infrastructure import database as db_module
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    transiently_cancelled = {"seen": False}
+
+    def _failing_audit(self, task_id, agent, action, payload=None):
+        # The first audit write is the armed schedule's and runs only AFTER its
+        # UPDATE has already executed inside the open transaction. Prove that
+        # mutation happened (transiently) before raising, so this test genuinely
+        # exercises "failure after the first persisted mutation" rather than a
+        # no-op error path.
+        row = self._conn.execute(
+            "SELECT status, active FROM schedules WHERE id = 'SCHED-ARMED'"
+        ).fetchone()
+        transiently_cancelled["seen"] = (
+            row is not None
+            and row["status"] == ScheduleStatus.CANCELLED.value
+            and row["active"] == 0
+        )
+        raise RuntimeError("injected audit insertion failure")
+
+    with patch.object(
+        db_module.Database, "insert_audit_log_uncommitted", new=_failing_audit,
+    ):
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "terminate",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+            },
+            headers=auth_headers,
+        )
+
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "terminate_cleanup_failed"
+
+    # The fault landed after the first persisted mutation, proving the rollback
+    # reversed an in-flight write rather than trivially doing nothing.
+    assert transiently_cancelled["seen"] is True
+
+    # Every future-work record is exactly its pre-call value.
+    sched = org_state.db.schedules.get("SCHED-ARMED")
+    assert sched.status == ScheduleStatus.ARMED
+    assert sched.active == 1
+    wake = org_state.db.work_hours.get("WORKHOUR-PEND")
+    assert wake.status == WorkHourStatus.PENDING
+    assert wake.ended_at is None
+    assert wake.error is None
+    dream = org_state.db.get_dream("DREAM-PEND")
+    assert dream.status == DreamStatus.PENDING
+    assert dream.ended_at is None
+    assert dream.error is None
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+    assert inv.consumed_at is None
+
+    # Active identity, workspace, and team membership remain intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+    # No cleanup audit residue from any cancelled/skipped/declined row.
+    cleanup_actions = {"schedule_cancelled", "work_hour_skipped", "dream_skipped"}
+    audit_rows, _ = org_state.db.query_audit_logs(agent="dev_agent", limit=1000)
+    assert all(row["action"] not in cleanup_actions for row in audit_rows)
+
+    # The database connection has no open transaction left behind.
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_run_step_fails_terminated_agent_without_executor(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Once archived, a task assigned to the agent fails closed before any
+    executor is constructed.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+
+    # Terminate the agent while it has no live work.
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "dev_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    # A task assigned to the now-archived agent must fail closed.
+    task = TaskRecord(
+        id="TASK-TERM",
+        team="engineering",
+        brief="work",
+        assigned_agent="dev_agent",
+        status=TaskStatus.PENDING,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    org_state.db.insert_task(task)
+
+    orch = Orchestrator(
+        db=org_state.db,
+        settings=org_state.settings,
+        paths=_paths(org_state),
+        slug="alpha",
+        teams=org_state.teams,
+    )
+    with patch("runtime.orchestrator.orchestrator.build_executor") as mock_build:
+        orch.run_step("TASK-TERM")
+    mock_build.assert_not_called()
+    failed = org_state.db.get_task("TASK-TERM")
+    assert failed.status == TaskStatus.FAILED
+    assert "terminated" in failed.note.lower()

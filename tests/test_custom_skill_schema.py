@@ -8,7 +8,6 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.skills import custom_store
-from runtime.skills.lifecycle import stores as lifecycle_stores
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -132,86 +131,46 @@ class TestCustomSkillSchema:
         finally:
             db.close()
 
-    def test_additive_migration_preserves_populated_legacy_lifecycle_fixture(self, tmp_path):
-        path = tmp_path / "legacy-lifecycle.db"
+    def test_existing_db_retires_all_lifecycle_tables_without_touching_b2_collision(self, tmp_path):
+        path = tmp_path / "retirement.db"
+        db = Database(path)
+        version_id = _create_skill_with_version(db._conn, "custom:collision")
+        db._conn.commit()
+        db.close()
+        artifact = path.parent / "artifacts" / "legacy" / "content" / "SKILL.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# retired")
         conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(lifecycle_stores.CREATE_PACKAGE_VERSIONS)
-        conn.executescript(lifecycle_stores.CREATE_LIFECYCLE_EVENTS)
-        conn.executescript(lifecycle_stores.CREATE_ASSIGNMENTS)
-        conn.executescript(lifecycle_stores.CREATE_MATERIALIZATIONS)
-        conn.execute(
-            """INSERT INTO skill_lifecycle_packages
-               (skill_id, slug, name, version, content_hash, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("hr:proposed", "proposed", "Proposed", "0.1", "hash-proposed", "proposed", "2026-08-09T00:00:00+00:00"),
+        conn.executescript(
+            """
+            CREATE TABLE skill_lifecycle_packages (
+                id INTEGER PRIMARY KEY, status TEXT, content_artifact_key TEXT
+            );
+            CREATE TABLE skill_lifecycle_events (id INTEGER PRIMARY KEY);
+            CREATE TABLE skill_lifecycle_assignments (id INTEGER PRIMARY KEY);
+            CREATE TABLE skill_lifecycle_materializations (id INTEGER PRIMARY KEY);
+            """
         )
-        published_version = conn.execute(
-            """INSERT INTO skill_lifecycle_packages
-               (skill_id, slug, name, version, content_hash, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("hr:published", "published", "Published", "0.1", "hash-published", "published", "2026-08-09T00:00:00+00:00"),
-        ).lastrowid
-        conn.execute(
-            """INSERT INTO skill_lifecycle_packages
-               (skill_id, slug, name, version, content_hash, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("hr:rejected", "rejected", "Rejected", "0.1", "hash-rejected", "rejected", "2026-08-09T00:00:00+00:00"),
-        )
-        retired_version = conn.execute(
-            """INSERT INTO skill_lifecycle_packages
-               (skill_id, slug, name, version, content_hash, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("hr:retired", "retired", "Retired", "0.1", "hash-retired", "retired", "2026-08-09T00:00:00+00:00"),
-        ).lastrowid
-        conn.execute(
-            """INSERT INTO skill_lifecycle_events
-               (skill_id, package_version_id, event_type, actor, actor_role, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ("hr:proposed", 1, "proposed", "dev_agent", "agent", "2026-08-09T00:00:00+00:00"),
-        )
-        conn.execute(
-            """INSERT INTO skill_lifecycle_assignments
-               (skill_id, agent_name, package_version_id, version, content_hash, assigned_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ("hr:published", "dev_agent", published_version, "0.1", "hash-published", "2026-08-09T00:00:00+00:00"),
-        )
-        conn.execute(
-            """INSERT INTO skill_lifecycle_materializations
-               (skill_id, agent_name, package_version_id, version, content_hash, session_context, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("hr:retired", "dev_agent", retired_version, "0.1", "hash-retired", "task", "2026-08-09T00:00:00+00:00"),
-        )
+        for status in ("proposed", "validated", "approved", "published", "rejected", "retired"):
+            conn.execute(
+                "INSERT INTO skill_lifecycle_packages (status, content_artifact_key) VALUES (?, ?)",
+                (status, "legacy/content/SKILL.md"),
+            )
         conn.commit()
-        legacy_tables = (
-            "skill_lifecycle_packages",
-            "skill_lifecycle_events",
-            "skill_lifecycle_assignments",
-            "skill_lifecycle_materializations",
-        )
-        before_rows = {
-            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
-            for table in legacy_tables
-        }
-        before_info = {table: list(conn.execute(f"PRAGMA table_info({table})")) for table in legacy_tables}
         conn.close()
 
-        db = Database(path)
+        retired = Database(path)
         try:
-            for table in legacy_tables:
-                assert [tuple(row) for row in db._conn.execute(f"SELECT * FROM {table} ORDER BY id")] == before_rows[table]
-                assert list(db._conn.execute(f"PRAGMA table_info({table})")) == before_info[table]
-
-            expected_columns = {
-                "custom_skills": ["id", "org_slug", "slug", "name", "description", "policy_class", "origin_kind", "origin_agent", "created_at", "created_by", "current_version_id", "retired_at", "retired_by", "retired_reason"],
-                "custom_skill_versions": ["id", "skill_id", "parent_version_id", "content_hash", "content_artifact_key", "skill_md_cache", "references_manifest", "assets_manifest", "validation_state", "validator_version", "validation_findings", "created_at", "author_kind", "author_identity", "source_task_id", "source_session_id", "task_brief_digest"],
-                "custom_skill_eligibility_rules": ["id", "skill_id", "scope_type", "scope_target", "effect", "created_at", "created_by", "superseded_at"],
-                "custom_skill_eligibility_events": ["id", "skill_id", "actor", "preview_revision", "rule_set_json", "affected_newly_visible", "affected_newly_hidden", "created_at"],
-                "custom_skill_materializations": ["id", "skill_id", "agent_name", "task_id", "session_context", "session_id", "version_id", "content_hash", "success", "error_message", "created_at"],
-                "custom_skill_events": ["id", "skill_id", "event_type", "actor", "version_id", "metadata_json", "created_at", "task_id", "session_id"],
-            }
-            for table, columns in expected_columns.items():
-                assert _table_columns(db._conn, table) == columns
+            assert retired._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'skill_lifecycle_%'"
+            ).fetchall() == []
+            assert not artifact.exists()
+            row = retired._conn.execute(
+                "SELECT current_version_id FROM custom_skills WHERE id='custom:collision'"
+            ).fetchone()
+            assert row[0] == version_id
+            assert retired._conn.execute(
+                "SELECT content_hash FROM custom_skill_versions WHERE id=?", (version_id,)
+            ).fetchone()[0] == "hash-1"
         finally:
-            db.close()
+            retired.close()

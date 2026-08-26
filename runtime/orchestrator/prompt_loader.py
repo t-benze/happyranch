@@ -1,7 +1,8 @@
 """File-based agent loader.
 
-Reads agents from <runtime>/org/agents/<name>.md (active) and
-<runtime>/org/agents/_pending/<name>.md (awaiting approval).
+Reads agents from <runtime>/org/agents/<name>.md (active),
+<runtime>/org/agents/_pending/<name>.md (awaiting approval), and
+<runtime>/org/agents/_terminated/<name>.md (archived, read-only).
 """
 from __future__ import annotations
 
@@ -29,12 +30,27 @@ __all__ = [
     "approve_agent",
     "reject_agent",
     "allow_rules_for_agent",
+    "load_terminated_agent",
+    "list_terminated",
+    "is_terminated",
+    "is_name_unavailable",
 ]
+
+
+_TERMINATED_DIRNAME = "_terminated"
 
 
 def _agent_path(paths: OrgPaths, name: str, *, pending: bool) -> Path:
     parent = paths.pending_agents_dir if pending else paths.agents_dir
     return parent / f"{name}.md"
+
+
+def _terminated_agents_dir(paths: OrgPaths) -> Path:
+    return paths.agents_dir / _TERMINATED_DIRNAME
+
+
+def _terminated_agent_path(paths: OrgPaths, name: str) -> Path:
+    return _terminated_agents_dir(paths) / f"{name}.md"
 
 
 def load_agent(paths: OrgPaths, name: str) -> AgentDef | None:
@@ -116,6 +132,33 @@ def reject_agent(paths: OrgPaths, name: str) -> None:
     if not pending.exists():
         raise FileNotFoundError(f"no pending agent: {name}")
     pending.unlink()
+
+
+def load_terminated_agent(paths: OrgPaths, name: str) -> AgentDef | None:
+    """Return the archived terminated agent, or None if not archived."""
+    path = _terminated_agent_path(paths, name)
+    if not path.exists():
+        return None
+    return parse_agent_file(path)
+
+
+def list_terminated(paths: OrgPaths) -> list[AgentDef]:
+    """All terminated agents under <runtime>/org/agents/_terminated/."""
+    return _list_dir(_terminated_agents_dir(paths))
+
+
+def is_terminated(paths: OrgPaths, name: str) -> bool:
+    """True if an archived terminated agent file exists for ``name``."""
+    return _terminated_agent_path(paths, name).exists()
+
+
+def is_name_unavailable(paths: OrgPaths, name: str) -> bool:
+    """True if ``name`` is pending, active, or terminated."""
+    return (
+        load_pending_agent(paths, name) is not None
+        or load_agent(paths, name) is not None
+        or is_terminated(paths, name)
+    )
 
 
 def allow_rules_for_agent(paths: OrgPaths, name: str) -> tuple[str, ...]:

@@ -16,14 +16,15 @@
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
  */
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   directConnect,
   executorBinaries,
   health as healthApi,
   settings as settingsApi,
 } from '@/lib/api';
+import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directConnect';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -304,9 +305,9 @@ export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
 
 /** Build the direct-connect prompt (THR-107 slice 3). Unlike the legacy
  *  adapter-submit prompt, there is no separate conformance-checkin dance
- *  and no PENDING/approval wait — one POST to /connect both proves the
- *  wrapper's integrity (server-side hash/structural checks) and, once the
- *  browser calls /commit, connects it. `wrapperDestination` is the
+ *  and no PENDING/approval wait. `/connect` is receipt-only; trusted daemon
+ *  projection later performs the bounded behavioral probe before connecting.
+ *  `wrapperDestination` is the
  *  LITERAL server-returned path from GET /runtime/custom-cli/status —
  *  do NOT derive, fallback, or guess this path client-side.
  *
@@ -340,14 +341,22 @@ export function buildDirectConnectPrompt(
     `#    This is the LITERAL daemon-issued path — no other location,`,
     `#    symlink, or alternate filename is accepted. Exact I/O contract:`,
     `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
-    `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
-    `#      context from the input (the server prepares the workspace dir)`,
+    `#    - Forward the ENTIRE AdapterInput.prompt (the normal v1 input) through one real`,
+    `#      provider invocation, with truthful workspace and timeout context`,
+    `#      from the input (the server prepares the workspace dir), and obtain`,
+    `#      a genuine terminal provider response`,
     `#    - Write exactly one v1 AdapterOutput JSON object to stdout,`,
     `#      nothing else on stdout — diagnostics go to stderr`,
+    `#    - The wrapper, not the provider, constructs the AdapterOutput.`,
+    `#      Propagate the provider's terminal error, return code, and agent`,
+    `#      session id faithfully; never fabricate AdapterOutput or static`,
+    `#      success, and never emit success without a real provider terminal response`,
     `#    - Exit after writing the output (single-invocation wrapper)`,
-    `#    - A CLI's "don't ask"/"don't block" flag is not necessarily auto-approve;`,
-    `#      CodeBuddy --permission-mode dontAsk denies tool calls. Use your CLI's`,
-    `#      actual bypass-permissions/auto-approve equivalent for headless runs`,
+    `#    - Before /connect, locally send your wrapper a fresh opaque canary in`,
+    `#      AdapterInput.prompt and prove the real terminal provider response`,
+    `#      returns the complete opaque canary in AdapterOutput.result.text.`,
+    `#      Do not use optional tools or explore the workspace during this short`,
+    `#      probe; normal task behavior is unchanged.`,
     `chmod +x "$WRAPPER"`,
     ``,
     `# 2. Declare EVERY child executable your wrapper invokes as an`,
@@ -368,8 +377,8 @@ export function buildDirectConnectPrompt(
     `#    If your CLI has no opinion, "pi" is a safe default (AGENTS.md).`,
     `WORKSPACE_ADAPTER_ID=pi`,
     ``,
-    `# 4. POST the manifest — this single call proves the wrapper's`,
-    `#    integrity and creates the connection record.`,
+    `# 4. POST the manifest — this receipt-only call validates wrapper`,
+    `#    integrity and creates the connection record; it starts no subprocess.`,
     `curl --fail-with-body -sS -X POST "$BASE/runtime/custom-cli/connect" \\`,
     `  -H "Authorization: Bearer $TOKEN" \\`,
     `  -H "Content-Type: application/json" \\`,
@@ -377,18 +386,40 @@ export function buildDirectConnectPrompt(
     `echo ""`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live —`,
-    `# once the POST above succeeds, HappyRanch finishes connecting`,
-    `# automatically. No founder-approval step.`,
+    `# trusted daemon commit/projection then runs one bounded behavioral probe`,
+    `# and finishes connecting automatically. No founder-approval step.`,
   ].join('\n');
 }
 
-/** Direct-connect state machine. */
+/** Direct-connect state machine.
+ *
+ * The server ``state`` field is authoritative; ``profile_state`` is legacy.
+ * ``failed_retryable`` is a first conformance-probe failure that admits exactly
+ * one corrected-artifact retry by rerunning the existing prompt. ``failed``
+ * covers terminal nonretryable, expired, and exhausted states.
+ */
 export type DirectConnectState =
   | { stage: 'form' }
   | { stage: 'waiting'; name: string; token: string; expired: boolean; wrapperDestination: string }
   | { stage: 'committing'; name: string; wrapperDestination: string }
   | { stage: 'connected'; name: string; wrapperDestination: string }
-  | { stage: 'failed'; name: string; wrapperDestination: string; operationId: string; reason: string };
+  | {
+      stage: 'failed_retryable';
+      name: string;
+      token: string;
+      wrapperDestination: string;
+      operationId: string;
+      reason: string;
+    }
+  | {
+      stage: 'failed';
+      name: string;
+      wrapperDestination: string;
+      operationId: string;
+      reason: string;
+      category: 'nonretryable' | 'expired' | 'exhausted';
+    }
+  | { stage: 'cleared'; name: string; wrapperStatus: ForgetWrapperStatus };
 
 /** Mint-time value for the RuntimeRegistrationTokenMintRequest's
  *  workspace_adapter_id field — this ONLY activates the daemon's Slice-1A
@@ -416,6 +447,12 @@ export function useDirectConnect({
 }) {
   const [state, setState] = useState<DirectConnectState>({ stage: 'form' });
   const [expiresAt, setExpiresAt] = useState(0);
+  // Preserve the originally minted registration token across committing,
+  // failed_retryable polls, and Back so the retryable prompt always reruns
+  // the same existing prompt.
+  const originalTokenRef = useRef('');
+  const queryClient = useQueryClient();
+  const directCommitPending = useRef(false);
 
   const mint = useMutation({
     mutationFn: async (name: string) => {
@@ -429,6 +466,7 @@ export function useDirectConnect({
       return { ...resp, wrapperDestination: status.wrapper_destination };
     },
     onSuccess: (resp, name) => {
+      originalTokenRef.current = resp.token;
       setExpiresAt(resp.expires_at);
       setState({
         stage: 'waiting',
@@ -455,9 +493,12 @@ export function useDirectConnect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.stage, expiresAt]);
 
-  const pollName = (state.stage === 'waiting' && !state.expired) || state.stage === 'committing'
-    ? state.name
-    : '';
+  const pollName =
+    (state.stage === 'waiting' && !state.expired) ||
+    state.stage === 'committing' ||
+    state.stage === 'failed_retryable'
+      ? state.name
+      : '';
   const { data: statusData } = useQuery({
     queryKey: ['direct-connect', 'status', pollName],
     queryFn: () => directConnect.getStatus(pollName),
@@ -465,41 +506,68 @@ export function useDirectConnect({
     refetchInterval: pollName !== '' ? 2500 : false,
   });
 
-  const commitMutation = useMutation({
-    mutationFn: (operationId: string) => directConnect.commit(operationId),
+  const retryMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.retry(operationId),
+  });
+  const forgetMutation = useMutation({
+    mutationFn: (operationId: string) => directConnect.forget(operationId),
   });
 
-  // The candidate CLI's /connect receipt moves waiting -> committing. The
-  // daemon owns projection; this hook only observes its terminal status.
+  // Observe the server-authoritative lifecycle state. The daemon owns
+  // projection and retry eligibility; this hook never computes retryability.
   useEffect(() => {
-    if (state.stage === 'waiting') {
-      if (state.expired || !statusData?.operation_id) return;
-      setState({
-        stage: 'committing',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
-      });
+    if (!statusData?.operation_id) return;
+    if (state.stage === 'form' || state.stage === 'cleared') return;
+    const { name, wrapperDestination } = state;
+
+    const transitionToConnected = (): void => {
+      setState({ stage: 'connected', name, wrapperDestination });
+      onConnected({ name, path: wrapperDestination, via: 'custom' });
+    };
+
+    if (statusData.state === 'connected') {
+      transitionToConnected();
       return;
     }
-    if (state.stage !== 'committing' || !statusData?.operation_id) return;
 
-    if (statusData.profile_state === 'committed') {
+    if (statusData.state === 'failed_retryable' && statusData.retry_eligible) {
+      if (state.stage === 'failed_retryable') return;
       setState({
-        stage: 'connected',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
-      });
-      onConnected({ name: state.name, path: state.wrapperDestination, via: 'custom' });
-    } else if (statusData.profile_state === 'failed') {
-      setState({
-        stage: 'failed',
-        name: state.name,
-        wrapperDestination: state.wrapperDestination,
+        stage: 'failed_retryable',
+        name,
+        token: originalTokenRef.current,
+        wrapperDestination,
         operationId: statusData.operation_id,
         reason: statusData.reason ?? 'The connection could not be completed.',
       });
-    } else if (statusData.profile_state === 'planned' || statusData.profile_state == null) {
-      // Daemon projection remains non-terminal; keep polling while committing.
+      return;
+    }
+
+    if (
+      statusData.state === 'failed_nonretryable' ||
+      statusData.state === 'expired' ||
+      statusData.state === 'exhausted'
+    ) {
+      if (state.stage === 'failed') return;
+      const category: 'nonretryable' | 'expired' | 'exhausted' =
+        statusData.state === 'expired' ? 'expired' : statusData.state === 'exhausted' ? 'exhausted' : 'nonretryable';
+      setState({
+        stage: 'failed',
+        name,
+        wrapperDestination,
+        operationId: statusData.operation_id,
+        reason: statusData.reason ?? 'The connection could not be completed.',
+        category,
+      });
+      return;
+    }
+
+    // The server reports ``active`` (projection or retry probe in flight) or
+    // ``waiting`` (receipt received, no projection row yet). The UI shows a
+    // single "finishing connection" committing state for both.
+    if (statusData.state === 'active' || statusData.state === 'waiting') {
+      if (state.stage === 'committing') return;
+      setState({ stage: 'committing', name, wrapperDestination });
     }
   }, [onConnected, state, statusData]);
 
@@ -511,28 +579,70 @@ export function useDirectConnect({
       mint.mutate(state.name);
     }
   };
-  const retryCommit = (): void => {
+  /** The historical immutable-snapshot validation path. Only available from a
+   *  terminal nonretryable failed state; textually distinct from the
+   *  corrected-artifact retry path. */
+  const retryValidation = (): void => {
     if (state.stage !== 'failed') return;
     const { name, wrapperDestination, operationId } = state;
+    directCommitPending.current = true;
     setState({ stage: 'committing', name, wrapperDestination });
-    commitMutation.mutate(operationId, {
+    retryMutation.mutate(operationId, {
       onSuccess: (resp) => {
         if (resp.profile_state === 'committed') {
+          directCommitPending.current = false;
           setState({ stage: 'connected', name, wrapperDestination });
           onConnected({ name, path: wrapperDestination, via: 'custom' });
+        } else if (resp.profile_state === 'planned') {
+          // The durable winner is still projecting; the status observer owns
+          // the terminal UI transition.
+          void queryClient.cancelQueries({ queryKey: ['direct-connect', 'status', name] }).then(() => {
+            queryClient.setQueryData<DirectConnectStatus>(
+              ['direct-connect', 'status', name],
+              {
+                wrapper_destination: wrapperDestination,
+                operation_id: operationId,
+                profile_state: 'planned',
+                reason: null,
+                state: 'active',
+                retry_eligible: false,
+              },
+            );
+            void queryClient.invalidateQueries({ queryKey: ['direct-connect', 'status', name] });
+            directCommitPending.current = false;
+          });
         } else {
+          directCommitPending.current = false;
           setState({
             stage: 'failed', name, wrapperDestination, operationId,
             reason: resp.reason ?? 'The connection could not be completed.',
+            category: 'nonretryable',
           });
         }
       },
       onError: () => {
+        directCommitPending.current = false;
         setState({
           stage: 'failed', name, wrapperDestination, operationId,
           reason: 'Could not reach the daemon to finish connecting.',
+          category: 'nonretryable',
         });
       },
+    });
+  };
+  /** Corrected-artifact retry: keep the original token and prompt, return to
+   *  the committing/waiting poll so the user's rerun of the existing prompt is
+   *  observed. Never calls /retry, /forget, or mints a token. */
+  const rerunExistingPrompt = (): void => {
+    if (state.stage !== 'failed_retryable') return;
+    const { name, wrapperDestination } = state;
+    setState({ stage: 'committing', name, wrapperDestination });
+  };
+  const clearFailed = (): void => {
+    if ((state.stage !== 'failed' && state.stage !== 'failed_retryable') || forgetMutation.isPending) return;
+    const { name, operationId } = state;
+    forgetMutation.mutate(operationId, {
+      onSuccess: (resp) => setState({ stage: 'cleared', name, wrapperStatus: resp.wrapper_status }),
     });
   };
   const back = (): void => {
@@ -541,5 +651,8 @@ export function useDirectConnect({
     mint.reset();
   };
 
-  return { state, mint, start, regenerate, retryCommit, back };
+  return {
+    state, mint, start, regenerate, retryValidation, rerunExistingPrompt, back, clearFailed,
+    forgetError: forgetMutation.error, isClearing: forgetMutation.isPending,
+  };
 }

@@ -111,6 +111,13 @@ describe('classOf — raw event-type → one of five classes', () => {
     ['thread_dispatch', 'dispatch'],
     ['artifact_put', 'dispatch'],
     ['job_submitted', 'dispatch'],
+    // GH-688 Phase 1 Slice C — reply-delivery lifecycle side-effects.
+    ['thread_reply_wake_created', 'dispatch'],
+    ['thread_reply_wake_coalesced', 'dispatch'],
+    ['thread_reply_wake_claimed', 'dispatch'],
+    ['thread_reply_wake_settled', 'dispatch'],
+    ['thread_reply_wake_cancelled', 'dispatch'],
+    ['thread_reply_wake_recovered', 'dispatch'],
   ];
 
   test.each(cases)('%s → %s', (action, expected) => {

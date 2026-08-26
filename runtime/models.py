@@ -488,6 +488,17 @@ class ThreadRecord(BaseModel):
     composed_from_task_id: str | None = None
     composed_from_dream_id: str | None = None
     last_speaker: str | None = None
+    # Founder-workspace presentation state (THR-209): non-None when the thread
+    # is pinned by the founder. Pinning changes display only — never identity,
+    # participants, routing, unread state, lifecycle, or activity timestamps.
+    pinned_at: datetime | None = None
+    # Phase-2 mention routing (THR-198): per-thread switch, DEFAULT ENABLED.
+    # Additive column with NOT NULL DEFAULT 1 — existing threads adopt the
+    # enabled default with no data migration or replay.
+    mention_routing_enabled: bool = True
+    # Most recent message created_at (derived; NULL for threads without
+    # messages). Feeds the pinned-section activity ranking (THR-209).
+    last_activity_at: datetime | None = None
 
 
 class ThreadParticipant(BaseModel):
@@ -553,11 +564,17 @@ class ThreadMessage(BaseModel):
     decline_reason: str | None = None
     system_payload: dict | None = None
     attachments: list[ThreadAttachment] = Field(default_factory=list)
+    # Phase-2 mention routing (THR-198): canonical valid-participant mentions
+    # derived server-side from body_markdown at write time (stored as
+    # mentions_json). Empty list when derived with no valid mentions; NULL
+    # rows (system/decline + pre-change history) read back as empty list.
+    mentions: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
 
 
 class ResponderStatusEntry(BaseModel):
     agent_name: str
+    purpose: ThreadInvocationPurpose
     status: Literal["queued", "working", "replied", "declined", "failed"]
     responded_at: str | None
     started_at: str | None = None
@@ -579,6 +596,125 @@ class ThreadInvocation(BaseModel):
     session_id: str | None = None
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
+
+
+class ThreadReplyDeliveryState(BaseModel):
+    """Durable per-(thread_id, agent_name) conversational REPLY delivery state.
+
+    GitHub #688 Phase 1 Slice A. This is the provider-neutral required-delivery
+    contract for coalesced conversational reply wakes. One row per pair:
+    at most one queued and one running REPLY slot; both tokens (when present)
+    reference same-pair REPLY invocations.
+
+    ``acknowledged_through_seq`` is the highest transcript sequence
+    intentionally acknowledged as presented/handled; ``required_through_seq``
+    is the highest conversational sequence that must still be offered. The
+    queued/running tokens occupy the single unstarted/started REPLY slots.
+    ``running_from_seq``/``running_through_seq`` are the immutable prompt
+    receipt captured at claim time.
+
+    ``last_terminal_reason``/``last_terminal_at`` carry the diagnostic data
+    Slice B uses to project ``retry_required`` and to audit settlement.
+    """
+    thread_id: str
+    agent_name: str
+    acknowledged_through_seq: int = 0
+    required_through_seq: int = 0
+    queued_invocation_token: str | None = None
+    running_invocation_token: str | None = None
+    running_from_seq: int | None = None
+    running_through_seq: int | None = None
+    last_terminal_reason: str | None = None
+    last_terminal_at: str | None = None
+    updated_at: str = ""
+
+
+class ThreadReplyRecoveryEntry(BaseModel):
+    """One runnable token returned by the durable reply-delivery recovery pass.
+
+    ``kind`` distinguishes a retained queued wake from a replacement queued
+    wake minted for an interrupted running attempt.
+    """
+    thread_id: str
+    agent_name: str
+    invocation_token: str
+    kind: Literal["retained_queued", "replacement_queued"]
+
+
+class ThreadReplyArrival(BaseModel):
+    """One recipient's delivery result from a conversational arrival.
+
+    GitHub #688 Phase 1 Slice B. ``invocation_token`` is non-None only when
+    this arrival minted a NEW queued REPLY (no queued/running ownership
+    existed); ``coalesced=True`` means the arrival merely raised
+    ``required_through_seq`` on an existing wake. ``from_seq``/``through_seq``
+    carry the delivery range the pair's single wake now covers (diagnostic).
+    """
+    agent_name: str
+    invocation_token: str | None
+    coalesced: bool
+    from_seq: int
+    through_seq: int
+
+
+class ThreadReplyClaim(BaseModel):
+    """Successful queued→running CAS result for a conversational REPLY.
+
+    ``running_from_seq``/``running_through_seq`` are the immutable inclusive
+    prompt receipt snapshotted at claim time; they never change for the life
+    of the running attempt even if later arrivals raise ``required_through_seq``.
+    """
+    thread_id: str
+    agent_name: str
+    invocation_token: str
+    acknowledged_through_seq: int
+    required_through_seq: int
+    running_from_seq: int
+    running_through_seq: int
+
+
+class ThreadReplySettlement(BaseModel):
+    """Result of settling a conversational REPLY terminal path.
+
+    ``follow_on_token`` is at most one newly-minted queued REPLY covering
+    arrivals strictly after the immutable running range (reply/decline only).
+    ``retry_required`` is the residual-obligation diagnostic: True only when
+    ``required_through_seq`` still exceeds the acknowledged watermark AND no
+    follow-on wake was minted to carry it (failure/timeout leave the range
+    unacknowledged with no immediate retry).
+    """
+    thread_id: str
+    agent_name: str
+    outcome: Literal["reply", "decline", "failed", "timeout"]
+    acknowledged_through_seq: int
+    required_through_seq: int
+    retry_required: bool
+    follow_on_token: str | None
+
+
+class ReplyDeliveryProjection(BaseModel):
+    """Pair-level reply-delivery wire projection (server contract, Slice B).
+
+    Derived from ``thread_reply_delivery_state``, never fabricated from
+    per-message invocation rows. ``state`` truthfully distinguishes the three
+    live obligations:
+      * ``queued`` — one unstarted coalesced REPLY wake (token set, not started)
+      * ``running`` — one claimed in-flight REPLY (immutable range)
+      * ``retry_required`` — unacknowledged range with no active wake; the
+        next conversational arrival mints the single covering retry
+    A fully-settled pair (nothing queued/running/required) is omitted from the
+    live projection; terminal history stays on the per-message responder strips.
+    ``coalesced_message_count`` is the number of transcript rows the wake's
+    range covers (computed in the store, not inferred by numeric subtraction).
+    """
+    agent_name: str
+    state: Literal["queued", "running", "retry_required"]
+    from_seq: int
+    through_seq: int
+    coalesced_message_count: int
+    started_at: str | None
+    updated_at: str | None
+    last_terminal_reason: str | None
 
 
 class JobStatus(StrEnum):
@@ -643,9 +779,10 @@ class JobRecord(BaseModel):
 
 
 class ScheduleKind(StrEnum):
-    """THR-105: v1 supports exactly one_shot and weekly recurrence."""
+    """THR-105 schedule cadence kinds."""
     ONE_SHOT = "one_shot"
     WEEKLY = "weekly"
+    RECURRING = "recurring"
 
 
 class ScheduleStatus(StrEnum):
@@ -685,9 +822,279 @@ class ScheduleRecord(BaseModel):
     spawned_task_ids: list[str] = Field(default_factory=list)
     last_fired_at: datetime | None = None
     fire_count: int = 0
+    end_reason: str | None = None
     # Fields needed by the later runner (Phase 2+), consistent with WorkHourRecord
     session_id: str | None = None
     error: str | None = None
     transcript_path: str | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+
+# ── THR-181 Track A: durable authority candidate/evaluation/audit foundation ──
+#
+# Slice 1 is an isolated, additive persistence foundation. These models define
+# the typed vocabulary for the authority_* tables in database.py. They are NOT
+# wired into any runtime surface yet — no evaluator invocation, policy
+# enforcement, selection/activation, or Exit-B behavior exists in this slice.
+# Every prose-bearing field is stored as a *digest* (never the raw content),
+# and every state/disposition value is a closed StrEnum mirrored by a SQLite
+# CHECK constraint so the DB itself rejects unknown values.
+
+
+class AuthorityLifecycleState(StrEnum):
+    """Controlled candidate lifecycle. Mirrored by a SQLite CHECK constraint."""
+    CREATED = "created"          # claimed, not yet evaluated
+    EVALUATED = "evaluated"      # a single evaluation disposition recorded
+    CONSUMED = "consumed"        # disposition consumed exactly once (later slice)
+
+
+class AuthorityDisposition(StrEnum):
+    """The primary controlled outcome recorded by the (later) evaluator slice."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+
+
+class AuthorityDispositionCode(StrEnum):
+    """Fine-grained fail-closed reason codes. Superset of AuthorityDisposition."""
+    CONTINUE_SAME_ROOT = "continue_same_root"
+    ESCALATE = "escalate"
+    NOT_APPLICABLE = "not_applicable"
+    EVALUATOR_ERROR = "evaluator_error"
+    LOW_CONFIDENCE = "low_confidence"
+    TIMEOUT = "timeout"
+    MALFORMED_OUTPUT = "malformed_output"
+    INJECTION_GUARD = "injection_guard"
+    AUDIT_FAILURE = "audit_failure"
+
+
+class AuthorityRetentionClass(StrEnum):
+    """How long a snapshot/response digest is retained. Mirrored by CHECK."""
+    DIGEST_ONLY = "digest_only"
+    SHADOW = "shadow"
+    INDEFINITE = "indefinite"
+
+
+class AuthorityRedactionClass(StrEnum):
+    """Whether content was redacted before it was digested. Mirrored by CHECK."""
+    NONE = "none"
+    REDACTED = "redacted"
+
+
+class AuthorityAuditEventType(StrEnum):
+    """Controlled append-only authority audit event vocabulary."""
+    CANDIDATE_CLAIMED = "candidate_claimed"
+    CANDIDATE_CLAIM_LOST = "candidate_claim_lost"
+    EVALUATION_RECORDED = "evaluation_recorded"
+    CANDIDATE_CONSUMED = "candidate_consumed"
+
+
+# Bounded digest/version validators. Shared by the closed Pydantic records
+# below AND the ``Database`` writer boundary (database.py) so the two surfaces
+# cannot drift. They reject task prose, raw model exchanges, and bearer/provider
+# credentials smuggled into a field that must only ever hold a hex digest or a
+# short version token — the writer refuses to persist (never silently redacts).
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+_CREDENTIAL_MARKERS = (
+    "bearer",
+    "authorization",
+    "api_key",
+    "apikey",
+    "password",
+    "credential",
+    "token=",
+    "sk-",
+    "private_key",
+    "client_secret",
+)
+
+
+def _reject_credential_like(value: str, field: str) -> str:
+    lowered = value.lower()
+    for marker in _CREDENTIAL_MARKERS:
+        if marker in lowered:
+            raise ValueError(
+                f"{field} appears to carry a credential-like token ({marker!r}); "
+                "refusing to persist it"
+            )
+    return value
+
+
+def validate_authority_digest(value: str, field: str) -> str:
+    """Validate a digest field: bounded hex only.
+
+    Rejects task prose, raw model exchanges (JSON), and bearer/provider
+    credentials — none of which are valid hex — rather than silently storing
+    or redacting them.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty string")
+    if not (32 <= len(value) <= 128) or not set(value) <= _HEX_DIGITS:
+        raise ValueError(
+            f"{field} must be a bounded hex digest (32-128 hex chars); "
+            "refusing to persist prose, credentials, or raw model-exchange content"
+        )
+    return value
+
+
+def validate_authority_version(value: str, field: str) -> str:
+    """Validate a version token: short, non-blank, credential-free."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-blank string")
+    if len(value) > 64:
+        raise ValueError(f"{field} must be at most 64 characters")
+    return _reject_credential_like(value, field)
+
+
+class AuthorityFenceCode(StrEnum):
+    """Closed vocabulary of mechanical fence outcome codes.
+
+    Only these codes may be recorded in an ``AuthorityFenceResult``. Unknown
+    codes are rejected at the writer boundary (and by the model's closed
+    validation) rather than persisted.
+    """
+    CANCELLED = "cancelled"
+    STALE = "stale"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    TIMEOUT = "timeout"
+    INJECTION = "injection"
+    MALFORMED = "malformed"
+
+
+class AuthorityFenceResult(BaseModel):
+    """One mechanical fence outcome: a boolean plus an optional closed code.
+
+    Structured, never prose — the fence name is the dict key, and this model
+    is the value. Extra keys and unknown codes are rejected; evaluator
+    prose/attestation text must never be stored here.
+    """
+    model_config = {"extra": "forbid"}
+
+    passed: StrictBool
+    code: AuthorityFenceCode | None = None
+
+
+class AuthorityAuditPayload(BaseModel):
+    """Bounded, closed audit-event payload.
+
+    Only digest / redaction / version / classification fields are permitted.
+    Never prose, credentials, raw model exchanges, or arbitrary evaluator
+    responses. Unknown keys are rejected.
+    """
+    model_config = {"extra": "forbid"}
+
+    disposition: AuthorityDisposition | None = None
+    disposition_code: AuthorityDispositionCode | None = None
+    retention_class: AuthorityRetentionClass | None = None
+    redaction_class: AuthorityRedactionClass | None = None
+    digest: StrictStr | None = None
+    version: StrictStr | None = None
+
+    @field_validator("digest")
+    @classmethod
+    def _digest_is_bounded_hex(cls, value, info):
+        if value is None:
+            return None
+        return validate_authority_digest(value, f"payload.{info.field_name}")
+
+    @field_validator("version")
+    @classmethod
+    def _version_is_bounded(cls, value, info):
+        if value is None:
+            return None
+        return validate_authority_version(value, f"payload.{info.field_name}")
+
+
+class AuthorityCandidate(BaseModel):
+    """Immutable identity of one pre-escalation authority candidate.
+
+    ``claim_key`` is the deterministic sha256 digest of the
+    root/session/causal-event/policy-prompt-model tuple — the CAS key that
+    guarantees at most one durable candidate per tuple. Every digest field is
+    validated as bounded hex; unknown keys are rejected.
+    """
+    model_config = {"extra": "forbid"}
+
+    id: str
+    claim_key: str
+    root_task_id: str
+    team: str
+    manager_agent: str
+    manager_session_id: str
+    causal_event_id: str
+    causal_event_digest: str
+    causal_result_id: str | None = None
+    policy_id: str
+    policy_version: str
+    policy_digest: str
+    prompt_id: str
+    prompt_version: str
+    prompt_digest: str
+    model_id: str
+    model_version: str
+    model_digest: str
+    snapshot_digest: str
+    snapshot_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    snapshot_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    disposition: AuthorityDisposition | None = None
+    lifecycle_state: AuthorityLifecycleState = AuthorityLifecycleState.CREATED
+    consumed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    @field_validator(
+        "claim_key",
+        "causal_event_digest",
+        "policy_digest",
+        "prompt_digest",
+        "model_digest",
+        "snapshot_digest",
+    )
+    @classmethod
+    def _digests_are_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+    @field_validator("policy_version", "prompt_version", "model_version")
+    @classmethod
+    def _versions_are_bounded(cls, value, info):
+        return validate_authority_version(value, info.field_name)
+
+
+class AuthorityEvaluation(BaseModel):
+    """The single, immutable evaluation outcome for a candidate.
+
+    Stores the *digest* of the evaluator response plus a controlled
+    disposition/code — never the raw response text or unredacted exchange.
+    """
+    model_config = {"extra": "forbid"}
+
+    id: int | None = None
+    candidate_id: str
+    disposition: AuthorityDisposition
+    disposition_code: AuthorityDispositionCode
+    response_digest: str
+    response_retention_class: AuthorityRetentionClass = AuthorityRetentionClass.DIGEST_ONLY
+    response_redaction_class: AuthorityRedactionClass = AuthorityRedactionClass.REDACTED
+    fence_results: dict[str, AuthorityFenceResult] | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("response_digest")
+    @classmethod
+    def _response_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class AuthorityAuditEvent(BaseModel):
+    """One append-only authority audit event. Immutable after write."""
+    model_config = {"extra": "forbid"}
+
+    id: int | None = None
+    candidate_id: str
+    event_type: AuthorityAuditEventType
+    payload: AuthorityAuditPayload | None = None
+    created_at: datetime = Field(default_factory=_now)

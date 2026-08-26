@@ -5,11 +5,10 @@ Addresses TASK-4001 findings:
 - Finding 4: Real restricted-process evidence (requires CI runner)
 - Finding 5: Complete cutover — no copy fallback survives
 - Finding 6: ORG_SLUG handling with session/task org-context mechanism
-- Finding 7: Lifecycle manifest provenance + canonical integration
+- Finding 7: B2 manifest provenance + canonical integration
 
-Tests in this file represent the production-bound expectation. Some tests
-require real OS-level same-owner operation validation (macOS only) and will
-report their prerequisite gap rather than manufacturing a false pass.
+Tests in this file represent the production-bound expectation for the shared
+same-owner macOS/Linux model.
 """
 
 from __future__ import annotations
@@ -376,12 +375,12 @@ class TestOrgSlugRemediation:
                     )
 
 
-# ── Finding 7: Lifecycle manifest provenance ──────────────────────────
+# ── Finding 7: B2 custom-skill manifest provenance ───────────────────
 
-class TestLifecycleManifestProvenance:
-    """Lifecycle manifest hash is preserved separately from tree/member hashes.
+class TestCustomSkillManifestProvenance:
+    """B2 manifest hash is preserved separately from tree/member hashes.
 
-    The content_hash in the lifecycle ledger binds the manifest bytes.
+    The immutable custom-skill version/provenance hash binds the manifest bytes.
     Materialized tree hashes are computed independently from the source tree.
     """
 
@@ -397,7 +396,7 @@ class TestLifecycleManifestProvenance:
         store = CanonicalSkillStore(settings=test_settings)
 
         # Create source tree
-        skill_dir = tmp_path / "test-lifecycle"
+        skill_dir = tmp_path / "test-b2-custom-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("# Test Skill\n")
         (skill_dir / "tools.py").write_text("def hello(): pass\n")
@@ -426,11 +425,11 @@ class TestLifecycleManifestProvenance:
 
         # Build into canonical store via manifest path
         store.build_from_source(
-            "lifecycle-skill", "1.0", manifest_hash, skill_dir,
+            "b2-custom-skill", "1.0", manifest_hash, skill_dir,
         )
 
         # Verify the canonical package was built under manifest_hash, not tree_hash
-        canonical_path = store.canonical_path("lifecycle-skill", "1.0", manifest_hash)
+        canonical_path = store.canonical_path("b2-custom-skill", "1.0", manifest_hash)
         assert canonical_path.is_dir(), (
             f"Canonical package not found at {canonical_path} "
             f"(expected under manifest_hash={manifest_hash[:16]}...)"
@@ -466,6 +465,7 @@ class TestSafeRepair:
             isolation.create_relative_symlink(
                 Path("target"),
                 ordinary,
+                workspace_root=link_dir,
             )
 
         # The ordinary directory must still exist with its content intact

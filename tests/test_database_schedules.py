@@ -33,6 +33,7 @@ _EXPECTED_COLUMNS = {
     "spawned_task_ids": (0, None),
     "last_fired_at": (0, None),
     "fire_count": (1, "0"),
+    "end_reason": (0, None),
     "session_id": (0, None),
     "error": (0, None),
     "transcript_path": (0, None),

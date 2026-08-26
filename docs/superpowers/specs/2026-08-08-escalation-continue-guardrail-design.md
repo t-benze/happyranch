@@ -1,7 +1,16 @@
 # Surface `continue` in the Thread Escalation Guardrail — Design Spec
 
 **Date:** 2026-08-08
-**Status:** Draft, pending implementation.
+**Status:** Superseded in part by THR-166 implementation. The former prompt-only
+manager-facing `continue` guidance is not an authority mechanism. Autonomous
+continue is now restricted to the policy-gated same-owner causal TASK_FOLLOWUP
+route described in protocol/05c; the direct task route is manual break-glass.
+THR-166's liveness correction binds that route to the exact server-recorded
+terminal result that caused its escalation (including terminal status, verdict,
+output snapshot, lineage, and freshness), rather than post-escalation
+descendants that cannot exist before the same root resumes. Acceptance only
+returns that same root to its ordinary repair/review/reverify lifecycle and
+never authorizes the original protected gate.
 **Origin:** Process audit of THR-107 (GitHub issue [#618](https://github.com/t-benze/happyranch/issues/618)) found that a single thread accumulated 30 `superseded` root tasks averaging 117 minutes each (58.7 of 87 total task-hours) before the initiative was cancelled. Every one of those supersessions re-stated a large multi-paragraph context brief and started a brand-new task (fresh worktree, fresh GitNexus run, fresh agent session) to resolve what was often just a founder "ok proceed" on an already-escalated task.
 **Relates to:**
 - `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md` — the `task_escalated` system-message + re-invocation machinery this spec's guardrail already rides on.

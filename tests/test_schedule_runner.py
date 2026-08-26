@@ -12,7 +12,7 @@ from runtime.config import Settings
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.org_config import OrgConfig
-from runtime.daemon.schedule_runner import build_schedule_prompt
+from runtime.daemon.schedule_runner import _failure_transition, _timeout_transition, build_schedule_prompt
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -69,6 +69,42 @@ def test_build_prompt_weekly():
     assert "weekly" in prompt
     assert "Recurrence: Sat 09:00 UTC" in prompt
     assert "Market update for Saturday." in prompt
+
+
+def test_failure_continuity_rearms_recurring_and_weekly_but_one_shot_is_terminal(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    now = datetime(2026, 7, 22, 12, tzinfo=timezone.utc)
+    recurring = ScheduleRecord(
+        id="SCHEDULE-001", agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.RECURRING, status=ScheduleStatus.FIRING,
+        fire_at=now, timezone="UTC", normalized_brief="x", source_instruction="x",
+        recurrence={"freq": "DAILY", "interval": 1, "anchor_date": "2026-07-01", "time": "09:00", "tz": "UTC", "until": None, "count": None},
+    )
+    one_shot = ScheduleRecord(
+        id="SCHEDULE-002", agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.ONE_SHOT, status=ScheduleStatus.FIRING,
+        fire_at=now, timezone="UTC", normalized_brief="x", source_instruction="x",
+    )
+    weekly = ScheduleRecord(
+        id="SCHEDULE-003", agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.WEEKLY, status=ScheduleStatus.FIRING,
+        fire_at=now, timezone="UTC", normalized_brief="x", source_instruction="x",
+        recurrence={"day": "Wed", "time": "09:00", "tz": "UTC"},
+    )
+    db.schedules.insert(recurring)
+    db.schedules.insert(one_shot)
+    db.schedules.insert(weekly)
+    _failure_transition(db.schedules, recurring, now, "executor_failed")
+    _timeout_transition(db.schedules, one_shot, now, "timed_out")
+    _timeout_transition(db.schedules, weekly, now, "timed_out")
+    assert db.schedules.get(recurring.id).status == ScheduleStatus.ARMED
+    assert db.schedules.get(recurring.id).fire_count == 0
+    assert db.schedules.get(weekly.id).status == ScheduleStatus.ARMED
+    assert db.schedules.get(weekly.id).fire_count == 0
+    assert db.schedules.get(one_shot.id).status == ScheduleStatus.TIMEOUT
+
+    _failure_transition(db.schedules, one_shot, now, "executor_failed")
+    assert db.schedules.get(one_shot.id).status == ScheduleStatus.FAILED
 
 
 def test_build_prompt_includes_managed_skills_when_present():

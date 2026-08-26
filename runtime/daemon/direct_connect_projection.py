@@ -15,42 +15,39 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 
-_CONCURRENT_WINNER_POLL_ATTEMPTS = 50
-_CONCURRENT_WINNER_POLL_INTERVAL_SECONDS = 0.02
-
-
 @dataclass(frozen=True)
 class ProjectionOutcome:
-    state: Literal["committed", "failed"]
+    state: Literal["planned", "committed", "failed"]
     adapter_id: str | None
     profile_name: str | None
     reason: str | None
 
 
-def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: str) -> ProjectionOutcome | None:
-    """Poll a bounded number of times for a concurrent winner's terminal state.
+def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: str) -> ProjectionOutcome:
+    """Reconcile a durable concurrent winner without starting another probe.
 
-    Returns ``None`` if no terminal state is observed within the bound —
-    the caller should treat that as its own failure rather than hang.
+    A failed plan insert proves the winner has already durably created its
+    projection row.  Returning that row's ``planned`` state keeps callers
+    bounded while the owner continues the probe; terminal rows remain
+    idempotent outcomes.
     """
-    for _ in range(_CONCURRENT_WINNER_POLL_ATTEMPTS):
-        projection = store.get_projection(operation_id)
-        if projection is not None and projection.state == "committed":
-            return ProjectionOutcome(
-                state="committed", adapter_id=projection.adapter_id,
-                profile_name=projection.profile_name, reason=None,
-            )
-        if projection is not None and projection.state == "failed":
-            return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=projection.reason)
-        time.sleep(_CONCURRENT_WINNER_POLL_INTERVAL_SECONDS)
-    return None
+    projection = store.get_projection(operation_id)
+    if projection is None:
+        raise RuntimeError(f"concurrent projection disappeared for operation {operation_id!r}")
+    if projection.state == "committed":
+        return ProjectionOutcome(
+            state="committed", adapter_id=projection.adapter_id,
+            profile_name=projection.profile_name, reason=None,
+        )
+    if projection.state == "failed":
+        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=projection.reason)
+    return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
 
 def project(
@@ -67,6 +64,7 @@ def project(
         AdapterEntry,
         acquire_store_lock,
         get_adapter,
+        remove_adapter,
         release_store_lock,
         save_adapter,
     )
@@ -84,19 +82,32 @@ def project(
     if artifacts is None:
         raise RuntimeError(f"no receipt found for direct-connect operation {operation_id!r}")
 
-    if not store.plan_projection(operation_id, now=now):
-        # Another caller won the plan race between our read of `existing`
-        # and now. Poll for its terminal result instead of racing the
-        # conformance probe / durable writes a second time.
-        outcome = _await_concurrent_outcome(store, operation_id)
-        if outcome is not None:
-            return outcome
-        # No terminal state showed up within the bound — surface as a
-        # failure rather than silently proceeding past a live winner.
+    # Only the latest accepted candidate for this operation's parent authority
+    # may be driven forward. Older candidates of the same parent are reported as
+    # superseded without starting a probe; candidates of other authorities for
+    # the same profile name are ignored.
+    latest = store.get_latest_candidate_for_token_fingerprint(artifacts.token_fingerprint)
+    if latest is not None and latest.operation_id != operation_id:
         return ProjectionOutcome(
             state="failed", adapter_id=None, profile_name=None,
-            reason="concurrent projection did not reach a terminal state in time",
+            reason="superseded_by_later_candidate",
         )
+
+    # Enforce exactly one active probe per parent lifecycle.  If another
+    # candidate of the same parent is already planned or being retried, report
+    # this one as in-flight without racing it.
+    active_other = store.active_operation_for_parent(operation_id)
+    if active_other is not None:
+        other_projection = store.get_projection(active_other)
+        if other_projection is not None:
+            return _await_concurrent_outcome(store, active_other)
+        return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
+
+    if not store.plan_projection(operation_id, now=now):
+        # Another caller won the plan race between our read of `existing`
+        # and now. Reconcile its durable state instead of racing the
+        # conformance probe / durable writes a second time.
+        return _await_concurrent_outcome(store, operation_id)
 
     adapter_id = custom_adapter_registry.generate_adapter_id(
         f"{artifacts.intended_profile_name}-adapter"
@@ -104,11 +115,14 @@ def project(
 
     try:
         probe_output = custom_adapter_registry.run_conformance_probe(
-            str(artifacts.wrapper_path), adapter_id
+            str(artifacts.wrapper_path), adapter_id, require_prompt_delivery=True,
         )
-    except Exception as exc:
-        store.mark_failed(operation_id, f"conformance_probe_failed: {exc}", now=now)
-        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
+    except Exception:
+        # The direct gate deliberately persists a category rather than any
+        # candidate-controlled output, diagnostics, or per-probe canary.
+        reason = "direct conformance probe failed"
+        store.mark_failed(operation_id, f"conformance_probe_failed: {reason}", now=now)
+        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=reason)
 
     entry = AdapterEntry(
         id=adapter_id,
@@ -129,28 +143,37 @@ def project(
         dependencies=[{"executable": c["executable"], "sha256": c["sha256"]} for c in artifacts.children],
     )
 
+    adapter_created = False
+    replaced_adapter: AdapterEntry | None = None
     acquire_store_lock()
-    adapter_persisted = False
     try:
-        if get_adapter(adapter_id) is None:
+        existing_adapter = get_adapter(adapter_id)
+        if existing_adapter is None:
             save_adapter(entry)
-            adapter_persisted = True
+            adapter_created = True
+        elif existing_adapter.executable_hash != entry.executable_hash:
+            save_adapter(entry)
+            replaced_adapter = existing_adapter
+        try:
+            bind_result = custom_adapter_registry._perform_adapter_profile_binding(
+                adapter_id=adapter_id,
+                profile_name=artifacts.intended_profile_name,
+                workspace_adapter=artifacts.workspace_adapter_id,
+            )
+        except Exception:
+            if adapter_created:
+                remove_adapter(adapter_id)
+            elif replaced_adapter is not None:
+                save_adapter(replaced_adapter)
+            # The direct gate persists only a fixed category; arbitrary
+            # exception text, paths, hashes, or candidate output must never
+            # reach durable rows or the HTTP response.
+            store.mark_failed(operation_id, "profile_binding_failed", now=now)
+            return ProjectionOutcome(
+                state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
+            )
     finally:
         release_store_lock()
-
-    try:
-        bind_result = custom_adapter_registry._perform_adapter_profile_binding(
-            adapter_id=adapter_id,
-            profile_name=artifacts.intended_profile_name,
-            workspace_adapter=artifacts.workspace_adapter_id,
-        )
-    except Exception as exc:
-        if adapter_persisted:
-            from runtime.orchestrator.adapter_store import remove_adapter
-
-            remove_adapter(adapter_id)
-        store.mark_failed(operation_id, f"profile_binding_failed: {exc}", now=now)
-        return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=str(exc))
 
     store.mark_committed(
         operation_id, adapter_id=adapter_id, profile_name=bind_result["profile_name"], now=now,

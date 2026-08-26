@@ -188,7 +188,7 @@ def test_settings_org_only_has_allow_listed_fields(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """OrgSettingsView must contain ONLY session_timeout_seconds, dreaming,
-    threads, working_hours."""
+    threads, working_hours, reviewer_agents."""
     client = TestClient(app)
     r = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings",
@@ -197,7 +197,10 @@ def test_settings_org_only_has_allow_listed_fields(
     assert r.status_code == 200
     org_keys = set(r.json()["org"].keys())
 
-    expected = {"session_timeout_seconds", "dreaming", "threads", "working_hours"}
+    expected = {
+        "session_timeout_seconds", "dreaming", "threads", "working_hours",
+        "reviewer_agents",
+    }
     assert org_keys == expected, (
         f"Org settings keys: {sorted(org_keys)}\n"
         f"Expected: {sorted(expected)}"
@@ -1102,3 +1105,104 @@ def test_put_teams_rollback_removing_agent_still_declaring_team(
     # (add_worker appends so order may differ; we assert set equality)
     after = yaml.safe_load(teams_path.read_text())
     assert set(after["teams"]["engineering"]["workers"]) == set(before_workers)
+
+
+# ----------------------------------------------------------------
+# THR-175: reviewer_agents org setting (GET + PUT validation)
+# ----------------------------------------------------------------
+
+def _seed_reviewer_agents_agents(org_state) -> None:
+    """Write agent files so _resolve_agent_names knows code_reviewer/senior_dev."""
+    from tests.conftest import seed_test_agents
+    from runtime.orchestrator._paths import OrgPaths
+    seed_test_agents(
+        OrgPaths(root=org_state.root),
+        ("code_reviewer", "senior_dev", "qa_engineer", "dev_agent"),
+    )
+
+
+def test_get_settings_returns_reviewer_agents_default(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    r = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["org"]["reviewer_agents"] == ["code_reviewer"]
+
+
+def test_put_settings_updates_reviewer_agents(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_reviewer_agents_agents(org_state)
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"reviewer_agents": ["senior_dev"]},
+    )
+    assert r.status_code == 200
+    assert r.json()["org"]["reviewer_agents"] == ["senior_dev"]
+    # Persisted in the DB.
+    import json as _json
+    assert _json.loads(org_state.db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+
+
+def test_put_settings_rejects_unknown_reviewer_agent(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_reviewer_agents_agents(org_state)
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"reviewer_agents": ["ghost_agent"]},
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["remediation"] and "HARD REJECT" in detail["remediation"]
+    assert any("unknown agent" in e for e in detail["errors"])
+
+
+def test_put_settings_rejects_empty_reviewer_agents(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_reviewer_agents_agents(org_state)
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"reviewer_agents": []},
+    )
+    assert r.status_code == 422
+
+
+def test_put_settings_rejects_non_string_reviewer_agent(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_reviewer_agents_agents(org_state)
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"reviewer_agents": ["senior_dev", 123]},
+    )
+    assert r.status_code == 422
+
+
+def test_get_settings_unknown_persisted_reviewer_agents_resolves_default(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """The GET settings read path resolves an already-persisted UNKNOWN
+    reviewer_agents value fail-closed to the code default — never exposes the
+    unknown name that would demote code_reviewer from the reviewer set."""
+    _seed_reviewer_agents_agents(org_state)
+    import json as _json
+    org_state.db.upsert_org_setting("reviewer_agents", _json.dumps(["ghost_agent"]))
+    client = TestClient(app)
+    r = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["org"]["reviewer_agents"] == ["code_reviewer"]

@@ -448,7 +448,7 @@ def test_sweep_reconciles_pending_invocation_to_failed(tmp_path):
     assert inv.status.value == "pending"
     # Verify wire render is 'queued' (no started_at)
     wire_entry = _responder_entry({
-        "agent_name": "alpha", "status": "pending",
+        "agent_name": "alpha", "purpose": "reply", "status": "pending",
         "consumed_at": None, "started_at": None,
     })
     assert wire_entry.status == "queued"
@@ -464,7 +464,7 @@ def test_sweep_reconciles_pending_invocation_to_failed(tmp_path):
 
     # Wire render is now 'failed' (box clears).
     wire_after = _responder_entry({
-        "agent_name": "alpha", "status": reel.status.value,
+        "agent_name": "alpha", "purpose": "reply", "status": reel.status.value,
         "consumed_at": reel.consumed_at.isoformat() if reel.consumed_at else None,
         "started_at": reel.started_at.isoformat() if reel.started_at else None,
     })
@@ -496,7 +496,7 @@ def test_sweep_reconciles_working_invocation_to_failed(tmp_path):
 
     # Wire renders 'working' because started_at is set.
     wire_entry = _responder_entry({
-        "agent_name": "alpha", "status": "pending",
+        "agent_name": "alpha", "purpose": "reply", "status": "pending",
         "consumed_at": None, "started_at": started_ts,
     })
     assert wire_entry.status == "working"
@@ -509,7 +509,7 @@ def test_sweep_reconciles_working_invocation_to_failed(tmp_path):
     assert reel.decline_reason == "daemon_restart"
 
     wire_after = _responder_entry({
-        "agent_name": "alpha", "status": reel.status.value,
+        "agent_name": "alpha", "purpose": "reply", "status": reel.status.value,
         "consumed_at": reel.consumed_at.isoformat() if reel.consumed_at else None,
         "started_at": reel.started_at.isoformat() if reel.started_at else None,
     })

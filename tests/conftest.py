@@ -8,12 +8,39 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.runtime import RuntimeDir
 
 
+# Standard test agents that many modules invoke through _run_agent or
+# run_invocation. Under THR-095/TASK-5293 launch is fail-closed, so tests
+# that previously relied on a silent claude fallback now need active
+# AgentDef frontmatter. Modules with special agent requirements can
+# override or supplement this list in their own fixtures.
+_TEST_AGENT_NAMES = (
+    "engineering_head", "product_manager", "dev_agent", "payment_agent",
+    "qa_engineer", "senior_dev", "content_head", "content_agent",
+    "alice", "bob",
+)
+
+
+def seed_test_agents(paths: OrgPaths, names: tuple[str, ...] | None = None) -> None:
+    """Write active AgentDef frontmatter for test agents under ``paths``."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    for name in (names or _TEST_AGENT_NAMES):
+        ad = AgentDef(
+            name=name, team="engineering", role="manager",
+            executor="claude", allow_rules=(), repos={},
+            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt=f"You are {name}.", description="", model=None,
+        )
+        (paths.agents_dir / f"{name}.md").write_text(render_agent_text(ad))
+
+
 # ── Test-mode platform isolation ──────────────────────────────────────
-# Test environments may not have distinct macOS executor accounts.
+# Test environments use a same-owner launch double so subprocess mocks remain
+# interceptable on both supported platforms.
 # This fixture monkeypatches detect_platform_isolation to return a
 # test-mode isolation that permits same-owner launches (the user running
-# the tests IS both daemon and executor). Real isolation tests against
-# available accounts live in test_canonical_production_bound.py.
+# the tests IS both daemon and executor). Direct platform evidence lives in
+# test_canonical_production_bound.py and the Linux platform operation tests.
 
 _TEST_ISOLATION_FIXTURE_ACTIVE = True
 
@@ -22,90 +49,43 @@ _TEST_ISOLATION_FIXTURE_ACTIVE = True
 def _test_mode_platform_isolation(monkeypatch):
     """Install a test-mode platform detector that permits same-owner launches.
 
-    Real isolation tests in test_canonical_production_bound.py call
-    detect_platform_isolation directly (bypassing the monkeypatch) or
-    are skipped on non-provisioned hosts.
+    Set HAPPYRANCH_TEST_REAL_PLATFORM=1 in platform-specific CI to exercise
+    the production adapter throughout the canonical-store suites.
     """
-    if not _TEST_ISOLATION_FIXTURE_ACTIVE:
+    import os
+
+    if (
+        not _TEST_ISOLATION_FIXTURE_ACTIVE
+        or os.environ.get("HAPPYRANCH_TEST_REAL_PLATFORM") == "1"
+    ):
         yield
         return
 
     from runtime.platform.isolation import (
-        PlatformIsolation,
         PlatformIsolationError,
-        _MacOSPlatformIsolation as _RealMacOSIsolation,
+        _PosixSameOwnerIsolation,
         detect_platform_isolation as _real_detect,
     )
-    import os
     import subprocess
     import sys
 
-    # Try to get the real isolation; if it fails (unsupported platform),
-    # create a test-only stub.
-    try:
-        _real_isolation = _real_detect()
-    except PlatformIsolationError:
-        _real_isolation = None
-
-    class _TestMacOSIsolation(PlatformIsolation):
-        """Test-mode macOS isolation for unit tests.
+    class _TestPlatformIsolation(_PosixSameOwnerIsolation):
+        """Test-mode same-owner isolation for unit tests.
 
         The test process runs as both daemon and executor — the executor
         and daemon share the same OS identity.
+
+        The link-writer surface (``create_relative_symlink``,
+        ``withdraw_workspace_link``, ``admit_skills_directory``,
+        ``verify_workspace_link``) is INHERITED from the production POSIX
+        implementation so the unit suite exercises the REAL THR-190 PR-B
+        containment enforcement (no-follow admission, resolved-parent
+        containment, atomic pinned-dirfd writes). A test-only writer that
+        bypassed containment would create a false green — deliberately not
+        done here. Only the executor launcher is overridden: it delegates to
+        ``executors.subprocess.Popen`` so test mocks intercept the call (the
+        same module ``_run_command`` uses).
         """
-
-        def create_relative_symlink(
-            self, target: Path, link_path: Path,
-        ) -> None:
-            if target.is_absolute():
-                raise PlatformIsolationError(
-                    "absolute_target",
-                    f"Symlink target must be relative, got absolute: {target}",
-                )
-            target_parts = str(target).split(os.sep)
-            up_count = sum(1 for p in target_parts if p == "..")
-            if up_count > 50:
-                raise PlatformIsolationError(
-                    "target_escape",
-                    f"Excessive .. traversal",
-                )
-            if link_path.is_symlink():
-                link_path.unlink()
-            elif link_path.exists(follow_symlinks=False):
-                if link_path.is_dir(follow_symlinks=False):
-                    raise PlatformIsolationError(
-                        "ordinary_dir_at_link_path",
-                        "Expected symlink, found ordinary directory",
-                    )
-                else:
-                    link_path.unlink()
-            link_path.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(target), str(link_path))
-
-        def verify_workspace_link(
-            self, link_path: Path, expected_target: Path, canonical_root: Path,
-        ) -> bool:
-            if not link_path.is_symlink():
-                return False
-            try:
-                actual = Path(os.readlink(str(link_path)))
-                actual_resolved = (link_path.parent / actual).resolve()
-                expected_resolved = expected_target.resolve()
-                if actual_resolved != expected_resolved:
-                    return False
-                try:
-                    actual_resolved.relative_to(canonical_root.resolve())
-                except ValueError:
-                    return False
-                return True
-            except (OSError, ValueError):
-                return False
-
-        def is_valid_symlink(self, path: Path) -> bool:
-            try:
-                return path.is_symlink()
-            except OSError:
-                return False
 
         def launch_executor(
             self,
@@ -134,10 +114,7 @@ def _test_mode_platform_isolation(monkeypatch):
             )
 
     def _test_detect():
-        if sys.platform == "darwin":
-            return _TestMacOSIsolation()
-        else:
-            return _TestMacOSIsolation()  # fallback for test environments
+        return _TestPlatformIsolation()
 
     monkeypatch.setattr(
         "runtime.platform.isolation.detect_platform_isolation",

@@ -289,6 +289,44 @@ _RECENT_ACTIVITY_KINDS = (
     "talk_started", "talk_ended", "learning_promoted",
 )
 
+# Free-string review-verdict vocabulary, normalized to its canonical spelling
+# (lowercase, separators ``_``/``-`` collapsed to spaces). The established
+# workflow spellings resolve case-insensitively and with benign
+# whitespace/separator variation at the dashboard/pulse read boundaries.
+_APPROVED_VERDICT_FORMS = frozenset({
+    "approve", "approved", "accept", "ok", "pass",
+})
+_NON_APPROVED_VERDICT_FORMS = frozenset({
+    "request changes", "revise", "reject", "rejected", "fail",
+})
+
+
+def normalize_review_verdict(
+    raw: str | None,
+) -> Literal["approve", "reject", "unknown"]:
+    """Normalize a free-string review verdict to its dashboard family.
+
+    Returns ``"approve"`` for the approval family (APPROVE / approved /
+    approve / ACCEPT / accept / OK / ok / PASS / pass), ``"reject"`` for the
+    non-approval family (REQUEST_CHANGES / request changes / request-changes /
+    REVISE / REJECT / reject / rejected / FAIL / fail), and ``"unknown"`` for
+    anything else — including an explicitly blank or unrecognized verdict,
+    which is neither an approval tone nor an acceptance count.
+
+    Legacy stored forms (``approved``, ``accept``, ``ok``, ``request_changes``,
+    ``rejected``) remain compatible via the same separator folding.
+    """
+    if raw is None:
+        return "unknown"
+    key = " ".join(
+        raw.strip().lower().replace("_", " ").replace("-", " ").split(),
+    )
+    if key in _APPROVED_VERDICT_FORMS:
+        return "approve"
+    if key in _NON_APPROVED_VERDICT_FORMS:
+        return "reject"
+    return "unknown"
+
 
 def _verdict_from_payload(
     action: str, payload_json: str | None
@@ -304,11 +342,12 @@ def _verdict_from_payload(
         if status == "blocked":
             return "warn"
     if action == "review_verdict":
-        v = payload.get("verdict")
-        if v in ("approved", "accept", "ok"):
+        family = normalize_review_verdict(payload.get("verdict"))
+        if family == "approve":
             return "ok"
-        if v in ("request_changes", "rejected"):
+        if family == "reject":
             return "fail"
+        return None  # unknown / blank — no tone
     return None
 
 
@@ -564,8 +603,7 @@ def _acceptance_pct_for_window(
     total = len(rows)
     for r in rows:
         payload = json.loads(r["payload"] or "{}")
-        v = payload.get("verdict")
-        if v in ("approved", "accept", "ok"):
+        if normalize_review_verdict(payload.get("verdict")) == "approve":
             approved += 1
     return approved, total
 

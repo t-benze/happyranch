@@ -22,8 +22,8 @@ logger = logging.getLogger("happyranch.daemon.direct_connect_projection_sweep")
 
 
 def _sweep_once(store: DirectConnectAuthorityStore) -> None:
-    """Project every receipt that has no durable projection row yet."""
-    for operation_id in store.list_operations_pending_projection():
+    """Project only the latest accepted candidate per parent lifecycle."""
+    for operation_id in store.list_latest_operations_pending_projection():
         try:
             direct_connect_projection.project(store, operation_id)
         except Exception:

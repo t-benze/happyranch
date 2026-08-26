@@ -127,6 +127,80 @@ def cmd_orgs_unload(args: argparse.Namespace) -> None:
     print(f"unloaded: {r.json()['slug']}")
 
 
+def cmd_orgs_portability_preflight(args: argparse.Namespace) -> None:
+    """Read-only org-portability preflight: classify roots + report blockers."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get(f"/api/v1/orgs/{args.slug}/portability-preflight")
+    if not _ok(r):
+        return
+    body = r.json()
+    status = "eligible" if body["eligible"] else "INELIGIBLE"
+    print(f"slug: {body['slug']}")
+    print(f"root: {body['root']}")
+    print(f"portability: {status}")
+    rejections = body["classification"]["rejections"]
+    if rejections:
+        print("\nrejections (must resolve before any export):")
+        for e in rejections:
+            print(f"  reject  {e['path']}  ({e['reason']})")
+    blockers = body["eligibility"]["blockers"]
+    if blockers.get("tasks"):
+        print(f"nonterminal tasks: {', '.join(blockers['tasks'])}")
+    if blockers.get("active_sessions"):
+        print(f"active sessions: {blockers['active_sessions']}")
+    if blockers.get("queued_items"):
+        print(f"queued items: {blockers['queued_items']}")
+    if blockers.get("pending_thread_invocations"):
+        print(f"pending thread invocations: {blockers['pending_thread_invocations']}")
+    if blockers.get("active_jobs"):
+        print(f"active jobs: {', '.join(blockers['active_jobs'])}")
+    if blockers.get("active_dreams"):
+        print(f"active dreams: {', '.join(blockers['active_dreams'])}")
+    if blockers.get("active_work_hours"):
+        print(f"active work-hours: {', '.join(blockers['active_work_hours'])}")
+    if blockers.get("active_schedules"):
+        print(f"active schedules: {', '.join(blockers['active_schedules'])}")
+    zombies = body["eligibility"]["possible_zombies"]
+    if zombies:
+        print("\npossible zombies (reported only — not resolved):")
+        for z in zombies:
+            print(f"  {z['task_id']}  agent={z['assigned_agent']}")
+    remedies = body.get("remedies") or []
+    if remedies:
+        print("\nremedies (existing controls only — no disarm/export command):")
+        for r in remedies:
+            label = r["target"] if r.get("target") else r["kind"]
+            print(f"  [{r['kind']}] {label}: {r['remedy']}")
+
+
+def cmd_orgs_reconcile_portability(args: argparse.Namespace) -> None:
+    """Founder-only reconciliation of a confirmed zombie (shared terminalization)."""
+    import json as _json
+    from cli._shared import require_absolute_payload_path
+
+    path = require_absolute_payload_path(args.request_path, kind="reconcile-portability")
+    try:
+        payload = _json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: cannot read reconcile request: {exc}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/orgs/{args.slug}/reconcile-portability", json=payload)
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"reconciled: {body['task_id']} ({body['disposition']})")
+    print(f"request_hash: {body['request_hash']}")
+
+
 
 def cmd_web(args: argparse.Namespace) -> None:
     """Open the HappyRanch web UI in the default browser."""
@@ -227,6 +301,108 @@ def cmd_custom_cli_status(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_custom_cli_forget(args: argparse.Namespace) -> None:
+    """Forget a failed direct custom-CLI connection for a profile name."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    body = _get_custom_cli_status(client, args.profile_name)
+    profile_state = body.get("profile_state")
+    if profile_state != "failed":
+        print(
+            f"refused: profile_state is '{profile_state or 'none'}', not 'failed' — nothing to forget",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    operation_id = body.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        print("refused: failed profile has no operation id — nothing to forget", file=sys.stderr)
+        sys.exit(1)
+    response = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/forget")
+    if not _ok(response):
+        return
+    print(f"cleared failed custom-CLI connection record for {args.profile_name}")
+    wrapper_messages = {
+        "already_absent": "wrapper file was already absent",
+        "preserved_changed": "wrapper file was preserved because it changed",
+        "preserved_unsafe": "wrapper file was preserved because it could not be safely verified",
+    }
+    wrapper_status = response.json().get("wrapper_status")
+    print(wrapper_messages.get(
+        wrapper_status, "wrapper disposition was not confirmed because the server returned an unknown cleanup status",
+    ))
+
+
+def cmd_custom_cli_retry(args: argparse.Namespace) -> None:
+    """Revalidate the immutable snapshot of one failed custom-CLI operation."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    body = _get_custom_cli_status(client, args.profile_name)
+    profile_state = body.get("profile_state")
+    if profile_state != "failed":
+        print(
+            f"refused: profile_state is '{profile_state or 'none'}', not 'failed' — nothing to retry",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    operation_id = body.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        print("refused: failed profile has no operation id — nothing to retry", file=sys.stderr)
+        sys.exit(1)
+    response = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/retry")
+    if not _ok(response):
+        return
+    result = response.json()
+    if result.get("profile_state") == "committed":
+        print(f"retry validated and connected custom-CLI profile {args.profile_name}")
+    else:
+        print(f"retry validation failed for custom-CLI profile {args.profile_name}", file=sys.stderr)
+
+
+def cmd_adapters_remove(args: argparse.Namespace) -> None:
+    """Remove an adapter using a freshly fetched exact snapshot."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    response = client.get(f"/api/v1/runtime/adapters/{args.adapter_id}")
+    if not _ok(response):
+        return
+    entry = response.json()
+    snapshot = {
+        field: entry.get(field)
+        for field in (
+            "name",
+            "executable",
+            "executable_hash",
+            "version",
+            "capabilities",
+            "contract_version",
+            "workspace_adapter",
+            "intended_profile_name",
+            "dependency_manifest_version",
+            "dependencies",
+        )
+    }
+    print(f"removing adapter {args.adapter_id} ({entry.get('name', '')})")
+    response = client.request(
+        "DELETE", f"/api/v1/runtime/adapters/{args.adapter_id}", json=snapshot,
+    )
+    if not _ok(response):
+        return
+    result = response.json()
+    print(f"removed adapter {result['id']} ({result['name']})")
+
+
 
 def register(sub) -> None:
     p_init_runtime = sub.add_parser(
@@ -264,6 +440,24 @@ def register(sub) -> None:
     p_orgs_unload.add_argument("slug")
     p_orgs_unload.set_defaults(func=cmd_orgs_unload)
 
+    p_orgs_preflight = orgs_sub.add_parser(
+        "portability-preflight",
+        help="read-only org-portability preflight (classify roots + report blockers)",
+    )
+    p_orgs_preflight.add_argument("slug")
+    p_orgs_preflight.set_defaults(func=cmd_orgs_portability_preflight)
+
+    p_orgs_reconcile = orgs_sub.add_parser(
+        "reconcile-portability",
+        help="founder-only reconciliation of a confirmed zombie",
+    )
+    p_orgs_reconcile.add_argument("slug")
+    p_orgs_reconcile.add_argument(
+        "--from-file", dest="request_path", required=True,
+        help="absolute path to the reconcile request JSON",
+    )
+    p_orgs_reconcile.set_defaults(func=cmd_orgs_reconcile_portability)
+
     p_web = sub.add_parser("web", help="Open the HappyRanch web UI in the default browser")
     p_web.add_argument(
         "--no-open",
@@ -284,3 +478,23 @@ def register(sub) -> None:
         help="Poll for up to 35 seconds for a committed or failed outcome",
     )
     p_custom_cli_status.set_defaults(func=cmd_custom_cli_status)
+
+    p_custom_cli_forget = custom_cli_sub.add_parser(
+        "forget", help="Clear a failed direct custom-CLI connection record",
+    )
+    p_custom_cli_forget.add_argument("profile_name", help="Profile name used to start the connection")
+    p_custom_cli_forget.set_defaults(func=cmd_custom_cli_forget)
+
+    p_custom_cli_retry = custom_cli_sub.add_parser(
+        "retry", help="Revalidate a failed direct custom-CLI connection",
+    )
+    p_custom_cli_retry.add_argument("profile_name", help="Profile name used to start the connection")
+    p_custom_cli_retry.set_defaults(func=cmd_custom_cli_retry)
+
+    p_adapters = sub.add_parser("adapters", help="Manage custom adapter entries")
+    adapters_sub = p_adapters.add_subparsers(dest="adapters_command", required=True)
+    p_adapters_remove = adapters_sub.add_parser(
+        "remove", help="Remove a custom adapter using its current server snapshot",
+    )
+    p_adapters_remove.add_argument("adapter_id", help="Custom adapter identifier to remove")
+    p_adapters_remove.set_defaults(func=cmd_adapters_remove)

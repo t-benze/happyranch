@@ -63,6 +63,51 @@ jobs:
       - name: Test (non-watch)
         run: npx vitest run
 
+  # ── Linux canonical skill store validation (same-owner, unconditional) ──
+  # Runs the production canonical-store boundary against the real Linux
+  # adapter rather than relying only on the unit-suite launch double.
+  linux-canonical-validation:
+    name: Linux Canonical Store Validation (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run canonical store + validation tests
+        env:
+          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
+        run: |
+          set -eux
+          uv run pytest \
+            tests/test_canonical_skill_store.py \
+            tests/test_canonical_production_bound.py \
+            tests/test_skill_cutover_completeness.py \
+            tests/test_thr070_skill_freshness.py \
+            tests/test_system_contract_materialization.py \
+            tests/test_workspace_adapters.py \
+            tests/test_prelaunch_integrity_validation.py \
+            -v --tb=short
+
+      - name: Run real daemon + executor smoke test
+        env:
+          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci-smoke
+          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
+        run: >-
+          uv run pytest -m integration
+          tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback
+          -v --tb=short
+
   # ── macOS canonical skill store validation (same-owner, unconditional) ──
   # Executor and daemon share the same OS identity — same-owner is the only
   # supported delivery mode. No distinct-account provisioning or sudo.
