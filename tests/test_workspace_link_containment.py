@@ -113,6 +113,77 @@ def _build_skill(store: CanonicalSkillStore, base: Path, slug: str) -> str:
     return ch
 
 
+def _install_ancestor_swap(
+    monkeypatch,
+    ws: Path,
+    ext: Path,
+    ancestor: str,
+    trigger: str,
+    final_part: str = "skills",
+) -> list[bool]:
+    """Deterministically swap *ancestor* to an EXTERNAL symlink at the
+    final-parent pin.
+
+    TASK-5712 (THR-190 PR-B repair): a same-UID workspace writer swaps an
+    already-admitted ancestor (e.g. ``<ws>/.claude``) to a symlink pointing
+    OUTSIDE the workspace. The swap fires exactly ONCE, synchronously INSIDE
+    the writer's own syscall — at the exact moment the final parent component
+    is about to be pinned — so the race window is exercised deterministically
+    with no timing, sleeps, or probabilistic interleaving.
+
+    *trigger* selects the production syscall that fires the swap:
+      "open"  — the final parent component is opened (dir_fd-anchored
+                component open in the corrected writer; the full-path parent
+                open in the pre-fix writer).
+      "mkdir" — the final parent component is created (missing-parents case),
+                anchored the same way.
+
+    The original *ancestor* directory is renamed to ``<ancestor>.original``
+    (so the already-pinned inode stays referenceable for assertions) and the
+    pathname is replaced by a symlink to *ext* (outside the workspace) — the
+    attacker's swap. Returns a one-element list that flips to True once fired.
+    """
+    swapped: list[bool] = [False]
+    real_open = os.open
+    real_mkdir = os.mkdir
+
+    def _is_final(path, dir_fd):
+        p = str(path)
+        if dir_fd is not None:
+            # Corrected writer: single component relative to pinned parent.
+            return p == final_part
+        # Pre-fix writer: full-path parent open/mkdir (no dir_fd).
+        return os.sep in p and p.endswith(final_part)
+
+    def _fire_once() -> None:
+        if swapped[0]:
+            return
+        src = ws / ancestor
+        os.rename(src, ws / f"{ancestor}.original")
+        os.symlink(ext, src)
+        swapped[0] = True
+
+    if trigger == "open":
+
+        def _open(path, flags, mode=0o777, *, dir_fd=None):
+            if _is_final(path, dir_fd):
+                _fire_once()
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", _open)
+    elif trigger == "mkdir":
+
+        def _mkdir(path, mode=0o777, *, dir_fd=None):
+            if _is_final(path, dir_fd):
+                _fire_once()
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "mkdir", _mkdir)
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown trigger {trigger!r}")
+    return swapped
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Lowest-level link writer (production POSIX class, real seam)
 # ═══════════════════════════════════════════════════════════════════════
@@ -344,6 +415,193 @@ class TestLinkWriterContainment:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Deterministic same-UID ancestor-swap regressions (TASK-5712)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestAncestorSwapContainment:
+    """Deterministic same-UID ancestor-swap regressions.
+
+    A same-UID workspace writer swaps an ALREADY-ADMITTED ancestor (e.g.
+    ``<ws>/.claude``) to an EXTERNAL symlink synchronously inside the link
+    writer's own syscall — at the exact moment the final parent component is
+    about to be pinned. No timing or sleeps: the swap fires exactly once,
+    inside the production ``os.open``/``os.mkdir`` call, so the race window
+    is exercised deterministically.
+
+    The corrected writer walks every component relative to its already-pinned
+    parent fd (rooted at a pinned fd for the REAL workspace) and retains the
+    final parent fd through the entire mutation, so every mutation must stay
+    bound to the ORIGINAL (renamed) parent inode: the external sentinel stays
+    byte- and state-identical, the attacker's swap survives, and the write /
+    repair / unlink lands in the pinned parent — never through the swapped
+    pathname.
+    """
+
+    def test_create_ancestor_swap_between_admission_and_mutation(
+        self, tmp_path, monkeypatch,
+    ):
+        """Ancestor swap at the final-parent pin: create lands in the pinned
+        parent, external sentinel untouched, attacker swap survives."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "open")
+
+        iso.create_relative_symlink(
+            Path("target"), ws / ".claude" / "skills" / "skill-a",
+            workspace_root=ws,
+        )
+
+        # The write landed in the PINNED original parent (renamed), never
+        # through the swapped pathname.
+        assert (ws / ".claude").is_symlink()
+        assert os.readlink(ws / ".claude") == str(ext)
+        assert not (ws / ".claude" / "skills" / "skill-a").exists(
+            follow_symlinks=False
+        )
+        pinned = ws / ".claude.original" / "skills" / "skill-a"
+        assert pinned.is_symlink()
+        assert os.readlink(pinned) == "target"
+        _assert_sentinel_unchanged(ext, before)
+
+    def test_create_ancestor_swap_agents_provider_root(
+        self, tmp_path, monkeypatch,
+    ):
+        """Same race for the .agents provider root."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".agents" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+        _install_ancestor_swap(monkeypatch, ws, ext, ".agents", "open")
+
+        iso.create_relative_symlink(
+            Path("target"), ws / ".agents" / "skills" / "skill-a",
+            workspace_root=ws,
+        )
+
+        assert (ws / ".agents").is_symlink()
+        pinned = ws / ".agents.original" / "skills" / "skill-a"
+        assert pinned.is_symlink()
+        assert os.readlink(pinned) == "target"
+        _assert_sentinel_unchanged(ext, before)
+
+    def test_replace_ancestor_swap_pins_original_parent(
+        self, tmp_path, monkeypatch,
+    ):
+        """Repair/replace: the new target is published in the pinned parent,
+        the external sentinel is not written, and the stale entry is
+        atomically replaced in the pinned parent."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+        link = ws / ".claude" / "skills" / "skill-a"
+        iso.create_relative_symlink(Path("old"), link, workspace_root=ws)
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "open")
+
+        iso.create_relative_symlink(Path("new"), link, workspace_root=ws)
+
+        pinned = ws / ".claude.original" / "skills" / "skill-a"
+        assert pinned.is_symlink()
+        assert os.readlink(pinned) == "new"
+        assert not (ext / "skills" / "skill-a").exists(follow_symlinks=False)
+        assert (ws / ".claude").is_symlink()
+        _assert_sentinel_unchanged(ext, before)
+
+    def test_withdraw_ancestor_swap_pins_original_parent(
+        self, tmp_path, monkeypatch,
+    ):
+        """Withdrawal: the link is unlinked from the PINNED parent; an
+        external same-name file is never unlinked through the swapped
+        pathname."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        (ext / "skills" / "skill-a").write_bytes(b"external same-name file")
+        before = _snapshot(ext)
+        link = ws / ".claude" / "skills" / "skill-a"
+        iso.create_relative_symlink(Path("target"), link, workspace_root=ws)
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "open")
+
+        iso.withdraw_workspace_link(link, workspace_root=ws)
+
+        assert not (ws / ".claude.original" / "skills" / "skill-a").exists(
+            follow_symlinks=False
+        )
+        assert (ext / "skills" / "skill-a").read_bytes() == b"external same-name file"
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
+
+    def test_mkdir_ancestor_swap_creates_in_pinned_parent(
+        self, tmp_path, monkeypatch,
+    ):
+        """Missing-parents create: the mkdir is anchored to the pinned parent;
+        no directory is created inside the external sentinel."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        # Minimal external: NO pre-existing skills dir, so a redirected mkdir
+        # would visibly mutate it.
+        ext = tmp_path / "external"
+        ext.mkdir()
+        (ext / "sentinel.txt").write_bytes(b"SENTINEL")
+        before = _snapshot(ext)
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "mkdir")
+
+        iso.create_relative_symlink(
+            Path("target"), ws / ".claude" / "skills" / "skill-a",
+            workspace_root=ws,
+        )
+
+        # Real dirs created inside the pinned (renamed) parent chain.
+        assert (ws / ".claude.original" / "skills").is_dir()
+        assert not (ws / ".claude.original" / "skills").is_symlink()
+        assert (ws / ".claude.original" / "skills" / "skill-a").is_symlink()
+        # The external sentinel was never mutated (no skills dir appeared).
+        assert not (ext / "skills").exists()
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
+
+    def test_temp_parent_swap_never_unlinks_external_tmp(
+        self, tmp_path, monkeypatch,
+    ):
+        """Stale temporary-parent/temp-link cleanup stays in the pinned parent:
+        an external .tmp.<name> decoy is never unlinked through the swapped
+        pathname."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        (ext / "skills" / ".tmp.skill-a").write_bytes(b"external tmp decoy")
+        before = _snapshot(ext)
+        # Stale temp from a crashed materialization, in the ORIGINAL parent.
+        stale = ws / ".claude" / "skills" / ".tmp.skill-a"
+        stale.write_bytes(b"stale temp bytes")
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "open")
+
+        iso.create_relative_symlink(
+            Path("target"), ws / ".claude" / "skills" / "skill-a",
+            workspace_root=ws,
+        )
+
+        # Stale temp removed + new link created in the PINNED parent.
+        assert not (ws / ".claude.original" / "skills" / ".tmp.skill-a").exists(
+            follow_symlinks=False
+        )
+        assert (ws / ".claude.original" / "skills" / "skill-a").is_symlink()
+        # External decoy byte-identical; attacker swap survives.
+        assert (ext / "skills" / ".tmp.skill-a").read_bytes() == b"external tmp decoy"
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SymlinkMaterializer (create/repair/withdraw via the real writer)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -456,6 +714,30 @@ class TestMaterializerContainment:
         assert os.readlink(link) != str(ext)
         # External sentinel byte- and state-identical
         _assert_sentinel_unchanged(ext, before)
+
+    def test_materialize_ancestor_swap_fails_closed_at_admission(
+        self, tmp_path, test_settings, monkeypatch,
+    ):
+        """A same-UID ancestor swap DURING the materializer call is refused:
+        the writer re-admits the swapped ancestor and fails closed before any
+        external write; the sentinel and the attacker's swap survive."""
+        materializer, store = self._materializer(tmp_path, test_settings)
+        ch = _build_skill(store, tmp_path, "skill-a")
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+        # Fire on the FIRST final-parent pin (admission inside the
+        # materializer) — the writer then re-admits and refuses the swap.
+        _install_ancestor_swap(monkeypatch, ws, ext, ".claude", "open")
+
+        with pytest.raises(SymlinkMaterializationError) as ei:
+            materializer.materialize_skill(
+                "skill-a", "1.0", ch, ws, ".claude/skills",
+            )
+        assert ei.value.code == "escaped_parent"
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
 
     def test_ordinary_in_workspace_links_materialize_and_repair(
         self, tmp_path, test_settings,

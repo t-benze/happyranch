@@ -623,21 +623,29 @@ daemon can) is NOT the defended principal.
 (``PlatformIsolation.create_relative_symlink``) immediately before each link
 creation/replacement — not by a route manifest, caller convention,
 lexical-only check, or one-time earlier validation:
-- **No-follow admission.** Every path component of the link's parent below
-  the resolved workspace root is lstat-verified (no-follow): a symlink at
-  ANY level — workspace-level provider dir (``.claude``), provider root
-  (``.claude/skills`` / ``.agents/skills``), or a nested skills root — fails
-  closed with a named ``escaped_parent`` error. Missing components are
-  created as genuine directories.
-- **Atomic pinned-dirfd write.** The link is published via temporary symlink
-  + ``os.replace`` through a no-follow (``O_NOFOLLOW``) pinned parent
-  directory fd, so a concurrent swap of the parent path cannot redirect the
-  write outside the real workspace.
+- **No-follow dirfd walk.** Every path component of the link's parent below
+  the resolved workspace root is admitted (and, where authorized, created)
+  RELATIVE to its already-pinned parent directory fd in a
+  component-by-component walk rooted at a pinned no-follow
+  (``O_NOFOLLOW``) fd for the REAL workspace root: ``os.open(part,
+  O_RDONLY|O_DIRECTORY|O_NOFOLLOW, dir_fd=parent)`` /
+  ``os.mkdir(part, dir_fd=parent)``. A full pathname is never re-resolved
+  or reopened after admission, so a symlink at ANY level — workspace-level
+  provider dir (``.claude``), provider root (``.claude/skills`` /
+  ``.agents/skills``), or a nested skills root — fails closed with a named
+  ``escaped_parent`` error, and a same-UID swap of an already-admitted
+  ancestor cannot redirect any later step. Missing components are created
+  as genuine directories anchored to the pinned parent.
+- **Pinned-fd mutation.** The final parent fd is retained through the ENTIRE
+  mutation — mkdir, stale temporary-parent/temp-link cleanup, temporary-
+  symlink creation, ``os.replace`` repair, and withdrawal ``unlink`` — so
+  every same-UID ancestor-swap window is closed: the write/unlink/replace
+  is bound to the admitted inode, never re-resolved through a pathname.
 - **Contained withdrawal and admission.** ``withdraw_workspace_link`` and
-  ``admit_skills_directory`` apply the same no-follow admission; repair
-  never lists a skills root and withdraw never unlinks through an escaped
-  parent, so no symlink swap or escaped parent can write/unlink/replace
-  outside the real workspace.
+  ``admit_skills_directory`` apply the same component-by-component dirfd
+  walk; repair never lists a skills root and withdraw never unlinks through
+  an escaped parent, so no symlink swap or escaped parent can
+  write/unlink/replace outside the real workspace.
 - **Ordinary workspaces unchanged.** Canonical relative symlinks wholly
   inside a normal workspace materialize and repair exactly as before.
 

@@ -92,11 +92,14 @@ class PlatformIsolation(ABC):
         *workspace_root*: every path component of ``link_path.parent`` below
         the resolved workspace root must be a genuine directory (no-follow
         admission — a symlinked provider root or nested skills root is a
-        pre-positioned escape and fails closed), and the resolved parent must
-        be inside the resolved workspace root. The link is created atomically
-        (temporary symlink + ``os.replace``) through a no-follow, pinned
-        parent directory fd so a concurrent swap of the parent path cannot
-        redirect the write.
+        pre-positioned escape and fails closed). Components are admitted
+        and, where authorized, created RELATIVE to an already-pinned parent
+        directory fd in a component-by-component walk rooted at a pinned
+        no-follow fd for the REAL workspace root — never re-resolved or
+        reopened through a full pathname after admission — and the final
+        parent fd is retained through the entire mutation (temporary symlink
+        + ``os.replace``), so a concurrent same-UID swap of ANY ancestor
+        cannot redirect the write.
 
         Must fail closed if:
         - link_path is an ordinary directory (never rmtree)
@@ -112,11 +115,12 @@ class PlatformIsolation(ABC):
     ) -> None:
         """Remove a workspace link at *link_path* contained in *workspace_root*.
 
-        Same no-follow admission as ``create_relative_symlink``: the parent
-        chain below the resolved workspace root must be genuine directories
-        (never symlinks) and the unlink is performed through a no-follow,
-        pinned parent directory fd. Removes symlinks and regular files;
-        refuses ordinary directories (never deletes their content).
+        Same component-by-component dirfd walk as
+        ``create_relative_symlink``: the parent chain below the resolved
+        workspace root is walked relative to pinned parent fds (never
+        re-resolved through a full pathname) and the unlink is performed
+        through the retained final parent fd. Removes symlinks and regular
+        files; refuses ordinary directories (never deletes their content).
 
         No-op when *link_path* does not exist.
         """
@@ -128,12 +132,14 @@ class PlatformIsolation(ABC):
     ) -> None:
         """No-follow admission of a provider/nested skills root.
 
-        Verifies every EXISTING path component of *skills_dir* below the
-        resolved workspace root is a genuine directory (lstat, no-follow). A
-        symlink at any level — a pre-positioned workspace/provider/nested-
-        skills path — raises ``PlatformIsolationError`` with code
-        ``escaped_parent``. A missing component (fresh workspace, nothing
-        admitted yet) is a no-op: later writes create real directories.
+        Walks every EXISTING path component of *skills_dir* below the
+        resolved workspace root in a component-by-component dirfd walk rooted
+        at a pinned no-follow fd for the REAL workspace root (each component
+        opened relative to its already-pinned parent fd). A symlink at any
+        level — a pre-positioned workspace/provider/nested-skills path —
+        raises ``PlatformIsolationError`` with code ``escaped_parent``. A
+        missing component (fresh workspace, nothing admitted yet) is a no-op:
+        later writes create real directories.
         """
         ...
 
@@ -209,29 +215,31 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
     # link writer, immediately before each link creation/replacement — not
     # by a route manifest, caller convention, lexical-only check, or a
     # one-time earlier validation.
+    #
+    # The walk is ROOTED AT A PINNED FD for the REAL workspace root: every
+    # component below the root is admitted (and, where authorized, created)
+    # relative to its ALREADY-PINNED parent fd with no-follow semantics, and
+    # the final parent fd is retained through the entire mutation (mkdir,
+    # stale temporary-parent/temp-link cleanup, temporary-symlink creation,
+    # ``os.replace`` repair, withdrawal ``unlink``). A full pathname is never
+    # re-resolved or reopened after admission, so a same-UID swap of any
+    # already-admitted ancestor cannot redirect a later step.
 
-    def _resolve_contained_parent(
-        self, link_path: Path, workspace_root: Path, *, create: bool,
-    ) -> Path | None:
-        """Resolve the REAL parent directory of *link_path*, contained in the workspace.
+    def _open_workspace_root(
+        self, workspace_root: Path, *, create: bool,
+    ) -> int | None:
+        """Pin a no-follow directory fd for the REAL (resolved) workspace root.
 
-        Walks every path component of ``link_path.parent`` below the resolved
-        workspace root with lstat (no-follow):
-        - a symlink at ANY level below the workspace root (pre-positioned
-          workspace/provider/nested-skills path) fails closed;
-        - an existing component must be a genuine directory;
-        - a missing component is created as a REAL directory when
-          ``create=True``; when ``create=False`` a missing component means
-          there is nothing to admit/withdraw and ``None`` is returned.
-
-        The returned path is the fully-real parent (every component verified
-        genuine below the resolved workspace root).
+        The returned fd anchors every subsequent component walk: no later
+        pathname resolution can re-resolve or follow an ancestor below this
+        pinned inode. Returns ``None`` when the root is missing and *create*
+        is False (nothing to admit/withdraw below a missing root).
         """
         real_ws = workspace_root.resolve()
         if create:
-            # Preserve prior mkdir(parents=True) behavior: a missing
-            # workspace root is created as a genuine directory (the resolved
-            # path's ancestors are daemon-owned).
+            # A missing workspace root is created as a genuine directory (the
+            # resolved path's ancestors are daemon-owned — outside the
+            # defended window, which covers components BELOW the root).
             if not real_ws.is_dir():
                 try:
                     real_ws.mkdir(parents=True, exist_ok=True)
@@ -243,65 +251,89 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
         elif not real_ws.is_dir():
             return None  # nothing to admit/withdraw below a missing root
         try:
-            rel_parts = link_path.parent.relative_to(workspace_root).parts
-        except ValueError:
-            raise PlatformIsolationError(
-                "link_outside_workspace",
-                f"Link parent {link_path.parent} is not lexically inside "
-                f"workspace {workspace_root}",
-            ) from None
-        cur = real_ws
-        for part in rel_parts:
-            cur = cur / part
-            try:
-                st = cur.lstat()
-            except FileNotFoundError:
-                if not create:
-                    return None
-                try:
-                    cur.mkdir()
-                except FileExistsError:
-                    pass  # a racing creator appeared — re-stat below
-                st = cur.lstat()
-            if stat.S_ISLNK(st.st_mode):
-                raise PlatformIsolationError(
-                    "escaped_parent",
-                    f"Symlink in link parent chain: {cur} — refusing to "
-                    f"follow (no-follow admission). Link {link_path} cannot "
-                    f"be created inside a symlinked workspace/provider/"
-                    f"nested-skills path.",
-                )
-            if not stat.S_ISDIR(st.st_mode):
-                raise PlatformIsolationError(
-                    "escaped_parent",
-                    f"Non-directory in link parent chain: {cur}",
-                )
-        # Belt-and-suspenders: the resolved parent must stay inside the
-        # resolved workspace root (structural, after the no-follow walk).
-        if not cur.resolve(strict=False).is_relative_to(real_ws):
-            raise PlatformIsolationError(
-                "escaped_parent",
-                f"Resolved link parent {cur} escapes workspace {real_ws}",
-            )
-        return cur
-
-    def _open_contained_parent(self, parent: Path) -> int:
-        """Open *parent* (verified genuine) with a no-follow directory fd.
-
-        The pinned fd keeps the write bound to the verified inode inside the
-        real workspace even if the path is concurrently swapped for a
-        symlink between admission and the write.
-        """
-        try:
             return os.open(
-                str(parent),
+                str(real_ws),
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
             )
         except OSError as exc:
             raise PlatformIsolationError(
-                "escaped_parent",
-                f"Cannot pin no-follow directory fd for {parent}: {exc}",
+                "containment_root_invalid",
+                f"Cannot pin no-follow workspace-root fd for {real_ws}: {exc}",
             ) from exc
+
+    def _walk_contained_components(
+        self, ws_fd: int, rel_parts: tuple[str, ...], *, create: bool,
+    ) -> int | None:
+        """Admit/create *rel_parts* below the pinned workspace-root fd.
+
+        Every component is opened RELATIVE to its already-pinned parent fd
+        with no-follow semantics (``os.open(part, os.O_RDONLY |
+        os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)``): a same-UID
+        swap of any already-admitted ancestor cannot redirect the lookup,
+        and a symlink at the component itself is refused (``ELOOP``). A
+        missing component is created as a genuine directory with
+        ``os.mkdir(part, dir_fd=parent_fd)`` when *create* is True;
+        otherwise ``None`` is returned (nothing to admit/withdraw).
+
+        The caller owns the returned final fd and MUST retain it through the
+        entire mutation (link creation/replacement, ``os.replace`` repair,
+        withdrawal ``unlink``) — the fd, not any pathname, binds the write
+        to the admitted inode.
+
+        Takes ownership of *ws_fd* on every path: on success the final fd is
+        returned (all intermediate fds closed); on failure or a ``None``
+        result every held fd is closed before returning.
+        """
+        cur_fd = ws_fd
+        try:
+            for part in rel_parts:
+                try:
+                    fd = os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=cur_fd,
+                    )
+                except FileNotFoundError:
+                    if not create:
+                        try:
+                            os.close(cur_fd)
+                        except OSError:
+                            pass
+                        return None
+                    try:
+                        os.mkdir(part, dir_fd=cur_fd)
+                    except FileExistsError:
+                        pass  # a racing creator appeared — re-open below
+                    try:
+                        fd = os.open(
+                            part,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=cur_fd,
+                        )
+                    except OSError as exc:
+                        raise PlatformIsolationError(
+                            "escaped_parent",
+                            f"Cannot admit created component '{part}' below "
+                            f"pinned parent: {exc}",
+                        ) from exc
+                except OSError as exc:
+                    raise PlatformIsolationError(
+                        "escaped_parent",
+                        f"Symlink or non-directory at component '{part}' in "
+                        f"link parent chain (no-follow admission): {exc}",
+                    ) from exc
+                try:
+                    os.close(cur_fd)
+                except OSError:
+                    pass
+                cur_fd = fd
+            return cur_fd
+        except BaseException:
+            try:
+                os.close(cur_fd)
+            except OSError:
+                pass
+            raise
 
     def create_relative_symlink(
         self, target: Path, link_path: Path, *, workspace_root: Path,
@@ -311,13 +343,16 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
         Validates:
         - target is not absolute (relative symlinks only)
         - target does not escape canonical root (no excessive ../ traversal)
-        - resolved-parent containment inside the REAL workspace: no-follow
-          admission of every parent component below the resolved workspace
-          root, then an atomic tmp-symlink + ``os.replace`` through a
-          no-follow pinned parent dirfd immediately before publication.
+        - resolved-parent containment inside the REAL workspace: a
+          component-by-component no-follow dirfd walk rooted at a pinned fd
+          for the resolved workspace root (missing parents created as real
+          dirs relative to the pinned parent), then an atomic tmp-symlink +
+          ``os.replace`` through the retained final parent fd immediately
+          before publication.
 
         **Safe repair:** existing entries are replaced atomically through the
-        pinned dirfd. Ordinary directories are NEVER recursively deleted.
+        pinned final parent fd. Ordinary directories are NEVER recursively
+        deleted.
         """
         if target.is_absolute():
             raise PlatformIsolationError(
@@ -335,16 +370,33 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
                 f"({up_count} levels)",
             )
 
-        # Resolved-parent containment: no-follow admission of every parent
-        # component below the real workspace, creating missing real dirs.
-        parent = self._resolve_contained_parent(
-            link_path, workspace_root, create=True,
+        # Resolved-parent containment: component-by-component no-follow dirfd
+        # walk rooted at a pinned fd for the REAL workspace root — every
+        # parent component below the root is admitted (and, where authorized,
+        # created) relative to its already-pinned parent fd; the final parent
+        # fd is retained through the entire mutation below.
+        ws_fd = self._open_workspace_root(workspace_root, create=True)
+        assert ws_fd is not None  # create=True never returns None
+        try:
+            rel_parts = link_path.parent.relative_to(workspace_root).parts
+        except ValueError:
+            try:
+                os.close(ws_fd)
+            except OSError:
+                pass
+            raise PlatformIsolationError(
+                "link_outside_workspace",
+                f"Link parent {link_path.parent} is not lexically inside "
+                f"workspace {workspace_root}",
+            ) from None
+        parent_fd = self._walk_contained_components(
+            ws_fd, rel_parts, create=True,
         )
-        assert parent is not None  # create=True never returns None
+        assert parent_fd is not None  # create=True never returns None
 
         # SAFE REMOVAL / REPLACEMENT: only replace symlinks or files, NEVER
-        # ordinary dirs — through the pinned no-follow parent dirfd.
-        fd = self._open_contained_parent(parent)
+        # ordinary dirs — through the retained final parent fd.
+        fd = parent_fd
         try:
             try:
                 st = os.lstat(link_path.name, dir_fd=fd)
@@ -409,16 +461,32 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
     ) -> None:
         """Remove a workspace link, contained in the real workspace.
 
-        No-follow admission of the parent chain; the unlink happens through
-        a pinned no-follow parent dirfd. Removes symlinks and regular files;
-        refuses ordinary directories. No-op when the entry is absent.
+        Component-by-component no-follow dirfd walk rooted at a pinned fd for
+        the REAL workspace root; the unlink happens through the retained
+        final parent fd. Removes symlinks and regular files; refuses ordinary
+        directories. No-op when the entry is absent.
         """
-        parent = self._resolve_contained_parent(
-            link_path, workspace_root, create=False,
+        ws_fd = self._open_workspace_root(workspace_root, create=False)
+        if ws_fd is None:
+            return  # root missing — nothing to withdraw
+        try:
+            rel_parts = link_path.parent.relative_to(workspace_root).parts
+        except ValueError:
+            try:
+                os.close(ws_fd)
+            except OSError:
+                pass
+            raise PlatformIsolationError(
+                "link_outside_workspace",
+                f"Link parent {link_path.parent} is not lexically inside "
+                f"workspace {workspace_root}",
+            ) from None
+        parent_fd = self._walk_contained_components(
+            ws_fd, rel_parts, create=False,
         )
-        if parent is None:
+        if parent_fd is None:
             return  # parent chain absent — nothing to withdraw
-        fd = self._open_contained_parent(parent)
+        fd = parent_fd
         try:
             try:
                 st = os.lstat(link_path.name, dir_fd=fd)
@@ -441,40 +509,32 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
         """No-follow admission of a provider/nested skills root.
 
         Every EXISTING component of *skills_dir* below the resolved workspace
-        root must be a genuine directory; a symlink at any level raises
+        root is walked relative to pinned parent fds (never re-resolved
+        through a full pathname); a symlink at any level raises
         ``escaped_parent``. A missing component (fresh workspace) is a no-op.
         """
-        # Walk skills_dir itself (all components including the final one).
-        real_ws = workspace_root.resolve()
-        if not real_ws.is_dir():
+        # Walk skills_dir itself (all components including the final one),
+        # rooted at a pinned fd for the REAL workspace root.
+        ws_fd = self._open_workspace_root(workspace_root, create=False)
+        if ws_fd is None:
             return  # nothing to admit below a missing workspace root
         try:
             rel_parts = skills_dir.relative_to(workspace_root).parts
         except ValueError:
+            try:
+                os.close(ws_fd)
+            except OSError:
+                pass
             raise PlatformIsolationError(
                 "link_outside_workspace",
                 f"Skills dir {skills_dir} is not lexically inside workspace "
                 f"{workspace_root}",
             ) from None
-        cur = real_ws
-        for part in rel_parts:
-            cur = cur / part
-            try:
-                st = cur.lstat()
-            except FileNotFoundError:
-                return  # missing tail — nothing to admit yet
-            if stat.S_ISLNK(st.st_mode):
-                raise PlatformIsolationError(
-                    "escaped_parent",
-                    f"Symlink at skills root: {cur} — refusing to follow "
-                    f"(no-follow admission). Provider/nested skills roots "
-                    f"must be genuine directories inside the real workspace.",
-                )
-            if not stat.S_ISDIR(st.st_mode):
-                raise PlatformIsolationError(
-                    "escaped_parent",
-                    f"Non-directory at skills root: {cur}",
-                )
+        parent_fd = self._walk_contained_components(
+            ws_fd, rel_parts, create=False,
+        )
+        if parent_fd is not None:
+            os.close(parent_fd)
 
     def verify_workspace_link(
         self, link_path: Path, expected_target: Path, canonical_root: Path,
