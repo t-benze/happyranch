@@ -69,6 +69,6 @@
   ],
   "existence_guard": {
     "enforced": true,
-    "rule": "Audit categories are a fixed enumerated set, and paired cases (target exists vs target absent) MUST produce identical deny and audit categories. A denied request never distinguishes 'tenant/cell/home exists but denies you' from 'does not exist'. No cross-tenant existence oracle is permitted in audit fields, failure details, error responses, or logs."
+    "rule": "Audit categories are a fixed enumerated set, and paired cases (target exists vs target absent) MUST produce identical deny and audit categories AND identical externally visible failure detail. A denied request never distinguishes 'tenant/cell/home exists but denies you' from 'does not exist', and a denied credential request never distinguishes 'was consumed/replayed' from 'never existed'. No cross-tenant or credential-existence oracle is permitted in audit fields, failure details, error responses, or logs."
   }
 }

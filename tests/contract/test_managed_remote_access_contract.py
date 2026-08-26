@@ -101,6 +101,7 @@ CREDENTIAL_CLASS_FIELDS = {
     "rotation": str,
     "revocation": str,
     "forbidden_exposure": list,
+    "network_presentation": str,
     "example_placeholder": str,
 }
 
@@ -593,6 +594,44 @@ def test_credential_taxonomy_daemon_bearer_boundary() -> None:
     assert bearer["single_use"] is False and "rotate" in bearer["rotation"].lower()
 
 
+def test_credential_taxonomy_transport_rules() -> None:
+    """Remotely-presented credentials: encrypted transport to the exact audience only.
+
+    A class normatively returned/presented over authenticated TLS/WireGuard to its
+    intended device must not also carry a blanket bare-``network`` prohibition
+    (that makes credential locality impossible to implement or validate). Every
+    non-bearer class must instead distinguish permitted encrypted transport to
+    its exact authenticated audience from forbidden plaintext/unintended network
+    exposure; only the local daemon bearer retains the absolute network
+    prohibition.
+    """
+    doc = _load("credential_taxonomy")
+    for cls in doc["classes"]:
+        cid = cls["id"]
+        rule = cls["network_presentation"]
+        assert rule, f"class {cid}: network_presentation is required"
+        if cid == "local_daemon_bearer":
+            low = rule.lower()
+            assert "never" in low and "network" in low, (
+                f"local_daemon_bearer.network_presentation must state the absolute "
+                "never-over-any-network rule"
+            )
+            continue
+        low = rule.lower()
+        assert "plaintext" in low, (
+            f"class {cid}: network_presentation must forbid plaintext transport"
+        )
+        assert any(k in low for k in ("tls", "https", "wireguard", "encrypted")), (
+            f"class {cid}: network_presentation must permit encrypted transport to "
+            "its exact authenticated audience"
+        )
+        bare = [e for e in cls["forbidden_exposure"] if e.strip().lower() == "network"]
+        assert not bare, (
+            f"class {cid}: forbidden_exposure must not blanket-forbid 'network'; "
+            "permitted encrypted transport to the exact audience is stated in "
+            "network_presentation"
+        )
+
 # ---------------------------------------------------------------------------
 # 4. Failure/audit category taxonomy
 # ---------------------------------------------------------------------------
@@ -702,6 +741,60 @@ def test_threat_cases_schema() -> None:
             assert "deny_category" in expected, f"case {cid}: denied case must carry deny_category"
 
 
+def _assert_class_outcome_consistency(cases: list[dict], context: str) -> None:
+    """Hostile cases must be denied with a deny_category; positive controls allowed.
+
+    A hostile tenant-crossing/replay/revocation/forbidden-route/DERP-bypass case
+    rewritten as allowed must never pass, even when its required category label
+    still satisfies coverage. This is the finding-2 invariant (TASK-5779).
+    """
+    for case in cases:
+        cid = case["id"]
+        expected = case["expected"]
+        if case["class"] == "hostile":
+            assert expected["outcome"] == "denied", (
+                f"{context}: hostile case {cid} must be denied, not allowed"
+            )
+            assert "deny_category" in expected, (
+                f"{context}: hostile case {cid} must carry a deny_category"
+            )
+        else:
+            assert expected["outcome"] == "allowed", (
+                f"{context}: positive control {cid} must be allowed, not denied"
+            )
+            assert "deny_category" not in expected, (
+                f"{context}: positive control {cid} must omit deny_category"
+            )
+            assert expected["audit_category"] == "allowed_request", (
+                f"{context}: positive control {cid} must audit as allowed_request"
+            )
+
+
+def test_threat_case_class_outcome_consistency() -> None:
+    """Every hostile case is denied with a deny_category; positives are allowed."""
+    doc = _load("threat_cases")
+    _assert_class_outcome_consistency(doc["cases"], "threat_cases")
+
+
+def test_mutation_hostile_to_allowed_is_rejected() -> None:
+    """Checked-in mutation proof: hostile->allowed must never pass validation.
+
+    Adversarial regression guard: flip a hostile case to outcome=allowed,
+    audit_category=allowed_request, and drop its deny_category. Its category
+    label still satisfies the coverage matrix, so only the class<->outcome
+    invariant can reject it — and it must.
+    """
+    doc = json.loads(FIXTURE_FILES["threat_cases"].read_text(encoding="utf-8"))
+    hostile = [c for c in doc["cases"] if c["class"] == "hostile"]
+    assert hostile, "precondition: fixture must contain hostile cases"
+    target = next(c for c in hostile if "existence_pair" not in c)
+    target["expected"]["outcome"] = "allowed"
+    target["expected"]["audit_category"] = "allowed_request"
+    target["expected"].pop("deny_category", None)
+    with pytest.raises(AssertionError, match="must be denied"):
+        _assert_class_outcome_consistency(doc["cases"], "threat_cases")
+
+
 def test_threat_cases_unique() -> None:
     doc = _load("threat_cases")
     ids: set[str] = set()
@@ -795,6 +888,50 @@ def test_existence_guard_pairs_share_identical_categories() -> None:
             f"pair {pair!r}: audit categories must be identical (no existence oracle)"
         )
         assert a["class"] == b["class"] == "hostile"
+
+
+def test_absent_vs_consumed_credential_pair_identical_visible_outcome() -> None:
+    """The absent-vs-consumed credential pair is externally indistinguishable.
+
+    A single-use enrollment credential that was already consumed/reused and one
+    that never existed must produce identical deny category, audit category, and
+    the exact same visible failure detail — otherwise the detail is a
+    credential-existence oracle (finding 1, TASK-5779).
+    """
+    doc = _load("threat_cases")
+    by_pair: dict[str, list[dict]] = {}
+    for case in doc["cases"]:
+        pair = case.get("existence_pair")
+        if pair:
+            by_pair.setdefault(pair, []).append(case)
+    cred_pairs = [
+        members
+        for members in by_pair.values()
+        if any(m["expected"]["audit_category"] == "credential_reused" for m in members)
+    ]
+    assert cred_pairs, (
+        "an absent-vs-consumed/replayed existence pair (audit credential_reused) "
+        "is required"
+    )
+    for members in cred_pairs:
+        assert len(members) == 2, "absent-vs-consumed pair must have exactly two cases"
+        a, b = members
+        assert a["expected"]["outcome"] == b["expected"]["outcome"] == "denied"
+        assert a["expected"].get("deny_category") == b["expected"].get("deny_category")
+        assert a["expected"]["audit_category"] == b["expected"]["audit_category"]
+        assert a["expected"]["failure_detail"] == b["expected"]["failure_detail"], (
+            f"absent-vs-consumed pair {a['id']}/{b['id']}: externally visible failure "
+            "details must be identical (no credential-existence oracle)"
+        )
+        low = a["expected"]["failure_detail"].lower()
+        assert "already" not in low, (
+            f"{a['id']}/{b['id']}: failure_detail must not confirm prior "
+            "existence/consumption ('already')"
+        )
+        assert "consumed" not in low, (
+            f"{a['id']}/{b['id']}: failure_detail must not confirm prior "
+            "existence/consumption ('consumed')"
+        )
 
 
 def test_audit_categories_never_embed_tenant_identifiers() -> None:
