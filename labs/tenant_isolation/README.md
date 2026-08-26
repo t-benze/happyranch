@@ -10,13 +10,22 @@ separate, unrelated lab; this harness does not reuse or depend on it.
 This harness builds **two independent Headscale cells (A and B)** — distinct
 state/key/config/network identity, deny-by-default policies, synthetic nodes —
 and proves, against the merged normative threat matrix, that tenant A cannot
-enroll into, learn about, or reach tenant B on any path (direct or
-deterministic forced-DERP), that a shared DERP never bypasses cell policy, that
-forged tags/routes/subnet/exit-node/SSH advertisements fail, that wrong
-cell/home/device/account/node/key reuse fails, that missing/empty/malformed/
-stale policy fails closed, and that cross-cell backup/state/key contamination
-is detected — all with **tenant-neutral category-level results and zero
-secret/raw-exception leakage**.
+enroll into, learn about, or reach tenant B on any path (genuine
+source-node-to-destination-node probes), that forged tags/routes/subnet/
+exit-node/SSH advertisements fail, that wrong cell/home/device/account/node/
+key reuse fails, that missing/empty/malformed policy fails closed, and that
+the two-cell topology runs deterministically with outcome-bearing cleanup —
+all with **tenant-neutral category-level results and zero secret/raw-exception
+leakage**.
+
+**DERP relay isolation is NOT claimed in this lab.** A deterministic real
+forced-relay path needs a DERP relay server reachable by both cells; the
+pinned tailscale tarball ships no `derper` binary and headscale v0.25.1
+embedded DERP requires TLS termination, so the already-authorized isolated
+runner cannot provide one without adding a pinned `derper` dependency or TLS
+infrastructure. The relay-forced cases are recorded as **not executed with the
+exact prerequisite** (`coverage.json` disposition `not-executed-prerequisite`,
+limitations in `summary.json`) — never weakened or fabricated.
 
 ## Honest runtime status (read first)
 
@@ -28,7 +37,8 @@ secret/raw-exception leakage**.
   `--runtime mock` and the unit tests exercise orchestration/parsing/assertion
   logic only. **A mocked/unit-only pass is NOT proof of tenant isolation** and
   every summary labels its `runtime_kind` honestly (`real` / `mock` / `none`);
-  `hostile_proof` is `true` only for a real run with all probes passed.
+  `hostile_proof` is `true` only for a real run whose genuinely executed
+  probes all passed with no residue and no cleanup failure.
 - `--check-runtime` and `--runtime none` emit `no-run-evidence.json` with exact
   prerequisite evidence — never fabricated runtime proof.
 
@@ -39,12 +49,28 @@ The harness reads `tests/contract/managed_remote_access/*.json` at runtime
 
 - expected deny/audit categories for every threat case come **from the
   fixtures**, never duplicated in harness code;
-- every one of the 56 threat cases is accounted for in `coverage.json`
-  (`probe` executed on the lab runner, or `deferred-unit-c` for connector-level
-  request-decision cases owned by merge unit C — never silently dropped);
+- every one of the 56 threat cases is accounted for in `coverage.json`:
+  `probe` (genuinely executed on the lab runner), `deferred-unit-c`
+  (connector-level request-decision / policy-epoch logic owned by merge unit
+  C), or `not-executed-prerequisite` (relay-forced cases whose real DERP path
+  the authorized runner cannot provide) — never silently dropped;
 - hostile ⇒ denied with a `deny_category`; positive controls ⇒ allowed;
   existence-guard pairs (absent vs consumed/replayed) must produce **byte
   identical** visible detail (no cross-tenant existence oracle);
+- transport probes are GENUINE source-node-to-destination-node data-plane
+  probes: they originate in a source node's own tailscaled context (SOCKS5
+  proxy on the runner host) and target a destination node's tailnet
+  IP:connector-port synthetic connector listener — never a runner-host TCP
+  connection to a Headscale control-plane port. `route_evidence`
+  (`direct`/`relay`/`none`) is recorded per result so a relay claim can never
+  be confused with a direct path;
+- one **single-use pre-auth key per node** is minted and consumed once; every
+  expected node is proven online/readiness-checked (cell record + own tailnet
+  identity) BEFORE any probe; every container/process launch result is checked
+  immediately (bounded/redacted stderr, no downstream work after failure);
+  cleanup is outcome-bearing (removal/termination awaited and escalated,
+  residue-checked on every terminal path) and cleanup/residue failure fails
+  the evidence closed;
 - results are category-level prose only: no sentinel credential shapes, no raw
   exception text, no synthetic hostnames/IPs/keys, no concrete tenant ids.
 
@@ -65,6 +91,12 @@ mutations **fails for its intended reason**:
 | leak a credential (sentinel) | post-run leak guard (sentinel scan) | `test_run_rejects_credential_leak_in_results` |
 | skip cleanup | residue check (containers/state) | `test_residue_check_detects_leftover_containers` |
 | target a non-lab endpoint | preflight endpoint allow-range | `test_preflight_rejects_non_lab_port` / `_public_hostname` |
+| runner-host control-plane TCP probe in transport recipes | node-context SOCKS5 probe (never 127.0.0.1:control-port) | `test_transport_probes_use_node_context_socks5_not_control_port` |
+| DERP isolation claimed while DERP disabled | not-executed disposition + exact prerequisite | `test_relay_categories_are_not_executed_with_prerequisite` |
+| one pre-auth key per cell reused for two nodes | one single-use key minted per node; reuse rejected | `test_mint_preauth_keys_issues_one_key_per_node`, `test_run_aborts_before_probes_when_key_reuse_rejected` |
+| missing/offline node | pre-probe readiness gate (every node online) | `test_node_ready_false_when_record_missing_from_cell`, `test_run_aborts_before_probes_when_node_offline` |
+| docker run result ignored | immediate launch check + bounded/redacted stderr | `test_launch_failure_aborts_before_any_enrollment`, `test_missing_container_immediately_after_launch_aborts` |
+| cleanup removal/termination failure ignored | outcome-bearing cleanup, residue fails closed | `test_cleanup_reports_failed_docker_rm_as_cleanup_failure`, `test_cleanup_records_failed_daemon_termination`, `test_cleanup_and_residue_used_on_signal_path` |
 
 ## Layout
 
@@ -82,7 +114,7 @@ labs/tenant_isolation/
     probes.py          threat-category → recipe mapping, outcome classifier, evaluate (assertion layer)
     orchestrator.py    preflight, lifecycle, cleanup, residue check, post-run guards, evidence
     main.py            CLI: --check-runtime / --runtime {auto,real,mock,none} / bounds
-tests/tenant_isolation/   focused unit tests (87) incl. the mandated mutation probes
+tests/tenant_isolation/   focused unit tests (113) incl. the mandated mutation probes
 .github/workflows/lab-tenant-isolation.yml   the one path-scoped lab workflow
 ```
 
@@ -102,8 +134,9 @@ uv run python -m labs.tenant_isolation.harness.main --check-runtime \
     --results-dir /tmp/hs-check
 ```
 
-Exit codes: `0` all probes passed · `1` hostile proof failed · `2` preflight
-declined · `3` residue found · `5` runtime unavailable (no-run evidence).
+Exit codes: `0` all executed probes passed, no residue, cleanup ok · `1` an
+executed probe failed / run aborted · `2` preflight declined · `3` residue or
+cleanup failure · `5` runtime unavailable (no-run evidence).
 
 ## Run for real (isolated CI/lab runtime)
 
@@ -127,13 +160,20 @@ writes `summary.json` + `results.jsonl` + `coverage.json`.
 
 ## Evidence format
 
-- `summary.json` — run id, honest `runtime_kind`, host/versions, per-probe
-  results, residue, limitations, `hostile_proof` flag, `deferred_case_ids`.
-- `results.jsonl` — one redacted record per executed probe.
-- `coverage.json` — every threat case → `probe` | `deferred-unit-c`.
+- `summary.json` — run id, honest `runtime_kind`, host/versions incl. runtime
+  path and pinned digests, per-probe results (with `disposition`,
+  `route_evidence`, `target_kind`), `proof_scope` (executed / deferred-unit-c
+  / not-executed-prerequisite), `cleanup_ok`/`cleanup_failures`, residue,
+  limitations (incl. the DERP prerequisite), `hostile_proof`.
+- `results.jsonl` — one redacted record per threat case (executed, deferred,
+  or not-executed with its reason).
+- `coverage.json` — every threat case → `probe` | `deferred-unit-c` |
+  `not-executed-prerequisite`.
 - `manifest-consumed.json` — the exact pinned manifest used.
 - `no-run-evidence.json` — exact prerequisite evidence when the runtime is
   absent (never fabricated proof).
+- `cell-<id>-launch-failure.txt` / `cell-diagnostics.txt` — bounded,
+  secret-redacted launch/diagnostics evidence (fail-fast, never raw secrets).
 
 ## Scope fence and STOP conditions
 

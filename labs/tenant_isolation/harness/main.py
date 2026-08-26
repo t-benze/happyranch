@@ -151,7 +151,13 @@ def main(argv: list[str] | None = None) -> int:
     # -- signal cleanup (success/failure/signal paths) ------------------------
     def _on_signal(signum, _frame):  # pragma: no cover - exercised in lab
         print(f"\nsignal {signum}: cleaning up lab resources", file=sys.stderr)
-        orch.cleanup()
+        residue = orch.cleanup_and_residue()
+        orch.write_failure_evidence(
+            f"signal {signum}", preflight_ok=False
+        )
+        if residue:
+            print(f"residue detected after signal cleanup: {residue}", file=sys.stderr)
+            sys.exit(EXIT_RESIDUE)
         sys.exit(128 + signum)
 
     signal.signal(signal.SIGINT, _on_signal)
@@ -165,13 +171,17 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_PREFLIGHT
     except RuntimeError as exc:
         print(f"run failed: {exc}", file=sys.stderr)
+        orch.write_failure_evidence(str(exc), preflight_ok=False)
         return EXIT_PROBE_FAILURE
 
     print(json.dumps(summary.to_dict(), indent=1))
     if summary.residue:
         print(f"residue detected: {summary.residue}", file=sys.stderr)
         return EXIT_RESIDUE
-    if not all(r.passed for r in summary.results):
+    if not summary.cleanup_ok:
+        print(f"cleanup failed: {summary.cleanup_failures}", file=sys.stderr)
+        return EXIT_RESIDUE
+    if any(r.executed and not r.passed for r in summary.results):
         return EXIT_PROBE_FAILURE
     if summary.runtime_kind != "real":
         print(

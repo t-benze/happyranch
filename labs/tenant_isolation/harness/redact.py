@@ -130,3 +130,20 @@ def redact_detail(category: str, detail: str) -> str:
     cleaned = _IP_RE.sub("<ip>", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def bounded_redacted_stderr(text: str, limit: int = 4000) -> str:
+    """Bound and redact a command's stderr for launch-failure diagnostics.
+
+    Credential values and private-key blocks are replaced with neutral labels
+    (never echoed); control characters are stripped; the result is truncated to
+    ``limit`` characters so diagnostics stay bounded and secret-free.
+    """
+    out = text or ""
+    for _label, pattern in SENTINEL_PATTERNS:
+        out = pattern.sub("<redacted>", out)
+    out = _PATH_RE.sub(" <path>", out)
+    out = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", out)
+    if len(out) > limit:
+        out = out[:limit] + "... (truncated)"
+    return out

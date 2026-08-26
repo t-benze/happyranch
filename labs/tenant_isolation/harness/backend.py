@@ -62,6 +62,34 @@ class Backend:
     def probe_tcp(self, host: str, port: int, timeout: float = 5.0) -> bool:
         raise NotImplementedError
 
+    def probe_node_http(
+        self,
+        proxy_host: str,
+        proxy_port: int,
+        target_host: str,
+        target_port: int,
+        timeout: float = 15.0,
+    ) -> bool:
+        """Genuine node-context data-plane probe.
+
+        Opens a SOCKS5 CONNECT through the proxy of the SOURCE node (the node's
+        own tailscaled userspace stack) and performs an HTTP GET to the target
+        (a destination node's tailnet IP:connector port). True only when the
+        connection through the node's own context succeeded with an HTTP 2xx.
+        This is a real source-node-to-destination-node probe — never a
+        runner-host connection to a control-plane port.
+        """
+        raise NotImplementedError
+
+    def docker_inspect_state(self, name: str) -> str | None:
+        """Return the container's state status ("running"/"exited"/...) or None
+        when the container does not exist."""
+        raise NotImplementedError
+
+    def daemon_alive(self, pid: int) -> bool:
+        """True when the daemon process is still alive (residue detection)."""
+        raise NotImplementedError
+
     def check_runtime(self) -> tuple[bool, dict[str, str]]:
         """Return (available, {tool: version}) for the real runtime."""
         raise NotImplementedError
@@ -75,7 +103,6 @@ class Backend:
 
     def stop_daemon(self, pid: int) -> None:
         raise NotImplementedError
-
     # -- shared ----------------------------------------------------------------
 
     def wait_for(
@@ -102,6 +129,24 @@ def normalize_expected_digest(expected: str) -> str:
     accepted so a prefixed manifest value is never a false mismatch.
     """
     return expected[7:] if expected.startswith("sha256:") else expected
+
+
+def _node_ip_from_socket(cmd: list[str]) -> str:
+    """Derive a stable fake 100.x tailnet IP from a ``--socket <path>`` arg.
+
+    FakeBackend status responses need per-node identities so node-to-node
+    probes see distinct targets; the socket path embeds the node id
+    (``tailscaled-<cell><idx>.sock``).
+    """
+    import re
+
+    joined = " ".join(str(c) for c in cmd)
+    m = re.search(r"tailscaled-([ab])([123])\.sock", joined)
+    if m:
+        cell, idx = m.group(1), int(m.group(2))
+        base = {"a": 0, "b": 3}[cell]
+        return f"100.64.0.{base + idx}"
+    return "100.64.0.1"
 
 
 class DockerBackend(Backend):
@@ -170,6 +215,115 @@ class DockerBackend(Backend):
         versions["docker"] = docker.stdout.strip() or docker.stderr.strip()
         return True, versions
 
+    def _socks5_connect(
+        self, proxy_host: str, proxy_port: int, target_host: str, target_port: int, timeout: float
+    ) -> tuple[socket.socket | None, bool]:
+        """Minimal RFC-1928 SOCKS5 CONNECT (no-auth) to the target IPv4.
+
+        Returns (socket, ok). The socket is returned so the caller can perform
+        an HTTP request through the established node-context tunnel. The
+        reply's BND.ADDR is consumed per ATYP so the stream is aligned.
+        """
+        import ipaddress
+
+        try:
+            ip = ipaddress.IPv4Address(target_host)
+        except ValueError:
+            return None, False
+        try:
+            sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
+            sock.settimeout(timeout)
+            sock.sendall(b"\x05\x01\x00")
+            if sock.recv(2) != b"\x05\x00":
+                sock.close()
+                return None, False
+            sock.sendall(b"\x05\x01\x00\x01" + ip.packed + target_port.to_bytes(2, "big"))
+            head = sock.recv(4)
+            if len(head) != 4 or head[0] != 0x05 or head[1] != 0x00:
+                sock.close()
+                return None, False
+            atyp = head[3]
+            if atyp == 0x01:
+                addr_len = 4
+            elif atyp == 0x04:
+                addr_len = 16
+            elif atyp == 0x03:
+                n = sock.recv(1)
+                if not n:
+                    sock.close()
+                    return None, False
+                addr_len = n[0]
+            else:
+                sock.close()
+                return None, False
+            addr = sock.recv(addr_len)
+            if len(addr) != addr_len:
+                sock.close()
+                return None, False
+            port = sock.recv(2)
+            if len(port) != 2:
+                sock.close()
+                return None, False
+            return sock, True
+        except OSError:
+            return None, False
+
+    def probe_node_http(
+        self,
+        proxy_host: str,
+        proxy_port: int,
+        target_host: str,
+        target_port: int,
+        timeout: float = 15.0,
+    ) -> bool:
+        self._record(
+            ["probe_node_http", str(proxy_host), str(proxy_port), str(target_host), str(target_port)],
+            timeout,
+        )
+        sock, ok = self._socks5_connect(proxy_host, proxy_port, target_host, target_port, timeout)
+        if not ok:
+            return False
+        try:
+            sock.sendall(
+                (
+                    f"GET /health HTTP/1.0\r\nHost: {target_host}:{target_port}\r\n"
+                    "Accept: */*\r\n\r\n"
+                ).encode("ascii")
+            )
+            response = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                if b"\r\n\r\n" in response:
+                    break
+            status_line = response.split(b"\r\n", 1)[0] if response else b""
+            if status_line.startswith(b"HTTP/1.") and b" 2" in status_line[:12]:
+                return True
+            return False
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    def docker_inspect_state(self, name: str) -> str | None:
+        result = self.run(
+            ["docker", "inspect", "--format", "{{.State.Status}}", name], timeout=30.0
+        )
+        if not result.ok():
+            return None
+        return result.stdout.strip() or None
+
+    def daemon_alive(self, pid: int) -> bool:
+        import os
+
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
     def download_verify(self, url: str, sha256: str, dest: Path) -> None:
         import hashlib
 
@@ -206,16 +360,35 @@ class DockerBackend(Backend):
         self._daemon_pids.append(proc.pid)
         return proc.pid
 
-    def stop_daemon(self, pid: int) -> None:
+    def stop_daemon(self, pid: int) -> bool:
+        """Terminate the daemon's process group, AWAIT termination, escalate to
+        SIGKILL if needed. Returns True when the process is confirmed gone."""
         import os
         import signal
 
         self._record(["stop_daemon", str(pid)], 30.0)
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        self._daemon_pids = [p for p in self._daemon_pids if p != pid]
+        if pid <= 0:
+            return False
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pid, signum)
+            except ProcessLookupError:
+                # already gone — termination confirmed
+                self._daemon_pids = [p for p in self._daemon_pids if p != pid]
+                return True
+            except PermissionError:
+                return False
+            # await actual termination (bounded)
+            deadline = time.monotonic() + (10.0 if signum == signal.SIGTERM else 5.0)
+            while time.monotonic() < deadline:
+                try:
+                    os.killpg(pid, 0)
+                except ProcessLookupError:
+                    self._daemon_pids = [p for p in self._daemon_pids if p != pid]
+                    return True
+                time.sleep(0.2)
+        # group still alive after SIGTERM + SIGKILL: escalation failed
+        return False
 
 
 class FakeBackend(Backend):
@@ -236,6 +409,16 @@ class FakeBackend(Backend):
         self.leftover_containers: list[str] = leftover_containers or []
         self.docker_available = True
         self.started_pids: list[int] = []
+        # node-context probe results: key = "<proxy_host> <proxy_port> <target_host> <target_port>"
+        self.node_probe_results: dict[str, bool] = {}
+        self.node_probe_default: bool = False  # deny-default (hostiles denied; positives need the real runtime)
+        # container state map: name -> status or None (absent)
+        self.container_states: dict[str, str | None] = {}
+        self.docker_inspect_default: str | None = "running"
+        # stop_daemon outcomes: pid -> bool (True = terminated cleanly)
+        self.stop_daemon_outcomes: dict[int, bool] = {}
+        self.stop_daemon_default: bool = True
+        self.alive_pids: set[int] = set()
 
     def _lookup(self, cmd: list[str]) -> CmdResult | None:
         for n in range(12, 0, -1):
@@ -262,7 +445,25 @@ class FakeBackend(Backend):
             elif "nodes list --output json" in joined:
                 result = CmdResult(
                     0,
-                    stdout='[{"given_name": "synth-a-client"},{"given_name": "synth-a-home"},{"given_name": "synth-b-client"},{"given_name": "synth-b-home"}]',
+                    stdout='['
+                    '{"given_name": "synth-a-client", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-client"]},'
+                    '{"given_name": "synth-a-client2", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-client"]},'
+                    '{"given_name": "synth-a-home", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-home"]},'
+                    '{"given_name": "synth-b-client", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-client"]},'
+                    '{"given_name": "synth-b-client2", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-client"]},'
+                    '{"given_name": "synth-b-home", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-home"]}'
+                    ']',
+                )
+            elif "status --json" in joined and "tailscale" in joined:
+                # Per-node identity: derive a stable 100.x IP from the socket
+                # path so node-to-node probes see distinct targets.
+                ip = _node_ip_from_socket(cmd)
+                result = CmdResult(
+                    0,
+                    stdout=(
+                        '{"Self": {"HostName": "synth-node", "TailscaleIPs": ["%s"]}, "Peer": []}'
+                        % ip
+                    ),
                 )
             else:
                 result = CmdResult(returncode=0, command=list(cmd))
@@ -272,7 +473,6 @@ class FakeBackend(Backend):
 
     def docker_rm(self, name: str) -> CmdResult:
         return self.run(["docker_rm", name], timeout=30.0)
-
     def docker_ps(self) -> list[str]:
         self._record(["docker_ps"], 30.0)
         return list(self.leftover_containers)
@@ -283,6 +483,36 @@ class FakeBackend(Backend):
         if result is not None:
             return result.returncode == 0
         return True
+
+    def probe_node_http(
+        self,
+        proxy_host: str,
+        proxy_port: int,
+        target_host: str,
+        target_port: int,
+        timeout: float = 15.0,
+    ) -> bool:
+        key = f"{proxy_host} {proxy_port} {target_host} {target_port}"
+        self._record(["probe_node_http"] + key.split(), timeout)
+        result = self._lookup(["probe_node_http"] + key.split())
+        if result is not None:
+            return result.returncode == 0
+        if key in self.node_probe_results:
+            return self.node_probe_results[key]
+        return self.node_probe_default
+
+    def docker_inspect_state(self, name: str) -> str | None:
+        self._record(["docker_inspect_state", name], 30.0)
+        result = self._lookup(["docker_inspect_state", name])
+        if result is not None:
+            return result.stdout.strip() or None if result.ok() else None
+        if name in self.container_states:
+            return self.container_states[name]
+        return self.docker_inspect_default
+
+    def daemon_alive(self, pid: int) -> bool:
+        self._record(["daemon_alive", str(pid)], 30.0)
+        return pid in self.alive_pids
 
     def check_runtime(self) -> tuple[bool, dict[str, str]]:
         self._record(["check_runtime"], 30.0)
@@ -304,8 +534,12 @@ class FakeBackend(Backend):
             sock.touch()
         pid = 1000 + len(self.started_pids)
         self.started_pids.append(pid)
+        self.alive_pids.add(pid)
         return pid
-
-    def stop_daemon(self, pid: int) -> None:
+    def stop_daemon(self, pid: int) -> bool:
         self._record(["stop_daemon", str(pid)], 30.0)
-        self.started_pids = [p for p in self.started_pids if p != pid]
+        outcome = self.stop_daemon_outcomes.get(pid, self.stop_daemon_default)
+        if outcome:
+            self.started_pids = [p for p in self.started_pids if p != pid]
+            self.alive_pids.discard(pid)
+        return outcome

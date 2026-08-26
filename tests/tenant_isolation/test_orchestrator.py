@@ -324,12 +324,24 @@ def test_existence_pairs_require_identical_visible_detail(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
+def _six_node_list() -> str:
+    """All six synthetic nodes with online status (readiness-gate truth)."""
+    return (
+        '[{"given_name": "synth-a-client", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-client"]},'
+        '{"given_name": "synth-a-client2", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-client"]},'
+        '{"given_name": "synth-a-home", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:a-home"]},'
+        '{"given_name": "synth-b-client", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-client"]},'
+        '{"given_name": "synth-b-client2", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-client"]},'
+        '{"given_name": "synth-b-home", "online": true, "last_seen": "2026-01-01T00:00:00Z", "forced_tags": ["tag:b-home"]}'
+        ']'
+    )
+
+
 def test_cleanup_invoked_on_failure_path(tmp_path: Path) -> None:
     """Cleanup must run even when a probe raises mid-run (fail-closed)."""
     from labs.tenant_isolation.harness.backend import CmdResult
 
-    nodes_a = '[{"given_name": "synth-a-client"},{"given_name": "synth-a-home"}]'
-    nodes_b = '[{"given_name": "synth-b-client"},{"given_name": "synth-b-home"}]'
+    nodes = _six_node_list()
     fake = FakeBackend(script={
         "docker exec run-clean-1-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
             0, stdout="mkey-synthlabcleanuptest1\n"
@@ -337,8 +349,8 @@ def test_cleanup_invoked_on_failure_path(tmp_path: Path) -> None:
         "docker exec run-clean-1-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
             0, stdout="mkey-synthlabcleanuptest2\n"
         ),
-        "docker exec run-clean-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_a),
-        "docker exec run-clean-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_b),
+        "docker exec run-clean-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
+        "docker exec run-clean-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
     })
 
     def boom(case, env):
@@ -432,12 +444,11 @@ def test_runtime_kind_labeled_honestly(tmp_path: Path) -> None:
 
 def test_real_mode_lifecycle_uses_pinned_artifacts_and_cleans_daemons(tmp_path: Path) -> None:
     """Real mode must pull the pinned headscale digest, download/verify the
-    pinned tailscale tarball, mint single-use keys, enroll nodes through the
-    pinned binaries, and stop daemons during cleanup."""
+    pinned tailscale tarball, mint one single-use key PER NODE, enroll nodes
+    through the pinned binaries, and stop daemons during cleanup."""
     from labs.tenant_isolation.harness.backend import CmdResult
 
-    nodes_a = '[{"given_name": "synth-a-client"},{"given_name": "synth-a-home"}]'
-    nodes_b = '[{"given_name": "synth-b-client"},{"given_name": "synth-b-home"}]'
+    nodes = _six_node_list()
     script = {
         "docker pull headscale/headscale@sha256:a7a8ae9616bb964a3eed8101ebb020213f73668142a84806ec37a5eeb2c1fceb": CmdResult(0),
         "docker exec run-real-1-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
@@ -446,8 +457,8 @@ def test_real_mode_lifecycle_uses_pinned_artifacts_and_cleans_daemons(tmp_path: 
         "docker exec run-real-1-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
             0, stdout="Created preauth key:\nmkey-synthlabcelltestkey67890\n"
         ),
-        "docker exec run-real-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_a),
-        "docker exec run-real-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_b),
+        "docker exec run-real-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
+        "docker exec run-real-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
     }
     fake = FakeBackend(script=script)
     orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-real-1", runtime_kind="real")
@@ -461,7 +472,14 @@ def test_real_mode_lifecycle_uses_pinned_artifacts_and_cleans_daemons(tmp_path: 
     assert "docker run -d --network host" in joined
     assert "start_daemon" in joined and "tailscaled" in joined
     assert "--tun=userspace-networking" in joined
+    assert "--socks5-server" in joined, "nodes must expose their own SOCKS5 proxy"
     assert "preauthkeys create --user admin --reusable=false --expiration 10m" in joined
+    # ONE single-use key minted per NODE (6 nodes => 6 mint commands), each
+    # carrying the node's own operator-owned tags.
+    minted = [c for c in joined.splitlines() if "preauthkeys create" in c]
+    assert len(minted) == 6, f"expected one pre-auth key per node, got {len(minted)}"
+    assert any("--tags tag:a-client" in c for c in minted)
+    assert any("--tags tag:a-home" in c for c in minted)
     # the minted single-use key must never reach the machine-readable evidence
     evidence = (tmp_path / "results" / "summary.json").read_text(encoding="utf-8")
     assert "mkey-synthlabcelltestkey12345" not in evidence
@@ -480,8 +498,7 @@ def test_minted_key_never_reaches_results(tmp_path: Path) -> None:
     carry them (sentinel scan would fail the run otherwise)."""
     from labs.tenant_isolation.harness.backend import CmdResult
 
-    nodes_a = '[{"given_name": "synth-a-client"},{"given_name": "synth-a-home"}]'
-    nodes_b = '[{"given_name": "synth-b-client"},{"given_name": "synth-b-home"}]'
+    nodes = _six_node_list()
     script = {
         "docker exec run-real-2-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
             0, stdout="mkey-synthlabsecretkey9999\n"
@@ -489,8 +506,8 @@ def test_minted_key_never_reaches_results(tmp_path: Path) -> None:
         "docker exec run-real-2-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
             0, stdout="mkey-synthlabsecretkey8888\n"
         ),
-        "docker exec run-real-2-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_a),
-        "docker exec run-real-2-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_b),
+        "docker exec run-real-2-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
+        "docker exec run-real-2-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
     }
     fake = FakeBackend(script=script)
     orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-real-2", runtime_kind="real")
@@ -498,3 +515,238 @@ def test_minted_key_never_reaches_results(tmp_path: Path) -> None:
     evidence = (tmp_path / "results" / "summary.json").read_text(encoding="utf-8")
     assert "synthlabsecretkey" not in evidence
     assert "hrpair_" not in evidence
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 (TASK-5796): one single-use pre-auth key per node; key reuse and
+# missing/offline nodes must abort BEFORE any probe executes.
+# ---------------------------------------------------------------------------
+
+
+def test_mint_preauth_keys_issues_one_key_per_node(tmp_path: Path) -> None:
+    """The key-per-node invariant: 6 nodes => 6 mint commands and one key per
+    node in the returned map (never one key per cell reused across nodes)."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker exec run-pernode-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
+            0, stdout="mkey-pernode-a.end\n"
+        ),
+        "docker exec run-pernode-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
+            0, stdout="mkey-pernode-b.end\n"
+        ),
+    })
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-pernode", runtime_kind="mock")
+    keys = orch._mint_preauth_keys()
+    assert set(keys) == {"a1", "a2", "a3", "b1", "b2", "b3"}, "one key per node expected"
+    minted = [c for c in fake.calls if "preauthkeys create" in " ".join(c)]
+    assert len(minted) == 6, "one single-use key minted per node"
+    assert keys["a1"] == keys["a2"] == keys["a3"] == "mkey-pernode-a.end"
+    assert keys["b1"] == keys["b2"] == keys["b3"] == "mkey-pernode-b.end"
+
+
+def test_run_aborts_before_probes_when_key_reuse_rejected(tmp_path: Path) -> None:
+    """Mutation: a consumed single-use key presented for a second node must make
+    enrollment fail and the run abort BEFORE any probe executes."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    nodes = _six_node_list()
+    spec = build_lab_spec("run-reuse-1", tmp_path, 38000, 990)
+    a2_sock = str(spec.node("a2").socket_path)
+    fake = FakeBackend(script={
+        "docker exec run-reuse-1-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
+            0, stdout="mkey-singleuse-SAMEKEY\n"
+        ),
+        "docker exec run-reuse-1-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(
+            0, stdout="mkey-singleuse-SAMEKEY\n"
+        ),
+        "docker exec run-reuse-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
+        "docker exec run-reuse-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes),
+        # the second node's enrollment with the already-consumed key is rejected
+        f"tailscale --socket {a2_sock} up": CmdResult(1, stderr="preauth key already used"),
+    })
+
+    def never(case, env):  # pragma: no cover - must never run
+        raise AssertionError("probe matrix must not run when a node cannot enroll")
+
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-reuse-1", probe_runner=never)
+    with pytest.raises(RuntimeError, match="failed to enroll"):
+        orch.run()
+
+
+def test_node_ready_false_when_record_missing_from_cell(tmp_path: Path) -> None:
+    """A node absent from the cell's authoritative record is NOT ready."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    nodes_a_only = _six_node_list().replace('"synth-a-client2"', '"synth-a-client2"')  # keep all
+    spec = build_lab_spec("run-offline-0", tmp_path, 38000, 990)
+    fake = FakeBackend(script={
+        "docker exec run-offline-0-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(
+            0, stdout='[{"given_name": "synth-a-client", "online": true, "last_seen": "2026-01-01T00:00:00Z"}]'
+        ),
+    })
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-offline-0", spec=spec)
+    assert orch._node_ready(spec.node("a1")) is True
+    assert orch._node_ready(spec.node("a2")) is False, (
+        "a node missing from the cell record must never be considered ready"
+    )
+
+
+def test_run_aborts_before_probes_when_node_offline(tmp_path: Path) -> None:
+    """Mutation: an expected node that never comes online must abort the run
+    (readiness gate) BEFORE any probe executes."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    # cell a's record omits synth-a-client2 (node a2 never enrolled/online)
+    partial = (
+        '[{"given_name": "synth-a-client", "online": true, "last_seen": "2026-01-01T00:00:00Z"},'
+        '{"given_name": "synth-a-home", "online": true, "last_seen": "2026-01-01T00:00:00Z"}]'
+    )
+    nodes_full = _six_node_list()
+    fake = FakeBackend(script={
+        "docker exec run-offline-1-cell-a headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(0, stdout="mkey-offline-a\n"),
+        "docker exec run-offline-1-cell-b headscale --config /etc/headscale/config.yaml preauthkeys": CmdResult(0, stdout="mkey-offline-b\n"),
+        "docker exec run-offline-1-cell-a headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=partial),
+        "docker exec run-offline-1-cell-b headscale --config /etc/headscale/config.yaml nodes list --output json": CmdResult(0, stdout=nodes_full),
+    })
+
+    def never(case, env):  # pragma: no cover - must never run
+        raise AssertionError("probe matrix must not run when a node is offline")
+
+    bounds = Bounds(per_probe=5.0, total=40.0, port_min=38000, port_max=38999)
+    orch, _ = _orchestrator(
+        tmp_path, backend=fake, run_id="run-offline-1", probe_runner=never, bounds=bounds
+    )
+    with pytest.raises(RuntimeError, match="online"):
+        orch.run()
+
+
+# ---------------------------------------------------------------------------
+# Finding 3 (TASK-5796): every container/process launch result is checked
+# immediately; no downstream enrollment/probe after a launch failure.
+# ---------------------------------------------------------------------------
+
+
+def test_launch_failure_aborts_before_any_enrollment(tmp_path: Path) -> None:
+    """Mutation: docker run fails (result previously ignored). The run must
+    abort with bounded/redacted diagnostics and NO downstream work."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker run": CmdResult(1, stderr="Error response from daemon: OCI runtime create failed: container_linux.go"),
+        "docker pull": CmdResult(0),
+    })
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-launch-1", runtime_kind="real")
+    with pytest.raises(RuntimeError, match="launch FAILED"):
+        orch.run()
+    joined = "\n".join(" ".join(c) for c in fake.calls)
+    assert "preauthkeys create" not in joined, "no enrollment after launch failure"
+    assert "tailscale --socket" not in joined, "no node/probe work after launch failure"
+    assert "start_daemon" not in joined, "no daemon started after launch failure"
+    diag = tmp_path / "results" / "cell-a-launch-failure.txt"
+    assert diag.exists(), "bounded/redacted launch diagnostics must be written"
+    text = diag.read_text(encoding="utf-8")
+    assert "container_linux.go" in text  # classified stderr preserved (bounded)
+    assert "hrpair_" not in text
+
+
+def test_missing_container_immediately_after_launch_aborts(tmp_path: Path) -> None:
+    """Mutation: docker run returns success but the container does not exist
+    (the exact-head run 32996155621 failure mode). Must abort immediately with
+    diagnostics — never a 6-minute silent health timeout."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker run": CmdResult(0, stdout="abc123\n"),
+        "docker pull": CmdResult(0),
+    })
+    fake.container_states["run-launch-2-cell-a"] = None  # container does not exist
+    fake.container_states["run-launch-2-cell-b"] = None
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-launch-2", runtime_kind="real")
+    with pytest.raises(RuntimeError, match="does not exist immediately after launch"):
+        orch.run()
+    joined = "\n".join(" ".join(c) for c in fake.calls)
+    assert "preauthkeys create" not in joined
+    assert "tailscale --socket" not in joined
+
+
+def test_cell_not_running_after_launch_aborts_with_diagnostics(tmp_path: Path) -> None:
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker run": CmdResult(0, stdout="abc\n"),
+        "docker pull": CmdResult(0),
+        "docker logs": CmdResult(0, stdout="headscale: fatal config error"),
+    })
+    fake.container_states["run-launch-3-cell-a"] = "exited"
+    fake.container_states["run-launch-3-cell-b"] = "exited"
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-launch-3", runtime_kind="real")
+    with pytest.raises(RuntimeError, match="not running"):
+        orch.run()
+
+
+# ---------------------------------------------------------------------------
+# Finding 4 (TASK-5796): cleanup is OUTCOME-BEARING — removal/termination
+# results are checked, termination awaited/escalated, and every terminal path
+# residue-checks; cleanup/residue failure fails the evidence closed.
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_reports_failed_docker_rm_as_cleanup_failure(tmp_path: Path) -> None:
+    """Mutation: container removal fails. Cleanup must record the failure and
+    the summary must fail closed (cleanup_ok=False, residue includes it)."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker_rm": CmdResult(1, stderr="Error response from daemon: unable to remove"),
+    })
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-rmfail-1")
+    ok = orch.cleanup()
+    assert ok is False
+    assert any("container:" in f for f in orch._cleanup_failures)
+    summary = orch.finish([_denied_result("CROSS-001", "enrollment", "enrollment_denied")])
+    assert summary.cleanup_ok is False
+    assert any("cleanup:" in r for r in summary.residue), (
+        "cleanup failure must surface in residue (evidence fails closed)"
+    )
+    assert summary.hostile_proof is False
+
+
+def test_cleanup_records_failed_daemon_termination(tmp_path: Path) -> None:
+    """Mutation: daemon termination fails even after escalation. Cleanup must
+    record it (process termination is awaited/escalated by the backend)."""
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-stopfail-1")
+    orch._daemon_pids = [4242]
+    fake.stop_daemon_outcomes[4242] = False
+    ok = orch.cleanup()
+    assert ok is False
+    assert "daemon:4242" in orch._cleanup_failures
+
+
+def test_residue_check_detects_surviving_daemon_process(tmp_path: Path) -> None:
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-resproc-1")
+    orch._daemon_pids = [5151]
+    fake.alive_pids.add(5151)
+    residue = orch.residue_check()
+    assert "process:5151" in residue, "a surviving daemon is residue"
+
+
+def test_cleanup_and_residue_used_on_signal_path(tmp_path: Path) -> None:
+    """The signal path uses cleanup_and_residue() (cleanup + residue check) so
+    a signal-terminated run still fails closed on residue."""
+    fake = FakeBackend()
+    fake.leftover_containers = ["run-signal-1-cell-a"]
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-signal-1")
+    residue = orch.cleanup_and_residue()
+    assert any("container:" in r for r in residue), (
+        "signal-path residue check must detect leftover containers"
+    )
+
+
+def test_cleanup_success_leaves_cleanup_ok_true(tmp_path: Path) -> None:
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-cleanok-1")
+    assert orch.cleanup() is True
+    assert orch._cleanup_failures == []

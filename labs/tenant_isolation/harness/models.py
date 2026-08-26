@@ -22,6 +22,13 @@ from typing import Any
 # range: cells bind 127.0.0.1 only and control ports live in [port_min, port_max].
 DEFAULT_PORT_MIN = 38000
 DEFAULT_PORT_MAX = 38999
+# Per-node tailscaled SOCKS5 proxy ports (data-plane probe ingress). Disjoint
+# from the control-port range so a probe can never collide with a cell endpoint.
+SOCKS5_PORT_MIN = 37000
+SOCKS5_PORT_MAX = 37999
+# Synthetic connector listener: the connector (home) node exposes a tailnet
+# listener on CONNECTOR_PORT and proxies to a loopback backend on a local port.
+CONNECTOR_PORT = 48080
 DERP_REGION_ID = 990  # shared DERP fleet region id (same for both cells)
 
 
@@ -46,7 +53,13 @@ class CellSpec:
 
 @dataclass(frozen=True)
 class NodeSpec:
-    """A synthetic tailscale node bound to exactly one cell."""
+    """A synthetic tailscale node bound to exactly one cell.
+
+    ``socks5_port`` is this node's tailscaled SOCKS5 proxy listener on the
+    runner host — every data-plane probe ORIGINATES from a node's own context
+    by dialing through that node's proxy (genuine source-node context, not a
+    runner-host connection to the control plane).
+    """
 
     node_id: str
     cell_id: str
@@ -57,6 +70,7 @@ class NodeSpec:
     tags: tuple[str, ...]
     is_connector: bool
     connector_port: int
+    socks5_port: int
     cell: CellSpec
 
 
@@ -81,17 +95,36 @@ class TailscaleStatus:
 
 @dataclass(frozen=True)
 class ObservedOutcome:
-    """Raw observation from a probe recipe, before fixture comparison."""
+    """Raw observation from a probe recipe, before fixture comparison.
+
+    ``route_evidence`` records the actual transport used (``direct`` / ``relay``
+    / ``none``) so a relay claim can never be confused with a direct path;
+    ``target_kind`` records what the probe actually targeted.
+    """
 
     outcome: str  # "allowed" | "denied"
     deny_category: str | None
     audit_category: str
     detail: str  # category-level prose (recipe must pre-redact)
+    route_evidence: str | None = None
+    target_kind: str | None = None
 
 
 @dataclass
 class ProbeResult:
-    """Outcome of one threat-case probe (redacted, category-level only)."""
+    """Outcome of one threat-case probe (redacted, category-level only).
+
+    ``disposition`` records what actually happened so the evidence is
+    machine-checkable: ``probe`` = genuinely executed against the live cells;
+    ``deferred`` = connector-level request-decision logic owned by merge unit
+    C; ``not-executed`` = would be a cell/data-plane probe here but the
+    authorized isolated runner cannot provide the prerequisite (e.g. a real
+    DERP relay) without adding dependencies/infrastructure — never claimed.
+
+    ``route_evidence`` distinguishes the actual transport the probe used
+    (``direct`` / ``relay`` / ``none``) so a relay claim can never be confused
+    with a direct path in the evidence.
+    """
 
     case_id: str
     recipe: str
@@ -102,6 +135,9 @@ class ProbeResult:
     passed: bool
     case_class: str = "hostile"  # "hostile" | "positive_control"
     limitation: str | None = None
+    disposition: str = "probe"  # "probe" | "deferred" | "not-executed"
+    route_evidence: str | None = None  # "direct" | "relay" | "none"
+    target_kind: str | None = None  # "node_to_node" | "control_plane" | "map" | None
 
     @property
     def hostile_allowed_bug(self) -> bool:
@@ -111,6 +147,11 @@ class ProbeResult:
         fire for hostile cases (the orchestrator enforces hostile=>denied).
         """
         return self.case_class == "hostile" and self.outcome == "allowed" and self.passed
+
+    @property
+    def executed(self) -> bool:
+        """True only for genuinely executed probes (never deferred/not-executed)."""
+        return self.disposition == "probe"
 
 
 @dataclass
@@ -128,19 +169,38 @@ class RunSummary:
     limitations: list[str]
     preflight_ok: bool
     deferred_case_ids: list[str] = field(default_factory=list)
+    cleanup_ok: bool = True
+    cleanup_failures: list[str] = field(default_factory=list)
+    runtime_path: str = ""
 
     @property
     def hostile_proof(self) -> bool:
-        """Real runtime proof exists only when a real runtime executed and passed."""
-        return self.runtime_kind == "real" and self.preflight_ok and all(r.passed for r in self.results)
+        """Real hostile proof exists only when a real runtime executed, cleanup
+        left no residue, and EVERY genuinely executed probe passed.
+
+        Deferred (unit C) and not-executed (prerequisite) cases never count as
+        proof and never fabricate a pass; ``proof_scope`` in the summary lists
+        exactly what was and was not executed.
+        """
+        executed = [r for r in self.results if r.executed]
+        return (
+            self.runtime_kind == "real"
+            and self.preflight_ok
+            and self.cleanup_ok
+            and not self.residue
+            and bool(executed)
+            and all(r.passed for r in executed)
+        )
 
     def to_dict(self) -> dict[str, Any]:
+        executed = [r for r in self.results if r.executed]
         return {
             "run_id": self.run_id,
             "runtime_kind": self.runtime_kind,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "host": self.host,
+            "runtime_path": self.runtime_path,
             "versions": self.versions,
             "results": [
                 {
@@ -152,10 +212,24 @@ class RunSummary:
                     "detail": r.detail,
                     "passed": r.passed,
                     "limitation": r.limitation,
+                    "disposition": r.disposition,
+                    "route_evidence": r.route_evidence,
+                    "target_kind": r.target_kind,
                 }
                 for r in self.results
             ],
             "residue": self.residue,
+            "cleanup_ok": self.cleanup_ok,
+            "cleanup_failures": self.cleanup_failures,
+            "proof_scope": {
+                "executed": [r.case_id for r in executed],
+                "deferred_unit_c": [
+                    r.case_id for r in self.results if r.disposition == "deferred"
+                ],
+                "not_executed": [
+                    r.case_id for r in self.results if r.disposition == "not-executed"
+                ],
+            },
             "limitations": self.limitations,
             "preflight_ok": self.preflight_ok,
             "deferred_case_ids": self.deferred_case_ids,
@@ -180,7 +254,12 @@ def build_lab_spec(
     Cells are named ``a``/``b`` with synthetic tenants ``tenant-a``/``tenant-b``.
     Everything is scoped under ``base_dir/<run_id>`` so a run's residue can be
     identified and swept. Control ports are derived from ``port_base`` and are
-    guaranteed unique within the run.
+    guaranteed unique within the run; per-node SOCKS5 proxy ports come from a
+    disjoint range so a data-plane probe can never collide with a cell.
+
+    Each cell has three synthetic nodes: two clients (``client``/``client2`` —
+    the second client exists so client-to-client denial is genuinely probeable)
+    and one ``home`` connector node exposing the synthetic connector listener.
     """
     run_dir = base_dir / run_id
     cells: list[CellSpec] = []
@@ -202,34 +281,35 @@ def build_lab_spec(
 
     by_id = {c.cell_id: c for c in cells}
     nodes: list[NodeSpec] = []
-    connector_port = 48080
-    for cell_id in ("a", "b"):
+    socks_base = SOCKS5_PORT_MIN
+    for cell_idx, cell_id in enumerate(("a", "b")):
         cell = by_id[cell_id]
-        client = NodeSpec(
-            node_id=f"{cell_id}1",
-            cell_id=cell_id,
-            role="client",
-            hostname=f"synth-{cell_id}-client",
-            socket_path=cell.state_dir / f"tailscaled-{cell_id}1.sock",
-            state="mem:",
-            tags=(f"tag:{cell_id}-client",),
-            is_connector=False,
-            connector_port=0,
-            cell=cell,
-        )
-        home = NodeSpec(
-            node_id=f"{cell_id}2",
-            cell_id=cell_id,
-            role="home",
-            hostname=f"synth-{cell_id}-home",
-            socket_path=cell.state_dir / f"tailscaled-{cell_id}2.sock",
-            state="mem:",
-            tags=(f"tag:{cell_id}-home",),
-            is_connector=True,
-            connector_port=connector_port,
-            cell=cell,
-        )
-        nodes.extend([client, home])
+        # client1 (probe origin), client2 (client-to-client target), home
+        # (connector). Node ids a1/a2/a3 and b1/b2/b3; socks5 ports are
+        # globally unique per node within the disjoint proxy range.
+        roles = [
+            ("client", "synth-{c}-client", "tag:{c}-client", False),
+            ("client2", "synth-{c}-client2", "tag:{c}-client", False),
+            ("home", "synth-{c}-home", "tag:{c}-home", True),
+        ]
+        for idx, (role, host_fmt, tag, is_connector) in enumerate(roles, start=1):
+            node_id = f"{cell_id}{idx}"
+            hostname = host_fmt.format(c=cell_id)
+            nodes.append(
+                NodeSpec(
+                    node_id=node_id,
+                    cell_id=cell_id,
+                    role=role,
+                    hostname=hostname,
+                    socket_path=cell.state_dir / f"tailscaled-{node_id}.sock",
+                    state="mem:",
+                    tags=(tag.format(c=cell_id),),
+                    is_connector=is_connector,
+                    connector_port=CONNECTOR_PORT if is_connector else 0,
+                    socks5_port=socks_base + cell_idx * 100 + idx,
+                    cell=cell,
+                )
+            )
     return LabSpec(
         run_id=run_id,
         run_dir=run_dir,
@@ -259,6 +339,14 @@ class LabSpec:
 
     def nodes_in(self, cell_id: str) -> list[NodeSpec]:
         return [n for n in self.nodes if n.cell_id == cell_id]
+
+    def connector(self, cell_id: str) -> NodeSpec:
+        """The single connector (home) node of a cell."""
+        return next(n for n in self.nodes if n.cell_id == cell_id and n.is_connector)
+
+    def clients(self, cell_id: str) -> list[NodeSpec]:
+        """The non-connector client nodes of a cell (probe origin + targets)."""
+        return [n for n in self.nodes if n.cell_id == cell_id and not n.is_connector]
 
 
 def parse_tailscale_status(raw: dict[str, Any]) -> TailscaleStatus:
@@ -297,6 +385,28 @@ def parse_headscale_nodes(raw: str) -> list[dict[str, Any]]:
     if isinstance(data, dict):
         data = data.get("nodes") or []
     return data
+
+
+def node_online(record: dict[str, Any]) -> bool:
+    """Best-effort online check for a headscale node record (v0.25.1).
+
+    The protobuf record carries an ``online`` bool; when it is absent (older
+    serialization), fall back to a fresh ``last_seen`` timestamp so an
+    offline/missing node can never slip through as ready.
+    """
+    if record.get("online") is True:
+        return True
+    last_seen = record.get("last_seen")
+    if isinstance(last_seen, str) and last_seen:
+        try:
+            from datetime import datetime, timezone
+
+            seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            return (now - seen).total_seconds() < 300  # seen within 5 minutes
+        except ValueError:
+            return False
+    return False
 
 
 def parse_preauth_key(raw: str) -> str:

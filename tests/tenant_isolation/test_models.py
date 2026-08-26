@@ -69,17 +69,23 @@ def test_nodes_are_cell_scoped_and_synthetic() -> None:
     for node in spec.nodes:
         assert node.cell_id in {"a", "b"}
         assert node.hostname.startswith(f"synth-{node.cell_id}-")
-        assert node.role in {"client", "home"}
+        assert node.role in {"client", "client2", "home"}
         by_cell.setdefault(node.cell_id, []).append(node)
-    assert len(by_cell["a"]) >= 2 and len(by_cell["b"]) >= 2
-    # Exactly one connector (home) node per cell.
+    # 3 nodes per cell: two clients (client-to-client denial is genuinely
+    # probeable only with a second client) + one home connector.
+    assert len(by_cell["a"]) == 3 and len(by_cell["b"]) == 3
     for cell_id, nodes in by_cell.items():
         homes = [n for n in nodes if n.role == "home"]
+        clients = [n for n in nodes if n.role != "home"]
         assert len(homes) == 1 and homes[0].is_connector is True
+        assert len(clients) == 2, "second client required for client-to-client probe"
         for node in nodes:
             # distinct per-node socket/state so nodes never share identity
             assert node.socket_path.is_relative_to(node.cell.state_dir)
             assert node.socket_path.name.startswith(f"tailscaled-{node.cell_id}")
+            assert 37000 <= node.socks5_port <= 37999, "socks5 proxy must use the disjoint lab range"
+        socks = [n.socks5_port for n in nodes]
+        assert len(socks) == len(set(socks)), "per-node socks5 proxy ports must be unique"
 
 
 def test_node_state_is_memory_only_for_disposable_identity() -> None:
