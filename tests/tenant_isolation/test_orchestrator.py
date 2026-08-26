@@ -778,3 +778,35 @@ def test_cell_launch_uses_absolute_bind_mount_sources(tmp_path: Path) -> None:
         if tok == "-v":
             src = cmd[i + 1].split(":")[0]
             assert str(src).startswith("/"), f"bind source must be absolute: {src!r}"
+
+
+def test_cell_policy_path_carries_raw_policy_body_not_versioned_wrapper(
+    tmp_path: Path,
+) -> None:
+    """Regression (real lab run 33000321509): headscale parses the policy file
+    directly into its ACLPolicy — the versioned artifact wrapper
+    (revision/checksum/policy) parsed as an EMPTY policy and the cell refused
+    to start ('failed to load ACL policy: parsing policy: empty policy'). The
+    cell's live policy path must carry the RAW body (grants at top level)."""
+    orch, _ = _orchestrator(tmp_path, run_id="run-rawpol-1", runtime_kind="mock")
+    orch._materialize_policy_states()
+    for cell in orch.spec.cells:
+        raw = json.loads(cell.policy_path.read_text(encoding="utf-8"))
+        assert "revision" not in raw, cell.cell_id
+        assert "checksum" not in raw, cell.cell_id
+        assert "grants" in raw, cell.cell_id
+        assert raw["grants"], "current policy must carry the cell-scoped grant"
+
+
+def test_policy_variant_empty_writes_raw_deny_by_default_body(tmp_path: Path) -> None:
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-polempty-1", runtime_kind="mock")
+    orch._materialize_policy_states()
+    orch.apply_policy_variant("b", "empty")
+    raw = json.loads(orch.spec.cell("b").policy_path.read_text(encoding="utf-8"))
+    assert raw == {"grants": []}, "empty variant must be the RAW deny-by-default body"
+    orch.restore_policy("b")
+    restored = json.loads(orch.spec.cell("b").policy_path.read_text(encoding="utf-8"))
+    assert restored["grants"], "restore must put the RAW current body back"

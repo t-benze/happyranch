@@ -175,7 +175,10 @@ class Orchestrator:
 
         Idempotent: a pre-seeded states dir (e.g. a mutation under test) is
         preserved so the validation guard can reject it. The cell's fixed
-        policy path (what headscale reads) is bound to the CURRENT artifact.
+        policy path (what headscale reads) is bound to the RAW policy body of
+        the CURRENT artifact — headscale parses the file directly into its
+        ACLPolicy, so a versioned wrapper (revision/checksum) would parse as
+        an empty policy and the cell would refuse to start.
         """
         from .policy import policy_states
 
@@ -185,7 +188,10 @@ class Orchestrator:
                 cell.state_dir.mkdir(parents=True, exist_ok=True)
                 policy_states(cell.state_dir, cell.cell_id)
             cell.state_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(states_dir / "current.json", cell.policy_path)
+            current = json.loads((states_dir / "current.json").read_text(encoding="utf-8"))
+            cell.policy_path.write_text(
+                json.dumps(current["policy"], indent=1), encoding="utf-8"
+            )
 
     def _mint_preauth_keys(self) -> dict[str, str]:
         """Mint ONE single-use, short-lived pre-auth key per NODE (real mode).
@@ -540,11 +546,11 @@ class Orchestrator:
         """
         cell = self.spec.cell(cell_id)
         if variant == "empty":
-            artifact = policy_artifact(
-                deny_by_default_policy(),
-                int(self.manifest.get("policy_current_revision", 7)),
+            # RAW deny-by-default policy body (headscale parses the file
+            # directly; the versioned wrapper would parse as empty policy).
+            cell.policy_path.write_text(
+                json.dumps(deny_by_default_policy(), indent=1), encoding="utf-8"
             )
-            cell.policy_path.write_text(json.dumps(artifact, indent=1), encoding="utf-8")
             self._sighup_cell(cell_id)
             time.sleep(2.0)
         elif variant == "malformed":
@@ -562,11 +568,13 @@ class Orchestrator:
             raise ValueError(f"unknown policy variant {variant!r}")
 
     def restore_policy(self, cell_id: str) -> None:
-        """Restore the current policy artifact and a healthy cell."""
+        """Restore the current RAW policy body and a healthy cell."""
         cell = self.spec.cell(cell_id)
         states_dir = cell.state_dir / "policies"
         current = json.loads((states_dir / "current.json").read_text(encoding="utf-8"))
-        cell.policy_path.write_text(json.dumps(current, indent=1), encoding="utf-8")
+        cell.policy_path.write_text(
+            json.dumps(current["policy"], indent=1), encoding="utf-8"
+        )
         name = f"{self.spec.run_id}-cell-{cell_id}"
         state = self.backend.docker_inspect_state(name)
         if state != "running":
