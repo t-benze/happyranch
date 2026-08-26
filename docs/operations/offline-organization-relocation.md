@@ -1022,13 +1022,14 @@ gate is operator-enforced (honesty boundary in the header).
      a blocked agent must never be reported `done`.
 2. **Regenerate workspaces from the active AgentDef roster only.** Run
    `happyranch init-agent --org <slug> <agent>` **per active agent by name**
-   (the roster from step 1). Prefer per-agent invocation: the bulk form
-   (`happyranch init-agent --org <slug>`) historically unions workspace
-   directories and can admit a stray/reserved directory; the per-agent form
-   targets exactly one AgentDef and can never touch `_pending`/`_terminated`
-   or write bootstrap material into archive roots. Repository-backed agents
-   will reclone/reconcile their configured repositories — an expected side
-   effect of workspace regeneration.
+   (the roster from step 1), or the bulk form `happyranch init-agent --org
+   <slug>` — bulk initialization derives its targets from the canonical
+   active AgentDef roster (`org/agents/*.md`) only: it never targets
+   `_pending`/`_terminated` enrollments, archived definitions, team-registry
+   members without an AgentDef, or stray/reserved workspace directories
+   (GH-709 Slice B). Repository-backed agents will reclone/reconcile their
+   configured repositories — an expected side effect of workspace
+   regeneration.
 3. **Verify the exact readiness marker is a regular file — do not trust the
    `done` phase.** The bulk/per-agent init stream can emit `done` without the
    marker existing (GH-709 finding 2). After each agent's init, verify the

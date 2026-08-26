@@ -410,17 +410,23 @@ def list_agents(slug: str, org: OrgDep) -> dict:
 
 @router.post("/agents/init")
 async def init_agents(slug: str, body: InitBody, org: OrgDep):
+    """Initialize agent workspaces.
+
+    With ``agent`` set, initializes exactly that agent (even a name without
+    an AgentDef yet — the workspace bootstrap is provider-derived). With
+    ``agent`` unset (bulk), targets are the canonical active AgentDef roster
+    only — ``prompt_loader.list_agents(paths)`` — never workspace
+    directories, team-registry members without an AgentDef, or
+    ``_pending``/``_terminated`` enrollments (GH-709 Slice B).
+    """
     paths = OrgPaths(root=org.root)
 
     if body.agent is None:
-        ws_dir = paths.workspaces_dir
-        known: set[str] = set()
-        if org.teams is not None:
-            known.update(org.teams.all_agents())
-        if ws_dir.exists():
-            known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-        known.update([a.name for a in prompt_loader.list_agents(paths)])
-        targets = sorted(known)
+        # Bulk init derives targets from the canonical active AgentDef roster
+        # only (org/agents/*.md). Workspace directories, the team registry, and
+        # _pending/_terminated enrollments are never targets: bulk init must
+        # not bootstrap material into archive/reserved/stray roots (GH-709).
+        targets = sorted(a.name for a in prompt_loader.list_agents(paths))
     else:
         targets = [body.agent]
 

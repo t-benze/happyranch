@@ -1374,22 +1374,169 @@ def test_manage_agent_body_allow_rules_none_is_valid() -> None:
     assert body.allow_rules is None
 
 
-def test_init_agents_targets_include_content_team(
-    org_state,
+def _stream_init_bulk_events(app, auth_headers) -> list[dict]:
+    """Drain the bulk (agent=None) init SSE stream into parsed events."""
+    import json as _json
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": None}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def _seed_pending_and_terminated(paths: OrgPaths, pending: str, terminated: str) -> None:
+    """Seed adversarial enrollment/archive records plus reserved workspace dirs."""
+    paths.pending_agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.pending_agents_dir / f"{pending}.md").write_text(f"pending agent {pending}\n")
+    (paths.agents_dir / "_terminated").mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "_terminated" / f"{terminated}.md").write_text(
+        f"terminated agent {terminated}\n"
+    )
+
+
+def test_init_bulk_targets_active_roster_only(
+    tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """init_agents target enumeration includes Content Team agents from TeamsRegistry."""
-    # The conftest seeds engineering and content teams.
-    assert org_state.teams is not None
-    agents = org_state.teams.all_agents()
-    assert "content_manager" in agents
-    assert "content_writer" in agents
-    assert "content_qa" in agents
+    """GH-709 Slice B: bulk init-agent derives targets from the canonical active
+    AgentDef roster only.
+
+    Adversarial fixture: active AgentDefs plus a pending enrollment, a terminated
+    archive, reserved workspace directories, a stray workspace, and team-only
+    members without an AgentDef. Only the active AgentDefs may be initialized;
+    every inactive/archive/stray byte must remain untouched.
+    """
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+    paths = _paths(org_state)
+    _seed_pending_and_terminated(paths, pending="seo_agent", terminated="legacy_agent")
+
+    # Reserved + stray workspace directories (must never be bootstrap targets).
+    reserved_markers = {
+        "workspaces/_pending/.keep": b"pending workspace marker\n",
+        "workspaces/_terminated/legacy_agent/keep.txt": b"archived workspace marker\n",
+        "workspaces/stray_dir/keep.txt": b"stray workspace marker\n",
+        "workspaces/content_manager/keep.txt": b"team-only member marker\n",
+    }
+    for rel, data in reserved_markers.items():
+        (org_state.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (org_state.root / rel).write_bytes(data)
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent", "qa_engineer"], f"unexpected targets: {targeted}"
+    assert any(e.get("phase") == "all_done" for e in events)
+
+    # Active targets got bootstrapped workspaces (claude adapter writes CLAUDE.md).
+    assert (org_state.root / "workspaces/dev_agent/CLAUDE.md").is_file()
+    assert (org_state.root / "workspaces/qa_engineer/CLAUDE.md").is_file()
+
+    # No workspace was created for excluded names (content_manager's dir was
+    # deliberately pre-created as a fixture — it must remain un-bootstrapped).
+    for excluded in ("seo_agent", "legacy_agent", "engineering_head",
+                     "product_manager", "payment_agent", "content_writer",
+                     "content_qa"):
+        assert not (org_state.root / "workspaces" / excluded).exists(), (
+            f"bulk init created a workspace for excluded target {excluded!r}"
+        )
+
+    # Inactive/archive/stray bytes are unchanged and no bootstrap material landed.
+    for rel, data in reserved_markers.items():
+        p = org_state.root / rel
+        assert p.read_bytes() == data, f"{rel} changed by bulk init"
+        assert not (p.parent / "AGENTS.md").exists(), (
+            f"bootstrap material written into excluded dir {p.parent}"
+        )
+        assert not (p.parent / "CLAUDE.md").exists(), (
+            f"bootstrap material written into excluded dir {p.parent}"
+        )
+    assert (paths.pending_agents_dir / "seo_agent.md").read_text() == "pending agent seo_agent\n"
+    assert (paths.agents_dir / "_terminated/legacy_agent.md").read_text() == "terminated agent legacy_agent\n"
+
+
+def test_init_bulk_targets_roster_when_teams_none(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """org.teams=None is safe and bulk init still targets the active roster only."""
+    _seed_active_agent(org_state, "dev_agent")
+    stray = org_state.root / "workspaces/stray_dir"
+    stray.mkdir(parents=True, exist_ok=True)
+    (stray / "keep.txt").write_bytes(b"stray marker\n")
+
+    org_state.teams = None  # type: ignore[assignment]
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent"]
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert not (stray / "AGENTS.md").exists(), "stray workspace was bootstrapped"
+    assert not (stray / "CLAUDE.md").exists(), "stray workspace was bootstrapped"
+
+
+def test_init_bulk_empty_roster_emits_all_done(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """An empty active roster targets nothing: no per-agent events, stream ends
+    with all_done, and stray/reserved workspace bytes stay untouched."""
+    stray = org_state.root / "workspaces/stray_dir"
+    stray.mkdir(parents=True, exist_ok=True)
+    (stray / "keep.txt").write_bytes(b"stray marker\n")
+    (org_state.root / "workspaces/_terminated/legacy_agent/keep.txt").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (org_state.root / "workspaces/_terminated/legacy_agent/keep.txt").write_bytes(
+        b"archived workspace marker\n"
+    )
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    assert [e for e in events if "agent" in e] == []
+    assert events[-1] == {"phase": "all_done"}
+    assert (stray / "keep.txt").read_bytes() == b"stray marker\n"
+    assert not (stray / "AGENTS.md").exists()
+    assert not (stray / "CLAUDE.md").exists()
+    archived = org_state.root / "workspaces/_terminated/legacy_agent/keep.txt"
+    assert archived.read_bytes() == b"archived workspace marker\n"
+
+
+def test_init_bulk_agent_error_stops_stream_without_all_done(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Existing per-agent error aggregation: a failing agent emits an error event
+    and the stream stops (no all_done) — unchanged by the roster-only fix."""
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.create_agent_dirs.return_value = None
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("bootstrap exploded")
+
+        mock_ctx.ensure_workspace_ready.side_effect = _boom
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert "bootstrap exploded" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "all_done" for e in events)
+    assert events[-1] == error_events[0], "stream must stop at the first error"
 
 
 def test_init_agents_targets_include_approved_enrollments(
     org_state,
 ) -> None:
-    """init_agents target enumeration includes approved enrollments from agent files."""
+    """The canonical active roster (prompt_loader.list_agents) includes approved
+    enrollments from active agent files; pending files are excluded."""
     from runtime.orchestrator import prompt_loader
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
@@ -1404,23 +1551,6 @@ def test_init_agents_targets_include_approved_enrollments(
     (paths.agents_dir / "seo_agent.md").write_text(render_agent_text(agent))
     names = [a.name for a in prompt_loader.list_agents(paths)]
     assert "seo_agent" in names
-
-
-def test_init_agents_targets_none_teams_is_safe(org_state) -> None:
-    """If teams is None the guard prevents a crash; workspace dirs are still used."""
-    org_state.teams = None  # type: ignore[assignment]
-    # No crash — org.teams is None but the guard `if org.teams is not None` handles it.
-    from runtime.orchestrator import prompt_loader
-    paths = _paths(org_state)
-    known: set[str] = set()
-    if org_state.teams is not None:
-        known.update(org_state.teams.all_agents())
-    ws_dir = paths.workspaces_dir
-    if ws_dir.exists():
-        known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-    known.update([a.name for a in prompt_loader.list_agents(paths)])
-    # No exception raised; result is an empty or workspace-only set.
-    assert isinstance(known, set)
 
 
 # ---------------------------------------------------------------------------
