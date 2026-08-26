@@ -1,0 +1,57 @@
+name: Lab capacity (managed remote access, unit D)
+
+# LAB-ONLY capacity spike runner for the managed remote-access design
+# (merge unit D). Runs disposable headscale cells + synthetic tailscale
+# clients on an isolated ubuntu-latest runner (docker preinstalled) and
+# uploads machine-readable raw results as a CI artifact.
+#
+# DISPATCH ONLY — this job never runs automatically and is not part of
+# PR CI. It consumes GitHub Actions minutes only when explicitly invoked:
+#   gh workflow run "Lab capacity (managed remote access, unit D)" --ref <branch>
+#
+# The runner is disposable and isolated: it cannot target non-lab
+# endpoints (all URLs are internal to the run's docker network; DERP and
+# DNS are disabled) and is destroyed after the job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Comma-separated scenarios or "all" (idle,nodes,churn,restart,failure)'
+        required: false
+        default: all
+      run_id:
+        description: 'Optional explicit synthetic run id (auto-generated when empty)'
+        required: false
+        default: ''
+
+jobs:
+  capacity:
+    name: Capacity lab (ubuntu-latest, docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.12'
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Run capacity lab
+        run: >-
+          bash labs/managed-remote-access/capacity/run_capacity_lab.sh
+          --scenarios "${{ inputs.scenarios }}"
+          ${{ inputs.run_id != '' && format('--run-id {0}', inputs.run_id) || '' }}
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: lab-capacity-results
+          path: labs/managed-remote-access/capacity/results/
+          if-no-files-found: error
