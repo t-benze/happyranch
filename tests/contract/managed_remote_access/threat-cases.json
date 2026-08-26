@@ -1,0 +1,1243 @@
+{
+  "version": "1",
+  "name": "managed-remote-access-threat-cases",
+  "status": "normative-contract",
+  "description": "Hostile threat matrix for the managed remote-access lane (merge unit A, TASK-5771). Positive controls plus tenant-A-vs-B hostile negatives. Every case carries a stable deny/failure category, a stable audit category, and redacted tenant-neutral failure prose with no raw exception text and no credential material. Hostile cases are denied with a deny_category; positive controls are allowed. Paired cases (existence_pair) prove the no-cross-tenant-existence-oracle rule: identical deny category, audit category, AND identical externally visible failure detail whether the target exists or not (including the absent-vs-consumed credential pair). All credential inputs are obvious non-secret placeholders.",
+  "cases": [
+    {
+      "id": "CRED-001",
+      "class": "hostile",
+      "category": "expired_credential",
+      "scenario": "A client proof is presented outside its validity window.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "expiry",
+        "audit_category": "credential_expired",
+        "failure_detail": "Connection denied; the presented proof is outside its validity window.",
+        "proves": "expired proofs are denied"
+      }
+    },
+    {
+      "id": "CRED-002",
+      "class": "hostile",
+      "category": "replayed_credential",
+      "scenario": "A previously used proof/nonce is replayed.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "replay",
+        "audit_category": "replay_denied",
+        "failure_detail": "Connection denied; the presented proof is not accepted; no confirmation of whether it was previously presented.",
+        "proves": "replayed proofs are denied"
+      }
+    },
+    {
+      "id": "CRED-003",
+      "class": "hostile",
+      "category": "reused_credential",
+      "scenario": "A single-use enrollment/pairing credential is presented a second time.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/pair",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ONE_USE_ENROLLMENT_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "replay",
+        "audit_category": "credential_reused",
+        "failure_detail": "Enrollment redemption denied at the boundary; no confirmation of whether the referenced enrollment binding exists or was previously redeemed.",
+        "proves": "single-use credentials cannot be reused"
+      },
+      "existence_pair": "pair-cred-absent-consumed"
+    },
+    {
+      "id": "CRED-003b",
+      "class": "hostile",
+      "category": "reused_credential",
+      "scenario": "A single-use enrollment binding that does not exist is presented (absent-vs-consumed existence-guard twin of CRED-003).",
+      "actor": "tenant_b_device",
+      "target": "home_b_connector",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/pair",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ONE_USE_ENROLLMENT"
+      },
+      "existence_pair": "pair-cred-absent-consumed",
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "replay",
+        "audit_category": "credential_reused",
+        "failure_detail": "Enrollment redemption denied at the boundary; no confirmation of whether the referenced enrollment binding exists or was previously redeemed.",
+        "proves": "absent and consumed/reused single-use enrollment bindings are indistinguishable to the caller (no credential-existence oracle)"
+      }
+    },
+    {
+      "id": "CRED-004",
+      "class": "hostile",
+      "category": "wrong_audience_credential",
+      "scenario": "A proof whose audience does not include this connector/home is presented.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "audience_denied",
+        "failure_detail": "Connection denied; the presented proof is not valid for this audience.",
+        "proves": "wrong-audience credentials are denied"
+      }
+    },
+    {
+      "id": "CRED-005",
+      "class": "hostile",
+      "category": "wrong_home_credential",
+      "scenario": "A credential bound to a different home is presented to this home's connector.",
+      "actor": "tenant_a_device",
+      "target": "home_b_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "home_denied",
+        "failure_detail": "Connection denied; the presented credential is not bound to this home.",
+        "proves": "home-bound credentials never authorize a different home"
+      }
+    },
+    {
+      "id": "CROSS-001",
+      "class": "hostile",
+      "category": "wrong_cell_enrollment",
+      "scenario": "Tenant A's one-use enrollment credential is presented to tenant B's cell enrollment endpoint.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/enroll",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ONE_USE_ENROLLMENT_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "enrollment",
+        "audit_category": "enrollment_denied",
+        "failure_detail": "Enrollment denied at the boundary; no confirmation of whether the referenced cell or home exists.",
+        "proves": "one-use enrollment credentials are cell-bound and single-cell redeemable"
+      },
+      "existence_pair": "pair-001"
+    },
+    {
+      "id": "CROSS-002",
+      "class": "hostile",
+      "category": "wrong_cell_redeem",
+      "scenario": "Tenant A's pre-auth key is redeemed at tenant B's cell; redemption is rejected and the credential is consumed/revoked.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/redeem",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ONE_USE_ENROLLMENT_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "enrollment",
+        "audit_category": "enrollment_denied",
+        "failure_detail": "Redemption rejected for the presented binding; the attempt is treated as an unknown enrollment.",
+        "proves": "wrong-cell redemption cannot enroll a node into another cell"
+      },
+      "existence_pair": "pair-001"
+    },
+    {
+      "id": "CROSS-003",
+      "class": "hostile",
+      "category": "cross_cell_node_reuse",
+      "scenario": "A node identity enrolled in tenant A is reused to join tenant B; B's cell rejects the foreign node identity.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/register",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "identity_denied",
+        "failure_detail": "Registration rejected: the presented node identity is not recognized in this cell.",
+        "proves": "node identities never cross cell boundaries"
+      }
+    },
+    {
+      "id": "CROSS-004",
+      "class": "hostile",
+      "category": "cross_cell_key_reuse",
+      "scenario": "Tenant A's device/network key material is presented to tenant B's cell during enrollment.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/enroll",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "enrollment",
+        "audit_category": "enrollment_denied",
+        "failure_detail": "Enrollment rejected: the presented key is not bound to this cell.",
+        "proves": "device keys are cell-bound and never reusable across cells"
+      }
+    },
+    {
+      "id": "CROSS-005",
+      "class": "hostile",
+      "category": "cross_cell_account_reuse",
+      "scenario": "Tenant A's account session token is used to request enrollment for a home owned by tenant B.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/enrollments",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ACCOUNT_SESSION_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "identity_denied",
+        "failure_detail": "Enrollment request rejected for the referenced home; no confirmation of whether the home exists.",
+        "proves": "account authority is tenant-scoped; entitlement cannot cross tenants"
+      },
+      "existence_pair": "pair-002"
+    },
+    {
+      "id": "CROSS-005b",
+      "class": "hostile",
+      "category": "cross_cell_account_reuse",
+      "scenario": "Tenant A's account session token is used to request enrollment for a home_id that does not exist anywhere. The response must be indistinguishable from the case where the home exists but belongs to tenant B.",
+      "actor": "tenant_a",
+      "target": "home_b_absent",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/enrollments",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_ACCOUNT_SESSION_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "identity_denied",
+        "failure_detail": "Enrollment request rejected for the referenced home; no confirmation of whether the home exists.",
+        "proves": "account authority is tenant-scoped; entitlement cannot cross tenants"
+      },
+      "existence_pair": "pair-002"
+    },
+    {
+      "id": "CROSS-006",
+      "class": "hostile",
+      "category": "cross_cell_home_reuse",
+      "scenario": "Tenant A's credential names a home_id that belongs to tenant B.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/pair",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_PAIRING_AUTHORIZATION_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "home_denied",
+        "failure_detail": "Pairing rejected for the referenced home; the home is not resolvable under this tenant.",
+        "proves": "home identity is tenant-scoped and never resolvable cross-tenant"
+      }
+    },
+    {
+      "id": "CROSS-007",
+      "class": "hostile",
+      "category": "cross_cell_device_reuse",
+      "scenario": "A device_id enrolled in tenant A is presented as a current device to a tenant B home connector.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "identity",
+        "audit_category": "identity_denied",
+        "failure_detail": "Connection rejected: the presented device is not paired with this home.",
+        "proves": "device identity is cell-bound and current-device checks are tenant-scoped"
+      }
+    },
+    {
+      "id": "CROSS-008",
+      "class": "hostile",
+      "category": "peer_absent",
+      "scenario": "Tenant A node's map request never returns tenant B peers; B's connector port is unreachable from A.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/map",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "peer",
+        "audit_category": "peer_denied",
+        "failure_detail": "Peer map request denied; no peer data outside the requesting cell is provided.",
+        "proves": "cross-cell peer data is never disclosed"
+      }
+    },
+    {
+      "id": "CROSS-009",
+      "class": "hostile",
+      "category": "map_absent",
+      "scenario": "Tenant A's map stream omits tenant B entirely; no B endpoint or key data is present.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/map",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "map",
+        "audit_category": "map_denied",
+        "failure_detail": "Map response contains no entries outside the requesting cell.",
+        "proves": "cell isolation means map data never crosses cells"
+      }
+    },
+    {
+      "id": "CROSS-010",
+      "class": "hostile",
+      "category": "direct_path_denied",
+      "scenario": "Tenant A attempts a direct WireGuard path to tenant B's connector port; the path is denied at the cell boundary.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "direct",
+        "audit_category": "direct_path_denied",
+        "failure_detail": "Direct path denied; no route to the referenced peer exists.",
+        "proves": "direct WireGuard path never crosses cells"
+      }
+    },
+    {
+      "id": "CROSS-011",
+      "class": "hostile",
+      "category": "forced_derp_denied",
+      "scenario": "Tenant A is forced through a DERP relay in an attempt to reach tenant B's connector; relay admission denies the session.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "relay",
+        "audit_category": "derp_relay_denied",
+        "failure_detail": "Relay session denied; the relay only serves ciphertext for cells that authorize it.",
+        "proves": "forced-DERP cannot create cross-cell reachability"
+      }
+    },
+    {
+      "id": "CROSS-012",
+      "class": "hostile",
+      "category": "derp_cannot_bypass_headscale_policy",
+      "scenario": "An attacker tries to use the shared DERP fleet to bypass Headscale/cell policy and reach a home the policy denies.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "relay",
+        "audit_category": "derp_no_bypass",
+        "failure_detail": "Relay path denied; the relay observes and relays ciphertext only and grants no reachability beyond cell policy.",
+        "proves": "DERP is a ciphertext relay, never an authorization bypass"
+      }
+    },
+    {
+      "id": "CROSS-013",
+      "class": "hostile",
+      "category": "forged_tags",
+      "scenario": "Tenant A client asserts tenant B's tag to gain authority; the policy compiler rejects the tag as not owned.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/tags",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "cell",
+        "audit_category": "tag_forgery_denied",
+        "failure_detail": "Tag assertion rejected; tags are compiler output and are never client-asserted authority.",
+        "proves": "tags cannot be forged across cells"
+      }
+    },
+    {
+      "id": "CROSS-014",
+      "class": "hostile",
+      "category": "forged_routes",
+      "scenario": "Tenant A advertises a route that would expose tenant B's subnet; the advertisement is quarantined and denied.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/routes",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "route_advert_denied",
+        "failure_detail": "Route advertisement rejected and quarantined; advertised routes are never auto-approved.",
+        "proves": "route advertisements cannot cross cell boundaries"
+      }
+    },
+    {
+      "id": "CROSS-015",
+      "class": "hostile",
+      "category": "forged_subnet_advertisements",
+      "scenario": "Tenant A announces subnet routes into tenant B's address space; announcement is denied.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/routes",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "route_advert_denied",
+        "failure_detail": "Subnet advertisement rejected; no route outside the requesting cell is accepted.",
+        "proves": "subnet advertisements are cell-local only"
+      }
+    },
+    {
+      "id": "CROSS-016",
+      "class": "hostile",
+      "category": "forged_exit_node",
+      "scenario": "Tenant A marks a node as exit node to reach tenant B networks; exit-node use is denied for this product.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/exit-node",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "exit_node_denied",
+        "failure_detail": "Exit-node request denied; exit-node capability is not granted for this product.",
+        "proves": "exit-node advertisements are always denied"
+      }
+    },
+    {
+      "id": "CROSS-017",
+      "class": "hostile",
+      "category": "forged_ssh",
+      "scenario": "Tenant A advertises SSH access into tenant B; SSH capability is denied for this product.",
+      "actor": "tenant_a",
+      "target": "tenant_b",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/ssh",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_NODE_DEVICE_KEY_A"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "ssh_denied",
+        "failure_detail": "SSH request denied; SSH capability is not granted for this product.",
+        "proves": "SSH advertisements are always denied"
+      }
+    },
+    {
+      "id": "DEV-001",
+      "class": "hostile",
+      "category": "current_device_mismatch",
+      "scenario": "A request arrives from a device that is not the currently paired/current device for this home.",
+      "actor": "tenant_a_old_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "current_device",
+        "audit_category": "device_mismatch_denied",
+        "failure_detail": "Connection denied; the presented device is not the current paired device for this home.",
+        "proves": "stale device identity is rejected"
+      }
+    },
+    {
+      "id": "DEV-002",
+      "class": "hostile",
+      "category": "pairing_mismatch",
+      "scenario": "A request arrives with pairing authorization bound to a different home or device.",
+      "actor": "tenant_a_device",
+      "target": "home_b_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_PAIRING_AUTHORIZATION"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "pairing",
+        "audit_category": "pairing_denied",
+        "failure_detail": "Connection denied; the pairing authorization does not cover this home/device pair.",
+        "proves": "pairing authorization is (tenant, home, device)-bound"
+      }
+    },
+    {
+      "id": "INT-001",
+      "class": "hostile",
+      "category": "internal_error_redacted",
+      "scenario": "An internal connector failure occurs mid-validation.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "internal",
+        "audit_category": "internal_error",
+        "failure_detail": "Request denied; an internal failure occurred and was redacted to category.",
+        "proves": "internal failures are redacted to category and deny closed"
+      }
+    },
+    {
+      "id": "LOCAL-001",
+      "class": "hostile",
+      "category": "daemon_bearer_in_remote_input",
+      "scenario": "A request carries bearer-shaped material in remote input (headers, path, or body).",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "local_daemon",
+        "audit_category": "local_daemon_denied",
+        "failure_detail": "Request rejected; credential-shaped material is never accepted in remote input.",
+        "proves": "the daemon bearer never appears in remote input"
+      }
+    },
+    {
+      "id": "LOCAL-002",
+      "class": "hostile",
+      "category": "daemon_unavailable",
+      "scenario": "The local daemon is unreachable or its token file is missing when the connector is ready to forward.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "local_daemon",
+        "audit_category": "daemon_unavailable",
+        "failure_detail": "Local daemon unavailable; the connector fails closed and serves no requests.",
+        "proves": "daemon unavailability fails closed"
+      }
+    },
+    {
+      "id": "LOCAL-003",
+      "class": "hostile",
+      "category": "daemon_bind_mismatch",
+      "scenario": "The daemon bind is not loopback; the connector refuses to forward.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "local_daemon",
+        "audit_category": "daemon_bind_mismatch",
+        "failure_detail": "Forwarding refused; the daemon must remain loopback-bound.",
+        "proves": "the daemon stays loopback-only; bind mismatch fails closed"
+      }
+    },
+    {
+      "id": "PATH-001",
+      "class": "hostile",
+      "category": "encoded_path",
+      "scenario": "A percent-encoded traversal (..) path is presented; strict decoding reveals the escape and the request is denied.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/%2e%2e%2f%2e%2e/etc/passwd",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "normalization",
+        "audit_category": "normalization_denied",
+        "failure_detail": "Path normalization rejected; the decoded path escapes the allowed surface.",
+        "proves": "percent-encoded traversal is denied"
+      }
+    },
+    {
+      "id": "PATH-002",
+      "class": "hostile",
+      "category": "traversal_path",
+      "scenario": "A dot-dot traversal path is presented.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/../../admin",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "normalization",
+        "audit_category": "normalization_denied",
+        "failure_detail": "Path normalization rejected; dot-segment resolution escapes the allowed surface.",
+        "proves": "dot-segment traversal is denied"
+      }
+    },
+    {
+      "id": "PATH-003",
+      "class": "hostile",
+      "category": "ambiguous_path",
+      "scenario": "An absolute-form request target (scheme://authority/path) is presented.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "https://daemon/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "normalization",
+        "audit_category": "normalization_denied",
+        "failure_detail": "Request target rejected; absolute-form/authority ambiguity is denied.",
+        "proves": "absolute-form request targets are denied"
+      }
+    },
+    {
+      "id": "POLICY-001",
+      "class": "hostile",
+      "category": "policy_empty",
+      "scenario": "Empty policy loaded on connector start. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "empty",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_missing",
+        "failure_detail": "Policy state is empty; the connector fails closed and refuses all requests.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-002",
+      "class": "hostile",
+      "category": "policy_malformed",
+      "scenario": "Malformed policy artifact (bad signature or schema). The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "malformed",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_malformed",
+        "failure_detail": "Policy artifact is malformed or its signature is invalid; the connector fails closed.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-003",
+      "class": "hostile",
+      "category": "policy_stale",
+      "scenario": "Revocation epoch is behind the required current epoch. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "stale",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_stale",
+        "failure_detail": "Policy/revocation epoch is stale; the connector fails closed.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-004",
+      "class": "hostile",
+      "category": "policy_future",
+      "scenario": "Policy artifact carries an epoch ahead of the accepted window. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "future",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_future",
+        "failure_detail": "Policy/revocation epoch is outside the accepted window; the connector fails closed.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-005",
+      "class": "hostile",
+      "category": "policy_rollback",
+      "scenario": "A replayed old policy would decrease the current epoch. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "rollback",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_rollback",
+        "failure_detail": "Policy/revocation epoch decreased; rollback rejected and the connector fails closed.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-006",
+      "class": "hostile",
+      "category": "policy_compile_failed",
+      "scenario": "Cell policy compiler fails to produce a deny-default artifact. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "compiler_failed",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_compile_failed",
+        "failure_detail": "Policy compilation failed; no traffic is authorized until a valid policy is compiled.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POLICY-007",
+      "class": "hostile",
+      "category": "policy_apply_failed",
+      "scenario": "Cell policy apply step fails on the connector. The connector must fail closed and deny every request.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "apply_failed",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "policy",
+        "audit_category": "policy_apply_failed",
+        "failure_detail": "Policy apply failed; the connector fails closed and authorizes nothing.",
+        "proves": "missing/malformed/stale/future/rollback policy and compiler/apply failure always fail closed"
+      }
+    },
+    {
+      "id": "POS-001",
+      "class": "positive_control",
+      "category": "positive_control_allowed_http",
+      "scenario": "Authenticated, currently paired device with current policy requests an allowed HTTP read route via direct path; connector forwards to loopback daemon.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "allowed",
+        "audit_category": "allowed_request",
+        "failure_detail": "Request authenticated, binding verified, proof current, policy current, route allowed; forwarded to the loopback daemon with the locally read bearer injected only on the final hop.",
+        "proves": "fully validated allowed request reaches the loopback daemon"
+      }
+    },
+    {
+      "id": "POS-002",
+      "class": "positive_control",
+      "category": "positive_control_allowed_http",
+      "scenario": "Authenticated, paired device reads an allowed org task-list route over the direct path.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/tasks",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "allowed",
+        "audit_category": "allowed_request",
+        "failure_detail": "Allowed read route matched the explicit allow-list template and was forwarded to the loopback daemon.",
+        "proves": "template allow-list matching authorizes normal browser-consumed reads"
+      }
+    },
+    {
+      "id": "POS-003",
+      "class": "positive_control",
+      "category": "positive_control_allowed_sse",
+      "scenario": "Paired device opens an allowed SSE stream (thread tail); connector validates the GET upgrade and streams events from the loopback daemon.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/threads/{thread_id}/tail",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "allowed",
+        "audit_category": "allowed_request",
+        "failure_detail": "Allowed SSE upgrade matched an explicitly allowed template; stream established through the relay and served from the loopback daemon.",
+        "proves": "allowed SSE upgrade semantics work over the relay path"
+      }
+    },
+    {
+      "id": "REV-001",
+      "class": "hostile",
+      "category": "revoked_before_request",
+      "scenario": "The device was revoked before presenting a request; revocation epoch is already current.",
+      "actor": "tenant_a_revoked_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_denied",
+        "failure_detail": "Connection denied; the device authorization is revoked.",
+        "proves": "revoked devices are denied before any request is authorized"
+      }
+    },
+    {
+      "id": "REV-002",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation lands while an HTTP request is in flight; the connector closes the stream before completing it.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/tasks",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; no further bytes are served.",
+        "proves": "revocation closes live HTTP streams immediately"
+      }
+    },
+    {
+      "id": "REV-003",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation lands while an SSE/WebSocket stream is open; the stream is closed and the connector denies subsequent frames.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/threads/{thread_id}/tail",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; subsequent frames are refused.",
+        "proves": "revocation cancels open SSE/WebSocket streams immediately"
+      }
+    },
+    {
+      "id": "ROUTE-001",
+      "class": "hostile",
+      "category": "forbidden_route",
+      "scenario": "A request targets a forbidden class route (agent completion callback).",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/orgs/{slug}/tasks/{task_id}/completion",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "route",
+        "audit_category": "route_denied",
+        "failure_detail": "Route denied; the normalized target is a forbidden class and never on the allow-list.",
+        "proves": "agent-callback routes are never remotely reachable"
+      }
+    },
+    {
+      "id": "ROUTE-002",
+      "class": "hostile",
+      "category": "forbidden_method",
+      "scenario": "A mutating method is attempted on a read-only allowed route.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "DELETE",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "method",
+        "audit_category": "method_denied",
+        "failure_detail": "Method denied; the method is not allowed for this surface.",
+        "proves": "method-awareness: only explicitly allowed methods pass"
+      }
+    },
+    {
+      "id": "ROUTE-003",
+      "class": "hostile",
+      "category": "unclassified_route",
+      "scenario": "A new or unknown route that is not on the allow-list is requested.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/some-new-route",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "route",
+        "audit_category": "unclassified_denied",
+        "failure_detail": "Route denied; the route is not on the explicit allow-list.",
+        "proves": "unclassified and future routes are denied by default"
+      }
+    },
+    {
+      "id": "SMUG-001",
+      "class": "hostile",
+      "category": "smuggling_headers",
+      "scenario": "Conflicting Content-Length / Transfer-Encoding framing (request smuggling) is attempted.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "POST",
+        "path": "/api/v1/orgs/{slug}/tasks",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "normalization",
+        "audit_category": "normalization_denied",
+        "failure_detail": "Framing rejected; conflicting body-framing headers are denied.",
+        "proves": "request smuggling is rejected"
+      }
+    },
+    {
+      "id": "SMUG-002",
+      "class": "hostile",
+      "category": "duplicate_critical_headers",
+      "scenario": "Duplicate critical headers (e.g. repeated Host or Content-Length) are presented.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "normalization",
+        "audit_category": "normalization_denied",
+        "failure_detail": "Headers rejected; duplicate critical headers are denied.",
+        "proves": "duplicate critical headers are rejected"
+      }
+    },
+    {
+      "id": "TOPO-001",
+      "class": "hostile",
+      "category": "client_to_client",
+      "scenario": "One client attempts to reach another client's node; only the paired home connector port is granted.",
+      "actor": "tenant_a_device_a",
+      "target": "tenant_a_device_b",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "transport",
+        "audit_category": "topology_denied",
+        "failure_detail": "Connection denied; only the paired home connector surface is granted.",
+        "proves": "client-to-client traffic is denied"
+      }
+    },
+    {
+      "id": "TOPO-002",
+      "class": "hostile",
+      "category": "home_to_client",
+      "scenario": "A home connector attempts an outbound connection to a client node; the reverse direction is denied.",
+      "actor": "home_a_connector",
+      "target": "tenant_a_device",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/connect",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "transport",
+        "audit_category": "topology_denied",
+        "failure_detail": "Connection denied; home-to-client connections are not granted.",
+        "proves": "home-to-client traffic is denied"
+      }
+    },
+    {
+      "id": "TOPO-003",
+      "class": "hostile",
+      "category": "non_connector_port",
+      "scenario": "An attacker attempts to reach a non-connector port on the home host through the tailnet.",
+      "actor": "tenant_a",
+      "target": "home_a",
+      "inputs": {
+        "method": "GET",
+        "path": "/:22",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "transport",
+        "audit_category": "port_denied",
+        "failure_detail": "Connection denied; only the connector port is reachable through the network.",
+        "proves": "non-connector ports are never reachable"
+      }
+    },
+    {
+      "id": "UPG-001",
+      "class": "hostile",
+      "category": "unsupported_upgrade",
+      "scenario": "An upgrade to an unsupported protocol is attempted.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/health",
+        "policy_state": "current",
+        "transport": "direct",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "method",
+        "audit_category": "method_denied",
+        "failure_detail": "Upgrade denied; only explicitly allowed upgrade semantics are supported.",
+        "proves": "unsupported upgrades are denied"
+      }
+    },
+    {
+      "id": "UPG-002",
+      "class": "hostile",
+      "category": "unsupported_body",
+      "scenario": "A body is attached to a surface that forbids bodies.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/threads/{thread_id}/tail",
+        "policy_state": "current",
+        "transport": "derp",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "method",
+        "audit_category": "method_denied",
+        "failure_detail": "Request denied; bodies are not permitted on this surface.",
+        "proves": "unsupported bodies are denied"
+      }
+    }
+  ]
+}
