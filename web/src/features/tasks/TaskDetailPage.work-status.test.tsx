@@ -7,7 +7,8 @@
  * updates, and that a legacy envelope WITHOUT work_status preserves the
  * previous empty behavior (no card, no error).
  */
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -16,6 +17,15 @@ import { server } from '@/test/server';
 import type { TaskRecord, WorkStatusResponse } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
+
+function QueryClientCapture({
+  capture,
+}: {
+  capture: (client: QueryClient) => void;
+}) {
+  capture(useQueryClient());
+  return null;
+}
 
 const TASK: TaskRecord = {
   task_id: 'TASK-0091',
@@ -82,6 +92,99 @@ function ws(overrides: Partial<WorkStatusResponse>): WorkStatusResponse {
 }
 
 describe('TaskDetailPage execution status card (TASK-5522)', () => {
+  test('pending detail request keeps the loading shell free of fabricated status data', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetail(ws({}));
+    let detailRequested = false;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () => {
+        detailRequested = true;
+        return new Promise(() => {});
+      }),
+    );
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    await waitFor(() => expect(detailRequested).toBe(true));
+    expect(
+      screen.getByRole('heading', { name: TASK.task_id }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recall tree' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Execution status' })).toBeNull();
+    expect(
+      screen.queryByText('Stale-but-alive — no substantive update recorded'),
+    ).toBeNull();
+  });
+
+  test('detail error preserves the route shell without stale or partial status data', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetail(ws({}));
+    let detailRequested = false;
+    let releaseErrorResponse!: () => void;
+    const errorResponsePending = new Promise<void>((resolve) => {
+      releaseErrorResponse = resolve;
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, async () => {
+        detailRequested = true;
+        await errorResponsePending;
+        return HttpResponse.json({ detail: 'Task lookup failed' }, { status: 500 });
+      }),
+    );
+
+    let queryClient!: QueryClient;
+    renderWithProviders(
+      <>
+        <QueryClientCapture
+          capture={(client) => {
+            queryClient = client;
+          }}
+        />
+        <AppRoutes />
+      </>,
+      {
+        route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+      },
+    );
+
+    await waitFor(() => expect(detailRequested).toBe(true));
+    expect(
+      queryClient.getQueryState(['task', SLUG, TASK.task_id])?.status,
+    ).toBe('pending');
+    expect(
+      screen.queryByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeNull();
+
+    releaseErrorResponse();
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(['task', SLUG, TASK.task_id])?.status,
+      ).toBe('error'),
+    );
+    expect(
+      screen.getByRole('heading', { name: TASK.task_id }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recall tree' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Execution status' })).toBeNull();
+    expect(
+      screen.queryByText('Stale-but-alive — no substantive update recorded'),
+    ).toBeNull();
+  });
+
   test('renders the card for a fresh-heartbeat/no-receipt task', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubDetail(ws({}));
@@ -90,7 +193,7 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     });
 
     const card = await screen.findByRole('complementary', {
-      name: 'Execution status',
+      name: 'Task status and properties',
     });
     expect(card.textContent).toContain(
       'Stale-but-alive — no substantive update recorded',
@@ -118,7 +221,7 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     });
 
     const card = await screen.findByRole('complementary', {
-      name: 'Execution status',
+      name: 'Task status and properties',
     });
     expect(card.textContent).toContain('Recent update recorded');
     expect(card.textContent).toContain('Phase 3 of 6: tests passing');
@@ -135,7 +238,12 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     await screen.findByText('TASK-0091');
     // …and no execution-status card is invented.
     expect(
-      screen.queryByRole('complementary', { name: 'Execution status' }),
+      screen.queryByRole('region', { name: 'Execution status' }),
     ).toBeNull();
+    expect(
+      await screen.findByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeInTheDocument();
   });
 });

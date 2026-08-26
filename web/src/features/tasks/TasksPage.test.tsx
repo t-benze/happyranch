@@ -1524,7 +1524,7 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
       route: `/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`,
     });
     return (await screen.findByRole('complementary', {
-      name: /task properties/i,
+      name: /task status and properties/i,
     })) as HTMLElement;
   }
 
@@ -1582,6 +1582,15 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     expect(within(rail).queryByText('Priority')).toBeNull();
   });
 
+  test('keeps a long assignee identifier fully available with wrap-safe styling', async () => {
+    const longAssignee = `frontend_${'engineer'.repeat(30)}`;
+    stubHandlers([], { ...DETAIL_TASK, assigned_agent: longAssignee });
+    const rail = await mountAndGetRail();
+    const identity = within(rail).getByText(longAssignee);
+    expect(identity).toHaveClass('min-w-0', 'break-all');
+    expect(identity).not.toHaveClass('truncate');
+  });
+
   // THR-137: a long in_progress + delegated status badge must stay readable in
   // the narrow property rail. jsdom cannot prove geometry, so the test asserts
   // the responsive layout contract (wrap-capable row, min-content value cell,
@@ -1603,9 +1612,9 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     const statusRow = within(rail).getByText('Status').closest('div') as HTMLElement;
     expect(statusRow).toHaveClass('flex-wrap');
     const value = qualifier.closest('dd') as HTMLElement;
-    expect(value).toHaveClass('min-w-max');
-    // The badge is wrapped in a no-wrap span so its text stays on one line.
-    expect(value.querySelector('span.whitespace-nowrap')).not.toBeNull();
+    expect(value).toHaveClass('min-w-0');
+    // The badge remains complete and can wrap as a unit at narrow widths.
+    expect(value.querySelector('span.inline-flex')).not.toBeNull();
   });
 
   test('omits the Thread and Job rows when those fields are absent', async () => {
@@ -1645,7 +1654,7 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     const rail = (await screen.findByRole('complementary', {
-      name: /task properties/i,
+      name: /task status and properties/i,
     })) as HTMLElement;
     // No thread / no jobs → those rows are absent (not fabricated).
     expect(within(rail).queryByText('Thread')).toBeNull();
