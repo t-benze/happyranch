@@ -606,6 +606,46 @@ mismatched-hash entries are atomically repaired.
   context.  **Release-managed and B2 custom-skill links remain policy-reconciled**
   and are withdrawn when the agent becomes ineligible, retired, or unassigned.
 
+**Workspace containment (THR-190 PR-B):**
+
+*Threat principal:* a SANDBOXED Codex/Pi agent with workspace-write can
+pre-position symlinked workspace/provider/nested-skills paths — e.g.
+``<ws>/.claude``, ``<ws>/.claude/skills``, ``<ws>/.agents/skills``, or deeper
+nested entries — that point OUTSIDE the real workspace. On the next session
+start the daemon's materializer must NOT follow those pre-positioned parents
+when creating, replacing, or withdrawing skill links; following them would
+write, unlink, or replace files OUTSIDE the real workspace under the daemon's
+identity. An unsandboxed Claude session (which can already reach anything the
+daemon can) is NOT the defended principal.
+
+*Structural enforcement:* resolved-parent containment inside the REAL
+(resolved) workspace is enforced at the actual lowest-level link writer
+(``PlatformIsolation.create_relative_symlink``) immediately before each link
+creation/replacement — not by a route manifest, caller convention,
+lexical-only check, or one-time earlier validation:
+- **No-follow admission.** Every path component of the link's parent below
+  the resolved workspace root is lstat-verified (no-follow): a symlink at
+  ANY level — workspace-level provider dir (``.claude``), provider root
+  (``.claude/skills`` / ``.agents/skills``), or a nested skills root — fails
+  closed with a named ``escaped_parent`` error. Missing components are
+  created as genuine directories.
+- **Atomic pinned-dirfd write.** The link is published via temporary symlink
+  + ``os.replace`` through a no-follow (``O_NOFOLLOW``) pinned parent
+  directory fd, so a concurrent swap of the parent path cannot redirect the
+  write outside the real workspace.
+- **Contained withdrawal and admission.** ``withdraw_workspace_link`` and
+  ``admit_skills_directory`` apply the same no-follow admission; repair
+  never lists a skills root and withdraw never unlinks through an escaped
+  parent, so no symlink swap or escaped parent can write/unlink/replace
+  outside the real workspace.
+- **Ordinary workspaces unchanged.** Canonical relative symlinks wholly
+  inside a normal workspace materialize and repair exactly as before.
+
+*Failure ordering:* containment failures surface as named materialization
+errors during the pre-spawn transaction, BEFORE executor construction or
+launch — every session-start family (task, thread, wake, dream, schedule)
+persists a terminal failure and returns without invoking the executor.
+
 **Legacy compatibility fallback:** The legacy per-session copy model
 (``_copy_skills_tree``, ``refresh_session_skills``, and the former
 ``_WHOLESALE_DUMP_ENABLED`` flag) is removed as an executable path. No

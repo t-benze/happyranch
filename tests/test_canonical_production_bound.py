@@ -465,6 +465,7 @@ class TestSafeRepair:
             isolation.create_relative_symlink(
                 Path("target"),
                 ordinary,
+                workspace_root=link_dir,
             )
 
         # The ordinary directory must still exist with its content intact

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -81,14 +82,58 @@ class PlatformIsolation(ABC):
 
     @abstractmethod
     def create_relative_symlink(
-        self, target: Path, link_path: Path,
+        self, target: Path, link_path: Path, *, workspace_root: Path,
     ) -> None:
         """Create a validated relative symlink from *link_path* to *target*.
 
+        **Containment contract (THR-190 PR-B):** the write MUST land inside
+        the REAL workspace. Immediately before link creation/replacement the
+        implementation enforces resolved-parent containment against
+        *workspace_root*: every path component of ``link_path.parent`` below
+        the resolved workspace root must be a genuine directory (no-follow
+        admission — a symlinked provider root or nested skills root is a
+        pre-positioned escape and fails closed), and the resolved parent must
+        be inside the resolved workspace root. The link is created atomically
+        (temporary symlink + ``os.replace``) through a no-follow, pinned
+        parent directory fd so a concurrent swap of the parent path cannot
+        redirect the write.
+
         Must fail closed if:
         - link_path is an ordinary directory (never rmtree)
+        - link_path's parent chain is not contained in workspace_root
         - target is absolute or escapes the canonical store root
         - platform does not support symlinks
+        """
+        ...
+
+    @abstractmethod
+    def withdraw_workspace_link(
+        self, link_path: Path, *, workspace_root: Path,
+    ) -> None:
+        """Remove a workspace link at *link_path* contained in *workspace_root*.
+
+        Same no-follow admission as ``create_relative_symlink``: the parent
+        chain below the resolved workspace root must be genuine directories
+        (never symlinks) and the unlink is performed through a no-follow,
+        pinned parent directory fd. Removes symlinks and regular files;
+        refuses ordinary directories (never deletes their content).
+
+        No-op when *link_path* does not exist.
+        """
+        ...
+
+    @abstractmethod
+    def admit_skills_directory(
+        self, skills_dir: Path, *, workspace_root: Path,
+    ) -> None:
+        """No-follow admission of a provider/nested skills root.
+
+        Verifies every EXISTING path component of *skills_dir* below the
+        resolved workspace root is a genuine directory (lstat, no-follow). A
+        symlink at any level — a pre-positioned workspace/provider/nested-
+        skills path — raises ``PlatformIsolationError`` with code
+        ``escaped_parent``. A missing component (fresh workspace, nothing
+        admitted yet) is a no-op: later writes create real directories.
         """
         ...
 
@@ -148,18 +193,131 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
       active/overlapping sessions.
     """
 
+    # ── Containment helpers (THR-190 PR-B) ──────────────────────────
+    # Threat principal: a SANDBOXED Codex/Pi agent with workspace-write can
+    # pre-position symlinked workspace/provider/nested-skills paths (e.g.
+    # <ws>/.claude, <ws>/.claude/skills, <ws>/.agents/skills, deeper
+    # nested entries) that point outside the real workspace. On the next
+    # session start the daemon's materializer must NOT follow those
+    # pre-positioned parents when creating/replacing/withdrawing links —
+    # doing so would write/unlink/replace files OUTSIDE the real workspace
+    # under the daemon's identity. An unsandboxed Claude session (which
+    # can already reach anything the daemon can) is NOT the defended
+    # principal.
+    #
+    # Containment is enforced structurally HERE, at the actual lowest-level
+    # link writer, immediately before each link creation/replacement — not
+    # by a route manifest, caller convention, lexical-only check, or a
+    # one-time earlier validation.
+
+    def _resolve_contained_parent(
+        self, link_path: Path, workspace_root: Path, *, create: bool,
+    ) -> Path | None:
+        """Resolve the REAL parent directory of *link_path*, contained in the workspace.
+
+        Walks every path component of ``link_path.parent`` below the resolved
+        workspace root with lstat (no-follow):
+        - a symlink at ANY level below the workspace root (pre-positioned
+          workspace/provider/nested-skills path) fails closed;
+        - an existing component must be a genuine directory;
+        - a missing component is created as a REAL directory when
+          ``create=True``; when ``create=False`` a missing component means
+          there is nothing to admit/withdraw and ``None`` is returned.
+
+        The returned path is the fully-real parent (every component verified
+        genuine below the resolved workspace root).
+        """
+        real_ws = workspace_root.resolve()
+        if create:
+            # Preserve prior mkdir(parents=True) behavior: a missing
+            # workspace root is created as a genuine directory (the resolved
+            # path's ancestors are daemon-owned).
+            if not real_ws.is_dir():
+                try:
+                    real_ws.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise PlatformIsolationError(
+                        "containment_root_invalid",
+                        f"Cannot create workspace root {real_ws}: {exc}",
+                    ) from exc
+        elif not real_ws.is_dir():
+            return None  # nothing to admit/withdraw below a missing root
+        try:
+            rel_parts = link_path.parent.relative_to(workspace_root).parts
+        except ValueError:
+            raise PlatformIsolationError(
+                "link_outside_workspace",
+                f"Link parent {link_path.parent} is not lexically inside "
+                f"workspace {workspace_root}",
+            ) from None
+        cur = real_ws
+        for part in rel_parts:
+            cur = cur / part
+            try:
+                st = cur.lstat()
+            except FileNotFoundError:
+                if not create:
+                    return None
+                try:
+                    cur.mkdir()
+                except FileExistsError:
+                    pass  # a racing creator appeared — re-stat below
+                st = cur.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                raise PlatformIsolationError(
+                    "escaped_parent",
+                    f"Symlink in link parent chain: {cur} — refusing to "
+                    f"follow (no-follow admission). Link {link_path} cannot "
+                    f"be created inside a symlinked workspace/provider/"
+                    f"nested-skills path.",
+                )
+            if not stat.S_ISDIR(st.st_mode):
+                raise PlatformIsolationError(
+                    "escaped_parent",
+                    f"Non-directory in link parent chain: {cur}",
+                )
+        # Belt-and-suspenders: the resolved parent must stay inside the
+        # resolved workspace root (structural, after the no-follow walk).
+        if not cur.resolve(strict=False).is_relative_to(real_ws):
+            raise PlatformIsolationError(
+                "escaped_parent",
+                f"Resolved link parent {cur} escapes workspace {real_ws}",
+            )
+        return cur
+
+    def _open_contained_parent(self, parent: Path) -> int:
+        """Open *parent* (verified genuine) with a no-follow directory fd.
+
+        The pinned fd keeps the write bound to the verified inode inside the
+        real workspace even if the path is concurrently swapped for a
+        symlink between admission and the write.
+        """
+        try:
+            return os.open(
+                str(parent),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+        except OSError as exc:
+            raise PlatformIsolationError(
+                "escaped_parent",
+                f"Cannot pin no-follow directory fd for {parent}: {exc}",
+            ) from exc
+
     def create_relative_symlink(
-        self, target: Path, link_path: Path,
+        self, target: Path, link_path: Path, *, workspace_root: Path,
     ) -> None:
         """Create a validated relative symlink on a supported POSIX host.
 
         Validates:
         - target is not absolute (relative symlinks only)
         - target does not escape canonical root (no excessive ../ traversal)
+        - resolved-parent containment inside the REAL workspace: no-follow
+          admission of every parent component below the resolved workspace
+          root, then an atomic tmp-symlink + ``os.replace`` through a
+          no-follow pinned parent dirfd immediately before publication.
 
-        **Safe repair:** existing entries are removed ONLY through
-        no-follow validated routines. Ordinary directories are NEVER
-        recursively deleted.
+        **Safe repair:** existing entries are replaced atomically through the
+        pinned dirfd. Ordinary directories are NEVER recursively deleted.
         """
         if target.is_absolute():
             raise PlatformIsolationError(
@@ -177,23 +335,146 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
                 f"({up_count} levels)",
             )
 
-        # Clean up existing entry at link_path.
-        # SAFE REMOVAL: only remove symlinks or files, NEVER ordinary dirs.
-        if link_path.is_symlink():
-            link_path.unlink()
-        elif link_path.exists(follow_symlinks=False):
-            if link_path.is_dir(follow_symlinks=False):
+        # Resolved-parent containment: no-follow admission of every parent
+        # component below the real workspace, creating missing real dirs.
+        parent = self._resolve_contained_parent(
+            link_path, workspace_root, create=True,
+        )
+        assert parent is not None  # create=True never returns None
+
+        # SAFE REMOVAL / REPLACEMENT: only replace symlinks or files, NEVER
+        # ordinary dirs — through the pinned no-follow parent dirfd.
+        fd = self._open_contained_parent(parent)
+        try:
+            try:
+                st = os.lstat(link_path.name, dir_fd=fd)
+            except FileNotFoundError:
+                st = None
+            if (
+                st is not None
+                and stat.S_ISDIR(st.st_mode)
+                and not stat.S_ISLNK(st.st_mode)
+            ):
                 raise PlatformIsolationError(
                     "ordinary_dir_at_link_path",
                     f"Expected symlink at {link_path} but found ordinary "
                     "directory. Refusing to recursively delete — remove "
                     "manually or use withdraw_skill first.",
                 )
-            else:
-                link_path.unlink()
 
-        link_path.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(str(target), str(link_path))
+            # Atomic create-or-replace: readers see either the old complete
+            # symlink or the new one, never a gap (a bare unlink + symlink
+            # leaves OSError: Invalid argument to concurrent readers).
+            tmp_name = ".tmp." + link_path.name
+            try:
+                os.unlink(tmp_name, dir_fd=fd)
+            except FileNotFoundError:
+                pass  # stale temp from a crashed prior materialization
+            os.symlink(str(target), tmp_name, dir_fd=fd)
+            try:
+                os.replace(
+                    tmp_name, link_path.name,
+                    src_dir_fd=fd, dst_dir_fd=fd,
+                )
+            except OSError as exc:
+                # Defend against an ordinary dir appearing at the final
+                # component between the lstat above and the replace.
+                try:
+                    st2 = os.lstat(link_path.name, dir_fd=fd)
+                except FileNotFoundError:
+                    st2 = None
+                if (
+                    st2 is not None
+                    and stat.S_ISDIR(st2.st_mode)
+                    and not stat.S_ISLNK(st2.st_mode)
+                ):
+                    try:
+                        os.unlink(tmp_name, dir_fd=fd)
+                    except FileNotFoundError:
+                        pass
+                    raise PlatformIsolationError(
+                        "ordinary_dir_at_link_path",
+                        f"Expected symlink at {link_path} but found ordinary "
+                        "directory. Refusing to recursively delete.",
+                    ) from exc
+                raise PlatformIsolationError(
+                    "link_creation_failed",
+                    f"Failed to atomically replace symlink {link_path}: {exc}",
+                ) from exc
+        finally:
+            os.close(fd)
+
+    def withdraw_workspace_link(
+        self, link_path: Path, *, workspace_root: Path,
+    ) -> None:
+        """Remove a workspace link, contained in the real workspace.
+
+        No-follow admission of the parent chain; the unlink happens through
+        a pinned no-follow parent dirfd. Removes symlinks and regular files;
+        refuses ordinary directories. No-op when the entry is absent.
+        """
+        parent = self._resolve_contained_parent(
+            link_path, workspace_root, create=False,
+        )
+        if parent is None:
+            return  # parent chain absent — nothing to withdraw
+        fd = self._open_contained_parent(parent)
+        try:
+            try:
+                st = os.lstat(link_path.name, dir_fd=fd)
+            except FileNotFoundError:
+                return  # already gone
+            if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+                raise PlatformIsolationError(
+                    "ordinary_dir_not_withdrawable",
+                    f"Expected symlink at {link_path} but found ordinary "
+                    f"directory — refusing to delete potentially valuable "
+                    f"content",
+                )
+            os.unlink(link_path.name, dir_fd=fd)
+        finally:
+            os.close(fd)
+
+    def admit_skills_directory(
+        self, skills_dir: Path, *, workspace_root: Path,
+    ) -> None:
+        """No-follow admission of a provider/nested skills root.
+
+        Every EXISTING component of *skills_dir* below the resolved workspace
+        root must be a genuine directory; a symlink at any level raises
+        ``escaped_parent``. A missing component (fresh workspace) is a no-op.
+        """
+        # Walk skills_dir itself (all components including the final one).
+        real_ws = workspace_root.resolve()
+        if not real_ws.is_dir():
+            return  # nothing to admit below a missing workspace root
+        try:
+            rel_parts = skills_dir.relative_to(workspace_root).parts
+        except ValueError:
+            raise PlatformIsolationError(
+                "link_outside_workspace",
+                f"Skills dir {skills_dir} is not lexically inside workspace "
+                f"{workspace_root}",
+            ) from None
+        cur = real_ws
+        for part in rel_parts:
+            cur = cur / part
+            try:
+                st = cur.lstat()
+            except FileNotFoundError:
+                return  # missing tail — nothing to admit yet
+            if stat.S_ISLNK(st.st_mode):
+                raise PlatformIsolationError(
+                    "escaped_parent",
+                    f"Symlink at skills root: {cur} — refusing to follow "
+                    f"(no-follow admission). Provider/nested skills roots "
+                    f"must be genuine directories inside the real workspace.",
+                )
+            if not stat.S_ISDIR(st.st_mode):
+                raise PlatformIsolationError(
+                    "escaped_parent",
+                    f"Non-directory at skills root: {cur}",
+                )
 
     def verify_workspace_link(
         self, link_path: Path, expected_target: Path, canonical_root: Path,

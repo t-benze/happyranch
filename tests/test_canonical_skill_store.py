@@ -154,6 +154,7 @@ class TestLinuxPlatformOperations:
 
         iso.create_relative_symlink(
             Path(os.path.relpath(expected, link.parent)), link,
+            workspace_root=tmp_path / "workspace",
         )
         assert iso.verify_workspace_link(link, expected, canonical_root)
 
@@ -195,7 +196,7 @@ class TestSymlinkOperations:
 
         link = tmp_path / "link"
         rel_target = Path("target")
-        iso.create_relative_symlink(rel_target, link)
+        iso.create_relative_symlink(rel_target, link, workspace_root=tmp_path)
         assert link.is_symlink()
         assert (link / "file.txt").read_text() == "hello"
 
@@ -204,7 +205,7 @@ class TestSymlinkOperations:
         iso = isolation.detect_platform_isolation()
         link = tmp_path / "link"
         with pytest.raises(PlatformIsolationError, match="absolute"):
-            iso.create_relative_symlink(Path("/etc/passwd"), link)
+            iso.create_relative_symlink(Path("/etc/passwd"), link, workspace_root=tmp_path)
 
     def test_verify_workspace_link_valid(self, tmp_path):
         """verify_workspace_link returns True for valid links."""

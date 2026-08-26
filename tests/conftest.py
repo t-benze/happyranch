@@ -62,72 +62,30 @@ def _test_mode_platform_isolation(monkeypatch):
         return
 
     from runtime.platform.isolation import (
-        PlatformIsolation,
         PlatformIsolationError,
+        _PosixSameOwnerIsolation,
         detect_platform_isolation as _real_detect,
     )
     import subprocess
     import sys
 
-    class _TestPlatformIsolation(PlatformIsolation):
+    class _TestPlatformIsolation(_PosixSameOwnerIsolation):
         """Test-mode same-owner isolation for unit tests.
 
         The test process runs as both daemon and executor — the executor
         and daemon share the same OS identity.
+
+        The link-writer surface (``create_relative_symlink``,
+        ``withdraw_workspace_link``, ``admit_skills_directory``,
+        ``verify_workspace_link``) is INHERITED from the production POSIX
+        implementation so the unit suite exercises the REAL THR-190 PR-B
+        containment enforcement (no-follow admission, resolved-parent
+        containment, atomic pinned-dirfd writes). A test-only writer that
+        bypassed containment would create a false green — deliberately not
+        done here. Only the executor launcher is overridden: it delegates to
+        ``executors.subprocess.Popen`` so test mocks intercept the call (the
+        same module ``_run_command`` uses).
         """
-
-        def create_relative_symlink(
-            self, target: Path, link_path: Path,
-        ) -> None:
-            if target.is_absolute():
-                raise PlatformIsolationError(
-                    "absolute_target",
-                    f"Symlink target must be relative, got absolute: {target}",
-                )
-            target_parts = str(target).split(os.sep)
-            up_count = sum(1 for p in target_parts if p == "..")
-            if up_count > 50:
-                raise PlatformIsolationError(
-                    "target_escape",
-                    f"Excessive .. traversal",
-                )
-            if link_path.is_symlink():
-                link_path.unlink()
-            elif link_path.exists(follow_symlinks=False):
-                if link_path.is_dir(follow_symlinks=False):
-                    raise PlatformIsolationError(
-                        "ordinary_dir_at_link_path",
-                        "Expected symlink, found ordinary directory",
-                    )
-                else:
-                    link_path.unlink()
-            link_path.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(target), str(link_path))
-
-        def verify_workspace_link(
-            self, link_path: Path, expected_target: Path, canonical_root: Path,
-        ) -> bool:
-            if not link_path.is_symlink():
-                return False
-            try:
-                actual = Path(os.readlink(str(link_path)))
-                actual_resolved = (link_path.parent / actual).resolve()
-                expected_resolved = expected_target.resolve()
-                if actual_resolved != expected_resolved:
-                    return False
-                try:
-                    actual_resolved.relative_to(canonical_root.resolve())
-                except ValueError:
-                    return False
-                return True
-            except (OSError, ValueError):
-                return False
-
-        def is_valid_symlink(self, path: Path) -> bool:
-            try:
-                return path.is_symlink()
-            except OSError:
-                return False
 
         def launch_executor(
             self,

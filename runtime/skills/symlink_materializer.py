@@ -106,6 +106,24 @@ class SymlinkMaterializer:
         croot = canonical_root or self._store.root
         link_path = workspace / skills_subdir / skill_slug
 
+        # THR-190 PR-B containment: no-follow admission of the provider /
+        # nested skills root BEFORE any verify/no-op or write. A pre-
+        # positioned symlink at the workspace level (e.g. ``.claude``), the
+        # provider root (``.claude/skills`` / ``.agents/skills``), or any
+        # nested component is refused — the daemon must never follow an
+        # attacker-controlled parent out of the real workspace. The
+        # lowest-level link writer re-enforces the same containment
+        # immediately before link creation/replacement (defense in depth).
+        try:
+            self._isolation.admit_skills_directory(
+                link_path.parent, workspace_root=workspace,
+            )
+        except PlatformIsolationError as exc:
+            raise SymlinkMaterializationError(
+                getattr(exc, "code", None) or "escaped_parent",
+                f"Workspace skills root {link_path.parent} refused: {exc}",
+            ) from exc
+
         # Relative target from link to canonical
         try:
             rel_target = Path(os.path.relpath(canonical_target, link_path.parent))
@@ -139,32 +157,16 @@ class SymlinkMaterializer:
                     "after verifying the directory does not contain real work.",
                 )
 
-        # Create/replace the link ATOMICALLY using a temp symlink + os.replace.
-        # A bare unlink() + create_relative_symlink() leaves a gap where
-        # concurrent readers see OSError: Invalid argument (the old symlink
-        # is unlinked but the new one hasn't been created yet).
-        # os.replace on a temp symlink makes the transition atomic — readers
-        # see either the old complete symlink or the new one, never nothing.
+        # Create/replace the link ATOMICALLY. The lowest-level link writer
+        # performs the write through a no-follow, pinned parent dirfd inside
+        # the real workspace: it re-verifies resolved-parent containment
+        # immediately before publication and swaps via temp symlink +
+        # os.replace so concurrent readers never see a gap (a bare unlink() +
+        # symlink() leaves OSError: Invalid argument in between).
         try:
-            tmp_link = link_path.with_name(".tmp." + link_path.name)
-            # Clean up any stale temp from a crashed prior materialization
-            if tmp_link.exists(follow_symlinks=False):
-                tmp_link.unlink()
-            self._isolation.create_relative_symlink(rel_target, tmp_link)
-            try:
-                os.replace(tmp_link, link_path)
-            except OSError:
-                # os.replace may fail if the target is an ordinary dir
-                # (already checked above for is_symlink case, but defend
-                # against race between check and replace)
-                if link_path.is_dir() and not link_path.is_symlink():
-                    tmp_link.unlink()
-                    raise SymlinkMaterializationError(
-                        "ordinary_dir_at_link_path",
-                        f"Expected symlink at {link_path} but found ordinary directory. "
-                        "Refusing to delete.",
-                    )
-                raise
+            self._isolation.create_relative_symlink(
+                rel_target, link_path, workspace_root=workspace,
+            )
             logger.info(
                 "Created workspace link %s → %s", link_path, rel_target,
             )
@@ -172,7 +174,7 @@ class SymlinkMaterializer:
             raise
         except PlatformIsolationError as exc:
             raise SymlinkMaterializationError(
-                "link_creation_failed",
+                getattr(exc, "code", None) or "link_creation_failed",
                 f"Failed to create symlink {link_path} → {rel_target}: {exc}",
             ) from exc
         except OSError as exc:
@@ -203,23 +205,22 @@ class SymlinkMaterializer:
                 (possibly containing real data that must not be deleted).
         """
         link_path = workspace / skills_subdir / skill_slug
-        if not link_path.exists(follow_symlinks=False):
-            return  # Already gone
-
-        if link_path.is_symlink():
-            link_path.unlink()
-            logger.info("Withdrew workspace link: %s", link_path)
-        elif link_path.is_dir():
-            # Ordinary directory — NOT owned by symlink materializer.
-            # Do NOT delete — it might contain real work.
-            raise SymlinkMaterializationError(
-                "ordinary_dir_not_withdrawable",
-                f"Expected symlink at {link_path} but found ordinary directory "
-                f"— refusing to delete potentially valuable content",
+        # THR-190 PR-B containment: the withdrawal happens through the
+        # lowest-level link writer, which performs no-follow admission of
+        # the parent chain (rejecting pre-positioned symlinked roots) and
+        # unlinks through a pinned no-follow parent dirfd — a symlink swap
+        # or escaped parent can never redirect the unlink outside the real
+        # workspace.
+        try:
+            self._isolation.withdraw_workspace_link(
+                link_path, workspace_root=workspace,
             )
-        else:
-            link_path.unlink()
-            logger.info("Withdrew non-link entry: %s", link_path)
+            logger.info("Withdrew workspace link: %s", link_path)
+        except PlatformIsolationError as exc:
+            raise SymlinkMaterializationError(
+                getattr(exc, "code", None) or "withdraw_failed",
+                f"Failed to withdraw link {link_path}: {exc}",
+            ) from exc
 
     def materialize_skills_batch(
         self,
@@ -265,9 +266,23 @@ class SymlinkMaterializer:
         skills_dir = workspace / skills_subdir
         expected_slugs = {spec["slug"] for spec in expected_specs}
 
-        # Identify existing entries
+        # THR-190 PR-B containment: no-follow admission of the provider /
+        # nested skills root BEFORE listing it. A pre-positioned symlink at
+        # the workspace level, the provider root, or any nested component
+        # must never be iterated (reading an external directory) or used to
+        # unlink external entries via withdrawal. The lowest-level link
+        # writer re-enforces containment on every write/unlink.
         existing_slugs: set[str] = set()
         if skills_dir.is_dir():
+            try:
+                self._isolation.admit_skills_directory(
+                    skills_dir, workspace_root=workspace,
+                )
+            except PlatformIsolationError as exc:
+                raise SymlinkMaterializationError(
+                    getattr(exc, "code", None) or "escaped_parent",
+                    f"Workspace skills root {skills_dir} refused: {exc}",
+                ) from exc
             for entry in skills_dir.iterdir():
                 if entry.name.startswith(".tmp."):
                     continue  # Stale temp dirs from crashed materialization
