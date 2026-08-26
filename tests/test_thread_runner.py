@@ -581,6 +581,15 @@ def test_build_delta_prompt_excludes_old_history_includes_new():
     assert "brand new point" in prompt
     assert "TOK-XYZ" in prompt
     assert "Decline-by-Default" in prompt
+    # TASK-5735: the resumed/delta REPLY builder must inject the same
+    # behavioral doctrine clauses as the full builder — inspect the full
+    # supplied conversation beyond the delivery range, and silently decline
+    # when the invoked agent already substantively answered in a later own
+    # message (with the distinct-unanswered-request exception preserved).
+    assert "already substantively answered" in prompt
+    assert "full conversation" in prompt
+    assert "delivery range" in prompt
+    assert "distinct request you have not yet answered" in prompt
     # It must NOT re-ship the full transcript header / participant roster.
     assert "Full message history follows" not in prompt
     assert "Participants:" not in prompt
