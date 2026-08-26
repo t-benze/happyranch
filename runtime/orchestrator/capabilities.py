@@ -190,6 +190,14 @@ def build_capabilities_prompt(
         "- Integration model (a): each mutating child opens its own PR; "
         "the parent join summarizes outcomes.\n"
         "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier).\n"
+        "- Retry links (THR-078): a child that re-targets an agent with a "
+        "FAILED child under this parent MUST carry `revisit_of_task_id` "
+        "naming that FAILED child — it must identify a FAILED child of this "
+        "parent assigned to the same agent. Example retry child: "
+        '{"agent": "dev_agent", "prompt": "<retry brief>", '
+        '"revisit_of_task_id": "<FAILED child task id>"}. '
+        "A missing or invalid `revisit_of_task_id` on ANY child rejects the "
+        "WHOLE fanout fail-closed before any child is spawned.\n"
         "- Children targeted at a **team manager** are decision-capable "
         "(mutating fan-out): they can return delegate-chain decisions that "
         "spawn implementation subtrees inside their branch.\n"
