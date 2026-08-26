@@ -813,6 +813,41 @@ honest no-enforcement ``PassthroughBackend``, and the daemon drain calls
 producers (task, thread, dream, wake) stay structurally unchanged; later
 serial slices attach them to the same contract.
 
+**Slice B backend selection (THR-207 / TASK-5637).** The daemon-wide
+supervisor's backend is selected through the capability factory
+(`runtime/platform/backend_factory.py`) — the single OS-name site, and even
+it selects by operational probe rather than OS/version strings:
+
+- healthy Linux systemd/cgroup-v2 probe (user manager reachable, cgroup v2
+  controllers mounted, transient scope created with applied limits,
+  membership/counters verified, empty-cgroup teardown, no residue) →
+  `LinuxSystemdBackend` (`runtime/platform/linux_systemd.py`);
+- otherwise a healthy process-group/census probe → `MacOSProcessGroupBackend`
+  (`runtime/platform/macos_process_group.py`);
+- anything else → the honest no-capability fallback (`PassthroughBackend`,
+  every capability `unavailable` — never a fabricated guarantee or zero
+  measurement).
+
+Callers above the factory branch on **capabilities** (`enforcement_guaranteed`
+and the binding-cap logic are unchanged), never on backend names. The wired
+schedule producer's launch body performs its own subprocess launch inside the
+executor, so its truthful selection is the honest fallback until the executor
+launch bodies are wired (a later slice); the real backends are exercised by
+real integration suites gated on the operational probe. Guaranteed-cleanup
+residue from the Linux backend blocks admission until reconciliation;
+best-effort macOS survivors stay censused/charged/visible and block only on
+census/measurement failure or the conservative survivor threshold.
+
+Containment/measurement is **fail-closed**: on the Linux backend an
+unreadable `cgroup.procs` or an errored `systemctl` unit-state interrogation
+is UNKNOWN evidence that never yields `CLEAN`/`quiescent` (guaranteed-cleanup
+lease release requires verified cgroup emptiness), and an absent counter is
+`unavailable` unless a real sample backs it; on the macOS backend a
+census/measurement exception at finish is explicit failure evidence that
+blocks admission — never an empty clean group. Retained samples and
+serialized sampling gaps are cardinality-bounded (truncated-prefix span
+preserved truthfully).
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:

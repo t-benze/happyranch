@@ -887,11 +887,65 @@ founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires run
 through the supervisor with the honest no-enforcement ``PassthroughBackend``
 (``runtime/platform/passthrough_backend.py``; all capabilities unavailable),
 and the daemon drain calls ``supervisor.shutdown()`` in the app lifespan
-finally before producer workers are cancelled. The other producers, both Popen
-bodies in ``runtime/orchestrator/executors.py``, Linux/macOS backends, and
-observability wiring are later serial slices. ``runtime/platform/isolation.py``
+finally before producer workers are cancelled. The other producers and both
+Popen bodies in ``runtime/orchestrator/executors.py`` stay on their current
+path; they are wired in later serial slices. ``runtime/platform/isolation.py``
 (canonical-skill-store integrity + same-owner launch) is layered beneath the
 supervisor and is unchanged by this design.
+
+**Slice B (THR-207 / TASK-5637) ships the real backends behind the capability
+factory** (``runtime/platform/backend_factory.py``):
+
+- ``runtime/platform/process_census.py`` — portable identity-safe descendant-
+  tree census + sampler (OS-shipped ``/proc`` / libproc only, no dependency):
+  start-identity PID-reuse rejection, zombie-aware liveness, sampled
+  RSS+CPU+process peaks, inter-sample gaps, ``unavailable`` never rendered
+  as zero.
+- ``runtime/platform/linux_systemd.py`` — real Linux systemd/cgroup-v2
+  backend: ``probe`` creates/verifies/tears down a transient scope (applied
+  limits, membership, counters, empty-cgroup teardown, no residue);
+  ``launch`` runs the target into a per-session transient scope under the
+  aggregate ``happyranch.slice``; ``finish`` **explicitly stops the whole
+  scope on every terminal path, clean success included**, escalates to
+  ``KILL`` within the measured grace, and verifies **cgroup emptiness**
+  (unit ``inactive`` alone is never quiescence — a TERM-resistant member can
+  linger in the cgroup after the main PID exits). Quiescence is
+  **fail-closed**: an unreadable ``cgroup.procs`` or an errored unit-state
+  interrogation is UNKNOWN evidence that never yields ``CLEAN``/``quiescent``
+  (the receipt stays ``INCOMPLETE`` with explicit ``cgroup_procs_unreadable``
+  evidence so admission blocks). Verified residue is reported as
+  guaranteed-cleanup residue (admission-blocking). Counters are authoritative
+  where the kernel exposes them (``memory.peak``, ``cpu.stat``
+  ``usage_usec``, ``pids.current``); an absent counter falls back to the
+  sampled peak with ``sampled`` provenance only when a sample exists,
+  otherwise it is ``unavailable`` — never a fabricated value.
+- ``runtime/platform/macos_process_group.py`` — honestly capped macOS
+  backend: process-group launch, TERM/KILL bounded cleanup with
+  group-ownership proof before signaling, identity-safe escaped-descendant
+  survivor census (a ``setsid``-escaped child is censused, never falsely
+  claimed clean), sampled-provenance peaks. ``finish`` runs its **own fresh
+  final identity-safe descendant census** (never the last periodic snapshot)
+  so an escaped descendant created after the last sample is detected by the
+  shipping finish seam; a census/measurement exception propagates as
+  explicit failure evidence that blocks admission — it never collapses into
+  an empty clean group. ``limits_*`` stay ``unavailable`` — no
+  Linux-equivalent descendant-tree controller exists on macOS.
+
+The supervisor retains a **cardinality-bounded** sample history per attempt
+(dropping the oldest past the bound) so the bounded receipt's serialized
+sampling gaps stay bounded; the truncated prefix's elapsed span is preserved
+as the truthful leading gap, so cadence is never presented as continuous
+or gap-free truth.
+
+Callers above the factory branch on **capabilities**, never OS names; the
+factory is the single OS-name site and even it selects by operational probe,
+never by OS/version strings. Unsupported or unhealthy environments select the
+honest no-capability fallback (``PassthroughBackend``). The daemon's wired
+schedule producer performs its own subprocess launch inside the executor
+body, so its truthful selection remains the honest fallback until the
+executor launch bodies are wired; the real backends are exercised by real
+integration suites gated on the operational probe (explicit skip reason
+thereafter).
 
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 

@@ -3,7 +3,8 @@
 Slice A (THR-207 rulings 1/2/3/4/5/6 as amended; governing spec
 ``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``, with the
 founder-approved real-caller amendment THR-207 seq 41-44) ships the
-platform-neutral core plus **exactly one** wired production producer:
+platform-neutral core plus **exactly one** wired production producer; Slice B
+ships the real backends behind the capability factory:
 
 * capability/report/sample/receipt/opaque-handle contracts — see
   ``runtime/platform/session_backend.py``;
@@ -16,9 +17,20 @@ platform-neutral core plus **exactly one** wired production producer:
   daemon drain iterates the same registry — so a shutdown that fires when or
   immediately after admission is granted can never miss an admitted attempt;
 * schedule fires (``runtime/daemon/schedule_runner.py``) run through the
-  supervisor via the honest no-enforcement ``PassthroughBackend``; the
-  daemon drain calls ``shutdown()`` in the app lifespan finally. Task, thread,
-  dream, and wake producers stay structurally unchanged.
+  supervisor; the backend is selected by the capability factory
+  (``runtime/platform/backend_factory.py``) — the wired producer's launch
+  body performs its own subprocess launch, so the truthful selection is the
+  honest no-enforcement passthrough until the executor launch bodies are
+  wired (a later slice). The daemon drain calls ``shutdown()`` in the app
+  lifespan finally. Task, thread, dream, and wake producers stay structurally
+  unchanged.
+
+Slice B backends (``runtime/platform/linux_systemd.py``,
+``runtime/platform/macos_process_group.py``) implement the same contract with
+real operations — operational capability probes, per-session containment,
+whole-tree stop on every terminal path, authoritative/sampled measurement —
+and are exercised by real integration suites; callers branch on capabilities,
+never on OS names.
 
 Load-bearing ordering invariants (enforced here, honored by wiring):
 
@@ -71,6 +83,12 @@ from runtime.platform.session_backend import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Receipt-boundedness: the supervisor retains at most this many samples per
+# attempt (dropping the oldest) so the bounded receipt's serialized sampling
+# gaps stay cardinality-bounded while the dropped prefix span is preserved
+# truthfully as the leading gap.
+_MAX_RETAINED_SAMPLES = 1024
 
 
 # ── Cancellation ─────────────────────────────────────────────────────
@@ -394,12 +412,14 @@ class AdmissionController:
         cap: int,
         gates: Sequence[PressureGate] = (),
         monotonic: Callable[[], float] = time.monotonic,
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
     ) -> None:
         if cap < 1:
             raise ValueError("cap must be >= 1")
         self._cap = cap
         self._gates = list(gates)
         self._monotonic = monotonic
+        self._max_retained_samples = max_retained_samples
         self._cv = threading.Condition(threading.Lock())
         self._queue: deque[_QueuedRequest] = deque()
         self._active = 0
@@ -533,6 +553,7 @@ class AdmissionController:
                             request.logical_id,
                             granted_generation=self._shutdown_generation,
                             monotonic=self._monotonic,
+                            max_retained_samples=self._max_retained_samples,
                         )
                         self._ownerships[lease_id] = ctx
                         lease = AdmissionLease(self, ctx)
@@ -837,6 +858,7 @@ class _AttemptContext:
         logical_id: str,
         granted_generation: int,
         monotonic: Callable[[], float],
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
     ) -> None:
         self._logical_id = logical_id
         self._granted_generation = granted_generation
@@ -855,6 +877,9 @@ class _AttemptContext:
         self._finalized = False
         self._receipt: Receipt | None = None
         self._samples: list[ResourceSample] = []
+        self._max_retained_samples = max_retained_samples
+        self._dropped_samples = 0
+        self._dropped_span = 0.0
         self._sample_errors = 0
         self._started_at: float = monotonic()
 
@@ -956,8 +981,33 @@ class _AttemptContext:
     # ── sampling sink ─────────────────────────────────────────────
 
     def add_sample(self, sample: ResourceSample) -> None:
+        """Retain one bounded sample; the oldest is dropped at capacity.
+
+        The dropped inter-sample span is accumulated so the receipt's
+        serialized gap series can preserve the truthful elapsed time of the
+        truncated prefix (samples beyond the bound are never presented as a
+        gap-free or fabricated cadence)."""
         with self._lock:
+            if len(self._samples) >= self._max_retained_samples:
+                if len(self._samples) >= 2:
+                    self._dropped_span += round(
+                        self._samples[1].sampled_at - self._samples[0].sampled_at,
+                        6,
+                    )
+                self._dropped_samples += 1
+                self._samples.pop(0)
             self._samples.append(sample)
+
+    def dropped_samples(self) -> int:
+        """Samples dropped by the retention bound (0 when none)."""
+        with self._lock:
+            return self._dropped_samples
+
+    def dropped_span(self) -> float:
+        """Truthful elapsed time from the first-ever sample to the first
+        retained sample (the sum of the dropped inter-sample gaps)."""
+        with self._lock:
+            return self._dropped_span
 
     def note_sample_error(self) -> None:
         with self._lock:
@@ -1007,6 +1057,7 @@ class _AttemptContext:
                 str(reason),
                 grace,
                 samples=self.samples_snapshot(),
+                sample_prefix_gap=self.dropped_span(),
             )
         except Exception as exc:
             receipt = None
@@ -1167,6 +1218,7 @@ class HostSessionSupervisor:
         residue: ResidueAccountant | None = None,
         sampler: Callable[[RunningHandle], ResourceSample] | None = None,
         sample_interval_seconds: float | None = None,
+        max_retained_samples: int = _MAX_RETAINED_SAMPLES,
         max_retry_attempts: int = 0,
         backoff_seconds: Sequence[float] = (),
         monotonic: Callable[[], float] = time.monotonic,
@@ -1192,6 +1244,7 @@ class HostSessionSupervisor:
             ),
             gates=(self._residue,),
             monotonic=monotonic,
+            max_retained_samples=max_retained_samples,
         )
         self._residue.set_waker(self._admission.wake)
         if sampler is not None:
@@ -1503,20 +1556,25 @@ def build_default_host_supervisor(
     policy: PolicySnapshot | None = None,
     publisher: Callable[[Receipt], None] | None = None,
 ) -> HostSessionSupervisor:
-    """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice A).
+    """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice B).
 
     Exactly ONE production producer — schedule fires — runs through the
     returned supervisor; task/thread/dream/wake producers stay structurally
-    unchanged. The backend is the honest no-enforcement ``PassthroughBackend``
-    (no Linux/macOS containment ships in this slice; missing enforcement
-    tightens admission via the binding macOS canary cap of 4, which never
-    binds the single schedule worker). The publisher logs bounded receipts —
-    no metrics/audit/health payload expansion.
+    unchanged. The backend is selected through the capability factory
+    (:func:`runtime.platform.backend_factory.session_backend_for_wired_producer`):
+    the wired producer's launch body performs its own subprocess launch
+    inside the executor, which no real containment backend can wrap until
+    the executor launch bodies are wired (a later slice), so the truthful
+    selection is the honest no-enforcement passthrough (all capabilities
+    unavailable; missing enforcement tightens admission via the binding
+    macOS canary cap of 4, which never binds the single schedule worker).
+    The publisher logs bounded receipts — no metrics/audit/health payload
+    expansion.
     """
-    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.platform.backend_factory import session_backend_for_wired_producer
 
     return HostSessionSupervisor(
-        backend=backend or PassthroughBackend(),
+        backend=backend or session_backend_for_wired_producer(),
         policy=policy or canary_policy(),
         publisher=publisher or _log_bounded_receipt,
     )

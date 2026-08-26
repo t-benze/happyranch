@@ -113,6 +113,7 @@ class PassthroughBackend:
         terminal_reason: str,
         grace_seconds: float,
         samples: Sequence[ResourceSample] | None = None,
+        sample_prefix_gap: float = 0.0,
     ) -> Receipt:
         """Nothing to tear down or verify — this backend manages no tree.
 
