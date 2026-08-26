@@ -78,6 +78,24 @@ def test_histogram_quantile_q0_q1():
     assert histogram_quantile(buckets, 10, 1.0) == pytest.approx(0.005)
 
 
+def test_parse_http_histogram_with_real_gateway_label():
+    # Headscale 0.25 records the gRPC-gateway surface under the "/api/v1/"
+    # route prefix; /ts2021 and /machine/map are excluded by the middleware.
+    text = (
+        '# TYPE headscale_http_duration_seconds histogram\n'
+        'headscale_http_duration_seconds_bucket{path="/api/v1/",le="0.01"} 5\n'
+        'headscale_http_duration_seconds_bucket{path="/api/v1/",le="0.05"} 9\n'
+        'headscale_http_duration_seconds_bucket{path="/api/v1/",le="+Inf"} 10\n'
+        'headscale_http_duration_seconds_sum{path="/api/v1/"} 0.12\n'
+        'headscale_http_duration_seconds_count{path="/api/v1/"} 10\n'
+    )
+    parsed = parse_prometheus(text)
+    buckets, count, total = extract_http_duration_histogram(parsed, "/api/v1/")
+    assert count == 10
+    assert total == pytest.approx(0.12)
+    assert buckets[0.01] == 5
+
+
 def test_counter_rate():
     samples = [(0.0, 10.0), (10.0, 40.0)]
     assert counter_rate(samples) == pytest.approx(3.0)

@@ -88,6 +88,8 @@ def test_lab_ports_unique_and_bounded():
         assert 40000 <= metrics <= 50000
         seen.extend([http, grpc, metrics])
     assert len(seen) == len(set(seen)), "ports must be unique across cells"
-    # Only the metrics port is ever published to the host (loopback); the
-    # control and gRPC ports stay on the internal lab network.
+    # Control-plane (8080) and gRPC (50443) ports stay on the internal lab
+    # network; only metrics (9090) and the HTTP API (8080) are published to
+    # the host, bound to 127.0.0.1 (loopback) so the harness can scrape and
+    # poll them. No lab endpoint is ever reachable off-host.
     assert all(port != 8080 for port in seen)

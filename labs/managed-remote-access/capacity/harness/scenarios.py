@@ -77,7 +77,37 @@ class Runner:
         self.host_series = []
         self.cell_series = []
 
-    def _sample_once(self, cells: list[int], metrics_ports: dict[int, int]) -> None:
+    def _metrics_summary(self, metrics_port: int) -> dict:
+        text = self.docker.metrics_scrape(metrics_port)
+        parsed = parse_prometheus(text)
+        out: dict = {}
+        # Headscale records HTTP request durations per mux route template. The
+        # control-plane API surface is served by the gRPC-gateway under the
+        # "/api/v1/" prefix; /ts2021 (Noise) and /machine/map are excluded by
+        # headscale itself. Summarize every path template present.
+        prefix = "headscale_http_duration_seconds"
+        seen_paths: dict[str, None] = {}
+        for labels, _v in parsed.get(f"{prefix}_bucket", []):
+            seen_paths[labels.get("path", "")] = None
+        for path in sorted(p for p in seen_paths if p):
+            buckets, count, total = extract_http_duration_histogram(parsed, path)
+            if count > 0:
+                q = histogram_quantile(buckets, count, 0.95)
+                out[path] = {
+                    "count": count,
+                    "sum_s": round(total, 6) if total else None,
+                    "mean_s": round(total / count, 6) if count else None,
+                    "p95_s": round(q, 6) if q is not None else None,
+                }
+        map_total = parsed.get("headscale_mapresponse_sent_total", [])
+        if map_total:
+            out["mapresponse_sent_total"] = {
+                "labels": [dict(l) for l in sorted({tuple(sorted(l.items())) for l, _ in map_total})],
+                "values": [v for _, v in map_total],
+            }
+        return out
+
+    def _sample_once(self, cells: list[int], ports: dict[int, dict], api_keys: dict[int, str]) -> None:
         ts = time.time()
         self.host_series.append((ts, self.docker.host_stats()))
         for cell in cells:
@@ -90,29 +120,10 @@ class Runner:
                 "disk_bytes": self.docker.cell_disk_bytes(cell),
                 "volume_bytes": self.docker.volume_size_bytes(cell),
                 "connected_nodes": self.docker.connected_node_count(cell),
-                "metrics": self._metrics_summary(metrics_ports[cell]),
+                "http_api_latency_ms": self.docker.http_api_latency(ports[cell]["http_port"], api_keys[cell])["latency_ms"],
+                "metrics": self._metrics_summary(ports[cell]["metrics_port"]),
             }
             self.cell_series.append(row)
-
-    def _metrics_summary(self, metrics_port: int) -> dict:
-        text = self.docker.metrics_scrape(metrics_port)
-        parsed = parse_prometheus(text)
-        out: dict = {}
-        for path in ("/api/v1/node", "/api/v1/preauthkey", "/api/v1/user", "/machine"):
-            buckets, count, total = extract_http_duration_histogram(parsed, path)
-            if count > 0:
-                q = histogram_quantile(buckets, count, 0.95)
-                out[path] = {
-                    "count": count,
-                    "sum_s": total,
-                    "mean_s": round(total / count, 6) if count else None,
-                    "p95_s": round(q, 6) if q is not None else None,
-                }
-        map_total = parsed.get("headscale_mapresponse_sent_total", [])
-        if map_total:
-            labels = sorted({tuple(sorted(l.items())) for l, _ in map_total})
-            out["mapresponse_sent_total"] = {"labels": [dict(l) for l in labels], "values": [v for _, v in map_total]}
-        return out
 
     def _abort_check(self, scenario: str, step: dict, fail_ratio: float | None = None, connected_ratio: float | None = None) -> list[str]:
         aborts: list[str] = []
@@ -144,9 +155,9 @@ class Runner:
         self.docker.volume_create(cell)
         cfg_path = self.out_dir / f"config-c{cell}.yaml"
         cfg_path.write_text(headscale_config(self.run_id, cell), encoding="utf-8")
-        _http, _grpc, metrics = lab_ports(cell)
-        self.docker.cell_start(cell, cfg_path, metrics)
-        return {"metrics_port": metrics}
+        http, _grpc, metrics = lab_ports(cell)
+        self.docker.cell_start(cell, cfg_path, metrics, http)
+        return {"metrics_port": metrics, "http_port": http}
 
     def _enroll(self, cell: int, node: int, *, ephemeral: bool) -> tuple[float, bool]:
         """Start one synthetic client; returns (latency_ms, ok)."""
@@ -200,11 +211,12 @@ class Runner:
         try:
             self.docker.network_create()
             for cells in plan_idle_cells():
-                ports: dict[int, int] = {}
+                ports: dict[int, dict] = {}
+                api_keys: dict[int, str] = {}
                 cell_names = []
                 for c in range(1, cells + 1):
                     info = self._start_cell(c)
-                    ports[c] = info["metrics_port"]
+                    ports[c] = info
                     cell_names.append(c)
                 # wait for healthy
                 deadline = time.monotonic() + 60
@@ -212,10 +224,12 @@ class Runner:
                     if all(self.docker.cell_health(c) for c in cell_names):
                         break
                     time.sleep(2)
+                for c in cell_names:
+                    api_keys[c] = self.docker.apikey_create(c)
                 time.sleep(WARMUP_S)
                 deadline = time.monotonic() + SAMPLE_WINDOW_S
                 while time.monotonic() < deadline:
-                    self._sample_once(cell_names, ports)
+                    self._sample_once(cell_names, ports, api_keys)
                     aborts = self._abort_check("idle", {"cells": cells})
                     if aborts:
                         result.aborts.extend(aborts)
@@ -240,17 +254,20 @@ class Runner:
             self.docker.network_create()
             for cells, nodes_per_cell in all_node_steps():
                 step = {"cells": cells, "nodes_per_cell": nodes_per_cell}
-                ports: dict[int, int] = {}
+                ports: dict[int, dict] = {}
+                api_keys: dict[int, str] = {}
                 cell_names = list(range(1, cells + 1))
                 for c in cell_names:
                     info = self._start_cell(c)
-                    ports[c] = info["metrics_port"]
+                    ports[c] = info
                     self.docker.users_create(c, LAB_USER)
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
                     if all(self.docker.cell_health(c) for c in cell_names):
                         break
                     time.sleep(2)
+                for c in cell_names:
+                    api_keys[c] = self.docker.apikey_create(c)
                 fails = 0
                 for c in cell_names:
                     for node in range(1, nodes_per_cell + 1):
@@ -258,17 +275,18 @@ class Runner:
                         if not ok:
                             fails += 1
                 fail_ratio = fails / (cells * nodes_per_cell)
-                connected_ok, connected = True, cells * nodes_per_cell
+                connected_ok, connected_total = True, 0
                 if fail_ratio <= self.limits.enroll_fail_max:
                     for c in cell_names:
                         ok_c, connected_c = self._wait_connected(c, nodes_per_cell, CONNECT_ALL_TIMEOUT_S)
                         connected_ok = connected_ok and ok_c
-                        connected = connected_c
+                        connected_total += connected_c
+                expected_total = cells * nodes_per_cell
                 time.sleep(WARMUP_S)
                 deadline = time.monotonic() + SAMPLE_WINDOW_S
                 while time.monotonic() < deadline:
-                    self._sample_once(cell_names, ports)
-                    aborts = self._abort_check("nodes", step, fail_ratio=fail_ratio, connected_ratio=(connected / (cells * nodes_per_cell)) if cells * nodes_per_cell else 0.0)
+                    self._sample_once(cell_names, ports, api_keys)
+                    aborts = self._abort_check("nodes", step, fail_ratio=fail_ratio, connected_ratio=(connected_total / expected_total) if expected_total else 0.0)
                     if aborts:
                         result.aborts.extend(aborts)
                         result.ok = False
@@ -280,7 +298,7 @@ class Runner:
                     for node in range(1, nodes_per_cell + 1):
                         self.docker.client_rm(c, node)
                     self.docker.run(["docker", "rm", "-f", headscale_container_name(self.run_id, c)], check=False)
-                result.summary[str(step)] = {"fail_ratio": round(fail_ratio, 4), "connected": connected}
+                result.summary[str(step)] = {"fail_ratio": round(fail_ratio, 4), "connected_total": connected_total}
         except Exception as exc:  # noqa: BLE001
             result.ok = False
             result.summary["error"] = str(exc)
@@ -302,6 +320,7 @@ class Runner:
                     break
                 time.sleep(2)
             db_before = self.docker.volume_size_bytes(cell)
+            api_key = self.docker.apikey_create(cell)
             for wave, (nodes, waves) in enumerate(plan_churn_waves(), start=1):
                 for _ in range(waves):
                     for node in range(1, nodes + 1):
@@ -322,7 +341,7 @@ class Runner:
                         time.sleep(5)
                     result.summary[f"wave_{wave}_leftover_nodes"] = self.docker.connected_node_count(cell)
                     time.sleep(WARMUP_S)
-                    self._sample_once([cell], {cell: info["metrics_port"]})
+                    self._sample_once([cell], {cell: info}, {cell: api_key})
                     self._samples("churn", {"wave": wave})
                     aborts = self._abort_check("churn", {"wave": wave})
                     if aborts:

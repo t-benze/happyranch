@@ -39,23 +39,27 @@ def parse_os_release(text: str) -> dict:
 
 
 def parse_docker_version(text: str) -> dict:
-    """Parse ``docker version --format '{{json .}}'`` client/server versions."""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+    """Parse ``docker version --format '{{json .}}'`` output.
+
+    The format emits one JSON object per line (Client, then Server).
+    """
     out: dict[str, str] = {}
-    for key in ("Client", "Server"):
-        if key not in data:
+    for line in text.splitlines():
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
             continue
-        ver = data[key].get("Version", "")
-        api = data[key].get("ApiVersion", "")
-        os_name = data[key].get("Os", "")
-        arch = data[key].get("Arch", "")
-        out[f"{key.lower()}_version"] = ver
-        out[f"{key.lower()}_api_version"] = api
-        out[f"{key.lower()}_os"] = os_name
-        out[f"{key.lower()}_arch"] = arch
+        for key in ("Client", "Server"):
+            if key not in data:
+                continue
+            ver = data[key].get("Version", "")
+            api = data[key].get("ApiVersion", "")
+            os_name = data[key].get("Os", "")
+            arch = data[key].get("Arch", "")
+            out[f"{key.lower()}_version"] = ver
+            out[f"{key.lower()}_api_version"] = api
+            out[f"{key.lower()}_os"] = os_name
+            out[f"{key.lower()}_arch"] = arch
     return out
 
 

@@ -105,7 +105,7 @@ class Docker:
         self.run(["docker", "volume", "create", "--label", f"lab.run={self.run_id}", volume_name(self.run_id, cell)])
 
     # ── headscale cells ────────────────────────────────────────────────
-    def cell_start(self, cell: int, config_path: Path, metrics_host_port: int) -> None:
+    def cell_start(self, cell: int, config_path: Path, metrics_host_port: int, http_host_port: int) -> None:
         self.run(
             [
                 "docker", "run", "-d",
@@ -117,6 +117,7 @@ class Docker:
                 "-v", f"{volume_name(self.run_id, cell)}:/var/lib/headscale",
                 "-v", f"{config_path}:/etc/headscale/config.yaml:ro",
                 "-p", f"127.0.0.1:{metrics_host_port}:9090",
+                "-p", f"127.0.0.1:{http_host_port}:8080",
                 HEADSCALE_IMAGE,
                 "serve",
             ]
@@ -231,6 +232,35 @@ class Docker:
         lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
         return max(0, len(lines) - 1)
 
+    def apikey_create(self, cell: int) -> str:
+        out = self.cell_exec(cell, ["apikeys", "create", "--expiration", "1h", "--output", "json"])
+        try:
+            data = json.loads(out.stdout)
+            key = data.get("apiKey")
+        except json.JSONDecodeError:
+            key = None
+        if not key:
+            raise RuntimeError(f"could not parse api key from: {out.stdout[-200:]}")
+        return key
+
+    def http_api_latency(self, http_host_port: int, api_key: str) -> dict:
+        url = f"http://127.0.0.1:{http_host_port}/api/v1/node"
+        t0 = time.monotonic()
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", "replace")
+                status = resp.status
+        except Exception as exc:  # noqa: BLE001
+            return {"latency_ms": None, "status": None, "error": str(exc)[:100]}
+        latency_ms = round((time.monotonic() - t0) * 1000, 3)
+        try:
+            nodes = json.loads(body).get("nodes", [])
+            node_count = len(nodes)
+        except json.JSONDecodeError:
+            node_count = None
+        return {"latency_ms": latency_ms, "status": status, "node_count": node_count}
+
     def metrics_scrape(self, metrics_host_port: int) -> str:
         url = f"http://127.0.0.1:{metrics_host_port}/metrics"
         try:
@@ -276,14 +306,35 @@ class Docker:
         pgrep = self.run(["pgrep", "-f", self.run_id], check=False)
         from cleanup import parse_docker_network_ls, parse_docker_ps_json, parse_docker_volume_ls, parse_pgrep
 
-        own_pid = str(os.getpid())
-        pids = [p for p in parse_pgrep(pgrep.stdout) if p != os.getpid() and own_pid not in pgrep.stdout]
+        # pgrep -f matches our own shell chain (the harness argv embeds the run
+        # id); exclude the harness process and its ancestors, keep any other
+        # run-id-matching pid as residue.
+        own_chain = _own_chain_pids(os.getpid())
+        pids = [p for p in parse_pgrep(pgrep.stdout) if p not in own_chain]
         return {
             "containers": [e.get("Names", "") for e in parse_docker_ps_json(containers.stdout) if e.get("Names")],
             "networks": parse_docker_network_ls(networks.stdout),
             "volumes": parse_docker_volume_ls(volumes.stdout),
             "pids": pids,
         }
+
+
+def _own_chain_pids(own_pid: int) -> set[int]:
+    """Return own_pid plus its ancestor pids (the harness's own shell chain)."""
+    chain: set[int] = set()
+    pid = own_pid
+    while pid > 1:
+        chain.add(pid)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            rest = stat.split(")", 1)[1]
+            ppid = int(rest.split()[1])
+        except (OSError, IndexError, ValueError):
+            break
+        if ppid == pid:
+            break
+        pid = ppid
+    return chain
 
 
 def _parse_stats(data: dict) -> dict:

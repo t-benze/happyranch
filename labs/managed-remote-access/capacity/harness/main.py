@@ -77,6 +77,8 @@ def _write_env_facts(out_dir: Path, docker: Docker) -> None:
         docker.run(["docker", "version", "--format", "{{json .}}"], check=False).stdout
     )
     env["kernel_cmdline_nesting"] = "ok"
+    for label, ref in (("headscale", HEADSCALE_IMAGE), ("tailscale_client", TAILSCALE_IMAGE)):
+        docker.run(["docker", "pull", ref], timeout=300)
     env["images"] = {
         "headscale": {
             "ref": HEADSCALE_IMAGE,
